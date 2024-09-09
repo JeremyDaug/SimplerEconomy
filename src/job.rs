@@ -95,8 +95,15 @@ impl Job {
             }
             // apply results of consumed goods
             for (&good, &quant) in proc_results.consumed.iter() {
-                
+                self.property.entry(good)
+                    .and_modify(|x| *x -= quant);
+                prev_results.goods_consumed
+                    .entry(good)
+                    .and_modify(|x| *x += quant)
+                    .or_insert(quant);
             }
+            // 
+
         }
 
         prev_results
@@ -113,9 +120,16 @@ impl Job {
 /// - Wages paid out.
 /// - Interest costs payed.
 pub struct WorkResults {
+    /// The cost to purchase input goods (and in what form).
     pub input_costs: HashMap<usize, f64>,
+    /// Goods consumed in work.
     pub goods_consumed: HashMap<usize, f64>,
+    /// Goods used but not consumed in work.
     pub goods_used: HashMap<usize, f64>,
+    /// How much (and in what form) was wages paid out in total.
     pub wages_paid: HashMap<usize, f64>,
+    /// How much (and what) was paid in interest.
     pub interest_paid: HashMap<usize, f64>,
+    /// How much time did each process consume.
+    pub process_time_success: HashMap<usize, f64>,
 }
