@@ -102,8 +102,19 @@ impl Job {
                     .and_modify(|x| *x += quant)
                     .or_insert(quant);
             }
-            // 
-
+            // record created goods
+            for (&good, &quant) in proc_results.created.iter() {
+                self.property.entry(good)
+                    .and_modify(|x| *x += quant)
+                    .or_insert(quant);
+                prev_results.produced_goods
+                    .entry(good)
+                    .and_modify(|x| *x += quant);
+            }
+            // record time used
+            prev_results.process_time_success.entry(*p)
+                .and_modify(|x| *x += proc_results.time_used)
+                .or_insert(proc_results.time_used);
         }
 
         prev_results
@@ -132,4 +143,6 @@ pub struct WorkResults {
     pub interest_paid: HashMap<usize, f64>,
     /// How much time did each process consume.
     pub process_time_success: HashMap<usize, f64>,
+    /// The goods produced 
+    pub produced_goods: HashMap<usize, f64>,
 }
