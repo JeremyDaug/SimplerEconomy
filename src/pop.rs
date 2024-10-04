@@ -124,6 +124,7 @@ impl Pop {
             while stepped_idx >= 10 {
                 let sat_at_idx = *result.get(stepped_idx).unwrap();
                 let stepped_desire_target = self.size * step;
+                stepped_idx -= 10;
                 if sat_at_idx <= stepped_desire_target {
                     // if current satisfaction is below our current target, try to buy up to that.
                     let diff = stepped_desire_target - sat_at_idx; // difference in units

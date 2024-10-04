@@ -21,6 +21,133 @@ mod tests {
             use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
 
             #[test]
+            pub fn correctly_calculate_full_satisfaction_more_than_10_entries() {
+                let desires = vec![ // 21 entries
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 1500.0); // 6 desires
+                property.insert(1, 2000.0); // 9 desires
+                property.insert(2, 1800.0); // 6 desires
+                property.insert(3, 50.0);  // 0 desires
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(1) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(2) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(3) .unwrap(), 400.0); // 2
+                assert_eq!(*results.get(4) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(5) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(6) .unwrap(), 400.0); // 2
+                assert_eq!(*results.get(7) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(8) .unwrap(), 200.0); // 0
+                assert_eq!(*results.get(9) .unwrap(), 200.0); // 1
+                assert_eq!(*results.get(10).unwrap(), 300.0);// 2
+                assert_eq!(*results.get(11).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(12).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(13).unwrap(), 300.0);// 2
+                assert_eq!(*results.get(14).unwrap(), 200.0);// 0
+                assert_eq!(*results.get(15).unwrap(), 200.0);// 0
+                assert_eq!(*results.get(16).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(17).unwrap(), 200.0);// 2
+                assert_eq!(*results.get(18).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(19).unwrap(), 100.0);// 1
+                assert_eq!(*results.get(20).unwrap(), 200.0);// 2
+                assert_eq!(l, 2.0);
+                assert_eq!(amv, 50.0);
+                let result = pop.possible_satisfaciton_gain(None, &market, &data);
+                assert_eq!(*result.get(0) .unwrap(), 300.0); // 0
+                assert_eq!(*result.get(1) .unwrap(), 300.0); // 0
+                assert_eq!(*result.get(2) .unwrap(), 300.0); // 1
+                assert_eq!(*result.get(3) .unwrap(), 400.0); // 2
+                assert_eq!(*result.get(4) .unwrap(), 300.0); // 1
+                assert_eq!(*result.get(5) .unwrap(), 300.0); // 1
+                assert_eq!(*result.get(6) .unwrap(), 400.0); // 2
+                assert_eq!(*result.get(7) .unwrap(), 300.0); // 0
+                assert_eq!(*result.get(8) .unwrap(), 200.0); // 0
+                assert_eq!(*result.get(9) .unwrap(), 200.0); // 1
+                assert_eq!(*result.get(10).unwrap(), 300.0);// 2
+                assert_eq!(*result.get(11).unwrap(), 300.0);// 1
+                assert_eq!(*result.get(12).unwrap(), 300.0);// 1
+                assert_eq!(*result.get(13).unwrap(), 300.0);// 2
+                assert_eq!(*result.get(14).unwrap(), 275.0);// 0
+                assert_eq!(*result.get(15).unwrap(), 200.0);// 0
+                assert_eq!(*result.get(16).unwrap(), 200.0);// 1
+                assert_eq!(*result.get(17).unwrap(), 200.0);// 2
+                assert_eq!(*result.get(18).unwrap(), 200.0);// 1
+                assert_eq!(*result.get(19).unwrap(), 200.0);// 1
+                assert_eq!(*result.get(20).unwrap(), 200.0);// 2
+            }
+
+            #[test]
             pub fn correctly_expend_excess_amv_with_less_than_10_entries() {
                 let desires = vec![
                     Desire::Consume(0),
@@ -67,7 +194,7 @@ mod tests {
                 });
                 market.goods_info.insert(3, GoodData {
                     amv: 1.0,
-                    salability: 2.0,
+                    salability: 1.0,
                 });
 
                 let mut property = HashMap::new();
@@ -85,17 +212,24 @@ mod tests {
                     unused_time: 200.0,
                 };
 
-                //let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                // assert_eq!(*results.get(0).unwrap(), 200.0);
-                // assert_eq!(*results.get(1).unwrap(), 100.0);
-                // assert_eq!(*results.get(2).unwrap(), 200.0);
-                // assert_eq!(*results.get(3).unwrap(), 200.0);
-                // assert_eq!(*results.get(4).unwrap(), 100.0);
-                // assert_eq!(*results.get(5).unwrap(), 100.0);
-                // assert_eq!(*results.get(6).unwrap(), 200.0);
-                // assert_eq!(l, 2.0);
-                // assert_eq!(amv, 150.0);
+                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0).unwrap(), 200.0);
+                assert_eq!(*results.get(1).unwrap(), 100.0);
+                assert_eq!(*results.get(2).unwrap(), 200.0);
+                assert_eq!(*results.get(3).unwrap(), 200.0);
+                assert_eq!(*results.get(4).unwrap(), 100.0);
+                assert_eq!(*results.get(5).unwrap(), 100.0);
+                assert_eq!(*results.get(6).unwrap(), 200.0);
+                assert_eq!(l, 2.0);
+                assert_eq!(amv, 150.0);
                 let result = pop.possible_satisfaciton_gain(None, &market, &data);
+                assert_eq!(*result.get(0).unwrap(), 200.0);
+                assert_eq!(*result.get(1).unwrap(), 200.0);
+                assert_eq!(*result.get(2).unwrap(), 200.0);
+                assert_eq!(*result.get(3).unwrap(), 200.0);
+                assert_eq!(*result.get(4).unwrap(), 150.0);
+                assert_eq!(*result.get(5).unwrap(), 100.0);
+                assert_eq!(*result.get(6).unwrap(), 200.0);
             }
         }
 
@@ -602,7 +736,7 @@ mod tests {
                 });
                 market.goods_info.insert(3, GoodData {
                     amv: 1.0,
-                    salability: 2.0,
+                    salability: 1.0,
                 });
 
                 let mut property = HashMap::new();
@@ -716,7 +850,7 @@ mod tests {
                 });
                 market.goods_info.insert(3, GoodData {
                     amv: 1.0,
-                    salability: 2.0,
+                    salability: 1.0,
                 });
 
                 let mut property = HashMap::new();
@@ -813,7 +947,7 @@ mod tests {
                 });
                 market.goods_info.insert(3, GoodData {
                     amv: 1.0,
-                    salability: 2.0,
+                    salability: 1.0,
                 });
 
                 let mut property = HashMap::new();

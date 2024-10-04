@@ -78,7 +78,8 @@ impl Market {
     /// 
     /// Current function is original (0.5 + sal / 2)
     pub fn salibility_amv_mod(sal: f64) -> f64 {
-        0.5 + sal / 2.0
+        let result = 0.5 + sal / 2.0;
+        result
     }
 }
 
