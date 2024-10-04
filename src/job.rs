@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::data::Data;
+use crate::{data::Data, market::GoodData, pop::Pop};
 
 /// # Job
 /// 
@@ -41,6 +41,10 @@ pub struct Job {
 
     /// The processes, and how many hours it wants to put into each process.
     pub target: HashMap<usize, f64>,
+    /// When planning, how many days worth of goods it wants to have at the end
+    /// of the day. Defaults to 2. Currently will not change, may need to change
+    /// if more market volatility is introduced.
+    pub excess_input_target: f64,
 
     /// Property owned by the job (and the owner technically)
     pub property: HashMap<usize, f64>,
@@ -59,9 +63,77 @@ pub struct Job {
 }
 
 impl Job {
-    /// # Runs the work for the day, excluding buying and selling.
-    pub fn workday(&mut self) {
+    /// # Pay Workers
+    /// 
+    /// Purchases labor from workers, and takes time appropriate to the
+    /// wage selected. If unable to pay all, it instead pays what it can
+    /// and takes it appropriately.
+    /// 
+    /// If the job has no owner, it instead takes all property from the pop,
+    /// as it assumes that it will return everything at the end of the work day.
+    /// 
+    /// If job has an owner, it pays the agreed upon wage and takes time
+    /// to match that. If unable to pay for all the time it wants, it pays everything it
+    /// can and gets as much time as it can, with the time recieved reduced by the AMV
+    /// missing from the total needed.
+    pub fn pay_workers(&mut self, pops: &mut HashMap<usize, Pop>, 
+    good_info: &HashMap<usize, GoodData>) {
+        if let Some(_) = self.owner {
+            let pop = pops.get_mut(&self.workers).expect("Pop not found.");
+            // get total time we'll try to get
+            let time = self.time_purchase.min(pop.unused_time);
+            let hourly_amv = self.wage.iter()
+                .map(|(good, amt)| {
+                    amt * good_info.get(good).unwrap().amv
+                }).sum::<f64>();
+            let total_amv_cost = time * hourly_amv;
+            let available_amv = self.property.iter()
+                .map(|(good, amt)| {
+                     // multiply the good's AMV times the amount available capped at what we can get.
+                    amt.min(time * self.wage.get(good).unwrap()) * good_info.get(good).unwrap().amv
+                }).sum::<f64>();
+            let retrieve = 1.0_f64.min(available_amv / total_amv_cost);
+            // with how many hours we can get, exchange all we can.
+            self.time = time * retrieve;
+            pop.unused_time -= self.time;
+            for (good, amt) in self.wage.iter() {
+                // Get our target
+                let target = self.time_purchase * amt;
+                // get how many we have available, up to our target for this good.
+                let shift = target.min(*self.property.get(good).unwrap());
+                // subtract the shift from our property, and add to the workers.
+                self.property.entry(*good)
+                    .and_modify(|x| *x -= shift);
+                pop.property.entry(*good)
+                    .and_modify(|x| *x += shift)
+                    .or_insert(shift);
+            }
+        } else { 
+            // No owner, so pops are the job
+            // Pops give everything to the job, then return all goods to the 
+            // pop at the end of the work day.
+            let pop = pops.get_mut(&self.workers).expect("Pop not found.");
+            // move time over.
+            self.time = pop.unused_time;
+            pop.unused_time = 0.0;
+            // move over property.
+            let ids: Vec<usize> = pop.property.keys().cloned().collect();
+            for good in ids {
+                let amt = pop.property.remove(&good).unwrap();
+                self.property.entry(good)
+                    .and_modify(|x| *x += amt)
+                    .or_insert(amt);
+            }
+        }
+    }
 
+    /// # Workday
+    /// 
+    /// Runs the work for the day, excluding buying and selling.
+    /// 
+    /// This 
+    pub fn workday(&mut self) {
+        // 
     }
 
     /// # Do Work
@@ -72,7 +144,7 @@ impl Job {
     /// 
     /// Records and collects results into Work Results.
     /// 
-    /// returns updated work results
+    /// Returns updated work results
     pub fn do_work(&mut self, data: &Data, mut prev_results: WorkResults) -> WorkResults {
         let mut expended = HashMap::new();
         for p in self.process.iter() {

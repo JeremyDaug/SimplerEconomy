@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{good::Good, process::Process};
+use crate::{culture::Culture, good::Good, process::Process};
 
 /// # Data
 /// 
@@ -16,5 +16,6 @@ pub struct Data {
     /// 
     /// All currently available processes.
     pub processes: HashMap<usize, Process>,
+    pub cultures: HashMap<usize, Culture>,
     // TODO, nothing els should be needed here yet.
 }

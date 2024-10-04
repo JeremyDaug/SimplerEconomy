@@ -32,6 +32,9 @@ pub struct Good {
     /// Tags to give extra properties for goods. Typically defines how they interact
     /// with the wider market.
     pub tags: Vec<GoodTags>,
+
+    // TODO: Add counts_as subsection, which allows goods to (unilaterally) substitute for another. This would be useful for more specific variations of generic products. If mutual, then the products can be counted as substitutions for each other.
+    // TODO: Add decays_into to allow for a closed matter loop, and more variety in what a good does.
 }
 
 impl Good {

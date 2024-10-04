@@ -5,11 +5,919 @@ pub mod process;
 pub mod market;
 pub mod job;
 pub mod data;
+pub mod world;
+pub mod culture;
 
 #[cfg(test)]
 mod tests {
     mod pop_tests {
+        mod check_barter_should {
+
+        }
+
+        mod possible_satisfaciton_gain_should {
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+
+            #[test]
+            pub fn correctly_expend_excess_amv_with_less_than_10_entries() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 2.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 300.0);
+                property.insert(1, 400.0);
+                property.insert(2, 400.0);
+                property.insert(3, 100.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                //let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                // assert_eq!(*results.get(0).unwrap(), 200.0);
+                // assert_eq!(*results.get(1).unwrap(), 100.0);
+                // assert_eq!(*results.get(2).unwrap(), 200.0);
+                // assert_eq!(*results.get(3).unwrap(), 200.0);
+                // assert_eq!(*results.get(4).unwrap(), 100.0);
+                // assert_eq!(*results.get(5).unwrap(), 100.0);
+                // assert_eq!(*results.get(6).unwrap(), 200.0);
+                // assert_eq!(l, 2.0);
+                // assert_eq!(amv, 150.0);
+                let result = pop.possible_satisfaciton_gain(None, &market, &data);
+            }
+        }
+
+        mod consume_goods_should {
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+
+            #[test]
+            pub fn consume_and_reserve_goods_correctly() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 300.0);
+                property.insert(1, 400.0);
+                property.insert(2, 400.0);
+                property.insert(3, 100.0);
+
+                let mut pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                pop.consume_goods(&market, &data, None);
+                // check property
+                assert_eq!(*pop.property.get(&0).unwrap(), 100.0);
+                assert_eq!(*pop.property.get(&1).unwrap(), 200.0);
+                assert_eq!(*pop.property.get(&2).unwrap(), 300.0);
+                assert_eq!(*pop.property.get(&3).unwrap(), 100.0);
+            }
+        }
+
+        mod starving_pops_should {
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+
+            #[test]
+            pub fn find_staving_pops_when_all_are_fed() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 150.0);
+                property.insert(1, 100.0);
+                property.insert(2, 75.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 10.0,
+                };
+
+                let result = pop.starving_pops(&market, &data, None);
+                assert_eq!(result, 0.0);
+            }
+
+            #[test]
+            pub fn find_staving_pops_when_some_are_starving() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 50.0);
+                property.insert(1, 100.0);
+                property.insert(2, 75.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 10.0,
+                };
+
+                let result = pop.starving_pops(&market, &data, None);
+                assert_eq!(result, 50.0);
+            }
+        }
+
+        mod satisfaction_spread_should{
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+ 
+            #[test]
+            pub fn correctly_calculate_simple_spread() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 800.0);
+                property.insert(1, 550.0);
+                property.insert(2, 456.0);
+                property.insert(3, 200.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let (lower, upper, average) = pop.satisfaction_spread(&market, &data, None);
+                assert_eq!(lower, 9.0);
+                assert_eq!(upper, 9.0);
+                assert_eq!(average, 2.0);
+            }
+
+            #[test]
+            pub fn correctly_calculate_varied_spread() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 150.0);
+                property.insert(1, 100.0);
+                property.insert(2, 75.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 10.0,
+                };
+
+                let (lower, upper, average) = pop.satisfaction_spread(&market, &data, None);
+                assert_eq!(lower, 2.0);
+                assert_eq!(upper, 5.0);
+                assert_eq!(average, 0.0);
+            }
+        }
+        
+        mod excess_goods_should {
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+
+            #[test]
+            pub fn correctly_calculate_excess_goods() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 800.0);
+                property.insert(1, 550.0);
+                property.insert(2, 456.0);
+                property.insert(3, 200.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let result = pop.excess_goods(&data);
+                assert_eq!(*result.get(&0).unwrap(), 600.0);
+                assert_eq!(*result.get(&1).unwrap(), 250.0);
+                assert_eq!(*result.get(&2).unwrap(), 256.0);
+                assert_eq!(*result.get(&3).unwrap(), 200.0);
+            }
+        }
+
         mod current_overall_satisfaction_should {
+            use std::collections::{HashMap, HashSet};
+
+            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+
+            #[test]
+            pub fn correctly_calculate_full_satisfaction_more_than_10_entries() {
+                let desires = vec![ // 21 entries
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 2.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 1500.0); // 6 desires
+                property.insert(1, 2000.0); // 9 desires
+                property.insert(2, 1800.0); // 6 desires
+                property.insert(3, 200.0);  // 0 desires
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(1) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(2) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(3) .unwrap(), 400.0); // 2
+                assert_eq!(*results.get(4) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(5) .unwrap(), 300.0); // 1
+                assert_eq!(*results.get(6) .unwrap(), 400.0); // 2
+                assert_eq!(*results.get(7) .unwrap(), 300.0); // 0
+                assert_eq!(*results.get(8) .unwrap(), 200.0); // 0
+                assert_eq!(*results.get(9) .unwrap(), 200.0); // 1
+                assert_eq!(*results.get(10).unwrap(), 300.0);// 2
+                assert_eq!(*results.get(11).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(12).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(13).unwrap(), 300.0);// 2
+                assert_eq!(*results.get(14).unwrap(), 200.0);// 0
+                assert_eq!(*results.get(15).unwrap(), 200.0);// 0
+                assert_eq!(*results.get(16).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(17).unwrap(), 200.0);// 2
+                assert_eq!(*results.get(18).unwrap(), 200.0);// 1
+                assert_eq!(*results.get(19).unwrap(), 100.0);// 1
+                assert_eq!(*results.get(20).unwrap(), 200.0);// 2
+                assert_eq!(l, 2.0);
+                assert_eq!(amv, 300.0);
+            }
+
+            #[test]
+            pub fn correctly_calculate_simple_satisfaction_more_than_10_entries() {
+                let desires = vec![ // 30 entries
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 2.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 6050.0); // 6 desires
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let (results, l, _) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0) .unwrap(), 300.0);
+                assert_eq!(*results.get(1) .unwrap(), 300.0);
+                assert_eq!(*results.get(2) .unwrap(), 300.0);
+                assert_eq!(*results.get(3) .unwrap(), 300.0);
+                assert_eq!(*results.get(4) .unwrap(), 300.0);
+                assert_eq!(*results.get(5) .unwrap(), 300.0);
+                assert_eq!(*results.get(6) .unwrap(), 300.0);
+                assert_eq!(*results.get(7) .unwrap(), 300.0);
+                assert_eq!(*results.get(8) .unwrap(), 300.0);
+                assert_eq!(*results.get(9) .unwrap(), 300.0);
+                assert_eq!(*results.get(10).unwrap(), 200.0);
+                assert_eq!(*results.get(11).unwrap(), 200.0);
+                assert_eq!(*results.get(12).unwrap(), 200.0);
+                assert_eq!(*results.get(13).unwrap(), 200.0);
+                assert_eq!(*results.get(14).unwrap(), 200.0);
+                assert_eq!(*results.get(15).unwrap(), 200.0);
+                assert_eq!(*results.get(16).unwrap(), 200.0);
+                assert_eq!(*results.get(17).unwrap(), 200.0);
+                assert_eq!(*results.get(18).unwrap(), 200.0);
+                assert_eq!(*results.get(19).unwrap(), 200.0);
+                assert_eq!(*results.get(20).unwrap(), 150.0);
+                assert_eq!(*results.get(21).unwrap(), 100.0);
+                assert_eq!(*results.get(22).unwrap(), 100.0);
+                assert_eq!(*results.get(23).unwrap(), 100.0);
+                assert_eq!(*results.get(24).unwrap(), 100.0);
+                assert_eq!(*results.get(25).unwrap(), 100.0);
+                assert_eq!(*results.get(26).unwrap(), 100.0);
+                assert_eq!(*results.get(27).unwrap(), 100.0);
+                assert_eq!(*results.get(28).unwrap(), 100.0);
+                assert_eq!(*results.get(29).unwrap(), 100.0);
+                assert_eq!(l, 2.0);
+            }
+
+
+            #[test]
+            pub fn correctly_calculate_full_satisfaction_less_than_10_entries() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 2.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 300.0);
+                property.insert(1, 400.0);
+                property.insert(2, 400.0);
+                property.insert(3, 100.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0).unwrap(), 200.0);
+                assert_eq!(*results.get(1).unwrap(), 100.0);
+                assert_eq!(*results.get(2).unwrap(), 200.0);
+                assert_eq!(*results.get(3).unwrap(), 200.0);
+                assert_eq!(*results.get(4).unwrap(), 100.0);
+                assert_eq!(*results.get(5).unwrap(), 100.0);
+                assert_eq!(*results.get(6).unwrap(), 200.0);
+                assert_eq!(l, 2.0);
+                assert_eq!(amv, 150.0);
+            }
+
+            #[test]
+            pub fn correctly_calculate_partial_satisfaction() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 300.0);
+                property.insert(1, 250.0);
+                property.insert(2, 125.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 0.0,
+                };
+
+                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
+                assert_eq!(*results.get(0).unwrap(), 200.0); // C0
+                assert_eq!(*results.get(1).unwrap(), 100.0); // C0
+                assert_eq!(*results.get(2).unwrap(), 100.0); // C1
+                assert_eq!(*results.get(3).unwrap(), 100.0); // C2
+                assert_eq!(*results.get(4).unwrap(), 100.0); // C1
+                assert_eq!(*results.get(5).unwrap(), 50.0);  // O1
+                assert_eq!(*results.get(6).unwrap(), 25.0);  // O2
+                assert_eq!(l, 0.0);
+                assert_eq!(amv, 0.0);
+            }
         }
     }
 
@@ -48,7 +956,8 @@ mod tests {
                 });
                 let data = Data {
                     goods: good_data,
-                    processes: HashMap::new()
+                    processes: HashMap::new(),
+                    cultures: HashMap::new()
                 };
 
                 let mut inputs = HashMap::new();
@@ -133,7 +1042,8 @@ mod tests {
                 });
                 let data = Data {
                     goods: good_data,
-                    processes: HashMap::new()
+                    processes: HashMap::new(),
+                    cultures: HashMap::new()
                 };
 
                 let mut inputs = HashMap::new();
@@ -217,7 +1127,8 @@ mod tests {
                 });
                 let data = Data {
                     goods: good_data,
-                    processes: HashMap::new()
+                    processes: HashMap::new(),
+                    cultures: HashMap::new()
                 };
 
                 let mut inputs = HashMap::new();
@@ -302,7 +1213,8 @@ mod tests {
                 });
                 let data = Data {
                     goods: good_data,
-                    processes: HashMap::new()
+                    processes: HashMap::new(),
+                    cultures: HashMap::new()
                 };
 
                 let mut inputs = HashMap::new();
