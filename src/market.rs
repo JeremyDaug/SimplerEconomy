@@ -79,6 +79,7 @@ impl Market {
     /// Current function is original (0.5 + sal / 2)
     pub fn salibility_amv_mod(sal: f64) -> f64 {
         let result = 0.5 + sal / 2.0;
+        debug_assert!(result <= 1.0, "Salability given is greater than 1.0");
         result
     }
 }

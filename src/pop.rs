@@ -83,16 +83,12 @@ impl Pop {
         let mut resulting_total = after_trade.possible_satisfaciton_gain(None, market, data);
         // subtract the current total from the resulting total to see the difference of the two.
         debug_assert_eq!(current_total.len(), resulting_total.len(), "Current and resulting length mismatch.");
-        let mut diff = vec![0.0; current_total.len()];
-        for (idx, &sat) in resulting_total.iter().enumerate() {
-            *diff.get_mut(idx).unwrap() = sat - *current_total.get(idx).unwrap();
-        }
         // with diff created, consolidate into simple value.
         // we can also liquidate the data in our diff satisfaction while we're at it.
         let mut balance = 0.0;
         // iterate while current total and resulting total have any values in them.
         let mut step_mult = 1.0;
-        while current_total.iter().any(|x| *x > 0.0) && resulting_total.iter().any(|x| *x > 0.0) {
+        while current_total.iter().any(|x| *x > 0.0) || resulting_total.iter().any(|x| *x > 0.0) {
             for idx in 0..resulting_total.len() {
                 let idx_mult = 0.9_f64.powf(idx as f64);
                 // subtract current from resulting, capping both at pop size.

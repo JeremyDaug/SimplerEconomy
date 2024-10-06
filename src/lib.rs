@@ -17,6 +17,175 @@ mod tests {
             use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
 
             #[test]
+            pub fn correctly_calculate_success_and_failure_on_offer_with_more_than_10_desires() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2), // 10
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(4, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 400.0);
+                property.insert(1, 600.0);
+                property.insert(2, 400.0);
+                //property.insert(3, 100.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let mut take = HashMap::new();
+                let mut give = HashMap::new();
+                // give level 0.5 item for level 13
+                take.insert(2, 100.0);
+                give.insert(0, 100.0);
+
+                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
+                let mut take = HashMap::new();
+                let mut give = HashMap::new();
+                take.insert(2, 200.0);
+                give.insert(1, 100.0);
+
+                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
+            }
+
+            #[test]
+            pub fn correctly_calculate_failure_on_sat_only_exchange() {
+                let desires = vec![
+                    Desire::Consume(0),
+                    Desire::Consume(0),
+                    Desire::Consume(1),
+                    Desire::Consume(2),
+                    Desire::Consume(1),
+                    Desire::Own(1),
+                    Desire::Own(2),
+                ];
+                let culture = Culture {
+                    id: 0,
+                    name: "test".to_string(),
+                    desires,
+                };
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.cultures.insert(culture.id, culture);
+
+                let mut market = Market {
+                    id: 0,
+                    name: "test_market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info: HashMap::new(),
+                    monies: HashSet::new(),
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+                market.goods_info.insert(0, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(1, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(2, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(3, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                market.goods_info.insert(4, GoodData {
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                let mut property = HashMap::new();
+                property.insert(0, 200.0);
+                property.insert(1, 300.0);
+                property.insert(2, 200.0);
+                //property.insert(3, 100.0);
+
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property,
+                    unused_time: 200.0,
+                };
+
+                let mut take = HashMap::new();
+                let mut give = HashMap::new();
+                // give level 0.5 item for level 2
+                take.insert(2, 100.0);
+                give.insert(0, 100.0);
+
+                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
+            }
+
+            #[test]
             pub fn correctly_calculate_success_on_sat_only_exchange() {
                 let desires = vec![
                     Desire::Consume(0),
@@ -74,7 +243,7 @@ mod tests {
                 property.insert(0, 100.0);
                 property.insert(1, 300.0);
                 property.insert(2, 200.0);
-                property.insert(3, 100.0);
+                //property.insert(3, 100.0);
 
                 let pop = Pop {
                     id: 0,
@@ -89,7 +258,7 @@ mod tests {
                 let mut give = HashMap::new();
                 // give level 1 item for level 2
                 take.insert(2, 100.0);
-                give.insert(1, 100.0);
+                give.insert(0, 100.0);
 
                 assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
             }
