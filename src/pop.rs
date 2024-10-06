@@ -66,8 +66,7 @@ impl Pop {
     ///   then we simply compare the relative AMVs of the goods.
     pub fn check_barter(&self, offer: HashMap<usize, f64>, 
     request: HashMap<usize, f64>, market: &Market, data: &Data) -> bool {
-        // get our current satisfaction.
-        let current_sat = self.current_overall_satisfaction(market, data);
+        // clone our data
         let mut after_trade = self.clone();
         // do the trade and go onwards.
         for (&good, &amt) in offer.iter() {
@@ -79,10 +78,40 @@ impl Pop {
             after_trade.property.entry(good)
                 .and_modify(|x| *x -= amt);
         }
-        let resulting_sat = after_trade.current_overall_satisfaction(market, data);
         // with both gotten, try to buy goods with our current excess AMV for each.
+        let mut current_total = self.possible_satisfaciton_gain(None, market, data);
+        let mut resulting_total = after_trade.possible_satisfaciton_gain(None, market, data);
+        // subtract the current total from the resulting total to see the difference of the two.
+        debug_assert_eq!(current_total.len(), resulting_total.len(), "Current and resulting length mismatch.");
+        let mut diff = vec![0.0; current_total.len()];
+        for (idx, &sat) in resulting_total.iter().enumerate() {
+            *diff.get_mut(idx).unwrap() = sat - *current_total.get(idx).unwrap();
+        }
+        // with diff created, consolidate into simple value.
+        // we can also liquidate the data in our diff satisfaction while we're at it.
+        let mut balance = 0.0;
+        // iterate while current total and resulting total have any values in them.
+        let mut step_mult = 1.0;
+        while current_total.iter().any(|x| *x > 0.0) && resulting_total.iter().any(|x| *x > 0.0) {
+            for idx in 0..resulting_total.len() {
+                let idx_mult = 0.9_f64.powf(idx as f64);
+                // subtract current from resulting, capping both at pop size.
+                let res_sat =  resulting_total.get_mut(idx).unwrap();
+                let cur_sat =  current_total.get_mut(idx).unwrap();
+                let diff = res_sat.min(self.size) - cur_sat.min(self.size);
+                // subtract from both.
+                *res_sat -= res_sat.min(self.size);
+                *cur_sat -= cur_sat.min(self.size);
+                // add diff, scaled to our current position add the difference to our balance.
+                if diff != 0.0 {
+                    balance += diff * idx_mult * step_mult;
+                }
+            }
+            step_mult *= 0.33;
+        }
 
-        false
+        // with our balance calculated, just check if it's positive or negative
+        balance > 0.0
     }
 
     /// # Possible Satisfaction Gain
