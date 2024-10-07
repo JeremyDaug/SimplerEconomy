@@ -24,6 +24,10 @@ pub struct Job {
     /// How much and in what goods workers are payed. These are reevaluated daily.
     /// 
     /// This is the wage paid per hour, so multiply by the time_purchase for total wage.
+    /// 
+    /// When paying out wages, a we will prioritize using these first, and will treat 
+    /// them as being full AMV when offered. If there is a shortfall, the job will 
+    /// supplement it with other goods, their amv modified by salability.
     pub wage: HashMap<usize, f64>,
     /// How much time the job purchases with it's wage.
     pub time_purchase: f64,
@@ -76,37 +80,44 @@ impl Job {
     /// to match that. If unable to pay for all the time it wants, it pays everything it
     /// can and gets as much time as it can, with the time recieved reduced by the AMV
     /// missing from the total needed.
+    /// 
+    /// Workers do not negotiate here, barter for time occurs near the end of the day,
+    /// if unable to pay for all time today, it only purchases as much as it can.
     pub fn pay_workers(&mut self, pops: &mut HashMap<usize, Pop>, 
     good_info: &HashMap<usize, GoodData>) {
-        if let Some(_) = self.owner {
+        if let Some(_) = self.owner { // if owned
+            // get the worker pop
             let pop = pops.get_mut(&self.workers).expect("Pop not found.");
             // get total time we'll try to get
-            let time = self.time_purchase.min(pop.unused_time);
+            let mut time = self.time_purchase.min(pop.unused_time);
+            // calculate the hourly AMV per hour based on specific wage.
             let hourly_amv = self.wage.iter()
                 .map(|(good, amt)| {
                     amt * good_info.get(good).unwrap().amv
                 }).sum::<f64>();
-            let total_amv_cost = time * hourly_amv;
-            let available_amv = self.property.iter()
-                .map(|(good, amt)| {
-                     // multiply the good's AMV times the amount available capped at what we can get.
-                    amt.min(time * self.wage.get(good).unwrap()) * good_info.get(good).unwrap().amv
-                }).sum::<f64>();
-            let retrieve = 1.0_f64.min(available_amv / total_amv_cost);
-            // with how many hours we can get, exchange all we can.
-            self.time = time * retrieve;
-            pop.unused_time -= self.time;
-            for (good, amt) in self.wage.iter() {
-                // Get our target
-                let target = self.time_purchase * amt;
-                // get how many we have available, up to our target for this good.
-                let shift = target.min(*self.property.get(good).unwrap());
-                // subtract the shift from our property, and add to the workers.
-                self.property.entry(*good)
-                    .and_modify(|x| *x -= shift);
-                pop.property.entry(*good)
-                    .and_modify(|x| *x += shift)
-                    .or_insert(shift);
+            let total_amv_cost = time * hourly_amv; // total AMV cost for the time we want.
+            // get how much we have in actual wages
+            let mut expending_amv = 0.0;
+            let mut paycheck = HashMap::new();
+            for (&good, amt) in self.wage.iter() {
+                let good_data = good_info.get(&good).unwrap(); // get good data
+                // insert what we have (up to what we should insert)
+                paycheck.insert(good, (amt * time).min(*self.property.get(&good).unwrap_or(&0.0)));
+                let expending = paycheck.get(&good).unwrap(); // how much we are/can expend
+                expending_amv += expending * good_data.amv; // add to expending
+                self.property.entry(good).and_modify(|x| *x -= expending); // remove from property.
+            }
+            if expending_amv < total_amv_cost { // if not enough AMV (not enough goods)
+                // reduce time purchase to match how much we're able to purchase (round down).
+                let reduction = expending_amv / total_amv_cost;
+                time = (time * reduction).floor(); // reduce by the fractional difference,
+            }
+            // take the time from the pop and give them their wage.
+            pop.unused_time -= time;
+            for (good, amt) in paycheck {
+                pop.property.entry(good)
+                    .and_modify(|x| *x += amt)
+                    .or_insert(amt);
             }
         } else { 
             // No owner, so pops are the job

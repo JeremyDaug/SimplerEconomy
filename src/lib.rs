@@ -10,6 +10,71 @@ pub mod culture;
 
 #[cfg(test)]
 mod tests {
+    mod job_tests {
+        mod do_work_should {
+            use std::collections::{HashMap, VecDeque};
+
+            use crate::{data::Data, job::{Job, WorkResults}, process::{InputType, Process}};
+
+            #[test]
+            pub fn correctly_do_and_record_work_results() {
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                let mut process = Process {
+                    id: 0,
+                    name: "testproc".to_string(),
+                    parent: None,
+                    time: 1.0,
+                    inputs: HashMap::new(),
+                    optional: 0.0,
+                    input_type: HashMap::new(),
+                    outputs: HashMap::new(),
+                };
+                process.inputs.insert(0, 100.0);
+                process.inputs.insert(1, 100.0);
+                process.input_type.insert(0, InputType::Input);
+                process.input_type.insert(0, InputType::Capital);
+                process.outputs.insert(2, 200.0);
+                data.processes.insert(0, process);
+                let mut property = HashMap::new();
+                property.insert(0, 100.0);
+                property.insert(1, 100.0);
+                let mut target = HashMap::new();
+                target.insert(0, 100.0);
+                let process = vec![0];
+
+                let job = Job {
+                    id: 0,
+                    name: "test".to_string(),
+                    workers: 0,
+                    wage: HashMap::new(),
+                    time_purchase: 100.0,
+                    owner: None,
+                    lenders: vec![],
+                    process,
+                    target,
+                    excess_input_target: 2.0,
+                    property,
+                    time: 100.0,
+                    property_history: VecDeque::new(),
+                    amv_history: VecDeque::new(),
+                };
+                let mut prior_results = WorkResults {
+                    input_costs: todo!(),
+                    goods_consumed: todo!(),
+                    goods_used: todo!(),
+                    wages_paid: todo!(),
+                    interest_paid: todo!(),
+                    process_time_success: todo!(),
+                    produced_goods: todo!(),
+                };
+            }
+        }
+    }
+
     mod pop_tests {
         mod check_barter_should {
             use std::collections::{HashMap, HashSet};
