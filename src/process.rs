@@ -48,10 +48,8 @@ impl Process {
     pub fn do_process(&self, time: f64, goods: &HashMap<usize, f64>, data: &Data) -> ProcessResults {
         // first, get the lesser between iterations possible by time, and iterations possible by target.
         let mut target = time / self.time;
-        println!("Iteration target: {}", target);
         // how many total goods we need per iteration
         let iter_good_cost = self.inputs.values().sum::<f64>() - self.optional;
-        println!("Good Cost per iteration: {}", iter_good_cost);
         // get the goods we need, we'll need these details later.
         // all the goods we will expend at the end of it.
         let mut expending_goods = HashMap::new();
@@ -59,15 +57,9 @@ impl Process {
             let expending = quant * target;
             expending_goods.insert(*good, expending.min(quant));
         }
-        println!("Starting Expending Goods:");
-        for (key, val) in expending_goods.iter() {
-            println!("{}: {}", key, val);
-        }
         // how many goods we have available to expend
         let available = expending_goods.values().sum::<f64>();
-        println!("Available Goods: {}", available);
         let mut target_result = available - target * iter_good_cost;
-        println!("Target results: {}", target_result);
         if target_result < 0.0 {
             // If we don't have enough goods and free slots, reduce the target downwards
             target = target + target_result;
@@ -81,17 +73,9 @@ impl Process {
         // recalculate our target result base on the new target
         let available = expending_goods.values().sum::<f64>();
         target_result = available - target * iter_good_cost;
-        println!("New Target: {}", target);
-
-        println!("New Target results: {}", target_result);
-        println!("Expending Goods");
-        for (key, val) in expending_goods.iter() {
-            println!("{}: {}", key, val);
-        }
 
         // subtract any extra free slots, starting from the highest ID to the lowest.
         let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
-        println!("Remaining Frees: {}", remaining_frees);
         while remaining_frees > 0.0 {
             if let Some(&highest) = expending_goods.keys().max() {
                 if *expending_goods.get(&highest).unwrap() > 0.0 {
@@ -102,10 +86,6 @@ impl Process {
                     expending_goods.remove(&highest);
                 }
             }
-        }
-        println!("Expending Goods with removed goods.");
-        for (key, val) in expending_goods.iter() {
-            println!("{}: {}", key, val);
         }
 
         // split expending goods into consumed and used.
@@ -124,7 +104,6 @@ impl Process {
 
         let mut created = HashMap::new();
         let eff = self.efficiency();
-        println!("Efficiency: {}", eff);
         for (good, quant) in self.outputs.iter() {
             // add outputs, correctly multiplying if durability above 1.0 
             let good_info = data.goods.get(good).expect(format!("Good '{}' not found.", good).as_str());
@@ -133,18 +112,6 @@ impl Process {
             } else {
                 created.insert(*good, (quant * target * eff).ceil());
             }
-        }
-        println!("consumed");
-        for (key, val) in consumed_goods.iter() {
-            println!("{}: {}", key, val);
-        }
-        println!("used");
-        for (key, val) in used_goods.iter() {
-            println!("{}: {}", key, val);
-        }
-        println!("created");
-        for (key, val) in created.iter() {
-            println!("{}: {}", key, val);
         }
 
         ProcessResults {

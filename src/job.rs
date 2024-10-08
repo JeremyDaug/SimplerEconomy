@@ -188,7 +188,8 @@ impl Job {
                     .or_insert(quant);
                 prev_results.produced_goods
                     .entry(good)
-                    .and_modify(|x| *x += quant);
+                    .and_modify(|x| *x += quant)
+                    .or_insert(quant);
             }
             // record time used
             prev_results.process_time_success.entry(*p)

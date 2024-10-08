@@ -88,10 +88,9 @@ mod tests {
                 };
                 job.property.insert(0, 100.0);
                 job.property.insert(1, 100.0);
-                job.process.push(0);
                 job.target.insert(0, 100.0);
 
-                let mut prior_results = WorkResults {
+                let prior_results = WorkResults {
                     input_costs: HashMap::new(),
                     goods_consumed: HashMap::new(),
                     goods_used: HashMap::new(),
@@ -109,7 +108,7 @@ mod tests {
                 // Check that the job's property matches these changes.
                 assert_eq!(*job.property.get(&0).unwrap(), 0.0);
                 assert_eq!(*job.property.get(&1).unwrap(), 0.0);
-                assert_eq!(*job.property.get(&2).unwrap(), 100.0);
+                assert_eq!(*job.property.get(&2).unwrap(), 221.0);
             }
         }
     }
