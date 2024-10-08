@@ -14,7 +14,7 @@ mod tests {
         mod do_work_should {
             use std::collections::{HashMap, VecDeque};
 
-            use crate::{data::Data, job::{Job, WorkResults}, process::{InputType, Process}};
+            use crate::{data::Data, good::Good, job::{Job, WorkResults}, process::{InputType, Process}};
 
             #[test]
             pub fn correctly_do_and_record_work_results() {
@@ -23,6 +23,30 @@ mod tests {
                     processes: HashMap::new(),
                     cultures: HashMap::new(),
                 };
+                data.goods.insert(0, Good {
+                    id: 0,
+                    name: "prod0".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(1, Good {
+                    id: 1,
+                    name: "prod1".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(2, Good {
+                    id: 2,
+                    name: "prod2".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
                 let mut process = Process {
                     id: 0,
                     name: "testproc".to_string(),
@@ -33,11 +57,11 @@ mod tests {
                     input_type: HashMap::new(),
                     outputs: HashMap::new(),
                 };
-                process.inputs.insert(0, 100.0);
-                process.inputs.insert(1, 100.0);
+                process.inputs.insert(0, 1.0);
+                process.inputs.insert(1, 1.0);
                 process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(0, InputType::Capital);
-                process.outputs.insert(2, 200.0);
+                process.input_type.insert(1, InputType::Capital);
+                process.outputs.insert(2, 2.0);
                 data.processes.insert(0, process);
                 let mut property = HashMap::new();
                 property.insert(0, 100.0);
@@ -46,7 +70,7 @@ mod tests {
                 target.insert(0, 100.0);
                 let process = vec![0];
 
-                let job = Job {
+                let mut job = Job {
                     id: 0,
                     name: "test".to_string(),
                     workers: 0,
@@ -62,15 +86,30 @@ mod tests {
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
                 };
+                job.property.insert(0, 100.0);
+                job.property.insert(1, 100.0);
+                job.process.push(0);
+                job.target.insert(0, 100.0);
+
                 let mut prior_results = WorkResults {
-                    input_costs: todo!(),
-                    goods_consumed: todo!(),
-                    goods_used: todo!(),
-                    wages_paid: todo!(),
-                    interest_paid: todo!(),
-                    process_time_success: todo!(),
-                    produced_goods: todo!(),
+                    input_costs: HashMap::new(),
+                    goods_consumed: HashMap::new(),
+                    goods_used: HashMap::new(),
+                    wages_paid: HashMap::new(),
+                    interest_paid: HashMap::new(),
+                    process_time_success: HashMap::new(),
+                    produced_goods: HashMap::new(),
                 };
+                let result = job.do_work(&data, prior_results);
+                // check Work Results is correct.
+                assert_eq!(*result.goods_consumed.get(&0).unwrap(), 100.0);
+                assert_eq!(*result.goods_used.get(&1).unwrap(), 100.0);
+                assert_eq!(*result.produced_goods.get(&2).unwrap(), 221.0);
+                assert_eq!(*result.process_time_success.get(&0).unwrap(), 100.0);
+                // Check that the job's property matches these changes.
+                assert_eq!(*job.property.get(&0).unwrap(), 0.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 0.0);
+                assert_eq!(*job.property.get(&2).unwrap(), 100.0);
             }
         }
     }

@@ -157,7 +157,6 @@ impl Job {
     /// 
     /// Returns updated work results
     pub fn do_work(&mut self, data: &Data, mut prev_results: WorkResults) -> WorkResults {
-        let mut expended = HashMap::new();
         for p in self.process.iter() {
             // get time target capped at what time we have available.
             let time = self.target.get(p).unwrap().min(self.time);
@@ -167,9 +166,6 @@ impl Job {
             let proc_results = proc.do_process(time, &self.property, &data);
             // with process results gotten, apply to work results and remove/use stuff.
             for (&good, &quant) in proc_results.used.iter() {
-                expended.entry(good)
-                    .and_modify(|x| *x += quant)
-                    .or_insert(quant);
                 self.property.entry(good)
                     .and_modify(|x| *x -= quant);
                 prev_results.goods_used.entry(good)

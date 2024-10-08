@@ -1,5 +1,5 @@
 use core::f64;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::{format, Display}};
 
 use crate::data::Data;
 
@@ -127,12 +127,20 @@ impl Process {
         println!("Efficiency: {}", eff);
         for (good, quant) in self.outputs.iter() {
             // add outputs, correctly multiplying if durability above 1.0 
-            let good_info = data.goods.get(good).unwrap();
+            let good_info = data.goods.get(good).expect(format!("Good '{}' not found.", good).as_str());
             if good_info.durability > 1.0 {
                 created.insert(*good, (quant * good_info.durability * target * eff).ceil());
             } else {
                 created.insert(*good, (quant * target * eff).ceil());
             }
+        }
+        println!("consumed");
+        for (key, val) in consumed_goods.iter() {
+            println!("{}: {}", key, val);
+        }
+        println!("used");
+        for (key, val) in used_goods.iter() {
+            println!("{}: {}", key, val);
         }
         println!("created");
         for (key, val) in created.iter() {
