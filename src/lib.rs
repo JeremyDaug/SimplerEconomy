@@ -11,6 +11,128 @@ pub mod culture;
 #[cfg(test)]
 mod tests {
     mod job_tests {
+        mod pay_workers_should {
+            use std::collections::{HashMap, VecDeque};
+
+            use crate::{data::Data, good::Good, job::Job, market::GoodData, pop::Pop, process::{InputType, Process}};
+
+            #[test]
+            pub fn take_property_from_worker_owners() {
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                data.goods.insert(0, Good {
+                    id: 0,
+                    name: "prod0".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(1, Good {
+                    id: 1,
+                    name: "prod1".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(2, Good {
+                    id: 2,
+                    name: "prod2".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                let mut process = Process {
+                    id: 0,
+                    name: "testproc".to_string(),
+                    parent: None,
+                    time: 1.0,
+                    inputs: HashMap::new(),
+                    optional: 0.0,
+                    input_type: HashMap::new(),
+                    outputs: HashMap::new(),
+                };
+                process.inputs.insert(0, 1.0);
+                process.inputs.insert(1, 1.0);
+                process.input_type.insert(0, InputType::Input);
+                process.input_type.insert(1, InputType::Capital);
+                process.outputs.insert(2, 2.0);
+                data.processes.insert(0, process);
+                let mut property = HashMap::new();
+                property.insert(0, 100.0);
+                property.insert(1, 100.0);
+                let mut target = HashMap::new();
+                target.insert(0, 100.0);
+                let process = vec![0];
+
+                let mut job = Job {
+                    id: 0,
+                    name: "test".to_string(),
+                    workers: 0,
+                    wage: HashMap::new(),
+                    time_purchase: 100.0,
+                    owner: None,
+                    lenders: vec![],
+                    process,
+                    target,
+                    excess_input_target: 2.0,
+                    property,
+                    time: 100.0,
+                    property_history: VecDeque::new(),
+                    amv_history: VecDeque::new(),
+                };
+                job.property.insert(0, 100.0);
+                job.property.insert(1, 100.0);
+                job.target.insert(0, 100.0);
+
+                let mut pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 100.0,
+                };
+                pop.property.insert(0, 100.0);
+                pop.property.insert(1, 100.0);
+                pop.property.insert(2, 100.0);
+
+                let mut pops = HashMap::new();
+                pops.insert(0, pop);
+
+                let mut good_info = HashMap::new();
+                good_info.insert(0, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                good_info.insert(1, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                good_info.insert(2, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+
+                job.pay_workers(&mut pops, &good_info);
+                // check everything was moved over correctly.
+                assert_eq!(*job.property.get(&0).unwrap(), 100.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 100.0);
+                assert_eq!(*job.property.get(&2).unwrap(), 100.0);
+                assert_eq!(job.time, 100.0);
+                // check that the pop had it's stuff removed.
+                assert_eq!(pop.unused_time, 0.0);
+                assert!(pop.property.contains_key(&0));
+                assert!(pop.property.contains_key(&1));
+                assert!(pop.property.contains_key(&2));
+            }
+        }
+
         mod do_work_should {
             use std::collections::{HashMap, VecDeque};
 
