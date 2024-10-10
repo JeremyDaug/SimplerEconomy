@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::{collections::{HashMap, VecDeque}, iter};
 
 use crate::{data::Data, market::GoodData, pop::Pop};
 
@@ -83,7 +83,18 @@ impl Job {
     /// 
     /// Workers do not negotiate here, barter for time occurs near the end of the day,
     /// if unable to pay for all time today, it only purchases as much as it can.
+    /// 
+    /// Non-Worker Owners are treated differently from worker owners. Instead of giving
+    /// everything over, the owner is payed excess profits from the business. These
+    /// profits are payed out here. The business will reserve up to 
+    /// self.excess_input_target of it's input goods, plus an amount of other goods
+    /// such that their AMV is equal to 2x the amount of inputs desired to purchase.
+    /// All excess is moved over to the owner. This reservation happens after wages are
+    /// paid.
+    /// 
+    /// TODO take into account loans/investment in the business from other accounts. Likely just added to the reserve step and payed out as possible.
     pub fn pay_workers(&mut self, pops: &mut HashMap<usize, Pop>, 
+    data: &Data,
     good_info: &HashMap<usize, GoodData>) {
         if let Some(_) = self.owner { // if owned
             // get the worker pop
@@ -119,6 +130,10 @@ impl Job {
                     .and_modify(|x| *x += amt)
                     .or_insert(amt);
             }
+            // reserve input goods and other property to get more inputs goods.
+            let mut reserve = HashMap::new();
+            let mut inputs = self.process_inputs(data);
+
         } else { 
             // No owner, so pops are the job
             // Pops give everything to the job, then return all goods to the 
@@ -136,6 +151,25 @@ impl Job {
                     .or_insert(amt);
             }
         }
+    }
+
+    /// # Process Inputs
+    /// 
+    /// Goes over all of our processes and collects how many goods we need to 
+    /// satisfy each. Ignores possible optional inputs.
+    pub fn process_inputs(&self, data: &Data) -> HashMap<usize, f64> {
+        let mut result = HashMap::new();
+        for (process_id, time) in self.target.iter() {
+            let process = data.processes.get(process_id)
+                .expect(format!("Process '{}' not found!", process_id).as_str());
+            let iterations = time / process.time;
+            for (&input, &amt) in process.inputs.iter() {
+                result.entry(input)
+                    .and_modify(|x| *x += amt * iterations)
+                    .or_insert(amt * iterations);
+            }
+        }
+        result
     }
 
     /// # Workday
