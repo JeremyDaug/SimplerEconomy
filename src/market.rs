@@ -1,6 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, fmt::format};
 
-use crate::world::World;
+use itertools::Itertools;
+
+use crate::{data::Data, world::World};
 
 
 
@@ -19,6 +21,9 @@ pub struct Market {
     /// A quick finder for those goods which have reached a Salability of 90% 
     /// or higher 
     pub monies: HashSet<usize>,
+    /// When looking at goods to offer, this is the order buyers should use in
+    /// this market.
+    pub good_trade_priority: Vec<usize>,
 
     /// Pops in this market.
     pub pops: HashSet<usize>,
@@ -58,7 +63,7 @@ impl Market {
     /// 
     /// After the market day, comes the inter-market day, which is when trade
     /// and inter-market migration occurs.
-    pub fn market_day(&mut self, world: &mut World) {
+    pub fn market_day(&mut self, world: &mut World, data: &Data) {
         // setup time in all of our pops.
         for pop in self.pops.iter() {
             world.pops.get_mut(pop).expect("Pop not found.")
@@ -67,8 +72,46 @@ impl Market {
         // Jobs purchase labor for the day.
         for job in self.jobs.iter() {
             world.jobs.get_mut(job).expect("Job not found.")
-            .pay_workers(&mut world.pops, &self.goods_info);
+            .pay_workers(&mut world.pops, data, &self);
         }
+    }
+
+    
+
+    /// # Good Trade Priority
+    /// 
+    /// Recalculates good trade order by our currently defined method.
+    /// 
+    /// Our current method, Monies followed by ID order... Because I'm 
+    /// feeling lazy right now.
+    /// 
+    /// TODO improve this to be more interesting. It should prioritize monies and salable goods.
+    pub fn update_good_trade_priority(&mut self, _data: &Data) {
+        self.good_trade_priority.clear();
+        // all monies go first in ID order
+        for good in self.monies.iter()
+            .sorted() {
+            self.good_trade_priority.push(*good);
+        }
+        // all other ids go in next, in id order.
+        for good in self.goods_info.keys()
+            .filter(|x| !self.monies.contains(&x))
+            .sorted() {
+            self.good_trade_priority.push(*good);
+        }
+    }
+
+    /// # Get Good Info
+    /// 
+    /// A quick helper to get a good's market information.
+    /// 
+    /// # Panics
+    /// 
+    /// If good is not found, it will panic. A good being sought should 
+    /// ALWAYS exist.
+    pub fn get_good_info(&self, good: &usize) -> &GoodData {
+        self.goods_info.get(good)
+            .expect(format!("Good '{}' not found!", *good).as_str())
     }
     
     /// # Salibility AMV Modifier
@@ -78,15 +121,32 @@ impl Market {
     /// 
     /// Current function is original (0.5 + sal / 2)
     pub fn salibility_amv_mod(sal: f64) -> f64 {
-        let result = 0.5 + sal / 2.0;
+        let result = 0.5 + sal * 0.5;
         debug_assert!(result <= 1.0, "Salability given is greater than 1.0");
         result
+    }
+    
+    /// # Good Trade Priority
+    /// 
+    /// A getter for good trade priority. 
+    /// 
+    /// # Panics
+    /// 
+    /// This panics when the length of self.good_trade_priority and self.goods_info
+    /// are not the same, meaning that one or the other has changed and 
+    /// self.update_good_trade_priority() should be run.
+    pub fn get_good_trade_priority(&self) -> &[usize] {
+        debug_assert!(self.good_trade_priority.len() == self.goods_info.len(), 
+            "Market '{}' good - trade priority mismatch. Did you remember to update good_trade_priority?", self.id);
+        &self.good_trade_priority
     }
 }
 
 /// # Good Data
 /// 
 /// Data of a good in a market.
+/// 
+/// TODO Expand to include an AMV history and/or average/rolling change over time and/or volatility.
 pub struct GoodData {
     /// Abstract Market Value, a helper which creates an understood comparable 
     /// value in the market. This is not a price, but should approximate it when

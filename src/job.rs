@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, iter};
 
-use crate::{data::Data, market::GoodData, pop::Pop};
+use crate::{data::Data, market::{GoodData, Market}, pop::Pop};
 
 /// # Job
 /// 
@@ -94,8 +94,7 @@ impl Job {
     /// 
     /// TODO take into account loans/investment in the business from other accounts. Likely just added to the reserve step and payed out as possible.
     pub fn pay_workers(&mut self, pops: &mut HashMap<usize, Pop>, 
-    data: &Data,
-    good_info: &HashMap<usize, GoodData>) {
+    data: &Data, market: &Market,) {
         if let Some(_) = self.owner { // if owned
             // get the worker pop
             let pop = pops.get_mut(&self.workers).expect("Pop not found.");
@@ -104,14 +103,14 @@ impl Job {
             // calculate the hourly AMV per hour based on specific wage.
             let hourly_amv = self.wage.iter()
                 .map(|(good, amt)| {
-                    amt * good_info.get(good).unwrap().amv
+                    amt * market.get_good_info(good).amv
                 }).sum::<f64>();
             let total_amv_cost = time * hourly_amv; // total AMV cost for the time we want.
             // get how much we have in actual wages
             let mut expending_amv = 0.0;
             let mut paycheck = HashMap::new();
             for (&good, amt) in self.wage.iter() {
-                let good_data = good_info.get(&good).unwrap(); // get good data
+                let good_data = market.get_good_info(&good); // get good data
                 // insert what we have (up to what we should insert)
                 paycheck.insert(good, (amt * time).min(*self.property.get(&good).unwrap_or(&0.0)));
                 let expending = paycheck.get(&good).unwrap(); // how much we are/can expend
@@ -132,8 +131,29 @@ impl Job {
             }
             // reserve input goods and other property to get more inputs goods.
             let mut reserve = HashMap::new();
-            let mut inputs = self.process_inputs(data);
-
+            let mut reserved_amv = 0.0;
+            let mut amv_target = 0.0;
+            let inputs = self.process_inputs(data);
+            for (good, amt) in inputs.iter() {
+                // the amount of inputs needed * our excess target.
+                let shift = (amt * self.excess_input_target)
+                    .min(*self.property.get(good).unwrap_or(&0.0));
+                // get the amv we're reserving
+                reserved_amv += shift * market.get_good_info(good)
+                    .amv;
+                // get the amv target we need to meet.
+                amv_target += amt * self.excess_input_target * market.get_good_info(good).amv;
+                reserve.insert(good, shift);
+                self.property.entry(*good)
+                    .and_modify(|x| *x -= shift)
+                    .or_insert(0.0);
+            }
+            if amv_target > reserved_amv { // if we did not cover all of our goods
+                // reserve other goods via "The selection process(tm)"
+                for good in market.get_good_trade_priority().iter() {
+                    // TODO Pick up here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                }
+            }
         } else { 
             // No owner, so pops are the job
             // Pops give everything to the job, then return all goods to the 
@@ -155,8 +175,8 @@ impl Job {
 
     /// # Process Inputs
     /// 
-    /// Goes over all of our processes and collects how many goods we need to 
-    /// satisfy each. Ignores possible optional inputs.
+    /// The overall cost of input goods for our processes, as decided by
+    /// plans. Does not take into account optional goods.
     pub fn process_inputs(&self, data: &Data) -> HashMap<usize, f64> {
         let mut result = HashMap::new();
         for (process_id, time) in self.target.iter() {
