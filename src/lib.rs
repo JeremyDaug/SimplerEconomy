@@ -81,11 +81,12 @@ mod tests {
                     lenders: vec![],
                     process,
                     target,
-                    excess_input_target: 2.0,
+                    excess_input_max: 2.0,
                     property,
                     time: 100.0,
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
+                    dividend: 0.5,
                 };
                 job.property.insert(0, 100.0);
                 job.property.insert(1, 100.0);
@@ -209,11 +210,12 @@ mod tests {
                     lenders: vec![],
                     process,
                     target,
-                    excess_input_target: 2.0,
+                    excess_input_max: 2.0,
                     property,
                     time: 100.0,
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
+                    dividend: 0.5,
                 };
                 job.property.insert(0, 100.0);
                 job.property.insert(1, 100.0);
@@ -360,11 +362,12 @@ mod tests {
                     lenders: vec![],
                     process,
                     target,
-                    excess_input_target: 2.0,
+                    excess_input_max: 2.0,
                     property,
                     time: 100.0,
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
+                    dividend: 0.5,
                 };
                 job.property.insert(0, 100.0);
                 job.property.insert(1, 100.0);
@@ -450,11 +453,12 @@ mod tests {
                     lenders: vec![],
                     process,
                     target,
-                    excess_input_target: 2.0,
+                    excess_input_max: 2.0,
                     property,
                     time: 100.0,
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
+                    dividend: 0.5,
                 };
                 job.property.insert(0, 100.0);
                 job.property.insert(1, 100.0);

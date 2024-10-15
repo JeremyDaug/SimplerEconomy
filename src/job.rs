@@ -2,6 +2,8 @@ use std::{collections::{HashMap, VecDeque}, iter};
 
 use crate::{data::Data, market::{GoodData, Market}, pop::Pop};
 
+const EXCESS_INPUT_MIN: f64 = 2.0;
+
 /// # Job
 /// 
 /// Jobs are defined by what processes they do, the pops which do them, and where they
@@ -38,17 +40,24 @@ pub struct Job {
     /// Links to any Loans the job has taken out.
     pub lenders: Vec<usize>,
 
-    /// WHat processes the job entails.
+    /// What processes the job entails.
     /// Also orders them by when which it tries to do first, and
     /// which it prioritizes.
     pub process: Vec<usize>,
 
     /// The processes, and how many hours it wants to put into each process.
     pub target: HashMap<usize, f64>,
-    /// When planning, how many days worth of goods it wants to have at the end
-    /// of the day. Defaults to 2. Currently will not change, may need to change
-    /// if more market volatility is introduced.
-    pub excess_input_target: f64,
+    /// When planning for savings between days, it will want a defacto minimum
+    /// set by EXCESS_INPUT_MIN above. This is the cap on total resources it will
+    /// want to keep in either goods or resources. Any excess above this target
+    /// will be given over to the owner, regardless of the dividend.
+    /// 
+    /// EXCESS_INPUT_MIN is the lower bound of this savings. If unable to reach
+    /// the minimum bound, it will reduce the dividend until it's above.
+    pub excess_input_max: f64,
+    /// This is the dividend which it defaults to sending to the owner when between
+    /// EXCESS_INPUT_MIN and self.excess_input_max.
+    pub dividend: f64,
 
     /// Property owned by the job (and the owner technically)
     pub property: HashMap<usize, f64>,
@@ -131,30 +140,37 @@ impl Job {
             }
             // reserve input goods and other property to get more inputs goods.
             let mut reserve = HashMap::new();
+            let mut dividend = HashMap::new();
             let mut reserved_amv = 0.0;
-            let mut amv_target = 0.0;
+            let mut min_amv = 0.0;
+            let mut max_amv = 0.0;
             let inputs = self.process_inputs(data);
+            // sum up our input needs, min, and max.
             for (good, amt) in inputs.iter() {
-                // the amount of inputs needed * our excess target.
-                let shift = (amt * self.excess_input_target)
+                let good_data = market.get_good_info(good);
+                min_amv += good_data.amv * amt * EXCESS_INPUT_MIN;
+                max_amv += good_data.amv * amt * self.excess_input_max;
+            }
+            // with amv levels gotten, divide up property based on our splits.
+            // start by reserving all inputs up to our maximum.
+            for (good, amt) in inputs.iter() {
+                // Get good data
+                let good_data = market.get_good_info(good);
+                // How many we can shift, capping at our min target.
+                let shift = (amt * self.excess_input_max)
                     .min(*self.property.get(good).unwrap_or(&0.0));
-                // get the amv we're reserving
-                reserved_amv += shift * market.get_good_info(good)
-                    .amv;
-                // get the amv target we need to meet.
-                amv_target += amt * self.excess_input_target * market.get_good_info(good).amv;
-                reserve.insert(good, shift);
+                // add to amv
+                reserved_amv += shift * good_data.amv;
+                // and shift from property to reserve.
+                reserve.entry(*good)
+                    .and_modify(|x| *x += shift)
+                    .or_insert(shift);
                 self.property.entry(*good)
-                    .and_modify(|x| *x -= shift)
-                    .or_insert(0.0);
+                    .and_modify(|x| *x -= shift);
             }
-            if amv_target > reserved_amv { // if we did not cover all of our goods
-                // reserve other goods via "The selection process(tm)"
-                for good in market.get_good_trade_priority().iter() {
-                    // TODO Pick up here !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                }
-            }
-        } else { 
+            // with all inputs reserved up to our max, deal with shifting the rest
+            
+        } else {
             // No owner, so pops are the job
             // Pops give everything to the job, then return all goods to the 
             // pop at the end of the work day.
