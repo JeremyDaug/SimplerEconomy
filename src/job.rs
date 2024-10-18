@@ -1,5 +1,7 @@
 use std::{collections::{HashMap, VecDeque}, iter};
 
+use itertools::Itertools;
+
 use crate::{data::Data, market::{GoodData, Market}, pop::Pop};
 
 const EXCESS_INPUT_MIN: f64 = 2.0;
@@ -95,11 +97,11 @@ impl Job {
     /// 
     /// Non-Worker Owners are treated differently from worker owners. Instead of giving
     /// everything over, the owner is payed excess profits from the business. These
-    /// profits are payed out here. The business will reserve up to 
-    /// self.excess_input_target of it's input goods, plus an amount of other goods
-    /// such that their AMV is equal to 2x the amount of inputs desired to purchase.
-    /// All excess is moved over to the owner. This reservation happens after wages are
-    /// paid.
+    /// profits are payed out here. All of a job's inputs, up to self.excess_input_max
+    /// If this is enough to reach max, then all other property is sent over to the 
+    /// owner. If it's not enough to reach EXCESS_INPUT_MIN, then all other property
+    /// will go to purchasing the job's inputs (assuming AMV * 0.5), after that,
+    /// all property will be split 50/50 between the job and the owner.
     /// 
     /// TODO take into account loans/investment in the business from other accounts. Likely just added to the reserve step and payed out as possible.
     pub fn pay_workers(&mut self, pops: &mut HashMap<usize, Pop>, 
@@ -142,6 +144,7 @@ impl Job {
             let mut reserve = HashMap::new();
             let mut dividend = HashMap::new();
             let mut reserved_amv = 0.0;
+            let mut available_amv = 0.0;
             let mut min_amv = 0.0;
             let mut max_amv = 0.0;
             let inputs = self.process_inputs(data);
@@ -150,6 +153,10 @@ impl Job {
                 let good_data = market.get_good_info(good);
                 min_amv += good_data.amv * amt * EXCESS_INPUT_MIN;
                 max_amv += good_data.amv * amt * self.excess_input_max;
+            }
+            for (good, amt) in self.property.iter() {
+                let good_amv = market.get_good_info(good).amv;
+                available_amv += good_amv * amt;
             }
             // with amv levels gotten, divide up property based on our splits.
             // start by reserving all inputs up to our maximum.
@@ -168,8 +175,150 @@ impl Job {
                 self.property.entry(*good)
                     .and_modify(|x| *x -= shift);
             }
+            // TODO paying off loans would likely go here.
             // with all inputs reserved up to our max, deal with shifting the rest
-            
+            if reserved_amv >= max_amv {
+                let clone = self.property.clone();
+                for (good, amt) in clone.iter() {
+                    self.property.remove(good); // always remove from property for safety reasons.
+                    if *amt == 0.0 { continue; } // if property is empty, just throw it away.
+                    let shift = amt.floor(); // shift whole valu.
+                    let remainder = amt - shift; // reserve the fractional excess.
+                    if remainder > 0.0 {
+                        reserve.entry(*good)
+                            .and_modify(|x| *x += remainder)
+                            .or_insert(remainder);
+                    }
+                    if shift > 0.0 {
+                        dividend.entry(*good)
+                            .and_modify(|x| *x += shift)
+                            .or_insert(shift);
+                    }
+                }
+            } else if reserved_amv < min_amv {
+                // if unable to reach the minimum, shift over goods until we get past it
+                for good in market.get_good_trade_priority() {
+                    if self.property.contains_key(good) {
+                        let target_amv = min_amv - reserved_amv; // How much AMV is left to get
+                        let good_amv = market.get_good_info(good).amv; // good's amv
+                        // how many of the goods (with amv reduced) are needed to reach the taregt.
+                        let target_goods = (target_amv / (good_amv * 0.5)).ceil();
+                        let shift = target_goods // gow many (whole) units we can reserve.
+                            .min(self.property.get(good).unwrap().floor());
+                        reserved_amv += shift * good_amv * 0.5; // add to our reserved amv
+                        // add goods to our reserve.
+                        reserve.entry(*good)
+                            .and_modify(|x| *x += shift)
+                            .or_insert(shift);
+                        // remove from property.
+                        self.property.entry(*good)
+                            .and_modify(|x| *x -= shift);
+                    }
+                    // if we reached ouur minimum, gfto.
+                    if reserved_amv >= min_amv { break; }
+                }
+                // Having reached the minimum, shift to splitting 50/50 with the owner.
+                let mut available_amv = 0.0;
+                for (good, amt) in self.property.iter() {
+                    let good_amv = market.get_good_info(good).amv;
+                    available_amv += good_amv * amt;
+                }
+                let to_each = available_amv / 2.0;
+                let (mut job_amv, mut owner_amv) = (to_each, to_each);
+                let unused_prop = self.property.clone(); // copy property.
+                self.property.clear(); // clear it out for later purposes.
+                for (good, mut amt) in unused_prop.into_iter() {
+                    // get good amv
+                    let good_amv = market.get_good_info(&good).amv;
+                    // move any fractional goods over to the reserve immediately
+                    let frac = amt.fract();
+                    amt -= frac;
+                    if frac > 0.0 {
+                        reserve.entry(good)
+                            .and_modify(|x| *x += frac)
+                            .or_insert(frac);
+                        job_amv -= frac * good_amv;
+                    }
+                    // find parity
+                    let odd =(amt / 2.0).fract() > 0.0;
+                    if odd { // if odd, give the extra to whoever is behind.
+                        amt -= 1.0;
+                        if job_amv > owner_amv {
+                            reserve.entry(good)
+                                .and_modify(|x| *x += 1.0)
+                                .or_insert(1.0);
+                        } else {
+                            dividend.entry(good)
+                                .and_modify(|x| *x += 1.0)
+                                .or_insert(1.0);
+                        }
+                    }
+                    // split the remaining whole amonut in two and give them out.
+                    let res = amt / 2.0;
+                    reserve.entry(good)
+                        .and_modify(|x| *x += res)
+                        .or_insert(res);
+                    dividend.entry(good)
+                        .and_modify(|x| *x += res)
+                        .or_insert(res);
+                    let amv_gain = res * good_amv;
+                    job_amv -= amv_gain;
+                    owner_amv -= amv_gain;
+                }
+            } else {// if between min and max, split the property between owner and job by amv.
+                // fractional goods stay with the job.
+                let to_each = (available_amv - reserved_amv) / 2.0;
+                let (mut job_amv, mut owner_amv) = (to_each, to_each);
+                let unused_prop = self.property.clone(); // copy property.
+                self.property.clear(); // clear it out for later purposes.
+                for (good, mut amt) in unused_prop.into_iter() {
+                    // get good amv
+                    let good_amv = market.get_good_info(&good).amv;
+                    // move any fractional goods over to the reserve immediately
+                    let frac = amt.fract();
+                    amt -= frac;
+                    if frac > 0.0 {
+                        reserve.entry(good)
+                            .and_modify(|x| *x += frac)
+                            .or_insert(frac);
+                        job_amv -= frac * good_amv;
+                    }
+                    // find parity
+                    let odd =(amt / 2.0).fract() > 0.0;
+                    if odd { // if odd, give the extra to whoever is behind.
+                        amt -= 1.0;
+                        if job_amv > owner_amv {
+                            reserve.entry(good)
+                                .and_modify(|x| *x += 1.0)
+                                .or_insert(1.0);
+                        } else {
+                            dividend.entry(good)
+                                .and_modify(|x| *x += 1.0)
+                                .or_insert(1.0);
+                        }
+                    }
+                    // split the remaining whole amonut in two and give them out.
+                    let res = amt / 2.0;
+                    reserve.entry(good)
+                        .and_modify(|x| *x += res)
+                        .or_insert(res);
+                    dividend.entry(good)
+                        .and_modify(|x| *x += res)
+                        .or_insert(res);
+                    let amv_gain = res * good_amv;
+                    job_amv -= amv_gain;
+                    owner_amv -= amv_gain;
+                }
+            }
+            // with reserve and dividend gotten, move the goods where they need to go.
+            let owner = pops.get_mut(&self.owner.unwrap())
+                .expect(format!("Owner Pop '{}' has not been found.", self.owner.unwrap()).as_str());
+            for (good, amt) in dividend.into_iter() {
+                owner.property.entry(good)
+                    .and_modify(|x| *x += amt)
+                    .or_insert(amt);
+            }
+
         } else {
             // No owner, so pops are the job
             // Pops give everything to the job, then return all goods to the 
