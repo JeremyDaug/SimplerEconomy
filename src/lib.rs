@@ -17,13 +17,14 @@ mod tests {
             use crate::{data::Data, good::Good, job::Job, market::{GoodData, Market}, pop::Pop, process::{InputType, Process}};
 
             #[test]
-            pub fn pay_workers_when_owner_exists() {
-                todo!("Working on Owner Payments.");
+            pub fn pay_workers_w_owner_between_min_and_max_target() {
+                // Set up Data
                 let mut data = Data {
                     goods: HashMap::new(),
                     processes: HashMap::new(),
                     cultures: HashMap::new(),
                 };
+                // set up good data
                 data.goods.insert(0, Good {
                     id: 0,
                     name: "prod0".to_string(),
@@ -48,6 +49,7 @@ mod tests {
                     mass: 1.0,
                     tags: vec![],
                 });
+                // set up process info
                 let mut process = Process {
                     id: 0,
                     name: "testproc".to_string(),
@@ -64,35 +66,39 @@ mod tests {
                 process.input_type.insert(1, InputType::Capital);
                 process.outputs.insert(2, 2.0);
                 data.processes.insert(0, process);
+                // Set up Job Property
+                // 25.0 to workers, 10 iterations available for work
                 let mut property = HashMap::new();
                 property.insert(0, 100.0);
-                property.insert(1, 100.0);
+                property.insert(1, 75.0);
+                // Job Target
                 let mut target = HashMap::new();
-                target.insert(0, 100.0);
+                target.insert(0, 25.0);
+                // Job Process Priority
                 let process = vec![0];
-
+                // job wage.
+                let mut wage = HashMap::new();
+                wage.insert(0, 1.0);
+                // the job
                 let mut job = Job {
                     id: 0,
                     name: "test".to_string(),
                     workers: 0,
-                    wage: HashMap::new(),
-                    time_purchase: 100.0,
+                    wage,
+                    time_purchase: 25.0,
                     owner: Some(1),
                     lenders: vec![],
                     process,
                     target,
-                    excess_input_max: 2.0,
+                    excess_input_max: 4.0,
                     property,
-                    time: 100.0,
+                    time: 0.0,
                     property_history: VecDeque::new(),
                     amv_history: VecDeque::new(),
                     dividend: 0.5,
                 };
-                job.property.insert(0, 100.0);
-                job.property.insert(1, 100.0);
-                job.target.insert(0, 100.0);
-
-                let mut pop = Pop {
+                // setup worker pop.
+                let pop = Pop {
                     id: 0,
                     size: 100.0,
                     culture: 0,
@@ -100,50 +106,366 @@ mod tests {
                     property: HashMap::new(),
                     unused_time: 100.0,
                 };
-                pop.property.insert(0, 100.0);
-                pop.property.insert(1, 100.0);
-                pop.property.insert(2, 100.0);
-
+                // setup owner pop.
+                let owner = Pop {
+                    id: 1,
+                    size: 1.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 1.0,
+                };
+                // insert pops into storage.
                 let pops = &mut HashMap::new();
-                pops.insert(0, pop);
+                pops.insert(0, pop); // worker
+                pops.insert(1, owner);
 
-                let mut good_info = HashMap::new();
-                good_info.insert(0, GoodData{
+                // Setup Market info.
+                let mut goods_info = HashMap::new();
+                goods_info.insert(0, GoodData{
                     amv: 1.0,
                     salability: 1.0,
                 });
-                good_info.insert(1, GoodData{
+                goods_info.insert(1, GoodData{
                     amv: 1.0,
                     salability: 1.0,
                 });
-                good_info.insert(2, GoodData{
+                goods_info.insert(2, GoodData{
                     amv: 1.0,
                     salability: 1.0,
                 });
+                let good_trade_priority = vec![0, 1, 2];
                 let market = Market {
                     id: 0,
                     name: "market".to_string(),
                     connections: HashMap::new(),
-                    goods_info: good_info,
+                    goods_info,
                     monies: HashSet::new(),
-                    good_trade_priority: vec![],
+                    good_trade_priority,
                     pops: HashSet::new(),
                     jobs: HashSet::new(),
                     merchants: HashSet::new(),
                 };
 
+                // Do test
                 job.pay_workers(pops, &data, &market);
                 // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 200.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 200.0);
-                assert_eq!(*job.property.get(&2).unwrap(), 100.0);
-                assert_eq!(job.time, 100.0);
-                // check that the pop had it's stuff removed.
+                assert_eq!(*job.property.get(&0).unwrap(), 100.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 100.0);
+                assert!(!job.property.contains_key(&2));
+                assert_eq!(job.time, 25.0);
+                // check that the worker has been paid.
                 let pop = pops.get(&0).unwrap();
-                assert_eq!(pop.unused_time, 0.0);
-                assert!(!pop.property.contains_key(&0));
+                assert_eq!(pop.unused_time, 75.0);
+                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
                 assert!(!pop.property.contains_key(&1));
                 assert!(!pop.property.contains_key(&2));
+                // check that the owner was paid half of the excess.
+                let owner = pops.get(&1).unwrap();
+                assert_eq!(owner.unused_time, 1.0);
+                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
+                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
+            }
+
+            #[test]
+            pub fn pay_workers_w_owner_below_min_target() {
+                // Set up Data
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                // set up good data
+                data.goods.insert(0, Good {
+                    id: 0,
+                    name: "prod0".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(1, Good {
+                    id: 1,
+                    name: "prod1".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(2, Good {
+                    id: 2,
+                    name: "prod2".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                // set up process info
+                let mut process = Process {
+                    id: 0,
+                    name: "testproc".to_string(),
+                    parent: None,
+                    time: 1.0,
+                    inputs: HashMap::new(),
+                    optional: 0.0,
+                    input_type: HashMap::new(),
+                    outputs: HashMap::new(),
+                };
+                process.inputs.insert(0, 1.0);
+                process.inputs.insert(1, 1.0);
+                process.input_type.insert(0, InputType::Input);
+                process.input_type.insert(1, InputType::Capital);
+                process.outputs.insert(2, 2.0);
+                data.processes.insert(0, process);
+                // Set up Job Property
+                // 25.0 to workers, 10 iterations available for work
+                let mut property = HashMap::new();
+                property.insert(0, 35.0);
+                property.insert(1, 10.0);
+                // Job Target
+                let mut target = HashMap::new();
+                target.insert(0, 25.0);
+                // Job Process Priority
+                let process = vec![0];
+                // job wage.
+                let mut wage = HashMap::new();
+                wage.insert(0, 1.0);
+                // the job
+                let mut job = Job {
+                    id: 0,
+                    name: "test".to_string(),
+                    workers: 0,
+                    wage,
+                    time_purchase: 25.0,
+                    owner: Some(1),
+                    lenders: vec![],
+                    process,
+                    target,
+                    excess_input_max: 2.0,
+                    property,
+                    time: 0.0,
+                    property_history: VecDeque::new(),
+                    amv_history: VecDeque::new(),
+                    dividend: 0.5,
+                };
+                // setup worker pop.
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 100.0,
+                };
+                // setup owner pop.
+                let owner = Pop {
+                    id: 1,
+                    size: 1.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 1.0,
+                };
+                // insert pops into storage.
+                let pops = &mut HashMap::new();
+                pops.insert(0, pop); // worker
+                pops.insert(1, owner);
+
+                // Setup Market info.
+                let mut goods_info = HashMap::new();
+                goods_info.insert(0, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                goods_info.insert(1, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                goods_info.insert(2, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                let good_trade_priority = vec![0, 1, 2];
+                let market = Market {
+                    id: 0,
+                    name: "market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info,
+                    monies: HashSet::new(),
+                    good_trade_priority,
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+
+                // Do test
+                job.pay_workers(pops, &data, &market);
+                // check everything was moved over correctly.
+                assert_eq!(*job.property.get(&0).unwrap(), 10.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 10.0);
+                assert!(!job.property.contains_key(&2));
+                assert_eq!(job.time, 25.0);
+                // check that the worker has been paid.
+                let pop = pops.get(&0).unwrap();
+                assert_eq!(pop.unused_time, 75.0);
+                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
+                assert!(!pop.property.contains_key(&1));
+                assert!(!pop.property.contains_key(&2));
+                // check that the owner was paid half of the excess.
+                let owner = pops.get(&1).unwrap();
+                assert_eq!(owner.unused_time, 1.0);
+                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
+                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
+            }
+
+            #[test]
+            pub fn pay_workers_w_owner_overflowing_inputs() {
+                // Set up Data
+                let mut data = Data {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                    cultures: HashMap::new(),
+                };
+                // set up good data
+                data.goods.insert(0, Good {
+                    id: 0,
+                    name: "prod0".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(1, Good {
+                    id: 1,
+                    name: "prod1".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                data.goods.insert(2, Good {
+                    id: 2,
+                    name: "prod2".to_string(),
+                    durability: 1.0,
+                    bulk: 1.0,
+                    mass: 1.0,
+                    tags: vec![],
+                });
+                // set up process info
+                let mut process = Process {
+                    id: 0,
+                    name: "testproc".to_string(),
+                    parent: None,
+                    time: 1.0,
+                    inputs: HashMap::new(),
+                    optional: 0.0,
+                    input_type: HashMap::new(),
+                    outputs: HashMap::new(),
+                };
+                process.inputs.insert(0, 1.0);
+                process.inputs.insert(1, 1.0);
+                process.input_type.insert(0, InputType::Input);
+                process.input_type.insert(1, InputType::Capital);
+                process.outputs.insert(2, 2.0);
+                data.processes.insert(0, process);
+                // Set up Job Property
+                let mut property = HashMap::new();
+                property.insert(0, 125.0);
+                property.insert(1, 100.0);
+                // Job Target
+                let mut target = HashMap::new();
+                target.insert(0, 25.0);
+                // Job Process Priority
+                let process = vec![0];
+                // job wage.
+                let mut wage = HashMap::new();
+                wage.insert(0, 1.0);
+                // the job
+                let mut job = Job {
+                    id: 0,
+                    name: "test".to_string(),
+                    workers: 0,
+                    wage,
+                    time_purchase: 25.0,
+                    owner: Some(1),
+                    lenders: vec![],
+                    process,
+                    target,
+                    excess_input_max: 2.0,
+                    property,
+                    time: 0.0,
+                    property_history: VecDeque::new(),
+                    amv_history: VecDeque::new(),
+                    dividend: 0.5,
+                };
+                // setup worker pop.
+                let pop = Pop {
+                    id: 0,
+                    size: 100.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 100.0,
+                };
+                // setup owner pop.
+                let owner = Pop {
+                    id: 1,
+                    size: 1.0,
+                    culture: 0,
+                    efficiency: 1.0,
+                    property: HashMap::new(),
+                    unused_time: 1.0,
+                };
+                // insert pops into storage.
+                let pops = &mut HashMap::new();
+                pops.insert(0, pop); // worker
+                pops.insert(1, owner);
+
+                // Setup Market info.
+                let mut goods_info = HashMap::new();
+                goods_info.insert(0, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                goods_info.insert(1, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                goods_info.insert(2, GoodData{
+                    amv: 1.0,
+                    salability: 1.0,
+                });
+                let good_trade_priority = vec![0, 1, 2];
+                let market = Market {
+                    id: 0,
+                    name: "market".to_string(),
+                    connections: HashMap::new(),
+                    goods_info,
+                    monies: HashSet::new(),
+                    good_trade_priority,
+                    pops: HashSet::new(),
+                    jobs: HashSet::new(),
+                    merchants: HashSet::new(),
+                };
+
+                // Do test
+                job.pay_workers(pops, &data, &market);
+                // check everything was moved over correctly.
+                assert_eq!(*job.property.get(&0).unwrap(), 50.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 50.0);
+                assert!(!job.property.contains_key(&2));
+                assert_eq!(job.time, 25.0);
+                // check that the worker has been paid.
+                let pop = pops.get(&0).unwrap();
+                assert_eq!(pop.unused_time, 75.0);
+                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
+                assert!(!pop.property.contains_key(&1));
+                assert!(!pop.property.contains_key(&2));
+                // check that the owner was paid half of the excess.
+                let owner = pops.get(&1).unwrap();
+                assert_eq!(owner.unused_time, 1.0);
+                assert_eq!(*owner.property.get(&0).unwrap(), 50.0);
+                assert_eq!(*owner.property.get(&1).unwrap(), 50.0);
             }
 
             #[test]

@@ -140,6 +140,7 @@ impl Job {
                     .and_modify(|x| *x += amt)
                     .or_insert(amt);
             }
+            self.time = time;
             // reserve input goods and other property to get more inputs goods.
             let mut reserve = HashMap::new();
             let mut dividend = HashMap::new();
@@ -177,7 +178,8 @@ impl Job {
             }
             // TODO paying off loans would likely go here.
             // with all inputs reserved up to our max, deal with shifting the rest
-            if reserved_amv >= max_amv {
+            if reserved_amv >= max_amv { // more than enough already reserved.
+                println!("Above Max");
                 let clone = self.property.clone();
                 for (good, amt) in clone.iter() {
                     self.property.remove(good); // always remove from property for safety reasons.
@@ -196,6 +198,7 @@ impl Job {
                     }
                 }
             } else if reserved_amv < min_amv {
+                println!("Below Min");
                 // if unable to reach the minimum, shift over goods until we get past it
                 for good in market.get_good_trade_priority() {
                     if self.property.contains_key(good) {
@@ -266,6 +269,7 @@ impl Job {
                     owner_amv -= amv_gain;
                 }
             } else {// if between min and max, split the property between owner and job by amv.
+                println!("Between Min and Max");
                 // fractional goods stay with the job.
                 let to_each = (available_amv - reserved_amv) / 2.0;
                 let (mut job_amv, mut owner_amv) = (to_each, to_each);
@@ -318,9 +322,14 @@ impl Job {
                     .and_modify(|x| *x += amt)
                     .or_insert(amt);
             }
+            // don't forget to move the reserve back into job's property also.
+            for (good, amt) in reserve.into_iter() {
+                self.property.entry(good)
+                    .and_modify(|x| *x += amt)
+                    .or_insert(amt);
+            }
 
-        } else {
-            // No owner, so pops are the job
+        } else { // No owner, so pops are the job
             // Pops give everything to the job, then return all goods to the 
             // pop at the end of the work day.
             let pop = pops.get_mut(&self.workers).expect("Pop not found.");
