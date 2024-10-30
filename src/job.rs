@@ -271,6 +271,8 @@ impl Job {
             } else {// if between min and max, split the property between owner and job by amv.
                 println!("Between Min and Max");
                 // fractional goods stay with the job.
+                println!("Available AMV: {}", available_amv);
+                println!("Reserved AMV: {}", reserved_amv);
                 let to_each = (available_amv - reserved_amv) / 2.0;
                 let (mut job_amv, mut owner_amv) = (to_each, to_each);
                 let unused_prop = self.property.clone(); // copy property.

@@ -71,6 +71,7 @@ mod tests {
                 let mut property = HashMap::new();
                 property.insert(0, 100.0);
                 property.insert(1, 75.0);
+                property.insert(2, 20.0);
                 // Job Target
                 let mut target = HashMap::new();
                 target.insert(0, 25.0);
@@ -150,9 +151,9 @@ mod tests {
                 // Do test
                 job.pay_workers(pops, &data, &market);
                 // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 100.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 100.0);
-                assert!(!job.property.contains_key(&2));
+                assert_eq!(*job.property.get(&0).unwrap(), 75.0);
+                assert_eq!(*job.property.get(&1).unwrap(), 75.0);
+                assert_eq!(*job.property.get(&2).unwrap(), 10.0);
                 assert_eq!(job.time, 25.0);
                 // check that the worker has been paid.
                 let pop = pops.get(&0).unwrap();
@@ -164,7 +165,8 @@ mod tests {
                 let owner = pops.get(&1).unwrap();
                 assert_eq!(owner.unused_time, 1.0);
                 assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
-                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
+                assert_eq!(*owner.property.get(&1).unwrap(), 0.0);
+                assert_eq!(*owner.property.get(&2).unwrap(), 10.0);
             }
 
             #[test]
