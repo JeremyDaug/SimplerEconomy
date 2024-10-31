@@ -74,6 +74,8 @@ impl Market {
             world.jobs.get_mut(job).expect("Job not found.")
             .pay_workers(&mut world.pops, data, &self);
         }
+        // jobs do their work
+        // set up selling across the 
     }
 
     
