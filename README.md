@@ -61,7 +61,7 @@ Along with these desires is the unique desire of Wealth which operates alongside
 
 Pop Desires are a list of things the pop wants (Wants, Class, and Specifics). These are created in the various subcomponents of the pop, Species, Culture, Religion, and other factors. These are defined with a starting weight, a step interval, and whether they are finite or infinite.
 
-Desires are organized in a list, organized from lowest starting weight to highest starting weight. Any desires with the same starting weight will be scattered around each other randomly (this should be randomized on updating) pop desires. The starting weight acts as the internal value of that good. 
+Desires are organized in a list, organized from lowest starting weight to highest starting weight. Any desires with the same starting weight will be selected, ordered by 
 
 ## Firms
 
