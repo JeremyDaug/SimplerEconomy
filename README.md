@@ -51,6 +51,12 @@ A number of inputs can be excluded also, allowing for greater flexibility.
 
 Processes also have a complexity rating which is based around how many goods are used, and how many can be excluded. The more complex a process rates as, the more difficult it is to generate it, but also the more efficient the process is.
 
+### Process Time
+
+Processes have a time value, which defines the minimum amount of time it takes for a process to occur. To explain how it is used. A firm can only spend a turn's worth of time in sequential processes. If there are 24 hours in a turn, and a process takes 1 hour, then you can do that process 24 times sequentially. 
+
+Note: Firms also have a 'friction' cost for each step they do, representing the time cost of changing what people are doing. This is likely to be a small, fixed, pre-defined cost (currently 0.1 Units of Time). It could be made more dynamic through the used of a 'similarity' rating between processes, but for now we'll just use a fixed value.
+
 ## Pops
 
 Pops are the people of the system. Pops create Time, and are the final consumer of many goods. Pops have a storage for goods they own. These goods they wish to own go to satsifying their desires. Desires are defined by various factors, Species, Culture, Religion, etc.

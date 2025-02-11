@@ -1,7 +1,7 @@
 use core::f64;
 use std::{collections::HashMap, fmt::{format, Display}};
 
-use crate::data::Data;
+use crate::{data::Data, good::Good, item::Item};
 
 /// # Process
 /// 
@@ -23,25 +23,106 @@ pub struct Process {
     pub id: usize,
     /// The name of the process.
     pub name: String,
+    /// The variant name of the process. Should be unique when combined with primary name.
+    pub variant_name: String,
+    /// The complexity value of the process. This is a calculated value.
+    pub complexity: f64,
     /// What process this one is derived from.
     pub parent: Option<usize>,
-    /// How much time the process takes.
-    /// Should be in whole units, should never go below 1 hour.
+    /// How much time the process takes if done sequentially.
     pub time: f64,
-    /// The goods which are consumed by the process.
-    /// Should be positive whole numbers.
-    pub inputs: HashMap<usize, f64>,
+    /// The goods which are needed for the process, de facto.
+    pub inputs: Vec<ProcessInput>,
     /// The number of inputs which can be omitted per iteration of the process.
     pub optional: f64,
-    /// what type of input it is. IE, whether it is consumed, used, or otherwise.
-    pub input_type: HashMap<usize, InputType>,
     /// The goods which are produced by the process.
     /// Should be whole numbers, may produce fractions, but fractions do not decay and 
     /// cannot be bought or sold. If the pop disappears, so to does any fractional goods.
-    pub outputs: HashMap<usize, f64>
+    /// Goods that are Consumed or Used are not included here.
+    pub outputs: Vec<ProcessOutput>
 }
 
 impl Process {
+    /// # New
+    /// 
+    /// Creates a new, empty process. 
+    /// Does not check for unique id or name.
+    pub fn new(id: usize, name: String, variant_name: String) -> Self {
+        Process {
+            id,
+            name,
+            variant_name,
+            complexity: 0.0,
+            parent: None,
+            time: 0.0,
+            inputs: vec![],
+            optional: 0.0,
+            outputs: vec![],
+        }
+    }
+
+    /// # Has Output
+    /// 
+    /// Fluent Output adder, only single output to add.
+    pub fn has_output(mut self, output: ProcessOutput) -> Self {
+        self.outputs.push(output);
+        self
+    }
+
+    /// # Outputs
+    /// 
+    /// Fluent Output(s) adder, can add multiple outputs.
+    pub fn has_outputs(mut self, outputs: Vec<ProcessOutput>) -> Self {
+        self.outputs.extend(outputs);
+        self
+    }
+
+    /// # With Optional
+    /// 
+    /// Fluent Optional Setter.
+    pub fn with_optionals(mut self, optional: f64) -> Self {
+        assert!(optional >= 0.0, "Optional cannot be negative.");
+        self.optional = optional;
+        self
+    }
+
+    /// # Uses Inputs
+    /// 
+    /// Fluent Input adder.
+    pub fn uses_input(mut self, input: ProcessInput) -> Self {
+        self.inputs.push(input);
+        self
+    }
+
+    /// # Uses Inputs
+    /// 
+    /// Fluent Input adder. Can add mulitple inputs at once.
+    pub fn uses_inputs(mut self, inputs: Vec<ProcessInput>) -> Self {
+        self.inputs.extend(inputs);
+        self
+    }
+
+    /// # With Time
+    /// 
+    /// Fluent Time Setter. Consumes Orinigal.
+    /// 
+    /// # Panics
+    /// 
+    /// Time must be Non-Negative.
+    pub fn with_time(mut self, time: f64) -> Self {
+        assert!(time >= 0.0, "Time must be non-negative.");
+        self.time = time;
+        self
+    }
+
+    /// # Has Parent
+    /// 
+    /// Fluent Parent Setter. Consumes original.
+    pub fn has_parent(mut self, parent: usize) -> Self {
+        self.parent = Some(parent);
+        self
+    }
+
     /// # Do Process
     /// 
     /// This is a simple process of taking in time and goods (and data of goods for good measure)
@@ -130,10 +211,81 @@ impl Process {
     /// 
     /// returns N^2 / 2.0 * 0.05
     pub fn efficiency(&self) -> f64 {
-        let n: f64 = self.inputs.values().sum::<f64>() 
+        let n: f64 = self.inputs.iter().map(|x| x.amount).sum::<f64>() 
             - self.optional;
 
         ((n * n - n) * 0.05 + 1.0).max(1.0)
+    }
+}
+
+/// The input information for a process.
+#[derive(Debug, Clone)]
+pub struct ProcessInput {
+    /// The item (Want, Class of Good, or Good) is being used.
+    pub item: Item,
+    /// The number of units needed.
+    pub amount: f64,
+    /// Additional information which modifies the input.
+    pub tag: Option<InputTag>,
+}
+
+impl ProcessInput {
+    /// # New
+    /// 
+    /// Creates a new (destroyed) input.
+    /// 
+    /// # Panics
+    /// 
+    /// Amount must be Positive.
+    pub fn new(item: Item, amount: f64) -> Self {
+        assert!(amount > 0.0, "Amount must be a Positive value.");
+        Self {
+            item,
+            amount,
+            tag: None,
+        }
+    }
+
+    /// # With Tag
+    /// 
+    /// Consuming setter for Tag.
+    pub fn with_tag(mut self, tag: InputTag) -> Self {
+        self.tag = Some(tag);
+        self
+    }
+}
+
+/// # Process Output
+/// 
+/// The information about process outputs.
+#[derive(Debug, Clone)]
+pub struct ProcessOutput {
+    /// The item being output.
+    pub item: Item,
+    /// The amount of that output made.
+    pub amount: f64,
+    /// The additional effects when a hte output is made.
+    pub tags: Vec<OutputTag>,
+}
+
+impl ProcessOutput {
+    pub fn new(item: Item, amount: f64) -> Self {
+        assert!(amount > 0.0, "Amount must be positive.");
+        Self {
+            item,
+            amount,
+            tags: vec![],
+        }
+    }
+
+    pub fn with_tag(mut self, tags: OutputTag) -> Self {
+        self.tags.push(tag);
+        self
+    }
+
+    pub fn with_tags(mut self, tags: Vec<OutputTag>) -> Self {
+        self.tags.extend(tags);
+        self
     }
 }
 
@@ -142,13 +294,31 @@ pub struct ProcessResults {
     pub consumed: HashMap<usize, f64>,
     pub used: HashMap<usize, f64>,
     pub time_used: f64,
-    pub created: HashMap<usize ,f64>,
+    pub created: HashMap<usize, f64>,
 }
 
-#[derive(Debug, Clone)]
-pub enum InputType {
-    /// Good is consumed as part of the process, or consumes durability of the bigger item.
-    Input,
-    /// Requires good.durability in units of the good, but does not consume the good in the process.
-    Capital,
+/// # Input Tag
+/// 
+/// Input tags are attached to ProcessInputs and define additional features that
+/// apply only to that part of the process.
+/// 
+/// A Process Input with no tags is, de facto, destroyed by the process.
+#[derive(Debug, Clone, Copy)]
+pub enum InputTag {
+    /// Consumed marks the input as resulting in the decay good being produced
+    /// rather than destroyed.
+    Consumed,
+    /// Used marks the input as being 'used' not consumed or destroyed.
+    Used,
+}
+
+/// # Output Tags
+/// 
+/// Adds special information to the outputs of a process part.
+/// 
+/// Currently used for sanity checking outputs.
+#[derive(Debug, Clone, Copy)]
+pub enum OutputTag {
+    ConsumedOutput,
+    UsedOutput
 }
