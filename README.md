@@ -77,17 +77,35 @@ Firms come in multiple levels and have different strategies. They can be owned i
 
 Firms can own property and the like by various means also, but cannot 'claim' territory like Institutions or States can.
 
-## Institutions
-
-Institutions are non-firm organizations, like Churches, social clubs, political groups, and the like. These are not explicitly economic entities, but usually have a firm contained within them for their 'sustaining' activities. They provide services and needs that are considered 'too important' for businesses to do. They have much broader goals and strategies, while also gaining resources through alternative methods like donations or dues. They are also typically made up of multiple firms, which may have their operations overrided by the institution.
-
-Institutions also claim territory, though they are not exclusive in their claims. They also have membership and rules, though they are (mostly) voluntary organizations.
-
 ## States
 
-States are an upgraded version of Institutions, they are typically made of one or more Institutions that have gained a Monopoly on Violence in a region. They can claim territory, and these claims are nearly exclusive. States may push out other states or institutions from their claims. States fight over their claims.
+States are what players control. States are organizations with a monopoly on legitimized violence. States have a primary culture (this can be changed or hybridized through various means), which they have influence over and represent roughly.
 
-States may create membership and rules and enforce them unilaterally. They typically gain their wealth through taxation.
+### Power Centers
+
+States are based around 'buildings' called power centers. All States need at least one, this is the capital of the state, and represents the primary starting point for costs and the like. These can be moved for a price and with the right abilites can be made mobile. 
+
+Each power centers have both linear and non-linear costs. The Linear costs are those things which you 'build' into that power center and allow you access to more of your state abilities and functionality. The non-linear costs represent the cost of connectivity and maintaining control peacefully, these scale with both the size/abilities of the power center, the distance from your capital, and various other factors like unrest.
+
+Power centers are typically the centerpoints of cities or towns by nature of the extra money and resources flowing through them due to your resources.
+
+### Resources
+
+Unity.
+
+Violence.
+
+Development.
+
+## Institutions
+
+Institutions are the subcomponents of a state, but are attached to culture. They represent the various abilities, capabilities, and functions of your state. Each can be developed by the state, giving access to more of it's abilites, but these abilities have a cost in both passive upkeep and a material upkeep when implemented.
+
+### Institution Paths
+
+Military. Broken into subgroups based on theatre kind (Army/Navy/Air).
+
+Economic. Broken into Facilitation and Control.
 
 ## Markets
 

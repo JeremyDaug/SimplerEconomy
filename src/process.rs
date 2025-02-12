@@ -1,7 +1,7 @@
 use core::f64;
-use std::{collections::HashMap, fmt::{format, Display}};
+use std::collections::HashMap;
 
-use crate::{data::Data, good::Good, item::Item};
+use crate::{data::Data, item::{Item, Product}};
 
 /// # Process
 /// 
@@ -15,8 +15,6 @@ use crate::{data::Data, good::Good, item::Item};
 /// 
 /// Each stock and capital increases the efficiency of the output by N * 0.1 + (N-1) * 0.05.
 /// Where N is the total number of stock and capital - the optional stock and capital.
-/// 
-/// Optional goods not implemented.
 #[derive(Debug, Clone)]
 pub struct Process {
     /// The unique id of the process.
@@ -125,12 +123,39 @@ impl Process {
 
     /// # Do Process
     /// 
+    /// Do process takes in the goods available and returns 
+    /// the effective change of the process. May use a target amount to cap everything at.
+    pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: Option<f64>) -> ProcessResults {
+        // get our initial upper bound
+        let upper_bound = if let Some(t) = target { t } else { f64::INFINITY };
+        // get all the goods we need and have.
+        let mut expending_goods = HashMap::new();
+        for input in self.inputs.iter() {
+            if let Product::Good(id) = input.product {
+                expending_goods.insert(id, *goods.get(&id).unwrap_or(&0.0));
+            } else if let Product::Class(id) = input.product {
+                let members = data.get_class(id);
+                // get all goods which are members.
+                for (&good, &amt) in goods.iter()
+                .filter(|(id, _)| members.contains(&id)) {
+                    expending_goods.insert(good, amt);
+                }
+            }
+        }
+        todo!()
+    }
+
+    /// # Do Process
+    /// 
     /// This is a simple process of taking in time and goods (and data of goods for good measure)
-    pub fn do_process(&self, time: f64, goods: &HashMap<usize, f64>, data: &Data) -> ProcessResults {
+    /// 
+    /// TODO: This needs testing.
+    #[deprecated]
+    pub fn do_process_old(&self, time: f64, goods: &HashMap<usize, f64>, data: &Data) -> ProcessResults {
         // first, get the lesser between iterations possible by time, and iterations possible by target.
         let mut target = time / self.time;
         // how many total goods we need per iteration
-        let iter_good_cost = self.inputs.values().sum::<f64>() - self.optional;
+        let iter_good_cost = self.inputs.iter().map(|x| x.amount).sum::<f64>() - self.optional;
         // get the goods we need, we'll need these details later.
         // all the goods we will expend at the end of it.
         let mut expending_goods = HashMap::new();
@@ -147,8 +172,8 @@ impl Process {
         }
         // with the target set, get expenditures.
         // update what will be expending
-        for (good, quant) in self.inputs.iter() {
-            let expending = quant * target;
+        for (input) in self.inputs.iter() {
+            let expending = input.amount * target;
             expending_goods.insert(*good, expending.min(*expending_goods.get(good).unwrap_or(&0.0)));
         }
         // recalculate our target result base on the new target
@@ -222,7 +247,7 @@ impl Process {
 #[derive(Debug, Clone)]
 pub struct ProcessInput {
     /// The item (Want, Class of Good, or Good) is being used.
-    pub item: Item,
+    pub product: Product,
     /// The number of units needed.
     pub amount: f64,
     /// Additional information which modifies the input.
@@ -237,10 +262,10 @@ impl ProcessInput {
     /// # Panics
     /// 
     /// Amount must be Positive.
-    pub fn new(item: Item, amount: f64) -> Self {
+    pub fn new(product: Product, amount: f64) -> Self {
         assert!(amount > 0.0, "Amount must be a Positive value.");
         Self {
-            item,
+            product,
             amount,
             tag: None,
         }
@@ -278,7 +303,7 @@ impl ProcessOutput {
         }
     }
 
-    pub fn with_tag(mut self, tags: OutputTag) -> Self {
+    pub fn with_tag(mut self, tag: OutputTag) -> Self {
         self.tags.push(tag);
         self
     }
@@ -291,10 +316,12 @@ impl ProcessOutput {
 
 pub struct ProcessResults {
     pub iterations: f64,
+    /// Goods Destroyed by the process.
     pub consumed: HashMap<usize, f64>,
+    /// Goods used but not destoyed by the process.
     pub used: HashMap<usize, f64>,
-    pub time_used: f64,
-    pub created: HashMap<usize, f64>,
+    /// The Items created by the process.
+    pub created: HashMap<Item, f64>,
 }
 
 /// # Input Tag
