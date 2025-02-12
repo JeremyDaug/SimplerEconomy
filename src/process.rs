@@ -1,7 +1,7 @@
 use core::f64;
 use std::collections::HashMap;
 
-use crate::{data::Data, item::{Item, Product}};
+use crate::{data::Data, item::{Item, Product}, markethistory::MarketHistory};
 
 /// # Process
 /// 
@@ -124,109 +124,53 @@ impl Process {
     /// # Do Process
     /// 
     /// Do process takes in the goods available and returns 
-    /// the effective change of the process. May use a target amount to cap everything at.
-    pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: Option<f64>) -> ProcessResults {
-        // get our initial upper bound
-        let upper_bound = if let Some(t) = target { t } else { f64::INFINITY };
-        // get all the goods we need and have.
-        let mut expending_goods = HashMap::new();
-        for input in self.inputs.iter() {
-            if let Product::Good(id) = input.product {
-                expending_goods.insert(id, *goods.get(&id).unwrap_or(&0.0));
-            } else if let Product::Class(id) = input.product {
-                let members = data.get_class(id);
-                // get all goods which are members.
-                for (&good, &amt) in goods.iter()
-                .filter(|(id, _)| members.contains(&id)) {
-                    expending_goods.insert(good, amt);
-                }
-            }
-        }
-        todo!()
-    }
-
-    /// # Do Process
+    /// the effective change of the process. 
     /// 
-    /// This is a simple process of taking in time and goods (and data of goods for good measure)
-    /// 
-    /// TODO: This needs testing.
-    #[deprecated]
-    pub fn do_process_old(&self, time: f64, goods: &HashMap<usize, f64>, data: &Data) -> ProcessResults {
-        // first, get the lesser between iterations possible by time, and iterations possible by target.
-        let mut target = time / self.time;
-        // how many total goods we need per iteration
+    /// A target number of processes is always needed.
+    pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, market_history: &MarketHistory) -> ProcessResults {
+        let mut target = target;
+        // Get how many we need in an iteration
         let iter_good_cost = self.inputs.iter().map(|x| x.amount).sum::<f64>() - self.optional;
-        // get the goods we need, we'll need these details later.
-        // all the goods we will expend at the end of it.
-        let mut expending_goods = HashMap::new();
-        for (good, &quant) in goods.iter() {
-            let expending = quant * target;
-            expending_goods.insert(*good, expending.min(quant));
+        // get all the goods we need
+        let mut expense_targets = HashMap::new();
+        for input in self.inputs.iter() {
+            expense_targets
+                .entry(input.good)
+                .and_modify(|x| *x += target * input.amount)
+                .or_insert(target * input.amount);
         }
-        // how many goods we have available to expend
+        
+        // next get the goods we can expend (capping at our targets).
+        let mut expending_goods = HashMap::new();
+        for (good, amt) in goods.iter()
+        .filter(|(good, _)| expense_targets.contains_key(good)) {
+            expending_goods.insert(good, amt.min(*expense_targets.get(good).unwrap()));
+        }
+        
         let available = expending_goods.values().sum::<f64>();
         let mut target_result = available - target * iter_good_cost;
-        if target_result < 0.0 {
-            // If we don't have enough goods and free slots, reduce the target downwards
+        if target_result < 0.0 { // if we don't have enough goods and free slots, reduce the target downward.
             target = target + target_result;
         }
-        // with the target set, get expenditures.
-        // update what will be expending
-        for (input) in self.inputs.iter() {
+        
+        // with target set, get actual expenditures.
+        for input in self.inputs.iter() {
             let expending = input.amount * target;
-            expending_goods.insert(*good, expending.min(*expending_goods.get(good).unwrap_or(&0.0)));
+            expending_goods.insert(&input.good, 
+                expending.min(*expending_goods.get(&input.good).unwrap_or(&0.0))
+            );
         }
-        // recalculate our target result base on the new target
+        // recalculate our target result based on the new target
         let available = expending_goods.values().sum::<f64>();
         target_result = available - target * iter_good_cost;
 
-        // subtract any extra free slots, starting from the highest ID to the lowest.
+        // subtract any extra free slots, starting from the most expensive good and going down.
         let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
         while remaining_frees > 0.0 {
-            if let Some(&highest) = expending_goods.keys().max() {
-                if *expending_goods.get(&highest).unwrap() > 0.0 {
-                    expending_goods.entry(highest)
-                        .and_modify(|x| *x -= 1.0);
-                    remaining_frees -= 1.0;
-                } else {
-                    expending_goods.remove(&highest);
-                }
-            }
+            if let Some(good) = expending_goods.iter().find(|x| )
         }
 
-        // split expending goods into consumed and used.
-        let mut used_goods = HashMap::new();
-        let mut consumed_goods = HashMap::new();
-        for (good, intype) in self.input_type.iter() {
-            if !expending_goods.contains_key(good) {
-                continue;// skip if we removed from our expenses.
-            }
-            match intype {
-                InputType::Input => consumed_goods.insert(*good, *expending_goods.get(good).expect("Good not found? Make sure all input_types have a good and vice versa.")),
-                InputType::Capital => used_goods.insert(*good, *expending_goods.get(good).expect("Good not found? Make sure all input_types have a good and vice versa.")),
-            };
-        }
-        debug_assert_eq!(self.inputs.len(), self.input_type.len(), "Inputs and InputTypes must have the same length so no goods are missing.");
-
-        let mut created = HashMap::new();
-        let eff = self.efficiency();
-        for (good, quant) in self.outputs.iter() {
-            // add outputs, correctly multiplying if durability above 1.0 
-            let good_info = data.goods.get(good).expect(format!("Good '{}' not found.", good).as_str());
-            if good_info.durability > 1.0 {
-                created.insert(*good, (quant * good_info.durability * target * eff).ceil());
-            } else {
-                created.insert(*good, (quant * target * eff).ceil());
-            }
-        }
-
-        ProcessResults {
-            iterations: target,
-            consumed: consumed_goods,
-            used: used_goods,
-            time_used: self.time * target,
-            created
-        }
+        todo!()
     }
 
     /// How much extra efficiency is gained due to the amount of stock and
@@ -244,10 +188,14 @@ impl Process {
 }
 
 /// The input information for a process.
+/// 
+/// Currently, only Goods are accepted by processes.
+/// 
+/// Eventually I would like to expand this to include Classes and Wants.
 #[derive(Debug, Clone)]
 pub struct ProcessInput {
-    /// The item (Want, Class of Good, or Good) is being used.
-    pub product: Product,
+    /// The Good that is being used.
+    pub good: usize,
     /// The number of units needed.
     pub amount: f64,
     /// Additional information which modifies the input.
@@ -262,10 +210,10 @@ impl ProcessInput {
     /// # Panics
     /// 
     /// Amount must be Positive.
-    pub fn new(product: Product, amount: f64) -> Self {
+    pub fn new(good: usize, amount: f64) -> Self {
         assert!(amount > 0.0, "Amount must be a Positive value.");
         Self {
-            product,
+            good,
             amount,
             tag: None,
         }

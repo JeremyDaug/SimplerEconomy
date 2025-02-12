@@ -8,6 +8,7 @@ pub mod world;
 pub mod culture;
 pub mod want;
 pub mod item;
+pub mod markethistory;
 
 #[cfg(test)]
 mod tests {

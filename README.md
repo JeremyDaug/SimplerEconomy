@@ -99,9 +99,13 @@ Development.
 
 ## Institutions
 
-Institutions are the subcomponents of a state, but are attached to culture. They represent the various abilities, capabilities, and functions of your state. Each can be developed by the state, giving access to more of it's abilites, but these abilities have a cost in both passive upkeep and a material upkeep when implemented.
+Institutions are the subcomponents of a state, but are attached to culture. They represent the various abilities, capabilities, and functions of your state. Each can be developed by the state, giving access to more of it's abilites, but these abilities have a cost in both passive upkeep and a material upkeep when implemented. Abilities may be exclusive to each other, requiring you to abandon the first to gain the other. 
+
+Many of these abilities may also be binary sliders going from an aspect on one side to it's opposite on another, like choosing to make your state Centralized vs Decentralized, or being Offensive or Defensive in your war organization.
 
 ### Institution Paths
+
+Authority. The central pillar of your state, it defines how you project control and authority internally, and to a lesser extent, externally. The primary advantages it gives are in efficiency of command and control internally (and externally aslo).
 
 Military. Broken into subgroups based on theatre kind (Army/Navy/Air).
 
