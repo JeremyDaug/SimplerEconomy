@@ -3,6 +3,18 @@ use std::collections::HashMap;
 /// # Good
 /// 
 /// A good is something that is desireable or useful.
+/// 
+/// ## Mass Conservation Rules
+/// 
+/// A soft rule to preserve conservation of mass would be the following.
+/// 
+/// 1. The starting good and decay result should have equivalent masses.
+/// 2. Classes should either universally enforce mass equivalence between goods in a 
+///     class, or be able to record that a class enforces equivalence or not. If it
+///     does enforce it, then that class of goods can be destroyed by a process 
+///     without creating or destroying mass safely. If it doesn't enforce equivalent 
+///     mass in the class (hah) then it should not be destroyed by a process, as that
+///     would create or destroy total mass by the process.
 #[derive(Clone, Debug)]
 pub struct Good {
     /// Unique id of the good.

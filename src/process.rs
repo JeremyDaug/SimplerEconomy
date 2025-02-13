@@ -17,6 +17,16 @@ use crate::{data::Data, item::{Item, Product}, markethistory::MarketHistory};
 /// 
 /// Each stock and capital increases the efficiency of the output by N * 0.1 + (N-1) * 0.05.
 /// Where N is the total number of stock and capital - the optional stock and capital.
+/// 
+/// ## Mass Conservation Rules
+/// 
+/// A soft rule that will/should be added is that the mass being destroyed by the process should always be
+/// equal to the mass coming out of it. 
+/// 
+/// Ways to enforce this are
+/// 
+/// 1. Tagless inputs (goods destroyed by the process) cannot be reduced via optional effects.
+/// 2. The number of Optional inputs cannot cut into Tagless inputs.
 #[derive(Debug, Clone)]
 pub struct Process {
     /// The unique id of the process.
@@ -30,8 +40,23 @@ pub struct Process {
     /// What process this one is derived from.
     pub parent: Option<usize>,
     /// How much time the process takes if done sequentially.
+    /// 
+    /// This is not used internally, instead it is used externally with scheduling.
     pub time: f64,
     /// The goods which are needed for the process, de facto.
+    /// 
+    /// These come with a particular sorted order.
+    /// 
+    /// TODO: VvvV This VvvV
+    /// 
+    /// First by tag, None -> Enum Order
+    /// 
+    /// Then within those tag groups by good ID order.
+    /// 
+    /// ## Note: 
+    /// 
+    /// When Classes and Wants added back, they will also need a specific order 
+    /// for them (likely Good -> Class -> Want).
     pub inputs: Vec<ProcessInput>,
     /// The number of inputs which can be omitted per iteration of the process.
     pub optional: f64,
@@ -165,6 +190,7 @@ impl Process {
                 expending.min(*expending_goods.get(&input.good).unwrap_or(&0.0))
             );
         }
+
         // recalculate our target result based on the new target
         let available = expending_goods.values().sum::<f64>();
         target_result = available - target * iter_good_cost;
@@ -172,16 +198,18 @@ impl Process {
         // subtract any extra free slots, starting from the most expensive good and going down.
         let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
         while remaining_frees > 0.0 {
-            // Get the most expensive
+            // Get the most expensive good and remove as many units as possible.
             let costliest = expending_goods.iter()
                 .sorted_by(|a, b| {
                     a.1.partial_cmp(b.1).unwrap()
                 }).last();
             if let Some((&good, &amt)) = costliest {
+                // How many we can remove.
                 let remove = amt.min(remaining_frees);
-                remaining_frees -= remove;
+                remaining_frees -= remove; // remove from free.
+                // remove from expending goods.
                 let update = expending_goods.remove(good).unwrap() - remove;
-                if update > 0.0 {
+                if update > 0.0 { // if not reduced to zero, add back in.
                     expending_goods.insert(good, update);
                 }
             } else { // if no costliest, then we probably have a problem.
@@ -189,7 +217,33 @@ impl Process {
             }
         }
 
-        todo!()
+        // with actual expenses gotten, begin adding to the results
+        let mut consumed = HashMap::new();
+        let mut used = HashMap::new();
+        let mut created = HashMap::new();
+        for input in self.inputs.iter() {
+            // go through the inputs and deal up to the target amount of that good for our current iterations.
+            // Any shortfall is 
+            if let Some(tag) = input.tag {
+                match tag {
+                    InputTag::Consumed => {
+
+                    },
+                    InputTag::Used => {
+
+                    },
+                }
+            } else { // Consumed input.
+
+            }
+        }
+
+        ProcessResults {
+            iterations: target,
+            consumed,
+            used,
+            created,
+        }
     }
 
     /// How much extra efficiency is gained due to the amount of stock and
@@ -311,13 +365,21 @@ impl ProcessResults {
 /// apply only to that part of the process.
 /// 
 /// A Process Input with no tags is, de facto, destroyed by the process.
-#[derive(Debug, Clone, Copy)]
+/// 
+/// ## Possible additions
+/// 
+/// - Specific Optional
+///     - Specific Optional would be an input which can be specifically excluded by 
+///         the process. This input being included should offer some kind of addiitonal 
+///         benefit, possibly a reduction in process time and possibly reduction in
+///         'massless' inputs like work time (good 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputTag {
+    /// Used marks the input as being 'used' not consumed or destroyed.
+    Used,
     /// Consumed marks the input as resulting in the decay good being produced
     /// rather than destroyed.
     Consumed,
-    /// Used marks the input as being 'used' not consumed or destroyed.
-    Used,
 }
 
 /// # Output Tags
