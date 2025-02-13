@@ -1,5 +1,7 @@
 use core::f64;
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
+
+use itertools::Itertools;
 
 use crate::{data::Data, item::{Item, Product}, markethistory::MarketHistory};
 
@@ -152,6 +154,9 @@ impl Process {
         if target_result < 0.0 { // if we don't have enough goods and free slots, reduce the target downward.
             target = target + target_result;
         }
+        if target == 0.0 {
+            return ProcessResults::new();
+        }
         
         // with target set, get actual expenditures.
         for input in self.inputs.iter() {
@@ -167,7 +172,21 @@ impl Process {
         // subtract any extra free slots, starting from the most expensive good and going down.
         let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
         while remaining_frees > 0.0 {
-            if let Some(good) = expending_goods.iter().find(|x| )
+            // Get the most expensive
+            let costliest = expending_goods.iter()
+                .sorted_by(|a, b| {
+                    a.1.partial_cmp(b.1).unwrap()
+                }).last();
+            if let Some((&good, &amt)) = costliest {
+                let remove = amt.min(remaining_frees);
+                remaining_frees -= remove;
+                let update = expending_goods.remove(good).unwrap() - remove;
+                if update > 0.0 {
+                    expending_goods.insert(good, update);
+                }
+            } else { // if no costliest, then we probably have a problem.
+                unreachable!("Somehow no goods in Expending goods.");
+            }
         }
 
         todo!()
@@ -262,6 +281,9 @@ impl ProcessOutput {
     }
 }
 
+/// # Process Results
+/// 
+/// The results of completing a process.
 pub struct ProcessResults {
     pub iterations: f64,
     /// Goods Destroyed by the process.
@@ -270,6 +292,17 @@ pub struct ProcessResults {
     pub used: HashMap<usize, f64>,
     /// The Items created by the process.
     pub created: HashMap<Item, f64>,
+}
+
+impl ProcessResults {
+    fn new() -> Self {
+        Self { 
+            iterations: 0.0,
+            consumed: HashMap::new(),
+            used: HashMap::new(),
+            created: HashMap::new()
+        }
+    }
 }
 
 /// # Input Tag
