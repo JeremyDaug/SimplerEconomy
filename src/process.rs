@@ -1,5 +1,5 @@
 use core::f64;
-use std::{collections::HashMap, hash::Hash};
+use std::{cmp, collections::HashMap, hash::Hash};
 
 use itertools::Itertools;
 
@@ -114,16 +114,60 @@ impl Process {
     /// # Uses Inputs
     /// 
     /// Fluent Input adder.
+    /// 
+    /// Inserts such that the input is properly sorted.
+    /// 
+    /// TODO: Test this actually works.
     pub fn uses_input(mut self, input: ProcessInput) -> Self {
         self.inputs.push(input);
+        let mut current = self.inputs.len();
+        loop { // sort downwards until it is both placed proprely tag wise and good id wise.
+            if current == 0 {
+                // if we got down to 0, then leave as we're already sorted.
+                break;
+            }
+            let cur_tag = self.inputs.get(current).unwrap().tag;
+            let next_tag = self.inputs.get(current-1).unwrap().tag;
+            if next_tag.is_some() && cur_tag.is_none() { // if next down has a a tag and we don't swap.
+                self.inputs.swap(current, current-1);
+                current -= 1;
+                continue;
+            }
+            if let (Some(next), Some(curr)) = (next_tag, cur_tag) {
+                // if both have a tag, swap when one should be before the other.
+                if next > curr {
+                    self.inputs.swap(current, current-1);
+                    current -= 1;
+                    continue;
+                }
+                if next < curr {
+                    // If the next down is the next tag down, then it's in it's place.
+                    break;
+                }
+            }
+            // if tags are the same, reorganize by good ID
+            let curr_id = self.inputs.get(current).unwrap().good;
+            let next_id = self.inputs.get(current-1).unwrap().good;
+            if next_id > curr_id {
+                self.inputs.swap(current, current-1);
+                current -= 1;
+                continue;
+            }
+            // Tag is properly placed, and id is proprely placed, must be the end.
+            break;
+        }
         self
     }
 
     /// # Uses Inputs
     /// 
     /// Fluent Input adder. Can add mulitple inputs at once.
+    /// 
+    /// Inserts them in the order defined above.
     pub fn uses_inputs(mut self, inputs: Vec<ProcessInput>) -> Self {
-        self.inputs.extend(inputs);
+        for input in inputs {
+            self = self.uses_input(input);
+        }
         self
     }
 

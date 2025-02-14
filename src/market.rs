@@ -66,13 +66,9 @@ impl Market {
     pub fn market_day(&mut self, world: &mut World, data: &Data) {
         // setup time in all of our pops.
         for pop in self.pops.iter() {
-            world.pops.get_mut(pop).expect("Pop not found.")
-            .reset_time();
         }
         // Jobs purchase labor for the day.
         for job in self.jobs.iter() {
-            world.jobs.get_mut(job).expect("Job not found.")
-            .pay_workers(&mut world.pops, data, &self);
         }
         // jobs do their work
         // set up selling across the 
