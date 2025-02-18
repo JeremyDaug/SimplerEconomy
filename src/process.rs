@@ -1,30 +1,30 @@
 use core::f64;
-use std::{cmp, collections::HashMap, fmt::{write, Display}, hash::Hash, os::unix::process};
+use std::{collections::HashMap, fmt::Display};
 
 use itertools::Itertools;
 
-use crate::{data::Data, item::{Item, Product}, markethistory::MarketHistory};
+use crate::{data::Data, item::Item, markethistory::MarketHistory};
 
 /// # Process
-/// 
+///
 /// Process transforms time, stock, and capital into outputs.
-/// 
+///
 /// Processes have a standard form and efficiency gain.
-/// 
+///
 /// Goods which don't decay cannot be capital. Goods which always decay must be stock.
-/// 
+///
 /// Processes always take at least 1 hour of time. All items are whole units.
-/// 
+///
 /// Each stock and capital increases the efficiency of the output by N * 0.1 + (N-1) * 0.05.
 /// Where N is the total number of stock and capital - the optional stock and capital.
-/// 
+///
 /// ## Mass Conservation Rules
-/// 
+///
 /// A soft rule that will/should be added is that the mass being destroyed by the process should always be
-/// equal to the mass coming out of it. 
-/// 
+/// equal to the mass coming out of it.
+///
 /// Ways to enforce this are
-/// 
+///
 /// 1. Tagless inputs (goods destroyed by the process) cannot be reduced via optional effects.
 /// 2. The number of Optional inputs cannot cut into Tagless inputs.
 #[derive(Debug, Clone)]
@@ -40,28 +40,28 @@ pub struct Process {
     /// What process this one is derived from.
     pub parent: Option<usize>,
     /// How much time the process takes if done sequentially.
-    /// 
+    ///
     /// This is not used internally, instead it is used externally with scheduling.
     pub time: f64,
     /// The goods which are needed for the process, de facto.
-    /// 
+    ///
     /// These come with a particular sorted order.
-    /// 
+    ///
     /// TODO: VvvV This VvvV
-    /// 
+    ///
     /// First by tag, None -> Enum Order
-    /// 
+    ///
     /// Then within those tag groups by good ID order.
-    /// 
-    /// ## Note: 
-    /// 
-    /// When Classes and Wants added back, they will also need a specific order 
+    ///
+    /// ## Note:
+    ///
+    /// When Classes and Wants added back, they will also need a specific order
     /// for them (likely Good -> Class -> Want).
     pub inputs: Vec<ProcessInput>,
     /// The number of inputs which can be omitted per iteration of the process.
     pub optional: f64,
     /// The goods which are produced by the process.
-    /// Should be whole numbers, may produce fractions, but fractions do not decay and 
+    /// Should be whole numbers, may produce fractions, but fractions do not decay and
     /// cannot be bought or sold. If the pop disappears, so to does any fractional goods.
     /// Goods that are Consumed or Used are not included here.
     pub outputs: Vec<ProcessOutput>,
@@ -69,8 +69,8 @@ pub struct Process {
 
 impl Process {
     /// # New
-    /// 
-    /// Creates a new, empty process. 
+    ///
+    /// Creates a new, empty process.
     /// Does not check for unique id or name.
     pub fn new(id: usize, name: String, variant_name: String) -> Self {
         Process {
@@ -87,11 +87,11 @@ impl Process {
     }
 
     /// # Has Output
-    /// 
+    ///
     /// Fluent Output adder, only single output to add.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Currently the system cannot output a Item::Class(), so if it recieves it it panics.
     pub fn has_output(mut self, output: ProcessOutput) -> Self {
         assert!(!output.item.is_class(), "Output Item cannot be a class.");
@@ -100,11 +100,11 @@ impl Process {
     }
 
     /// # Outputs
-    /// 
+    ///
     /// Fluent Output(s) adder, can add multiple outputs.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Currently the system cannot output a Item::Class(), so if it recieves it it panics.
     pub fn has_outputs(mut self, outputs: Vec<ProcessOutput>) -> Self {
         for output in outputs {
@@ -114,19 +114,19 @@ impl Process {
     }
 
     /// # With Optional
-    /// 
+    ///
     /// Fluent Optional Setter.
     pub fn with_optionals(mut self, optional: f64) -> Self {
         assert!(optional >= 0.0, "Optional cannot be negative.");
-        assert!((optional - optional.floor()) > 0.0, "Optional must be a whole value!");
+        //assert!((optional - optional.floor()) > 0.0, "Optional must be a whole value!");
         self.optional = optional;
         self
     }
 
     /// # Uses Inputs
-    /// 
+    ///
     /// Fluent Input adder.
-    /// 
+    ///
     /// Inserts such that the input is properly sorted.
     pub fn uses_input(mut self, input: ProcessInput) -> Self {
         self.inputs.push(input);
@@ -163,9 +163,9 @@ impl Process {
     }
 
     /// # Uses Inputs
-    /// 
+    ///
     /// Fluent Input adder. Can add mulitple inputs at once.
-    /// 
+    ///
     /// Inserts them in the order defined above.
     pub fn uses_inputs(mut self, inputs: Vec<ProcessInput>) -> Self {
         for input in inputs {
@@ -175,11 +175,11 @@ impl Process {
     }
 
     /// # With Time
-    /// 
+    ///
     /// Fluent Time Setter. Consumes Orinigal.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Time must be Non-Negative.
     pub fn with_time(mut self, time: f64) -> Self {
         assert!(time >= 0.0, "Time must be non-negative.");
@@ -188,7 +188,7 @@ impl Process {
     }
 
     /// # Has Parent
-    /// 
+    ///
     /// Fluent Parent Setter. Consumes original.
     pub fn has_parent(mut self, parent: usize) -> Self {
         self.parent = Some(parent);
@@ -196,19 +196,20 @@ impl Process {
     }
 
     /// # Do Process
-    /// 
-    /// Do process takes in the goods available and returns 
-    /// the effective change of the process. 
-    /// 
+    ///
+    /// Do process takes in the goods available and returns
+    /// the effective change of the process.
+    ///
     /// A target number of processes is always needed.
-    /// 
+    ///
     /// TODO: Add in code to allow for normal inputs to be excluded (Unless they are massless) to help enforce conservation of mass.
+    /// TODO: Add in the ability to accept class or want inputs.
     pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, market_history: &MarketHistory) -> ProcessResults {
         let mut target = target;
         // get base iteration goods and base iteration cost.
         let mut iter_good_cost = 0.0;
         let mut base_goods = HashMap::new();
-        for input in self.inputs {
+        for input in self.inputs.iter() {
             iter_good_cost += input.amount;
             base_goods.entry(input.good)
                 .and_modify(|x| *x += input.amount)
@@ -221,47 +222,59 @@ impl Process {
         let mut input_goods = HashMap::new();
         let mut total_available = 0.0;
         let mut unused_free_slots = 0.0;
-        loop {
-            // get our currently available inputs
+        // get our currently available inputs
+        for (good, amt) in base_goods.iter() {
+            let available = (amt * target).min(*goods.get(good).unwrap_or(&0.0));
+            input_goods.insert(good, available);
+            total_available += available;
+        }
+        // get how many free slots we have available.
+        unused_free_slots = total_available - iter_good_cost * target;
+        if unused_free_slots < 0.0 {
+            // if negative, try a 'near zero' value, and see if we can do any at all.
+            // Get the lowest possible non-zero step we can.
+            let mut iters = vec![];
             for (good, amt) in base_goods.iter() {
-                let available = (amt * target).min(*goods.get(good).unwrap_or(&0.0));
-                input_goods.insert(good, available);
-                total_available += available;
+                iters.push(goods.get(good).unwrap_or(&0.0) / *amt);
             }
-            // get how many free slots we have available.
-            unused_free_slots = total_available - iter_good_cost * target;
-            if unused_free_slots >= 0.0 { // if over our target, break and go down to remove those optionals.
-                break;
+            let lower_bound = iters.iter().filter(|&&x| x > 0.0)
+                .fold(f64::INFINITY, |a, &b| a.min(b));
+            // Calculate the value of our current lower bound.
+            let mut lower_bound_inputs = HashMap::new();
+            let mut lower_bound_available = 0.0;
+            for (good, amt) in base_goods.iter() {
+                let cur = amt * lower_bound;
+                lower_bound_inputs.insert(good, cur);
+                lower_bound_available += cur;
             }
-            // if negative free slots, then we need to reduce our target.
-            let mut highest = 0.0;
-            let mut second = 0.0;
-            for (good, amt) in input_goods.iter() {
-                let curr = amt / base_goods.get(&good).unwrap();
-                if curr > highest {
-                    second = highest;
-                    highest = curr;
-                } else if curr < highest && curr > second {
-                    second = curr;
+            // Get how many optionals we have available at our lower bound.
+            let lower_bound_frees = lower_bound_available 
+                - iter_good_cost * lower_bound;
+            if lower_bound_frees < 0.0 { 
+                // if lower bound is still negative, return empty, 
+                // we *Cannot* find an intersection.
+                return  ProcessResults::new();
+            } else if lower_bound_frees == 0.0 { 
+                // if lower bound is equal to zero, then we have already hit 
+                // the highest possible value that can be done.
+                // set our target to the lower bound and update our data
+                target = lower_bound;
+                input_goods.clear();
+                unused_free_slots = -self.optional * target;
+                for (good, amt) in base_goods.iter() {
+                    let curr = goods.get(good).unwrap_or(&0.0).min(amt * target);
+                    input_goods.insert(good, curr);
+                    unused_free_slots += curr;
+                } // then leave to finish the process.
+            } else {
+                // if there is a solution between our lower bound and current target, find it.
+                loop {
+                    // Estimate the new target by finding the intersection between 
+                    // the current estimates and the iter_cost line.
+                    break;
                 }
             }
-            // with the second highest found, reduce our target to that.
-            target = second;
-            // if target reached zero, just GTFO.
-            if target == 0.0 {
-                return ProcessResults::new();
-            }
-            // then restart this loop
         }
-
-        // if we have any extra free slots
-        if unused_free_slots > 0.0 { // we have extras we can remove
-            // get how many 'free' slots we can spend
-            while unused_free_slots > 0.0 {
-
-            }
-        }
-        
 
         // subtract any extra free slots, starting from the most expensive good and going down.
         let mut remaining_frees = unused_free_slots.max(0.0).min(target * self.optional);
@@ -270,11 +283,11 @@ impl Process {
         println!("Remaining frees: {}", remaining_frees);
         while remaining_frees > 0.0 {
             // Get the most expensive good and remove as many units as possible.
-            let costliest = process_goods.iter()
+            let costliest = input_goods.iter()
                 .sorted_by(|(&a, _), (&b, _)| {
                     {
-                        let a_price = market_history.get_record(a).price;
-                        let b_price = market_history.get_record(b).price;
+                        let a_price = market_history.get_record(*a).price;
+                        let b_price = market_history.get_record(*b).price;
                         a_price.partial_cmp(&b_price).expect("Prices not set right.")
                     }
                 }).last();
@@ -284,9 +297,9 @@ impl Process {
                 let remove = amt.min(remaining_frees);
                 remaining_frees -= remove; // remove from free.
                 // remove from expending goods.
-                let update = process_goods.remove(&good).unwrap() - remove;
+                let update = input_goods.remove(&good).unwrap() - remove;
                 if update > 0.0 { // if not reduced to zero, add back in.
-                    process_goods.insert(good, update);
+                    input_goods.insert(good, update);
                 }
             } else { // if no costliest, then we probably have a problem.
                 unreachable!("Somehow no goods in Expending goods.");
@@ -300,9 +313,9 @@ impl Process {
         // All inputs
         for input in self.inputs.iter() {
             // get how much we're removing, capped at what's actually in expending goods.
-            let remove = (input.amount * target).min(*process_goods.get(&input.good).unwrap_or(&0.0));
+            let remove = (input.amount * target).min(*input_goods.get(&input.good).unwrap_or(&0.0));
             // always remove from expending
-            process_goods.entry(input.good)
+            input_goods.entry(&input.good)
                 .and_modify(|x| *x -= remove);
             // Any shortfall is ignored.
             match input.tag {
@@ -348,12 +361,12 @@ impl Process {
 
     /// How much extra efficiency is gained due to the amount of stock and
     /// capital needed.
-    /// 
+    ///
     /// Where N = the number of goods needed - the optional good value.
-    /// 
+    ///
     /// returns N^2 / 2.0 * 0.05
     pub fn efficiency(&self) -> f64 {
-        let n: f64 = self.inputs.iter().map(|x| x.amount).sum::<f64>() 
+        let n: f64 = self.inputs.iter().map(|x| x.amount).sum::<f64>()
             - self.optional;
 
         ((n * n - n) * 0.05 + 1.0).max(1.0)
@@ -361,9 +374,9 @@ impl Process {
 }
 
 /// The input information for a process.
-/// 
+///
 /// Currently, only Goods are accepted by processes.
-/// 
+///
 /// Eventually I would like to expand this to include Classes and Wants.
 #[derive(Debug, Clone)]
 pub struct ProcessInput {
@@ -377,15 +390,15 @@ pub struct ProcessInput {
 
 impl ProcessInput {
     /// # New
-    /// 
+    ///
     /// Creates a new (destroyed) input.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Amount must be Positive.
     pub fn new(good: usize, amount: f64) -> Self {
         assert!(amount > 0.0, "Amount must be a Positive value.");
-        assert!((amount - amount.floor()) > 0.0, "Amount must be an integer value.");
+        //assert!((amount - amount.floor()) > 0.0, "Amount must be an integer value.");
         Self {
             good,
             amount,
@@ -394,7 +407,7 @@ impl ProcessInput {
     }
 
     /// # With Tag
-    /// 
+    ///
     /// Consuming setter for Tag.
     pub fn with_tag(mut self, tag: InputTag) -> Self {
         self.tag = tag;
@@ -403,7 +416,7 @@ impl ProcessInput {
 }
 
 /// # Process Output
-/// 
+///
 /// The information about process outputs.
 #[derive(Debug, Clone)]
 pub struct ProcessOutput {
@@ -437,7 +450,7 @@ impl ProcessOutput {
 }
 
 /// # Process Results
-/// 
+///
 /// The results of completing a process.
 pub struct ProcessResults {
     pub iterations: f64,
@@ -451,7 +464,7 @@ pub struct ProcessResults {
 
 impl ProcessResults {
     fn new() -> Self {
-        Self { 
+        Self {
             iterations: 0.0,
             consumed: HashMap::new(),
             used: HashMap::new(),
@@ -461,17 +474,17 @@ impl ProcessResults {
 }
 
 /// # Input Tag
-/// 
+///
 /// Input tags are attached to ProcessInputs and define additional features that
 /// apply only to that part of the process.
-/// 
+///
 /// A Process Input with no tags is, de facto, destroyed by the process.
-/// 
+///
 /// ## Possible additions
-/// 
+///
 /// - Specific Optional
-///     - Specific Optional would be an input which can be specifically excluded by 
-///         the process. This input being included should offer some kind of addiitonal 
+///     - Specific Optional would be an input which can be specifically excluded by
+///         the process. This input being included should offer some kind of addiitonal
 ///         benefit, possibly a reduction in process time and possibly reduction in
 ///         'massless' inputs like work time (good 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -496,9 +509,9 @@ impl Display for InputTag {
 }
 
 /// # Output Tags
-/// 
+///
 /// Adds special information to the outputs of a process part.
-/// 
+///
 /// Currently used for sanity checking outputs.
 #[derive(Debug, Clone, Copy)]
 pub enum OutputTag {
