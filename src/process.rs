@@ -1,5 +1,5 @@
 use core::f64;
-use std::{cmp, collections::HashMap, fmt::{write, Display}, hash::Hash};
+use std::{cmp, collections::HashMap, fmt::{write, Display}, hash::Hash, os::unix::process};
 
 use itertools::Itertools;
 
@@ -118,6 +118,7 @@ impl Process {
     /// Fluent Optional Setter.
     pub fn with_optionals(mut self, optional: f64) -> Self {
         assert!(optional >= 0.0, "Optional cannot be negative.");
+        assert!((optional - optional.floor()) > 0.0, "Optional must be a whole value!");
         self.optional = optional;
         self
     }
@@ -204,68 +205,72 @@ impl Process {
     /// TODO: Add in code to allow for normal inputs to be excluded (Unless they are massless) to help enforce conservation of mass.
     pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, market_history: &MarketHistory) -> ProcessResults {
         let mut target = target;
-        // Get how many we need in an iteration
-        let iter_good_cost = self.inputs.iter().map(|x| x.amount).sum::<f64>() - self.optional;
-        println!("Iteration Cost: {}", iter_good_cost);
-        // get all the goods we need
-        let mut expense_targets = HashMap::new();
-        println!("Printing Inputs:");
-        for input in self.inputs.iter() {
-            //println!("Good {}: {} Tag: {}", input.good, input.amount, input.tag);
-            expense_targets
-                .entry(input.good)
-                .and_modify(|x| *x += target * input.amount)
-                .or_insert(target * input.amount);
+        // get base iteration goods and base iteration cost.
+        let mut iter_good_cost = 0.0;
+        let mut base_goods = HashMap::new();
+        for input in self.inputs {
+            iter_good_cost += input.amount;
+            base_goods.entry(input.good)
+                .and_modify(|x| *x += input.amount)
+                .or_insert(input.amount);
+        }
+        // finalize base good cost.
+        let iter_good_cost = iter_good_cost - self.optional;
+
+        // get our real target to the best of our ability.
+        let mut input_goods = HashMap::new();
+        let mut total_available = 0.0;
+        let mut unused_free_slots = 0.0;
+        loop {
+            // get our currently available inputs
+            for (good, amt) in base_goods.iter() {
+                let available = (amt * target).min(*goods.get(good).unwrap_or(&0.0));
+                input_goods.insert(good, available);
+                total_available += available;
+            }
+            // get how many free slots we have available.
+            unused_free_slots = total_available - iter_good_cost * target;
+            if unused_free_slots >= 0.0 { // if over our target, break and go down to remove those optionals.
+                break;
+            }
+            // if negative free slots, then we need to reduce our target.
+            let mut highest = 0.0;
+            let mut second = 0.0;
+            for (good, amt) in input_goods.iter() {
+                let curr = amt / base_goods.get(&good).unwrap();
+                if curr > highest {
+                    second = highest;
+                    highest = curr;
+                } else if curr < highest && curr > second {
+                    second = curr;
+                }
+            }
+            // with the second highest found, reduce our target to that.
+            target = second;
+            // if target reached zero, just GTFO.
+            if target == 0.0 {
+                return ProcessResults::new();
+            }
+            // then restart this loop
+        }
+
+        // if we have any extra free slots
+        if unused_free_slots > 0.0 { // we have extras we can remove
+            // get how many 'free' slots we can spend
+            while unused_free_slots > 0.0 {
+
+            }
         }
         
-        // next get the goods we can expend (capping at our targets).
-        let mut expending_goods = HashMap::new();
-        for (&good, amt) in goods.iter()
-        .filter(|(good, _)| expense_targets.contains_key(good)) {
-            expending_goods.insert(good, amt.min(*expense_targets.get(&good).unwrap()));
-        }
-
-        let available = expending_goods.values().sum::<f64>();
-        println!("Available: {}", available);
-        let mut target_result = available - target * iter_good_cost;
-        println!("Target Result: {}", target_result);
-        if target_result > 0.0 {}
-        if target_result < 0.0 { // if we don't have enough goods and free slots, reduce the target downward.
-            let target_reduction = target_result / iter_good_cost;
-            println!("Reduction: {}", target_reduction);
-            target = target + target_reduction;
-        }
-        if target == 0.0 {
-            println!("Target failed hard.");
-            return ProcessResults::new();
-        }
-        
-        // with target set, get actual expenditures.
-        let mut final_goods = HashMap::new();
-        for input in self.inputs.iter() {
-            let expending = input.amount * target;
-            let remove = expending.min(*expending_goods.get(&input.good).unwrap_or(&0.0));
-            final_goods.entry(input.good)
-                .and_modify(|x| *x += remove)
-                .or_insert(remove);
-            expending_goods.entry(input.good)
-                .and_modify(|x| *x -= remove);
-        }
-        expending_goods = final_goods;
-
-        // recalculate our target result based on the new target
-        let available = expending_goods.values().sum::<f64>();
-        target_result = available - target * iter_good_cost;
-
 
         // subtract any extra free slots, starting from the most expensive good and going down.
-        let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
-        println!("Available: {}", available);
-        println!("target_result: {}", target_result);
+        let mut remaining_frees = unused_free_slots.max(0.0).min(target * self.optional);
+        println!("Available: {}", total_available);
+        println!("target_compare: {}", unused_free_slots);
         println!("Remaining frees: {}", remaining_frees);
         while remaining_frees > 0.0 {
             // Get the most expensive good and remove as many units as possible.
-            let costliest = expending_goods.iter()
+            let costliest = process_goods.iter()
                 .sorted_by(|(&a, _), (&b, _)| {
                     {
                         let a_price = market_history.get_record(a).price;
@@ -279,9 +284,9 @@ impl Process {
                 let remove = amt.min(remaining_frees);
                 remaining_frees -= remove; // remove from free.
                 // remove from expending goods.
-                let update = expending_goods.remove(&good).unwrap() - remove;
+                let update = process_goods.remove(&good).unwrap() - remove;
                 if update > 0.0 { // if not reduced to zero, add back in.
-                    expending_goods.insert(good, update);
+                    process_goods.insert(good, update);
                 }
             } else { // if no costliest, then we probably have a problem.
                 unreachable!("Somehow no goods in Expending goods.");
@@ -295,9 +300,9 @@ impl Process {
         // All inputs
         for input in self.inputs.iter() {
             // get how much we're removing, capped at what's actually in expending goods.
-            let remove = (input.amount * target).min(*expending_goods.get(&input.good).unwrap_or(&0.0));
+            let remove = (input.amount * target).min(*process_goods.get(&input.good).unwrap_or(&0.0));
             // always remove from expending
-            expending_goods.entry(input.good)
+            process_goods.entry(input.good)
                 .and_modify(|x| *x -= remove);
             // Any shortfall is ignored.
             match input.tag {
@@ -380,6 +385,7 @@ impl ProcessInput {
     /// Amount must be Positive.
     pub fn new(good: usize, amount: f64) -> Self {
         assert!(amount > 0.0, "Amount must be a Positive value.");
+        assert!((amount - amount.floor()) > 0.0, "Amount must be an integer value.");
         Self {
             good,
             amount,
