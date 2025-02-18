@@ -36,4 +36,16 @@ impl Data {
         self.classes.get(&id)
         .expect(format!("Class '{}' not found!", id).as_str())
     }
+    
+    /// # Get Good
+    /// 
+    /// Wrapper for get(id).expect().
+    /// 
+    /// # Panics
+    /// 
+    /// If the good id does not exist.
+    pub fn get_good(&self, id: usize) -> &Good {
+        self.goods.get(&id)
+        .expect(format!("Good '{}' not found!", id).as_str())
+    }
 }

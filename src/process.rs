@@ -1,5 +1,5 @@
 use core::f64;
-use std::{cmp, collections::HashMap, hash::Hash};
+use std::{cmp, collections::HashMap, fmt::{write, Display}, hash::Hash};
 
 use itertools::Itertools;
 
@@ -64,7 +64,7 @@ pub struct Process {
     /// Should be whole numbers, may produce fractions, but fractions do not decay and 
     /// cannot be bought or sold. If the pop disappears, so to does any fractional goods.
     /// Goods that are Consumed or Used are not included here.
-    pub outputs: Vec<ProcessOutput>
+    pub outputs: Vec<ProcessOutput>,
 }
 
 impl Process {
@@ -89,7 +89,12 @@ impl Process {
     /// # Has Output
     /// 
     /// Fluent Output adder, only single output to add.
+    /// 
+    /// # Panics
+    /// 
+    /// Currently the system cannot output a Item::Class(), so if it recieves it it panics.
     pub fn has_output(mut self, output: ProcessOutput) -> Self {
+        assert!(!output.item.is_class(), "Output Item cannot be a class.");
         self.outputs.push(output);
         self
     }
@@ -97,8 +102,14 @@ impl Process {
     /// # Outputs
     /// 
     /// Fluent Output(s) adder, can add multiple outputs.
+    /// 
+    /// # Panics
+    /// 
+    /// Currently the system cannot output a Item::Class(), so if it recieves it it panics.
     pub fn has_outputs(mut self, outputs: Vec<ProcessOutput>) -> Self {
-        self.outputs.extend(outputs);
+        for output in outputs {
+            self = self.has_output(output);
+        }
         self
     }
 
@@ -116,34 +127,25 @@ impl Process {
     /// Fluent Input adder.
     /// 
     /// Inserts such that the input is properly sorted.
-    /// 
-    /// TODO: Test this actually works.
     pub fn uses_input(mut self, input: ProcessInput) -> Self {
         self.inputs.push(input);
-        let mut current = self.inputs.len();
+        let mut current = self.inputs.len()-1;
         loop { // sort downwards until it is both placed proprely tag wise and good id wise.
             if current == 0 {
                 // if we got down to 0, then leave as we're already sorted.
                 break;
             }
-            let cur_tag = self.inputs.get(current).unwrap().tag;
+            let curr_tag = self.inputs.get(current).unwrap().tag;
             let next_tag = self.inputs.get(current-1).unwrap().tag;
-            if next_tag.is_some() && cur_tag.is_none() { // if next down has a a tag and we don't swap.
+            // if both have a tag, swap when one should be before the other.
+            if next_tag > curr_tag {
                 self.inputs.swap(current, current-1);
                 current -= 1;
                 continue;
             }
-            if let (Some(next), Some(curr)) = (next_tag, cur_tag) {
-                // if both have a tag, swap when one should be before the other.
-                if next > curr {
-                    self.inputs.swap(current, current-1);
-                    current -= 1;
-                    continue;
-                }
-                if next < curr {
-                    // If the next down is the next tag down, then it's in it's place.
-                    break;
-                }
+            if next_tag < curr_tag {
+                // If the next down is the next tag down, then it's in it's place.
+                break;
             }
             // if tags are the same, reorganize by good ID
             let curr_id = self.inputs.get(current).unwrap().good;
@@ -198,13 +200,18 @@ impl Process {
     /// the effective change of the process. 
     /// 
     /// A target number of processes is always needed.
+    /// 
+    /// TODO: Add in code to allow for normal inputs to be excluded (Unless they are massless) to help enforce conservation of mass.
     pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, market_history: &MarketHistory) -> ProcessResults {
         let mut target = target;
         // Get how many we need in an iteration
         let iter_good_cost = self.inputs.iter().map(|x| x.amount).sum::<f64>() - self.optional;
+        println!("Iteration Cost: {}", iter_good_cost);
         // get all the goods we need
         let mut expense_targets = HashMap::new();
+        println!("Printing Inputs:");
         for input in self.inputs.iter() {
+            //println!("Good {}: {} Tag: {}", input.good, input.amount, input.tag);
             expense_targets
                 .entry(input.good)
                 .and_modify(|x| *x += target * input.amount)
@@ -213,46 +220,66 @@ impl Process {
         
         // next get the goods we can expend (capping at our targets).
         let mut expending_goods = HashMap::new();
-        for (good, amt) in goods.iter()
+        for (&good, amt) in goods.iter()
         .filter(|(good, _)| expense_targets.contains_key(good)) {
-            expending_goods.insert(good, amt.min(*expense_targets.get(good).unwrap()));
+            expending_goods.insert(good, amt.min(*expense_targets.get(&good).unwrap()));
         }
-        
+
         let available = expending_goods.values().sum::<f64>();
+        println!("Available: {}", available);
         let mut target_result = available - target * iter_good_cost;
+        println!("Target Result: {}", target_result);
+        if target_result > 0.0 {}
         if target_result < 0.0 { // if we don't have enough goods and free slots, reduce the target downward.
-            target = target + target_result;
+            let target_reduction = target_result / iter_good_cost;
+            println!("Reduction: {}", target_reduction);
+            target = target + target_reduction;
         }
         if target == 0.0 {
+            println!("Target failed hard.");
             return ProcessResults::new();
         }
         
         // with target set, get actual expenditures.
+        let mut final_goods = HashMap::new();
         for input in self.inputs.iter() {
             let expending = input.amount * target;
-            expending_goods.insert(&input.good, 
-                expending.min(*expending_goods.get(&input.good).unwrap_or(&0.0))
-            );
+            let remove = expending.min(*expending_goods.get(&input.good).unwrap_or(&0.0));
+            final_goods.entry(input.good)
+                .and_modify(|x| *x += remove)
+                .or_insert(remove);
+            expending_goods.entry(input.good)
+                .and_modify(|x| *x -= remove);
         }
+        expending_goods = final_goods;
 
         // recalculate our target result based on the new target
         let available = expending_goods.values().sum::<f64>();
         target_result = available - target * iter_good_cost;
 
+
         // subtract any extra free slots, starting from the most expensive good and going down.
         let mut remaining_frees = target_result.max(0.0).min(target * self.optional);
+        println!("Available: {}", available);
+        println!("target_result: {}", target_result);
+        println!("Remaining frees: {}", remaining_frees);
         while remaining_frees > 0.0 {
             // Get the most expensive good and remove as many units as possible.
             let costliest = expending_goods.iter()
-                .sorted_by(|a, b| {
-                    a.1.partial_cmp(b.1).unwrap()
+                .sorted_by(|(&a, _), (&b, _)| {
+                    {
+                        let a_price = market_history.get_record(a).price;
+                        let b_price = market_history.get_record(b).price;
+                        a_price.partial_cmp(&b_price).expect("Prices not set right.")
+                    }
                 }).last();
             if let Some((&good, &amt)) = costliest {
+                println!("Costliest Good: {}", good);
                 // How many we can remove.
                 let remove = amt.min(remaining_frees);
                 remaining_frees -= remove; // remove from free.
                 // remove from expending goods.
-                let update = expending_goods.remove(good).unwrap() - remove;
+                let update = expending_goods.remove(&good).unwrap() - remove;
                 if update > 0.0 { // if not reduced to zero, add back in.
                     expending_goods.insert(good, update);
                 }
@@ -265,21 +292,45 @@ impl Process {
         let mut consumed = HashMap::new();
         let mut used = HashMap::new();
         let mut created = HashMap::new();
+        // All inputs
         for input in self.inputs.iter() {
-            // go through the inputs and deal up to the target amount of that good for our current iterations.
-            // Any shortfall is 
-            if let Some(tag) = input.tag {
-                match tag {
-                    InputTag::Consumed => {
-
-                    },
-                    InputTag::Used => {
-
-                    },
-                }
-            } else { // Consumed input.
-
+            // get how much we're removing, capped at what's actually in expending goods.
+            let remove = (input.amount * target).min(*expending_goods.get(&input.good).unwrap_or(&0.0));
+            // always remove from expending
+            expending_goods.entry(input.good)
+                .and_modify(|x| *x -= remove);
+            // Any shortfall is ignored.
+            match input.tag {
+                InputTag::None => { // Normal Consumption
+                    consumed.entry(input.good)
+                        .and_modify(|x| *x += remove)
+                        .or_insert(remove);
+                },
+                InputTag::Used => { // Used
+                    used.entry(input.good)
+                        .and_modify(|x| *x += remove)
+                        .or_insert(remove);
+                },
+                InputTag::Consumed => { // consumed, put decay into output.
+                    consumed.entry(input.good)
+                        .and_modify(|x| *x += remove)
+                        .or_insert(remove);
+                    let good_info = data.get_good(input.good);
+                    if let Some((decay_good, rate)) = good_info.decays_to {
+                        created.entry(Item::Good(decay_good))
+                            .and_modify(|x| *x += rate * remove)
+                            .or_insert(rate * remove);
+                    }
+                },
             }
+        }
+
+        // Then outputs.
+        for output in self.outputs.iter() {
+            let add = output.amount * target;
+            created.entry(output.item)
+                .and_modify(|x| *x += add)
+                .or_insert(add);
         }
 
         ProcessResults {
@@ -316,7 +367,7 @@ pub struct ProcessInput {
     /// The number of units needed.
     pub amount: f64,
     /// Additional information which modifies the input.
-    pub tag: Option<InputTag>,
+    pub tag: InputTag,
 }
 
 impl ProcessInput {
@@ -332,7 +383,7 @@ impl ProcessInput {
         Self {
             good,
             amount,
-            tag: None,
+            tag: InputTag::None,
         }
     }
 
@@ -340,7 +391,7 @@ impl ProcessInput {
     /// 
     /// Consuming setter for Tag.
     pub fn with_tag(mut self, tag: InputTag) -> Self {
-        self.tag = Some(tag);
+        self.tag = tag;
         self
     }
 }
@@ -419,11 +470,23 @@ impl ProcessResults {
 ///         'massless' inputs like work time (good 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputTag {
+    /// No tag, a place holder so we don't need to use Optional<InputTag>.
+    None,
     /// Used marks the input as being 'used' not consumed or destroyed.
     Used,
     /// Consumed marks the input as resulting in the decay good being produced
     /// rather than destroyed.
     Consumed,
+}
+
+impl Display for InputTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InputTag::None => write!(f, "None"),
+            InputTag::Used => write!(f, "Used"),
+            InputTag::Consumed => write!(f, "Consumed"),
+        }
+    }
 }
 
 /// # Output Tags

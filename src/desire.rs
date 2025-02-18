@@ -80,10 +80,12 @@ impl Desire {
     /// TODO: Test this to ensure correctness.
     /// 
     /// ```
+    /// use simpler_economy::item::Item;
+    /// use simpler_economy::desire::Desire;
     /// let d = Desire::new(Item::Want(0), 1.0);
     /// assert_eq!(d.end(), Some(1.0));
     /// let d = Desire::new(Item::Want(0), 1.0)
-    ///     .with_interval(1.0, 10);
+    ///     .with_interval(1.0, Some(10));
     /// assert_eq!(d.end(), Some(11.0));
     /// let d = Desire::new(Item::Want(0), 1.0)
     ///     .with_interval(1.0, None);

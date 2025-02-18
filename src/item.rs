@@ -1,7 +1,9 @@
+use std::cmp;
+
 /// # Item
 /// 
 /// Item is an enum for pointing to a want, class, or specific good.
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Item {
     Want(usize),
     Class(usize),

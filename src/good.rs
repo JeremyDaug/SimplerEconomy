@@ -80,7 +80,7 @@ impl Good {
             use_time: 0.0, 
             own_wants: HashMap::new(), 
             class: None, 
-            decay_rate: 1.0, 
+            decay_rate: 0.0, 
             decays_to: None, 
             bulk: 0.0, 
             mass: 0.0, 
@@ -102,15 +102,33 @@ impl Good {
     /// 
     /// Consumes original.
     /// 
+    /// 1.0 Is alwasy decays, 0.0 is never decays.
+    /// 
     /// # Panics
     /// 
     /// If Decay Rate is not between 0.0 and 1.0 inclusive.
-    pub fn with_decay(mut self, decay_rate: f64, decays_to: Option<(usize, f64)>) -> Self {
+    pub fn with_decay_rate(mut self, decay_rate: f64, ) -> Self {
         assert!(0.0 <= decay_rate && decay_rate <= 1.0, "decay_rate must be between 0.0 and 1.0 inclusive.");
-
         self.decay_rate = decay_rate;
-        self.decays_to = decays_to;
+        self
+    }
 
+    /// # Decays To
+    /// 
+    /// Sets what it decays to and at what efficiency.
+    /// 
+    /// 1.0 in = decay_eff out
+    /// 
+    /// # Warning
+    /// 
+    /// This does not check that 'decays_to' is a real good, and may result in error.
+    /// 
+    /// # Panics
+    /// 
+    /// decay_eff must be a positive value.
+    pub fn decays_to(mut self, decays_to: usize, decay_eff: f64) -> Self {
+        assert!(decay_eff > 0.0, "Decay Efficiency must be a Positive value.");
+        self.decays_to = Some((decays_to, decay_eff));
         self
     }
 
