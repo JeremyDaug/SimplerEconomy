@@ -219,7 +219,7 @@ impl Process {
         let iter_good_cost = iter_good_cost - self.optional;
 
         // get our real target to the best of our ability.
-        let mut input_goods = HashMap::new();
+        let mut input_goods =  HashMap::new();
         let mut total_available = 0.0;
         let mut unused_free_slots = 0.0;
         // get our currently available inputs
@@ -230,15 +230,20 @@ impl Process {
         }
         // get how many free slots we have available.
         unused_free_slots = total_available - iter_good_cost * target;
+        // If we don't have a negative number of free slots, 
         if unused_free_slots < 0.0 {
-            // if negative, try a 'near zero' value, and see if we can do any at all.
-            // Get the lowest possible non-zero step we can.
-            let mut iters = vec![];
+            // get the 'legs' of our journey.
+            let mut legs = vec![];
             for (good, amt) in base_goods.iter() {
-                iters.push(goods.get(good).unwrap_or(&0.0) / *amt);
+                let current = goods.get(good).unwrap_or(&0.0) / *amt;
+                if !legs.contains(&current) && current > 0.0 {
+                    legs.push(current);
+                }
             }
-            let lower_bound = iters.iter().filter(|&&x| x > 0.0)
-                .fold(f64::INFINITY, |a, &b| a.min(b));
+            // sort lowest to highest.
+            legs.sort_by(|a, b| a.total_cmp(b));
+            // get lower bound
+            let mut lower_bound = *legs.first().expect("No iterations possible?");
             // Calculate the value of our current lower bound.
             let mut lower_bound_inputs = HashMap::new();
             let mut lower_bound_available = 0.0;
@@ -248,11 +253,11 @@ impl Process {
                 lower_bound_available += cur;
             }
             // Get how many optionals we have available at our lower bound.
-            let lower_bound_frees = lower_bound_available 
+            let mut lower_bound_frees = lower_bound_available 
                 - iter_good_cost * lower_bound;
             if lower_bound_frees < 0.0 { 
                 // if lower bound is still negative, return empty, 
-                // we *Cannot* find an intersection.
+                // we **Cannot** find an intersection.
                 return  ProcessResults::new();
             } else if lower_bound_frees == 0.0 { 
                 // if lower bound is equal to zero, then we have already hit 
@@ -271,7 +276,74 @@ impl Process {
                 loop {
                     // Estimate the new target by finding the intersection between 
                     // the current estimates and the iter_cost line.
-                    break;
+                    let est_slope = (total_available - lower_bound_available) / (target - lower_bound); // slope between lower and upper bound
+                    // the intersection based on this approximation.
+                    let est_target = (lower_bound_available - est_slope * lower_bound) / (iter_good_cost - est_slope);
+                    // with estimated target gotten, get the leg we land in.
+                    let mut higher = f64::INFINITY;
+                    let mut lower = f64::NEG_INFINITY;
+                    for &iter in legs.iter() {
+                        if iter > lower && iter < est_target { // if between current lowest and est
+                            lower = iter;
+                        } else if higher > iter && iter > est_target {
+                            higher = iter;
+                        }
+                    }
+                    let lower_match = lower == lower_bound;
+                    let higher_match = higher == target;
+                    let mut updated_target = 0.0;
+                    if lower_match && higher_match { // if we are in the only leg left, use estimate.
+                        updated_target = est_target;
+                    } else if higher_match { // If higher matches, choose lower.
+                        updated_target = lower; 
+                    } else { // if lower or neither matches, take the higher.
+                        updated_target = higher;
+                    }
+                    // with updated target(s) gotten, get our info on that target, then update our bounds.
+                    let mut updated_goods = HashMap::new();
+                    let mut updated_available = 0.0;
+                    for (good, amt) in base_goods.iter() {
+                        let curr = goods.get(good).unwrap_or(&0.0).min(amt * updated_target);
+                        updated_goods.insert(good, curr);
+                        updated_available += curr;
+                    }
+                    let updated_frees = updated_available - iter_good_cost * updated_target;
+                    // with updated target gotten and tested, see where it lands
+                    if updated_frees >= 0.0 {
+                        // if 0 or above, set update target which is our upper bound.
+                        input_goods = updated_goods;
+                        target = updated_target;
+                        total_available = updated_available;
+                        unused_free_slots = updated_frees;
+                        // if 0 frees, then we've found our ultimate target.
+                        if updated_frees == 0.0 { break; }
+                        // if not, then remove excess targets, and continue.
+                        loop {
+                            if let Some(iter) = legs.last() {
+                                if *iter == target {
+                                    break;
+                                } else {
+                                    legs.pop();
+                                }
+                            }
+                        }
+                    } else { // if below, then replace the lower bound.
+                        lower_bound = updated_target;
+                        lower_bound_inputs = updated_goods;
+                        lower_bound_available = updated_available;
+                        lower_bound_frees = updated_frees;
+                        // and pop off low targets to reduce load.
+                        loop {
+                            if let Some(iter) = legs.first() {
+                                if *iter == lower_bound {
+                                    break;
+                                } else {
+                                    legs.remove(0);
+                                }
+                            }
+                        }
+                    }
+                    // repeat until we find find something that has 0 frees.
                 }
             }
         }
