@@ -235,20 +235,31 @@ impl Process {
             // get the 'legs' of our journey.
             let mut legs = vec![];
             for (good, amt) in base_goods.iter() {
-                let current = goods.get(good).unwrap_or(&0.0) / *amt;
+                // get iterations possible for the current good, capping at our target.
+                let current = (goods.get(good).unwrap_or(&0.0) / *amt).min(target);
                 if !legs.contains(&current) && current > 0.0 {
                     legs.push(current);
                 }
             }
+            // ensure actual target is included as well.
+            if !legs.contains(&target) { legs.push(target); }
+            // If we get here and have only 1 leg, then we can never reach a valid value.
+            if legs.len() <= 1 {
+                return ProcessResults::new();
+            }
             // sort lowest to highest.
             legs.sort_by(|a, b| a.total_cmp(b));
+            println!("Legs:");
+            for leg in legs.iter() {
+                println!("{}", leg);
+            }
             // get lower bound
             let mut lower_bound = *legs.first().expect("No iterations possible?");
             // Calculate the value of our current lower bound.
             let mut lower_bound_inputs = HashMap::new();
             let mut lower_bound_available = 0.0;
             for (good, amt) in base_goods.iter() {
-                let cur = amt * lower_bound;
+                let cur = (amt * lower_bound).min(*goods.get(good).unwrap_or(&0.0));
                 lower_bound_inputs.insert(good, cur);
                 lower_bound_available += cur;
             }
@@ -265,7 +276,7 @@ impl Process {
                 // set our target to the lower bound and update our data
                 target = lower_bound;
                 input_goods.clear();
-                unused_free_slots = -self.optional * target;
+                unused_free_slots = -iter_good_cost * target;
                 for (good, amt) in base_goods.iter() {
                     let curr = goods.get(good).unwrap_or(&0.0).min(amt * target);
                     input_goods.insert(good, curr);
@@ -309,25 +320,8 @@ impl Process {
                     }
                     let updated_frees = updated_available - iter_good_cost * updated_target;
                     // with updated target gotten and tested, see where it lands
-                    if updated_frees >= 0.0 {
-                        // if 0 or above, set update target which is our upper bound.
-                        input_goods = updated_goods;
-                        target = updated_target;
-                        total_available = updated_available;
-                        unused_free_slots = updated_frees;
-                        // if 0 frees, then we've found our ultimate target.
-                        if updated_frees == 0.0 { break; }
-                        // if not, then remove excess targets, and continue.
-                        loop {
-                            if let Some(iter) = legs.last() {
-                                if *iter == target {
-                                    break;
-                                } else {
-                                    legs.pop();
-                                }
-                            }
-                        }
-                    } else { // if below, then replace the lower bound.
+                    if updated_frees > 0.0 {
+                        // if 0 or above, set lower bound to our update target
                         lower_bound = updated_target;
                         lower_bound_inputs = updated_goods;
                         lower_bound_available = updated_available;
@@ -342,6 +336,24 @@ impl Process {
                                 }
                             }
                         }
+                    } else {
+                        // if 0 or below, set our upper bound (target) to update target.
+                        input_goods = updated_goods;
+                        target = updated_target;
+                        total_available = updated_available;
+                        unused_free_slots = updated_frees;
+                        // if 0 frees, then we've found our ultimate target.
+                        if updated_frees == 0.0 { break; } // break without bothering legs
+                        // if not, then remove excess targets, and continue.
+                        loop {
+                            if let Some(iter) = legs.last() {
+                                if *iter == target {
+                                    break;
+                                } else {
+                                    legs.pop();
+                                }
+                            }
+                        }
                     }
                     // repeat until we find find something that has 0 frees.
                 }
@@ -349,11 +361,9 @@ impl Process {
         }
 
         // subtract any extra free slots, starting from the most expensive good and going down.
-        let mut remaining_frees = unused_free_slots.max(0.0).min(target * self.optional);
         println!("Available: {}", total_available);
         println!("target_compare: {}", unused_free_slots);
-        println!("Remaining frees: {}", remaining_frees);
-        while remaining_frees > 0.0 {
+        while unused_free_slots > 0.0 {
             // Get the most expensive good and remove as many units as possible.
             let costliest = input_goods.iter()
                 .sorted_by(|(&a, _), (&b, _)| {
@@ -366,8 +376,8 @@ impl Process {
             if let Some((&good, &amt)) = costliest {
                 println!("Costliest Good: {}", good);
                 // How many we can remove.
-                let remove = amt.min(remaining_frees);
-                remaining_frees -= remove; // remove from free.
+                let remove = amt.min(unused_free_slots);
+                unused_free_slots -= remove; // remove from free.
                 // remove from expending goods.
                 let update = input_goods.remove(&good).unwrap() - remove;
                 if update > 0.0 { // if not reduced to zero, add back in.
