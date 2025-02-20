@@ -15,4 +15,16 @@ pub struct Culture {
     pub name: String,
     /// The desire track of the culture.
     pub desires: Vec<Desire>,
+    // TODO: Culture Modifiers
+    // TODO: Culture Tech Storage.
+}
+
+impl Culture {
+    pub fn new(id: usize, name: String) -> Culture {
+        Culture {
+            id,
+            name,
+            desires: vec![],
+        }
+    }
 }

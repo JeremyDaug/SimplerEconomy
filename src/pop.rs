@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{data::Data, desire::Desire, market::Market};
+use crate::{data::Data, desire::Desire, market::Market, drow::DRow};
 
 /// # Pop
 /// 
@@ -9,12 +9,20 @@ use crate::{data::Data, desire::Desire, market::Market};
 pub struct Pop {
     /// Unique Id of the pop.
     pub id: usize,
-    /// how many households are in it. Should be whole numbers.
+    /// The Id of the market our Pop is in
+    pub market: usize,
+    /// The ID of the firm the pop is working at.
+    pub firm: usize,
+
+    /// how many households are in it. Fractional values are used to stor population
+    /// growth.
     pub size: f64,
-    /// Desires are what the pop wants. The first is always item 0 Food,
-    /// the last is always item 1 Leisure. The last item is infinitely desireable.
-    /// TODO replace with culture.
-    pub culture: usize,
+    /// Demographic Breakdown of the pop.
+    /// This allows us to consolidate multiple categories of pop into a singular
+    /// pop group. Pops make have these enforced down into particular limitations,
+    /// though this comes at the cost of increased difficulty.
+    /// If different groups are in the same pop, then we assume they are being paid the same.
+    pub demo_breakdown: DRow,
     /// How many days worth of work a single household in the group does.
     pub efficiency: f64,
     /// What property the pop owns today.
