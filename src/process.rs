@@ -35,6 +35,9 @@ pub struct Process {
     pub name: String,
     /// The variant name of the process. Should be unique when combined with primary name.
     pub variant_name: String,
+    /// The 'industry' or grouping this process is considered a part of. 
+    /// Think of it as a reference as to what kind of job does this work.
+    pub industry: Option<usize>,
     /// The complexity value of the process. This is a calculated value.
     pub complexity: f64,
     /// What process this one is derived from.
@@ -46,12 +49,6 @@ pub struct Process {
     /// The goods which are needed for the process, de facto.
     ///
     /// These come with a particular sorted order.
-    ///
-    /// TODO: VvvV This VvvV
-    ///
-    /// First by tag, None -> Enum Order
-    ///
-    /// Then within those tag groups by good ID order.
     ///
     /// ## Note:
     ///
@@ -77,6 +74,7 @@ impl Process {
             id,
             name,
             variant_name,
+            industry: None,
             complexity: 0.0,
             parent: None,
             time: 0.0,
@@ -84,6 +82,11 @@ impl Process {
             optional: 0.0,
             outputs: vec![],
         }
+    }
+
+    pub fn in_industry(mut self, industry: usize) -> Self {
+        self.industry = Some(industry);
+        self
     }
 
     /// # Has Output

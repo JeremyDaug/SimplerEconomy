@@ -10,6 +10,7 @@ pub mod want;
 pub mod item;
 pub mod markethistory;
 pub mod drow;
+pub mod species;
 
 #[cfg(test)]
 mod tests {
