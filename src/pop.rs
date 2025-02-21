@@ -14,15 +14,20 @@ pub struct Pop {
     /// The ID of the firm the pop is working at.
     pub firm: usize,
 
-    /// how many households are in it. Fractional values are used to stor population
-    /// growth.
+    /// how many households are in it.
     pub size: f64,
     /// Demographic Breakdown of the pop.
     /// This allows us to consolidate multiple categories of pop into a singular
-    /// pop group. Pops make have these enforced down into particular limitations,
-    /// though this comes at the cost of increased difficulty.
+    /// pop group. Pops have these enforced down into particular limitations,
+    /// though this comes at the cost of increased processing and complexity.
     /// If different groups are in the same pop, then we assume they are being paid the same.
-    pub demo_breakdown: DRow,
+    /// If you want a pop to be paid differently, keep them separate.
+    /// 
+    /// The sum of each DRow should be equal to the size of the pop.
+    /// 
+    /// Fractional values in the breakdown represent stored up population growth.
+    /// Fractions are dropped 
+    pub demo_breakdown: Vec<DRow>,
     /// How many days worth of work a single household in the group does.
     pub efficiency: f64,
     /// What property the pop owns today.

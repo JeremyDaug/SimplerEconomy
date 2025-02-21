@@ -15,7 +15,16 @@ pub struct Species {
     /// The desires that the species naturally desires.
     /// Desires are sorted by their starting value, lowest to highest.
     pub desires: Vec<Desire>,
-    // NOTE: Placeholder spot for Species modifiers
+    /// The 'default' household size for a species. This is a measure of all
+    /// the people in a household, adults, elders, and children.
+    /// NOTE: This will need tobe broken up further into who is were 
+    pub household: f64,
+    /// The default birthrate of a species. Must be non-negative.
+    pub birthrate: f64,
+    /// The default mortality of a species. Must be non-negative.
+    pub mortality: f64,
+    // TODO: Placeholder spot for Species modifiers
+    // TODO: Placeholder spot for Tech tied to species.
 }
 
 impl Species {
@@ -23,8 +32,24 @@ impl Species {
         Species {
             id,
             name,
+            household: 1.0,
+            birthrate: 0.0,
+            mortality: 0.0,
             desires: vec![],
         }
+    }
+
+    /// # With Base Efficiency
+    /// 
+    /// Sets and checks base efficiency fluently.
+    /// 
+    /// # Panics
+    /// 
+    /// Base Efficiency must be greater than 0.0.
+    pub fn with_household_size(mut self, base_eff: f64) -> Self {
+        assert!(base_eff > 0.0, "Base Efficiency must be a positive number.");
+        self.base_efficiency = base_eff;
+        self
     }
     
     /// # With Desire
@@ -41,4 +66,6 @@ impl Species {
         self.desires.insert(index, desire);
         self
     }
+
+
 }
