@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{good::Good, process::Process, want::Want};
+use crate::{culture::Culture, good::Good, process::Process, species::Species, want::Want};
 
 /// # Data
 pub struct Data {
@@ -13,6 +13,8 @@ pub struct Data {
     /// Needs to be updated when inserting new good.
     pub classes: HashMap<usize, HashSet<usize>>,
     pub processes: HashMap<usize, Process>,
+    pub species: HashMap<usize, Species>,
+    pub culture: HashMap<usize, Culture>,
 }
 
 impl Data {
@@ -21,8 +23,34 @@ impl Data {
             wants: HashMap::new(),
             goods: HashMap::new(),
             classes: HashMap::new(),
-            processes: HashMap::new()
+            processes: HashMap::new(),
+            species: HashMap::new(),
+            culture: HashMap::new(),
         }
+    }
+
+    /// # Get species
+    /// 
+    /// wrapper for get(id).expect()
+    /// 
+    /// # Panics
+    /// 
+    /// If the species id does not exist.
+    pub fn get_species(&self, id: usize) -> &Species {
+        self.species.get(&id)
+        .expect(format!("Species '{} not found!'", id).as_str())
+    }
+
+    /// # Get Culture
+    /// 
+    /// wrapper for get(id).expect()
+    /// 
+    /// # Panics
+    /// 
+    /// If the culture id does not exist.
+    pub fn get_culture(&self, id: usize) -> &Culture {
+        self.culture.get(&id)
+        .expect(format!("Culture '{} not found!'", id).as_str())
     }
 
     /// # Get Class

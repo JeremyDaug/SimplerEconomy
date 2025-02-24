@@ -1,3 +1,5 @@
+use crate::data::Data;
+
 /// # Demographic Row
 /// 
 /// A Demographic row is used by pops to define the amount of a population in a
@@ -29,5 +31,29 @@ impl DRow {
     pub fn has_culture(mut self, culture: usize) -> Self {
         self.culture = Some(culture);
         self
+    }
+
+    pub fn birthrate(self, data: &Data) -> f64 {
+        let base = data.get_species(self.species).birthrate;
+        let culture = if let Some(culture_id) = self.culture {
+            data.get_culture(culture_id).birthrate
+        } else { 0.0 };
+        (base + culture).max(0.0)
+    }
+
+    pub fn mortality(self, data: &Data) -> f64 {
+        let base = data.get_species(self.species).mortality;
+        let culture = if let Some(culture_id) = self.culture {
+            data.get_culture(culture_id).mortality
+        } else { 0.0 };
+        (base + culture).max(0.0)
+    }
+    
+    pub fn household_mult(self, data: &Data) -> f64 {
+        let base = data.get_species(self.species).household;
+        let culture = if let Some(culture_id) = self.culture {
+            data.get_culture(culture_id).household_modifier
+        } else { 1.0 };
+        (base * culture).max(1.0)
     }
 }

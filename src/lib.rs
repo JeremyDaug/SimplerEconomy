@@ -11,6 +11,7 @@ pub mod item;
 pub mod markethistory;
 pub mod drow;
 pub mod species;
+pub mod household;
 
 #[cfg(test)]
 mod tests {
