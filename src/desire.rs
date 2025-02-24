@@ -1,6 +1,6 @@
 use std::{mem::discriminant, num::{NonZero, NonZeroUsize}};
 
-use crate::item::Item;
+use crate::{household::HouseholdMember, item::Item};
 
 /// # Desire
 /// 
@@ -165,6 +165,13 @@ pub enum DesireTag {
     /// 
     /// If it has an interval, it MUST have an end, otherwise the mortality gain is always infinite.
     LifeNeed(f64),
+    /// Desire is needed on a 'per household' level, meaning that it uses the number of households rather
+    /// than the number of people.
+    /// 
+    /// Exclusive with HouseholdMemberNeed.
+    HouseholdNeed,
+    /// The desire is needed based on the number of a particular member in the household.
+    HouseMemberNeed(HouseholdMember),
 }
 
 impl DesireTag {
@@ -173,3 +180,4 @@ impl DesireTag {
         DesireTag::LifeNeed(mortality)
     }
 }
+
