@@ -83,6 +83,49 @@ pub struct Household {
 }
 
 impl Household {
+    /// # Growth
+    /// 
+    /// The growth expected of the household given current values.
+    pub fn growth(&self) -> f64 {
+        self.count * self.growth_rate()
+    }
+
+    /// # Growth Rate
+    /// 
+    /// The net growth of the household.
+    pub fn growth_rate(&self) -> f64 {
+        self.birth_rate() - self.mortality()
+    }
+
+    /// # Mortality
+    /// 
+    /// The mortality Rate of the household.
+    pub fn mortality(&self) -> f64 {
+        self.elders * 0.1
+    }
+
+    /// # Birth Rate
+    /// 
+    /// Produces the birthrate of the household.
+    /// 
+    /// 1.0 per child.
+    pub fn birth_rate(&self) -> f64 {
+        self.children * 0.1
+    }
+
+    /// # Labor 
+    /// 
+    /// The amount of labor this household produces each day.
+    /// 
+    /// # Defaults
+    /// 
+    /// Adults give 1.0.
+    /// Children give 0.3.
+    /// Elders give 0.5.
+    pub fn labor(&self) -> f64 {
+        self.count * (self.adults + self.children * 0.3 + self.elders * 0.5)
+    }
+
     /// # Combine Households
     /// 
     /// Takes multiple households and combines them into one. Counts are added
