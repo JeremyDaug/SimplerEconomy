@@ -1,4 +1,4 @@
-use crate::desire::Desire;
+use crate::{desire::Desire, household::{Household, HouseholdMod}};
 
 
 /// # Culture
@@ -13,16 +13,16 @@ pub struct Culture {
     pub id: usize,
     /// The unique name of the culture.
     pub name: String,
+
+    /// The effects on a household a culture has. This should be a cound 0.0 
+    /// household.
+    /// 
+    /// # V 1.0 Note
+    /// 
+    /// This should never push any group below 0.0, or the household down below 1.0 size.
+    pub household_mod: HouseholdMod,
     /// The desire track of the culture.
     pub desires: Vec<Desire>,
-    /// A multiplier on household size.
-    /// 
-    /// This should be broken up into adult, child, and elder modifiers.
-    pub household_modifier: f64,
-    /// An additive bonus or malus on birthrate.
-    pub birthrate: f64,
-    /// An additive bonus or malus on mortality.
-    pub mortality: f64,
     // TODO: Culture Modifiers
     // TODO: Culture Tech Storage
 }
@@ -32,55 +32,20 @@ impl Culture {
         Culture {
             id,
             name,
-            household_modifier: 1.0,
-            birthrate: 0.0,
-            mortality: 0.0,
+            household_mod: HouseholdMod {
+                adults: 0.0,
+                elders: 0.0,
+                children: 0.0,
+            },
             desires: vec![],
         }
     }
 
-    /// # With Household
+    /// # With Household Modification
     /// 
-    /// Sets household size modification for culture.
-    /// Values greater than 1.0 results in an increase.
-    /// Negative in a decrease.
-    /// 
-    /// ## Note
-    /// 
-    /// This should never reduce the household below 1, but this is not enforced.
-    /// 
-    /// # Panics
-    /// 
-    /// Household must be a positive value.
-    pub fn with_household(mut self, household: f64) -> Self {
-        assert!(household > 0.0, "Base Efficiency must be positive.");
-        self.household_modifier = household;
-        self
-    }
-
-    /// # With Birthrate
-    /// 
-    /// Sets Birthrate modifier for culture.
-    /// 
-    /// # Notes
-    /// 
-    /// Birthrate mod should never result in a negative birthrate, but we 
-    /// won't enforce that here.
-    pub fn with_birthrate(mut self, birthrate_mod: f64) -> Self {
-        self.birthrate = birthrate_mod;
-        self
-    }
-
-    /// # With Mortality
-    /// 
-    /// Sets Mortality modifier for culture.
-    /// 
-    /// # Notes
-    /// 
-    /// Mortality mod should never result in a negative Mortality, but we 
-    /// won't enforce that here.
-    pub fn with_mortality(mut self, mortality_mod: f64) -> Self {
-        self.mortality = mortality_mod;
+    /// Sets the changes to a household that this culture makes.
+    pub fn with_household_mod(mut self, household_mod: HouseholdMod) -> Self {
+        self.household_mod = household_mod;
         self
     }
 

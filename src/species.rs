@@ -1,4 +1,4 @@
-use crate::{desire::Desire, household::Household};
+use crate::{desire::Desire, household::{Household, HouseholdMod}};
 
 /// # Species
 /// 
@@ -17,7 +17,7 @@ pub struct Species {
     /// This should have a size of 0.0, and a positive household size.
     /// 
     /// It's broken up into adults, children, and elders which define the makeup.
-    pub household: Household,
+    pub household: HouseholdMod,
 
     /// The desires that the species naturally desires.
     /// Desires are sorted by their starting value, lowest to highest.
@@ -32,16 +32,15 @@ impl Species {
         Species {
             id,
             name,
-            household: Household::default_households(0.0),
+            household: HouseholdMod::default_household(),
             desires: vec![],
         }
     }
 
     /// # With Household
     /// 
-    /// Fluent household setter. 
-    pub fn with_household(&mut self, household: Household) -> Self {
-        assert!(household.count == 0.0, "Household given to Species must have a count of 0.0");
+    /// Sets the household of the species using household mod.
+    pub fn with_household(mut self, household: HouseholdMod) -> Self {
         self.household = household;
         self
     }
@@ -61,6 +60,4 @@ impl Species {
         self.desires.insert(index, desire);
         self
     }
-
-
 }

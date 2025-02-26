@@ -442,3 +442,40 @@ pub enum HouseholdMember {
     Child,
     Elder,
 }
+
+/// # Household Modifier
+/// 
+/// Household Modifier is used to record changes in a household.
+/// 
+/// This is to simplify and streamline some of the logic of consolidation and
+/// modifying households in a pop's Demographic Factors.
+/// 
+/// There is no protections or limitations on what is allowed. Households 
+/// cap to ensure a household isn't empty, this doesn't.
+pub struct HouseholdMod {
+    pub adults: f64,
+    pub elders: f64,
+    pub children: f64
+}
+
+impl HouseholdMod {
+    /// # Net Change
+    /// 
+    /// The net changes in the size of a household.
+    pub fn net_change(&self) -> f64 {
+        self.adults + self.elders + self.children
+    }
+
+    /// # Default Household
+    /// 
+    /// Gives a household mod that is the same as our default:
+    /// 
+    /// 2 adults, 0.5 elders, 2.5 children.
+    pub fn default_household() -> Self {
+        Self {
+            adults: 2.0,
+            elders: 0.5,
+            children: 2.5,
+        }
+    }
+}
