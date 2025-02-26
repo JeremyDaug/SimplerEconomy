@@ -1,4 +1,4 @@
-use crate::data::Data;
+use crate::{data::Data, household::Household};
 
 /// # Demographic Row
 /// 
@@ -11,7 +11,7 @@ use crate::data::Data;
 #[derive(Debug, Clone, Copy)]
 pub struct DRow {
     /// How many households have this data.
-    pub count: f64,
+    pub household: Household,
     /// All pops need a base species at all times.
     pub species: usize,
     /// Culture is currently the only additional layer of info for a pop.
@@ -21,8 +21,9 @@ pub struct DRow {
 
 impl DRow {
     pub fn new(count: f64, species: usize) -> Self {
+        let household = Household::zeroed_household().add_count(count);
         Self {
-            count,
+            household,
             species,
             culture: None,
         }

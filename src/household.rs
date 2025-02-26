@@ -28,6 +28,11 @@ use std::default;
 /// - Elders, 0.5 Labor Efficiency, but add +1.0% Mortality (per 400 Days) per Elder, and
 /// add 1.0 Research Point. May later include skill learning and preservation bonuses.
 /// 
+/// # Notes
+/// 
+/// Households are **Not** meant to change after being created, only adding households together
+/// should change them. All changes in household should come from HoueholdMod.
+/// 
 /// ## Default Household
 /// 
 /// The base household that is used as the 'default' for V1.0 is made of 
@@ -45,21 +50,10 @@ use std::default;
 /// This comes from the +1.0% birthrate from each child and the +1.0% mortality
 /// for each elder.
 /// 
-/// ## Household Changes
+/// ## Household Modifiers
 /// 
-/// Households are 'created' at the species level and represents the 'natural' form
-/// the species tends to take without any additional aid or needs.
-/// 
-/// Eventually, we may allow for greater variety and uniqueness in Households, but for 
-/// now, this is fixed in place with pre-defined roles.
-/// 
-/// ## Modifiers
-/// 
-/// Higher levels of pop categories can alter the makeup of the household, adding 
-/// or removing elders and children.
-/// 
-/// Additionally, some wants/goods have passive effects on a household if kept long enough.
-/// Relativeyl high amounts of healthcare increase Elders for example.
+/// Higher levels of pop categories can alter the makeup of the household, changing 
+/// size and ratio.
 /// 
 /// Modifiers are created by summing the values of households across a pop's demographics.
 /// As such, values are not required to be positive.
@@ -186,31 +180,13 @@ impl Household {
         }
     }
 
-    /// # Base Household
-    /// 
-    /// Returns the base house information of the household with count 0.0.
-    pub fn base_household(&self) -> Self {
-        self.mult(0.0)
-    }
-
     /// # New
     /// 
-    /// Creates new households. 
-    /// 
-    /// Household is the size, and adults, children, and elders are the ratios.
+    /// Creates new households. Sets both ratios, size, and number of household.
     /// 
     /// Be sure that the final size is as you expect.
     pub fn new(households: f64, adults: f64, children: f64, elders: f64) -> Self {
         Self::new_household(adults, children, elders).mult(households)
-    }
-
-    /// # Default Households
-    /// 
-    /// Creates household with the given number of households
-    /// 
-    /// Assumes the default makeup of household (2:0.5:2.5 Adult:Elder:Child ratio).
-    pub fn default_households(households: f64) -> Self {
-        Self::default().mult(households)
     }
 
     /// # Add Count
@@ -239,166 +215,6 @@ impl Household {
         }
     }
 
-    /// # Add Households
-    /// 
-    /// Adds to the count of households.
-    /// 
-    /// Does not change anything else.
-    pub fn add_households(&self, size: f64) -> Self {
-        let mut result = self.clone();
-        result.count += size;
-        result
-    }
-}
-
-// Household unit functions, kept separate to maintain sanity.
-impl Household {
-    /// # Add House Units
-    /// 
-    /// Adds together two household details. Ignoring size entirely.
-    /// 
-    /// This adds together the household information, accumulating into a final household.
-    /// This is used to sum a pop row's changes and effects.
-    /// 
-    /// Species + culture + etc = our output.
-    /// 
-    /// # Panics
-    /// 
-    /// This panics if the results of adding doesn't work. Components should add up to the 
-    /// household size.
-    pub fn add_house_units(&self, other: &Household) -> Self {
-        let result = Self {
-            count: 0.0,
-            household_size: self.household_size + other.household_size,
-            adults: self.adults + other.adults,
-            elders: self.elders + other.elders,
-            children: self.children + other.children,
-        };
-        debug_assert!(result.household_size == (result.adults + result.elders + result.children),
-            "Other has added to household incorrectly somehow.");
-        result
-    }
-
-    /// # New Household
-    /// 
-    /// Creates a new household, the result is 1 household returned.
-    pub fn new_household(adults: f64, children: f64, elders: f64) -> Self {
-        Self {
-            count: 1.0,
-            household_size: adults + children + elders,
-            adults,
-            elders,
-            children,
-        }
-    }
-
-    /// # New Household Mod
-    /// 
-    /// Creates a new household, with no count.
-    pub fn new_household_mod(adults: f64, children: f64, elders: f64) -> Self {
-        Self {
-            count: 0.0,
-            household_size: adults + children + elders,
-            adults,
-            elders,
-            children,
-        }
-    }
-
-    /// # Change Household Size
-    /// 
-    /// Safely changes household size without altering population ratios between
-    /// the components, adding the size to the households.
-    pub fn change_household_size(&self, size: f64) -> Self {
-        assert!(self.household_size + size > 0.0, 
-            "Household size should not be reduced at or below 0.0.");
-        // Get copy to return
-        let mut result = self.clone();
-        result.household_size += size;
-        // Get ratios of the original to copy over.
-        let adult_r = self.adults / self.household_size;
-        let child_r = self.children / self.household_size;
-        let elder_r = self.elders / self.household_size;
-        result.adults = result.household_size * adult_r;
-        result.children = result.household_size * child_r;
-        result.elders = result.household_size * elder_r;
-        result
-    }
-
-    /// # Add Elders
-    /// 
-    /// Adds elders to the basic household, this does alter the size of the household.
-    pub fn add_elders(&self, elders: f64) -> Self {
-        assert!(self.elders + elders > 0.0, "Elders cannot reduce self.adults below 0.0.");
-        assert!(self.household_size + elders > 0.0, "Elders cannot reduce household size below 0.0.");
-
-        let mut res = self.clone();
-        res.household_size += elders;
-        res.elders += elders;
-        res
-    }
-
-    /// # Add Children
-    /// 
-    /// Adds Children to the basic household, this does alter the size of the household.
-    pub fn add_children(&self, children: f64) -> Self {
-        assert!(self.children + children > 0.0, "Children cannot reduce self.adults below 0.0.");
-        assert!(self.household_size + children > 0.0, "Children cannot reduce household size below 0.0.");
-
-        let mut res = self.clone();
-        res.household_size += children;
-        res.children += children;
-        res
-    }
-
-    /// # Add Adult
-    /// 
-    /// Adds adults to the basic household, this does alter the size of the household.
-    pub fn add_adults(&self, adults: f64) -> Self {
-        assert!(self.adults + adults > 0.0, "Adult cannot reduce self.adults below 0.0.");
-        assert!(self.household_size + adults > 0.0, "Adult cannot reduce household size below 0.0.");
-
-        let mut res = self.clone();
-        res.household_size += adults;
-        res.adults += adults;
-        res
-    }
-
-    /// # Alter Ratios
-    /// 
-    /// Safely moves pops from one component to another without changing size.
-    /// 
-    /// # Panics
-    /// 
-    /// Enforces the household_size is maintained (adult + child + elder = 0) and 
-    /// that resulting adult, child, and elder values are positive.
-    pub fn alter_ratios(&self, adult: f64, child: f64, elder: f64) -> Self {
-        assert!((adult + child + elder == 0.0),  "Parameters must sum to 0.0.");
-        assert!(self.adults + adult > 0.0, "Adult cannot be larger than self.adults.");
-        assert!(self.children + child > 0.0, "Child cannot be larger than self.children.");
-        assert!(self.elders + elder > 0.0, "Elders cannot be larger than self.elders.");
-        let mut res = self.clone();
-        res.adults += adult;
-        res.children += child;
-        res.elders += elder;
-        res
-    }
-
-    /// # Is Unit
-    /// 
-    /// Checks to see if this household is a 'unit' household of size 1.
-    pub fn is_unit(&self) -> bool {
-        self.count == 1.0
-    }
-
-    /// # Is real household
-    /// 
-    /// Households that are real have a positive count. Anything else means 
-    /// it's not properly calibrated for actual use as a part of Pop.
-    pub fn is_real_household(&self) -> bool {
-        self.count > 0.0
-    }
-
     /// # Zeroed Household
     /// 
     /// Gets a household with all zero values.
@@ -412,20 +228,39 @@ impl Household {
             children: 0.0,
         }
     }
-}
 
-impl default::Default for Household {
-    /// # Household Default
+    /// # Modify Household
     /// 
-    /// 1 household of household size 5, 2 adults, 0.5 elders, and 2.5 children.
-    fn default() -> Self {
-        Self { 
-            count: 1.0,
-            household_size: 5.0, 
-            adults: 2.0, 
-            elders: 0.5, 
-            children: 2.5 
+    /// Adds the household modifier to the household. If applied to a household
+    /// with a count it will change the size of the population.
+    /// 
+    /// # Notes
+    /// 
+    /// This ensures that household size and adults bottom out at 1.0, while 
+    /// elders and children bottom out at 0.0.
+    pub fn modify_household(&self, house_mod: HouseholdMod) -> Self {
+        Self {
+            count: self.count,
+            household_size: (self.household_size + house_mod.net_change()).max(1.0),
+            adults: (self.adults + house_mod.adults).max(1.0),
+            elders: (self.elders + house_mod.elders).max(0.0),
+            children: (self.children + house_mod.children).max(0.0),
         }
+    }
+
+    /// # Add Mods
+    /// 
+    /// Adds multiple modifiers to the household.
+    /// 
+    /// # Notes
+    /// 
+    /// This adds and restricts only after all household modifiers are applied.
+    pub fn add_mods(&self, modifiers: Vec<HouseholdMod>) -> Self {
+        let mut final_mod = HouseholdMod::zero();
+        for modifier in modifiers.iter() {
+            final_mod = final_mod.add_modifiers(*modifier);
+        }
+        Household::zeroed_household().modify_household(final_mod)
     }
 }
 
@@ -452,6 +287,7 @@ pub enum HouseholdMember {
 /// 
 /// There is no protections or limitations on what is allowed. Households 
 /// cap to ensure a household isn't empty, this doesn't.
+#[derive(Debug, Copy, Clone)]
 pub struct HouseholdMod {
     pub adults: f64,
     pub elders: f64,
@@ -459,6 +295,17 @@ pub struct HouseholdMod {
 }
 
 impl HouseholdMod {
+    /// # Add Modifiers
+    /// 
+    /// Adds two modifiers together to produce a combined modifiers.
+    pub fn add_modifiers(&self, other: Self) -> Self {
+        let mut result = self.clone();
+        result.adults += other.adults;
+        result.elders += other.elders;
+        result.children += other.children;
+        result
+    }
+
     /// # Net Change
     /// 
     /// The net changes in the size of a household.
@@ -476,6 +323,14 @@ impl HouseholdMod {
             adults: 2.0,
             elders: 0.5,
             children: 2.5,
+        }
+    }
+
+    pub fn zero() -> Self {
+        Self {
+            adults: 0.0,
+            elders: 0.0,
+            children: 0.0,
         }
     }
 }
