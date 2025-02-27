@@ -37,6 +37,8 @@ pub struct Desire {
     /// Tags and effects attached to this desire.
     /// 
     /// Tags also force additional rules on the desire in question.
+    /// 
+    /// To ensure make similarity checking easier, tags are sorted.
     pub tags: Vec<DesireTag>,
 }
 
@@ -51,6 +53,9 @@ impl Desire {
     /// If the start Interval is not positive, it panics.
     pub fn new(item: Item, amount: f64, start: f64) -> Self {
         assert!(start > 0.0, "Start must have positive value.");
+        assert!(amount > 0.0, "Amount must be a positive value.");
+        assert!(!amount.is_nan(), "Amount must be a number.");
+        assert!(!start.is_nan(), "Start must be a number.");
         Self {
             item,
             amount,
@@ -69,8 +74,9 @@ impl Desire {
     /// 
     /// Asserts that LifeNeeds must be finite.
     /// 
-    /// Asserts that HouseholdNeed and HouseMemberNeed() 
+    /// Asserts if tags can or can't be next to each other.
     pub fn with_tag(mut self, tag: DesireTag) -> Self {
+        // ensure this desire has proper ending if we're addign a life need.
         match tag {
             DesireTag::LifeNeed(_) => {
                 assert!(self.steps.is_some(), 
@@ -78,9 +84,21 @@ impl Desire {
             },
             _ => {}
         }
-        // TODO: Assert no duplicates can be added.
-        // TODO: Assert that HosueholdNeed and HouseMemberNeed are exclusive with each other.
-        self.tags.push(tag);
+        // check that tag can be put next to all exsiting tags.
+        for t in self.tags.iter() {
+            if let Err(msg) = t.safe_with(&tag) {
+                assert!(false, "{}", msg);
+            }
+        }
+        // insert into sorted place and check that there are no duplicates.
+        match self.tags.binary_search_by(|p| p.partial_cmp(&tag)
+            .expect("Tag somehow has a NaN value.")) 
+        {
+            Ok(_) => { assert!(false, "Tag already exists in Desire.")},
+            Err(pos) => {
+                self.tags.insert(pos, tag);
+            }
+        }
         self
     }
 
@@ -93,6 +111,7 @@ impl Desire {
     /// Panics if interval is not positive.
     pub fn with_interval(mut self, interval: f64, steps: Option<usize>) -> Self {
         assert!(interval > 1.0, "Interval must Greater than 1.0.");
+        assert!(!interval.is_nan(), "Interval must be a number.");
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps.is_some(), "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }
@@ -162,9 +181,34 @@ impl Desire {
         // and recalculate the step.
         Some(self.start * self.interval.unwrap().powf(fin_step))
     }
+
+    /// # Equals
+    /// 
+    /// A specific check for desires that ensures they are effectively the same.
+    /// It checks that everything BUT amount is the same.
+    pub fn equals(&self, other: &Desire) -> bool {
+        if self.item == other.item &&
+        self.start == other.start &&
+        self.interval == other.interval &&
+        self.steps == other.steps { // if easy stuff is true, check tags.
+            if self.tags.len() == other.tags.len() { // need same number
+                for idx in 0..self.tags.len() {
+                    // and same order.
+                    if self.tags[idx] != other.tags[idx] {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum DesireTag {
     /// Desire is necissary for life. Not getting it massively 
     /// increases mortality per tier not met. Value attached is 
@@ -183,7 +227,7 @@ pub enum DesireTag {
     HouseholdNeed,
     /// The desire is needed based on the number of a particular member in the household.
     /// 
-    /// This is exclusive with Household Need
+    /// This is exclusive with Household Need and itself.
     HouseMemberNeed(HouseholdMember),
 }
 
@@ -191,6 +235,34 @@ impl DesireTag {
     pub fn life_need(mortality: f64) -> DesireTag {
         assert!(mortality > 0.0 && mortality <= 1.0, "Mortality must be greater than 0.0, and no greater than 1.0.");
         DesireTag::LifeNeed(mortality)
+    }
+
+    /// # Safe With
+    /// 
+    /// Our enforcement checker to ensure two tags are safe next to each other.
+    /// 
+    /// Returns Ok() when it's safe. Returns Err(str) when not safe, the str is why it's invalid.
+    pub fn safe_with(&self, other: &DesireTag) -> Result<(), &str> {
+        // Currently, no tag can be next to itself, even if it's another version.
+        if discriminant(self) == discriminant(other) {
+            return Err("Same Tags, never safe.");
+        }
+        match self {
+            DesireTag::LifeNeed(_) => {}, // safe next to all others.
+            DesireTag::HouseholdNeed => {
+                // Cannot be next to any HouseMemberNeed
+                if let DesireTag::HouseMemberNeed(_) = other {
+                    return Err("Household Need cannot be next to a HouseMemberNeed.");
+                }
+            },
+            DesireTag::HouseMemberNeed(_) => {
+                // cannot be next to householdneed
+                if let DesireTag::HouseholdNeed = other {
+                    return Err("HouseMemberNeed cannot be next to a HouseholdNeed.");
+                }
+            },
+        }
+        Ok(())
     }
 }
 

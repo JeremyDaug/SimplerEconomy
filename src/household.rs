@@ -185,8 +185,14 @@ impl Household {
     /// Creates new households. Sets both ratios, size, and number of household.
     /// 
     /// Be sure that the final size is as you expect.
-    pub fn new(households: f64, adults: f64, children: f64, elders: f64) -> Self {
-        Self::new_household(adults, children, elders).mult(households)
+    pub fn new(count: f64, adults: f64, children: f64, elders: f64) -> Self {
+        Self {
+            count,
+            household_size: adults + children + elders,
+            adults,
+            elders,
+            children
+        }
     }
 
     /// # Add Count
@@ -262,6 +268,34 @@ impl Household {
         }
         Household::zeroed_household().modify_household(final_mod)
     }
+    
+    /// # Population
+    /// 
+    /// Gets the population of the household, Count * household Size
+    pub fn population(&self) -> f64 {
+        self.count * self.household_size
+    }
+    
+    /// # Total Adults
+    /// 
+    /// Gets the total number of adults in the household, Count * adults
+    pub fn total_adults(&self) -> f64 {
+        self.count * self.adults
+    }
+
+    /// # Total elders
+    /// 
+    /// Gets the total number of elders in the household, Count * elders
+    pub fn total_elders(&self) -> f64 {
+        self.count * self.elders
+    }
+
+    /// # Total Children
+    /// 
+    /// Gets the total number of Children in the household, Count * Children
+    pub fn total_children(&self) -> f64 {
+        self.count * self.children
+    }
 }
 
 /// # Household Member
@@ -271,7 +305,7 @@ impl Household {
 /// 
 /// Currently only covers our built in members. If members are made generic and
 /// moddable, then this may need to be just removed outright.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HouseholdMember {
     Adult,
     Child,

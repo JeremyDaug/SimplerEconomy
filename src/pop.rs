@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::discriminant};
 
 use itertools::Itertools;
 
@@ -97,8 +97,31 @@ impl Pop {
             let species = data.get_species(row.species);
             for desire in species.desires.iter() {
                 // copy base over
-                let new_des = desire.clone();
-                // get mul
+                let mut new_des = desire.clone();
+                // get multiplier
+                let mut multiplier = 0.0;
+                for tag in desire.tags {
+                    if let DesireTag::HouseholdNeed = tag {
+                        debug_assert!(multiplier == 0.0, 
+                            "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
+                        multiplier = row.household.population();
+                    } else if let DesireTag::HouseMemberNeed(member) = tag {
+                        debug_assert!(multiplier == 0.0, 
+                            "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
+                        match member {
+                            crate::household::HouseholdMember::Adult => multiplier = row.household.total_adults(),
+                            crate::household::HouseholdMember::Child => multiplier = row.household.total_children(),
+                            crate::household::HouseholdMember::Elder => multiplier = row.household.total_elders(),
+                        }
+                    }
+                }
+                // If no other tag sets Multiplier, then set to total population.
+                if multiplier == 0.0 {
+                    multiplier = row.household.population();
+                }
+                // multiply the desrie amount by the multiplier.
+                new_des.amount = new_des.amount * multiplier;
+                // with desire scaled properly, find if it already exists in our desires
                 
             }
         }
