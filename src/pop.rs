@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::Desire, market::Market, drow::DRow};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market};
 
 /// # Pop
 /// 
@@ -16,12 +16,9 @@ pub struct Pop {
     /// The ID of the firm the pop is working at.
     pub firm: usize,
 
-    /// How many households are in it. This is used as the 'base' labor time calculation.
-    /// 
-    /// You can think of this as the 'base' number of working adults. 
-    /// 
-    /// This should NEVER be larger than Population.
-    pub workers: f64,
+    /// This is the collated households of the pop group, a the results of adding all
+    /// demograpchic data together.
+    pub households: Household,
     /// The actual population of the pop. This defines how many actual people are in this
     /// pop. How many mouths there are to feed and satisfy.
     /// 
@@ -56,7 +53,7 @@ impl Pop {
             id,
             market,
             firm,
-            workers: 0.0,
+            households: Household::zeroed_household(),
             population: 0.0,
             demo_breakdown: vec![],
             efficiency: 1.0,
@@ -67,36 +64,44 @@ impl Pop {
 
     /// # Add Demo
     /// 
-    /// Adds a demographic row to the pop.
-    /// 
-    /// Also adds to the size of the pop.
+    /// Adds a demographic row to the pop. Does not combine households.
     /// 
     /// This does not update desires. Do that separately.
     pub fn add_demo(mut self, demo: DRow) -> Self {
-        self.workers += demo.count;
         self.demo_breakdown.push(demo);
         self
     }
 
+    /// # Combine Households
+    /// 
+    /// Combines the households of the pop and combines them into one in the pop.
+    /// 
+    /// Does not handle Demographic Desires.
+    pub fn combine_households(&mut self, data: &Data) {
+        self.households = Household::zeroed_household();
+        for row in self.demo_breakdown.iter() {
+            self.households.combine(&row.household);
+        }
+    }
+
     /// # Update Desires
     /// 
-    /// Call this on a pop that has it's demographic rows updated.
+    /// Call this on a pop that has it's demographic rows updated and needs
+    /// it's desires updated to match.
     pub fn update_desires(&mut self, data: &Data) {
-        // collect like parts into consolidated desires regardless of row.
-        // species
-        let species = self.demo_breakdown.iter()
-            .map(|x| x.species).unique().collect_vec();
-        for spec_id in species {
-            let species_data = data.get_species(spec_id);
-            // get how many of this species.
-            let sum = self.demo_breakdown
-                .iter().filter(|x| x.species == spec_id)
-                .map(|x| x.count)
-                .sum::<f64>();
-            for desire in species_data.desires.iter() {
-
+        // Insert all desires into our vector, scaling to the appropriate tags of the 
+        // desire. If they are the same desire (with different desire values) combine them.
+        let mut desires = vec![];
+        for row in self.demo_breakdown.iter() {
+            // species
+            let species = data.get_species(row.species);
+            for desire in species.desires.iter() {
+                // copy base over
+                let new_des = desire.clone();
+                // get mul
+                
             }
         }
-        // cultures
+        // After getting them all, sort the desires by their starting value.
     }
 }

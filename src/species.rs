@@ -17,7 +17,7 @@ pub struct Species {
     /// This should have a size of 0.0, and a positive household size.
     /// 
     /// It's broken up into adults, children, and elders which define the makeup.
-    pub household: HouseholdMod,
+    pub household_mod: HouseholdMod,
 
     /// The desires that the species naturally desires.
     /// Desires are sorted by their starting value, lowest to highest.
@@ -32,7 +32,7 @@ impl Species {
         Species {
             id,
             name,
-            household: HouseholdMod::default_household(),
+            household_mod: HouseholdMod::default_household(),
             desires: vec![],
         }
     }
@@ -41,7 +41,7 @@ impl Species {
     /// 
     /// Sets the household of the species using household mod.
     pub fn with_household(mut self, household: HouseholdMod) -> Self {
-        self.household = household;
+        self.household_mod = household;
         self
     }
 

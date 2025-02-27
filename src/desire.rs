@@ -61,6 +61,15 @@ impl Desire {
         }
     }
 
+    /// # With Tag
+    /// 
+    /// Inserts tag onto desire fluently.
+    /// 
+    /// # Panics
+    /// 
+    /// Asserts that LifeNeeds must be finite.
+    /// 
+    /// Asserts that HouseholdNeed and HouseMemberNeed() 
     pub fn with_tag(mut self, tag: DesireTag) -> Self {
         match tag {
             DesireTag::LifeNeed(_) => {
@@ -69,6 +78,8 @@ impl Desire {
             },
             _ => {}
         }
+        // TODO: Assert no duplicates can be added.
+        // TODO: Assert that HosueholdNeed and HouseMemberNeed are exclusive with each other.
         self.tags.push(tag);
         self
     }
@@ -171,6 +182,8 @@ pub enum DesireTag {
     /// Exclusive with HouseholdMemberNeed.
     HouseholdNeed,
     /// The desire is needed based on the number of a particular member in the household.
+    /// 
+    /// This is exclusive with Household Need
     HouseMemberNeed(HouseholdMember),
 }
 

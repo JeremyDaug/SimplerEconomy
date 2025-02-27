@@ -34,27 +34,17 @@ impl DRow {
         self
     }
 
-    pub fn birthrate(self, data: &Data) -> f64 {
-        let base = data.get_species(self.species).birthrate;
-        let culture = if let Some(culture_id) = self.culture {
-            data.get_culture(culture_id).birthrate
-        } else { 0.0 };
-        (base + culture).max(0.0)
-    }
-
-    pub fn mortality(self, data: &Data) -> f64 {
-        let base = data.get_species(self.species).mortality;
-        let culture = if let Some(culture_id) = self.culture {
-            data.get_culture(culture_id).mortality
-        } else { 0.0 };
-        (base + culture).max(0.0)
-    }
-    
-    pub fn household_mult(self, data: &Data) -> f64 {
-        let base = data.get_species(self.species).household;
-        let culture = if let Some(culture_id) = self.culture {
-            data.get_culture(culture_id).household_modifier
-        } else { 1.0 };
-        (base * culture).max(1.0)
+    /// # Update Household
+    /// 
+    /// Used after setting the demographic parts, updates the household to match species.
+    /// 
+    /// This does change population as household count is maintained.
+    pub fn update_household(&mut self, data: &Data) {
+        let mut mods = vec![];
+        mods.push(data.get_species(self.species).household_mod);
+        if let Some(id) = self.culture {
+            mods.push(data.get_culture(id).household_mod);
+        }
+        self.household.add_mods(mods);
     }
 }
