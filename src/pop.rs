@@ -38,6 +38,8 @@ pub struct Pop {
     /// 
     /// Fractional values in the breakdown represent stored up population growth.
     /// Fractions are dropped 
+    /// 
+    /// This is sorted by household count, largest to smallest.
     pub demo_breakdown: Vec<DRow>,
     /// How many days worth of work a single household in the group does.
     pub efficiency: f64,
@@ -68,8 +70,21 @@ impl Pop {
     /// 
     /// This does not update desires. Do that separately.
     pub fn add_demo(mut self, demo: DRow) -> Self {
-        self.demo_breakdown.push(demo);
+        match self.demo_breakdown.binary_search_by(|x| x.household.count.total_cmp(&demo.household.count)) {
+            Ok(pos) | 
+            Err(pos) => self.demo_breakdown.insert(pos, demo),
+        }
         self
+    }
+
+    /// # Include Demo
+    /// 
+    /// Adds a demographic row to the demographic breakdown in proper ordering.
+    pub fn include_demo(&mut self, demo: DRow) {
+        match self.demo_breakdown.binary_search_by(|x| x.household.count.total_cmp(&demo.household.count)) {
+            Ok(pos) | 
+            Err(pos) => self.demo_breakdown.insert(pos, demo),
+        }
     }
 
     /// # Combine Households
@@ -91,7 +106,7 @@ impl Pop {
     pub fn update_desires(&mut self, data: &Data) {
         // Insert all desires into our vector, scaling to the appropriate tags of the 
         // desire. If they are the same desire (with different desire values) combine them.
-        let mut desires = vec![];
+        let mut desires: Vec<Desire> = vec![];
         for row in self.demo_breakdown.iter() {
             // species
             let species = data.get_species(row.species);
@@ -100,7 +115,7 @@ impl Pop {
                 let mut new_des = desire.clone();
                 // get multiplier
                 let mut multiplier = 0.0;
-                for tag in desire.tags {
+                for tag in desire.tags.iter() {
                     if let DesireTag::HouseholdNeed = tag {
                         debug_assert!(multiplier == 0.0, 
                             "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
@@ -122,9 +137,9 @@ impl Pop {
                 // multiply the desrie amount by the multiplier.
                 new_des.amount = new_des.amount * multiplier;
                 // with desire scaled properly, find if it already exists in our desires
+                // desires are always sorted.
                 
             }
         }
-        // After getting them all, sort the desires by their starting value.
     }
 }

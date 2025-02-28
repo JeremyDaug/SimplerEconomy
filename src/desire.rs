@@ -40,6 +40,9 @@ pub struct Desire {
     /// 
     /// To ensure make similarity checking easier, tags are sorted.
     pub tags: Vec<DesireTag>,
+    /// The amount of satisfaciton the desire has currently.
+    /// Only used for Pops.
+    pub satisfaction: f64,
 }
 
 impl Desire {
@@ -62,7 +65,8 @@ impl Desire {
             start,
             interval: None,
             steps: None,
-            tags: vec![]
+            tags: vec![],
+            satisfaction: 0.0,
         }
     }
 
