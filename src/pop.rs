@@ -1,8 +1,8 @@
-use std::{collections::HashMap, mem::discriminant};
+use std::{collections::{HashMap, HashSet, VecDeque}, mem::discriminant};
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market, species::Species};
 
 /// # Pop
 /// 
@@ -44,9 +44,24 @@ pub struct Pop {
     /// How many days worth of work a single household in the group does.
     pub efficiency: f64,
     /// The consolidated desires of the pop, formed out of the consolidated desires of the pop.
-    pub desires: Vec<Desire>,
-    /// What property the pop owns today.
-    pub property: HashMap<usize, f64>,
+    pub desires: VecDeque<Desire>,
+    /// What property the pop owns and how they are using it.
+    pub property: HashMap<usize, PropertyRecord>,
+}
+
+/// Helper for pop property.
+#[derive(Debug, Copy, Clone)]
+struct PropertyRecord {
+    /// How many units are owned by the pop right now.
+    pub owned: f64,
+    /// How many they want to keep at all times.
+    pub reserved: f64,
+    /// How many they have used today to satisfy desires.
+    pub expended: f64,
+    /// How many were given up in trade.
+    pub traded: f64,
+    /// How many were offered, but not accepted.
+    pub offered: f64,
 }
 
 impl Pop {
@@ -59,7 +74,7 @@ impl Pop {
             population: 0.0,
             demo_breakdown: vec![],
             efficiency: 1.0,
-            desires: vec![],
+            desires: VecDeque::new(),
             property: HashMap::new(),
         }
     }
@@ -99,47 +114,138 @@ impl Pop {
         }
     }
 
-    /// # Update Desires
+    /// # Satisfy Desires
+    /// 
+    /// Takes the existing property of the pop and sorts it into it's desires.
+    /// 
+    /// There's no special prioritization, start at the bottom of desires, add to
+    /// the first, and go from there. 
+    pub fn satisfy_desires(&mut self, data: &Data) {
+        /// Original ordering for simplicity.
+        let og_desires = self.desires.clone();
+        // use self.desires as our working space and reorganize back to original at end.
+        // A holding space for desires that have been totally satisfied to simplify 
+        let mut finished: Vec<Desire> = vec![];
+        loop {
+            if self.desires.len() == 0 {
+                break;
+            }
+            let mut curr_desire = self.desires.pop_front().unwrap();
+            match curr_desire.item {
+                crate::item::Item::Want(id) => todo!(),
+                crate::item::Item::Class(id) => todo!(),
+                crate::item::Item::Good(id) => {
+                    // Good, so just find and insert
+                    // TODO: Pick Up Here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
+                },
+            }
+        }
+    }
+
+    /// # Update Desires Full
     /// 
     /// Call this on a pop that has it's demographic rows updated and needs
-    /// it's desires updated to match.
-    pub fn update_desires(&mut self, data: &Data) {
+    /// it's desires updated to match. 
+    /// 
+    /// This will totally recalculate the desires of a pop from scratch, so only use 
+    /// if the pop is new or there was a major change that a simple update would not cover.
+    /// 
+    /// NOTE: Didn't bother to test as it's most complex parts have been broken out and tested separately.
+    pub fn update_desires_full(&mut self, data: &Data) {
         // Insert all desires into our vector, scaling to the appropriate tags of the 
         // desire. If they are the same desire (with different desire values) combine them.
         let mut desires: Vec<Desire> = vec![];
         for row in self.demo_breakdown.iter() {
             // species
             let species = data.get_species(row.species);
-            for desire in species.desires.iter() {
-                // copy base over
-                let mut new_des = desire.clone();
-                // get multiplier
-                let mut multiplier = 0.0;
-                for tag in desire.tags.iter() {
-                    if let DesireTag::HouseholdNeed = tag {
-                        debug_assert!(multiplier == 0.0, 
-                            "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
-                        multiplier = row.household.population();
-                    } else if let DesireTag::HouseMemberNeed(member) = tag {
-                        debug_assert!(multiplier == 0.0, 
-                            "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
-                        match member {
-                            crate::household::HouseholdMember::Adult => multiplier = row.household.total_adults(),
-                            crate::household::HouseholdMember::Child => multiplier = row.household.total_children(),
-                            crate::household::HouseholdMember::Elder => multiplier = row.household.total_elders(),
-                        }
-                    }
+            Self::integrate_desires(&species.desires, row, &mut desires);
+            // culture
+            if let Some(culture_id) = row.culture {
+                let culture = data.get_culture(culture_id);
+                Self::integrate_desires(&culture.desires, row, &mut desires);
+            }
+            // Remaining sections go here.
+        }
+    }
+
+    /// Helper for getting desires from a part of demographics into our total desires.
+    /// 
+    /// Takes in the desires of the source demographic part (Species.desires, culture.desires)
+    /// Takes in the row for household information.
+    /// 
+    /// And it takes in, and modifies, the desires we are adding to and will eventually set
+    /// self.desires to.
+    pub(crate) fn integrate_desires(source_desires: &Vec<Desire>, row: &DRow, desires: &mut Vec<Desire>) {
+        for desire in source_desires.iter() {
+            println!("---");
+            println!("Start: {}", desire.start);
+            println!("Good: {}", desire.item.unwrap());
+            println!("Amount: {}", desire.amount);
+            // copy base over
+            let mut new_des = desire.clone();
+            // get multiplier
+            Self::get_desire_multiplier(desire, row, &mut new_des);
+            // with desire scaled properly, find if it already exists in our desires
+            // desires are always sorted.
+            let mut current = if let Some((est, _)) = desires.iter()
+            .find_position(|x| x.start >= new_des.start) {
+                // find the first one which is equal to or greater than our new destination.
+                est
+            } else { desires.len() }; // if none was found then it is either the last or only one.
+            println!("First Pos: {}", current);
+            // with first match found, try to find duplicates while walking up. 
+            loop {
+                if current >= desires.len() {
+                    // if at or past the end, insert at the end and continue.
+                    println!("Insert Position: {}", current);
+                    desires.push(new_des);
+                    break;
+                } else if desires.get(current).unwrap().equals(&new_des) {
+                    // if new_desire matches existing desire, add to it.
+                    println!("Insert Position: {}", current);
+                    desires.get_mut(current).unwrap().amount += new_des.amount;
+                    break;
+                } else if desires.get(current).unwrap().start > new_des.start {
+                    // If the desire we're looking at is greater than our current, insert
+                    println!("Insert Position: {}", current);
+                    desires.insert(current, new_des);
+                    break;
                 }
-                // If no other tag sets Multiplier, then set to total population.
-                if multiplier == 0.0 {
-                    multiplier = row.household.population();
-                }
-                // multiply the desrie amount by the multiplier.
-                new_des.amount = new_des.amount * multiplier;
-                // with desire scaled properly, find if it already exists in our desires
-                // desires are always sorted.
-                
+                // If we haven't walked off the end just yet,
+                // and we haven't found a match
+                // AND we the current is still less than or equal to our new desires start
+                // step up 1 and try again.
+                println!("Current Start: {}", desires.get(current).unwrap().start);
+                current += 1;
             }
         }
+    }
+
+    /// Helper for getting multiplier on desires based on tags. This is is used in
+    /// multiple places and is likely to change in the future.
+    pub(crate) fn get_desire_multiplier(desire: &Desire, row: &DRow, new_des: &mut Desire) {
+        // get multiplier
+        let mut multiplier = 0.0;
+        for tag in desire.tags.iter() {
+            if let DesireTag::HouseholdNeed = tag {
+                debug_assert!(multiplier == 0.0, 
+                    "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
+                multiplier = row.household.count;
+            } else if let DesireTag::HouseMemberNeed(member) = tag {
+                debug_assert!(multiplier == 0.0, 
+                    "Mulitpliper already set here, either duplicate tag found or another tag is HouseMemberNeed, which shouldn't be next to HouseholdNeed.");
+                match member {
+                    crate::household::HouseholdMember::Adult => multiplier = row.household.total_adults(),
+                    crate::household::HouseholdMember::Child => multiplier = row.household.total_children(),
+                    crate::household::HouseholdMember::Elder => multiplier = row.household.total_elders(),
+                }
+            }
+        }
+        // If no other tag sets Multiplier, then set to total population.
+        if multiplier == 0.0 {
+            multiplier = row.household.population();
+        }
+        // multiply the desrie amount by the multiplier.
+        new_des.amount = new_des.amount * multiplier;
     }
 }

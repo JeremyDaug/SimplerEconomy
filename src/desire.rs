@@ -83,7 +83,7 @@ impl Desire {
         // ensure this desire has proper ending if we're addign a life need.
         match tag {
             DesireTag::LifeNeed(_) => {
-                assert!(self.steps.is_some(), 
+                assert!(self.interval.is_none() || (self.interval.is_some() && self.steps.is_some()), 
                 "A Desire with the tag LifeNeed must have a finite number of steps.");
             },
             _ => {}
@@ -110,17 +110,19 @@ impl Desire {
     /// 
     /// Consuming setter for interval and steps.
     /// 
+    /// Putting in 0 steps means that it has no end.
+    /// 
     /// # Panics
     /// 
     /// Panics if interval is not positive.
-    pub fn with_interval(mut self, interval: f64, steps: Option<usize>) -> Self {
+    pub fn with_interval(mut self, interval: f64, steps: usize) -> Self {
         assert!(interval > 1.0, "Interval must Greater than 1.0.");
         assert!(!interval.is_nan(), "Interval must be a number.");
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
-            assert!(steps.is_some(), "Desire has the LifeNeed tag. It must have a finite number of steps.");
+            assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }
         self.interval = Some(interval);
-        if let Some(steps) = steps { // If given a value, convert to Option<NonZeroUsize>
+        if steps > 0 { // If given a value, convert to Option<NonZeroUsize>
             self.steps = NonZero::new(steps);
         } else { // if no steps given, just set to None.
             self.steps = None;
@@ -170,6 +172,7 @@ impl Desire {
     /// 
     /// TODO: Test this to ensure correctness.
     pub fn next_step(&self, current:  f64) -> Option<f64> {
+        assert!(current > 0.0, "Current must be a positive value.");
         if current < self.start {
             return Some(self.start);
         } else if let Some(end) = self.end() {
@@ -181,7 +184,10 @@ impl Desire {
         // This solves for step. Log_Interval(Point / Step ) = Step
         let step = (current / self.start).log(self.interval.unwrap());
         // with step, round up
-        let fin_step = step.ceil();
+        let mut fin_step = step.ceil();
+        if fin_step == step {
+            fin_step += 1.0;
+        }
         // and recalculate the step.
         Some(self.start * self.interval.unwrap().powf(fin_step))
     }
@@ -209,6 +215,56 @@ impl Desire {
         } else {
             false
         }
+    }
+
+    /// # On Step
+    /// 
+    /// Calculates which step a value is on.
+    /// 
+    /// IE, in the formula start * Interval ^ N, this returns N.
+    /// 
+    /// If outside of the interval, it returns None.
+    /// 
+    /// If N is a decimal value, then it's not a whole step we're on.
+    pub fn on_step(&self, val: f64) -> Option<f64> {
+        assert!(val > 0.0, "Val must be a positive number.");
+        if val < self.start {
+            return None;
+        } else if let Some(end) = self.end() {
+            if val >= end {
+                return None;
+            }
+        }
+        // base formula is Start * Interval ^ Step = Point
+        // This solves for step. Log_Interval(Point / Step ) = Step
+        Some((val / self.start).log(self.interval.unwrap()))
+    }
+
+    /// # Satsfied Up To
+    /// 
+    /// Given the current satisfaction of a desire, it returns the step it 
+    /// reaches. Rounds down. Fractional satisfaciton returns the step it is
+    /// currently on.
+    /// 
+    /// Caps at the maximum nubre of steps (if any).
+    pub fn satisfied_up_to(&self) -> f64 {
+        (self.satisfaction / self.amount).floor()
+    }
+
+    /// # Satisfied to Value
+    /// 
+    /// What value level the desire has been satisfied to.
+    /// 
+    /// This is equivalent to finding the steps, flooring it, then
+    /// applying the interval that many times.
+    pub fn satisfied_to_value(&self) -> f64 {
+        let mut step = self.satisfied_up_to();
+        if let Some(interval) = self.interval {
+            if let Some(steps) = self.steps {
+                step = step.min(steps.get() as f64);
+            }
+            self.start * interval.powf(step)
+        } else { self.start }
     }
 }
 

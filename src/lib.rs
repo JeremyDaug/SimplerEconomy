@@ -531,4 +531,191 @@ mod tests {
             }
         }
     }
+
+    mod desire_tests {
+        mod next_step_should {
+            use crate::{desire::Desire, item::Item};
+
+            #[test]
+            pub fn step_up_when_matching_current_step() {
+                let test = Desire::new(Item::Class(0), 1.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let result = test.next_step(2.0).expect("Did not return correctly!");
+                assert_eq!(result, 4.0);
+            }
+        }
+
+        mod assertion_checks {
+            use std::mem::discriminant;
+
+            use crate::{desire::{Desire, DesireTag}, household::HouseholdMember, item::Item};
+
+            #[test]
+            #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
+            pub fn fail_when_lifeneed_tag_and_no_end() {
+                Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_interval(2.0, 0)
+                .with_tag(DesireTag::life_need(0.5));
+            }
+
+            #[test]
+            #[should_panic(expected = "Desire has the LifeNeed tag. It must have a finite number of steps.")]
+            pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
+                Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_tag(DesireTag::life_need(0.5))
+                .with_interval(2.0, 0);
+            }
+
+            #[test]
+            #[should_panic(expected = "Same Tags, never safe.")]
+            pub fn panic_with_duplicate_tags_put_in() {
+                Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_tag(DesireTag::HouseholdNeed)
+                .with_tag(DesireTag::HouseholdNeed);
+            }
+
+            #[test]
+            #[should_panic(expected = "Household Need cannot be next to a HouseMemberNeed.")]
+            pub fn panic_when_inserting_housememberneed_and_householdneed_exists() {
+                Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_tag(DesireTag::HouseholdNeed)
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult));
+            }
+            
+            #[test]
+            #[should_panic(expected = "HouseMemberNeed cannot be next to a HouseholdNeed.")]
+            pub fn panic_when_inserting_householdrneed_and_housememberneed_exists() {
+                Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
+                .with_tag(DesireTag::HouseholdNeed);
+            }
+
+            #[test]
+            pub fn insert_tags_into_desire_sorted() {
+                let test = Desire::new(Item::Good(0), 1.0, 1.0)
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
+                .with_tag(DesireTag::life_need(0.5));
+
+                // check ordering
+                assert!(discriminant(test.tags.get(0).unwrap()) == discriminant(&DesireTag::LifeNeed(0.0)));
+                assert!(discriminant(test.tags.get(1).unwrap()) == discriminant(&DesireTag::HouseMemberNeed(HouseholdMember::Adult)))
+            }
+        }
+    }
+
+    mod pop_tests {
+        mod integrate_desires_should {
+            use crate::{desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn correctly_integrate_desires() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3),
+                    Desire::new(Item::Good(1), 1.0, 1.0)
+                        .with_tag(DesireTag::HouseholdNeed),
+                    Desire::new(Item::Good(2), 1.0, 1.0)
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                    Desire::new(Item::Good(3), 1.0, 1.0)
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
+                    Desire::new(Item::Good(4), 1.0, 1.0)
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
+                ];
+
+                let mut desires: Vec<Desire> = vec![];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+                // check that initials were added in correctly.
+                assert_eq!(desires.len(), 5);
+                assert_eq!(desires.get(0).unwrap().start, 0.3);
+                assert_eq!(desires.get(0).unwrap().amount, 18.0);
+                assert_eq!(desires.get(1).unwrap().start, 1.0);
+                assert_eq!(desires.get(1).unwrap().amount, 3.0);
+                assert_eq!(desires.get(2).unwrap().start, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 9.0);
+                assert_eq!(desires.get(3).unwrap().start, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 6.0);
+                assert_eq!(desires.get(4).unwrap().start, 1.0);
+                assert_eq!(desires.get(4).unwrap().amount, 3.0);
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3), // duplicate, combines with 0
+                    Desire::new(Item::Good(1), 1.0, 0.6)
+                        .with_tag(DesireTag::HouseholdNeed), // inserted into 1
+                    Desire::new(Item::Good(2), 1.0, 1.5) // inserted at end near duplicate
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                ];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+
+                assert_eq!(desires.len(), 7);
+                assert_eq!(desires.get(0).unwrap().start, 0.3); // added to by 2nd
+                assert_eq!(desires.get(0).unwrap().amount, 36.0);
+                assert_eq!(desires.get(1).unwrap().start, 0.6); // inserted by 2nd
+                assert_eq!(desires.get(1).unwrap().amount, 3.0);
+                assert_eq!(desires.get(2).unwrap().start, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 3.0);
+                assert_eq!(desires.get(3).unwrap().start, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 9.0);
+                assert_eq!(desires.get(4).unwrap().start, 1.0);
+                assert_eq!(desires.get(4).unwrap().amount, 6.0);
+                assert_eq!(desires.get(5).unwrap().start, 1.0);
+                assert_eq!(desires.get(5).unwrap().amount, 3.0);
+                assert_eq!(desires.get(6).unwrap().start, 1.5); // last insertion.
+                assert_eq!(desires.get(6).unwrap().amount, 9.0);
+            }
+        }
+
+        mod get_desire_multiplier_should {
+            use crate::{desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn calculate_multiplier_correctly() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let mut desire = Desire {
+                    item: Item::Good(0),
+                    amount: 1.0,
+                    start: 1.0,
+                    interval: None,
+                    steps: None,
+                    tags: vec![],
+                    satisfaction: 0.0,
+                };
+
+                let mut new_des = desire.clone();
+                // default, no tags should multiply by 6.0 (household) * 3.0 count
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 18.0);
+                
+                // householdNeed, 3.0 count.
+                desire.tags.push(DesireTag::HouseholdNeed);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
+
+                // Member Need, adult 9.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Adult);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 9.0);
+
+                // Member Need, child 6.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Child);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 6.0);
+
+                // Member Need, elder 3.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Elder);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
+            }
+        }
+    }
 }
