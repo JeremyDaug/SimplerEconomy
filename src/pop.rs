@@ -49,21 +49,6 @@ pub struct Pop {
     pub property: HashMap<usize, PropertyRecord>,
 }
 
-/// Helper for pop property.
-#[derive(Debug, Copy, Clone)]
-struct PropertyRecord {
-    /// How many units are owned by the pop right now.
-    pub owned: f64,
-    /// How many they want to keep at all times.
-    pub reserved: f64,
-    /// How many they have used today to satisfy desires.
-    pub expended: f64,
-    /// How many were given up in trade.
-    pub traded: f64,
-    /// How many were offered, but not accepted.
-    pub offered: f64,
-}
-
 impl Pop {
     pub fn new(id: usize, market: usize, firm: usize) -> Self {
         Pop {
@@ -136,7 +121,9 @@ impl Pop {
                 crate::item::Item::Class(id) => todo!(),
                 crate::item::Item::Good(id) => {
                     // Good, so just find and insert
-                    // TODO: Pick Up Here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
+                    if let Some(rec) = self.property.get_mut(&id) {
+                        let available = rec.owned - rec.reserved;
+                    }
                 },
             }
         }
@@ -247,5 +234,33 @@ impl Pop {
         }
         // multiply the desrie amount by the multiplier.
         new_des.amount = new_des.amount * multiplier;
+    }
+}
+
+/// Helper for pop property.
+#[derive(Debug, Copy, Clone)]
+struct PropertyRecord {
+    /// How many units are owned by the pop right now.
+    pub owned: f64,
+    /// How many they want to keep at all times. This also covers
+    /// reservations to satisfy desires.
+    pub reserved: f64,
+    /// How many they have used today to satisfy desires.
+    pub expended: f64,
+    /// How many were given up in trade.
+    pub traded: f64,
+    /// How many were offered, but not accepted.
+    pub offered: f64,
+}
+
+impl PropertyRecord {
+    pub fn new() -> Self {
+        Self {
+            owned: 0.0,
+            reserved: 0.0,
+            expended: 0.0,
+            traded: 0.0,
+            offered: 0.0,
+        }
     }
 }
