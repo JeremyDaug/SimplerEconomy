@@ -29,6 +29,14 @@ impl Data {
         }
     }
 
+    /// # Add Good
+    /// 
+    /// A helper which allows us to add a good to our data and 
+    /// add it to both wants and classes in the process.
+    pub fn add_good(&mut self, good: Good) {
+        // TODO: DO this!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    }
+
     /// # Get species
     /// 
     /// wrapper for get(id).expect()

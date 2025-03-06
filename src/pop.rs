@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, VecDeque}, mem::discriminant};
+use std::{collections::{HashMap, HashSet, VecDeque}, mem::discriminant, thread::current};
 
 use itertools::Itertools;
 
@@ -47,6 +47,8 @@ pub struct Pop {
     pub desires: VecDeque<Desire>,
     /// What property the pop owns and how they are using it.
     pub property: HashMap<usize, PropertyRecord>,
+    /// What wants the pop currently has in their 
+    pub wants: HashMap<usize, WantRecord>,
 }
 
 impl Pop {
@@ -61,6 +63,7 @@ impl Pop {
             efficiency: 1.0,
             desires: VecDeque::new(),
             property: HashMap::new(),
+            wants: HashMap::new(),
         }
     }
 
@@ -117,12 +120,57 @@ impl Pop {
             }
             let mut curr_desire = self.desires.pop_front().unwrap();
             match curr_desire.item {
-                crate::item::Item::Want(id) => todo!(),
-                crate::item::Item::Class(id) => todo!(),
+                crate::item::Item::Want(id) => {
+                    // want is the most complicated, but follows a standard priority method.
+                    // First, try to get wants from storage.
+                    let mut shifted = 0.0;
+                    if let Some(want_rec) = self.wants.get_mut(&id) {
+                        let shift = want_rec.available().min(curr_desire.amount - shifted);
+                        want_rec.reserved += shift;
+                        curr_desire.satisfaction += shift;
+                        shifted += shift;
+                    }
+                    if shifted != curr_desire.amount {
+                        // First try to get via ownership
+                        // TODO: DO this!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    }
+                    // then try for use
+                    // lastly consumption
+                },
+                crate::item::Item::Class(id) => {
+                    let members = data.get_class(id);
+                    let mut shifted = 0.0;
+                    for member in members.iter() {
+                        if let Some(rec) = self.property.get_mut(member) {
+                            // get how much we can shift over, capping at the target sans already moved goods.
+                            let shift = rec.available().min(curr_desire.amount - shifted);
+                            rec.reserved += shift;
+                            curr_desire.satisfaction += shift;
+                            shifted += shift;
+                        }
+                        if shifted == curr_desire.amount {
+                            // if shifted in total enough to cover desire, break out of loop.
+                            break;
+                        }
+                    }
+                    if shifted < curr_desire.amount {
+                        finished.push(curr_desire);
+                    }
+                },
                 crate::item::Item::Good(id) => {
                     // Good, so just find and insert
                     if let Some(rec) = self.property.get_mut(&id) {
-                        let available = rec.owned - rec.reserved;
+                        // How much we can shift over.
+                        let shift = rec.available().min(curr_desire.amount);
+                        rec.reserved += shift;
+                        curr_desire.satisfaction += shift;
+                        if curr_desire.amount > shift { 
+                            // if couldn't satisfy the level totally, mark finished.
+                            finished.push(curr_desire);
+                        }
+                    } else {
+                        // If we can't find the good in property, GTFO.
+                        finished.push(curr_desire);
                     }
                 },
             }
@@ -239,7 +287,7 @@ impl Pop {
 
 /// Helper for pop property.
 #[derive(Debug, Copy, Clone)]
-struct PropertyRecord {
+pub struct PropertyRecord {
     /// How many units are owned by the pop right now.
     pub owned: f64,
     /// How many they want to keep at all times. This also covers
@@ -262,5 +310,41 @@ impl PropertyRecord {
             traded: 0.0,
             offered: 0.0,
         }
+    }
+
+    /// Available
+    /// 
+    /// How many goods are available to be used/expended.
+    /// This is effectively the difference between owned and reserved.
+    pub fn available(&self) -> f64 {
+        self.owned - self.reserved
+    }
+}
+
+/// # Want Record
+/// 
+/// Records want data for the pop, including how much is available today,
+/// reserved wants,
+#[derive(Debug, Clone)]
+pub struct WantRecord {
+    /// How much is currnetly owned.
+    pub owned: f64,
+    /// How much has been reserved for desires
+    pub reserved: f64,
+}
+
+impl WantRecord {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    fn available(&self) -> f64 {
+        self.owned - self.reserved
+    }
+}
+
+impl Default for WantRecord {
+    fn default() -> Self {
+        Self::new()
     }
 }

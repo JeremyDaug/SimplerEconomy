@@ -11,7 +11,11 @@ pub struct Want {
     /// Name of the want, should be unique.
     pub name: String,
     /// The additional effects of a want that are applied to the owner at day's end.
-    pub effects: Vec<WantEffect>
+    pub effects: Vec<WantEffect>,
+    /// All sources which 
+    pub ownership_sources: Vec<usize>,
+    pub use_sources: Vec<usize>,
+    pub consumption_sources: Vec<usize>,
 }
 
 impl Want {
@@ -20,6 +24,9 @@ impl Want {
             id,
             name,
             effects: vec![],
+            ownership_sources: vec![],
+            use_sources: vec![],
+            consumption_sources: vec![],
         }
     }
 
