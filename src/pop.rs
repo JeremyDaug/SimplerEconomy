@@ -1,8 +1,10 @@
-use std::{collections::{HashMap, HashSet, VecDeque}, mem::discriminant, thread::current};
+use std::{collections::{BTreeMap, HashMap, VecDeque}, mem::discriminant};
 
 use itertools::Itertools;
 
 use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market, species::Species};
+
+use ordered_float::OrderedFloat;
 
 /// # Pop
 /// 
@@ -109,30 +111,42 @@ impl Pop {
     /// There's no special prioritization, start at the bottom of desires, add to
     /// the first, and go from there. 
     pub fn satisfy_desires(&mut self, data: &Data) {
-        /// Original ordering for simplicity.
-        let og_desires = self.desires.clone();
-        // use self.desires as our working space and reorganize back to original at end.
-        // A holding space for desires that have been totally satisfied to simplify 
+        // Move current desires into a working btreemap for easier organization and management.
+        let mut working_desires: BTreeMap<OrderedFloat<f64>, Desire> = BTreeMap::new();
+        for desire in self.desires.iter() {
+            let start = OrderedFloat(desire.start);
+            working_desires.insert(start, desire.clone());
+        }
+        // A holding space for desires that have been totally satisfied to simplify
         let mut finished: Vec<Desire> = vec![];
         loop {
-            if self.desires.len() == 0 {
+            // Get current step and desire from the front of the working desires. If no next one, leave loop.
+            let (current_step, mut current_desire) = 
+            if let Some((current_step, current_desire)) = working_desires.pop_first() {
+                (current_step, current_desire)
+            } else {
                 break;
-            }
-            let mut curr_desire = self.desires.pop_front().unwrap();
-            match curr_desire.item {
+            };
+            // prep our shifted record for checking if we succeeded at satisfying the desire.
+            let mut shifted = 0.0;
+            match current_desire.item {
                 crate::item::Item::Want(id) => {
                     // want is the most complicated, but follows a standard priority method.
                     // First, try to get wants from storage.
                     let mut shifted = 0.0;
                     if let Some(want_rec) = self.wants.get_mut(&id) {
-                        let shift = want_rec.available().min(curr_desire.amount - shifted);
+                        let shift = want_rec.available().min(current_desire.amount - shifted);
                         want_rec.reserved += shift;
-                        curr_desire.satisfaction += shift;
+                        current_desire.satisfaction += shift;
                         shifted += shift;
                     }
-                    if shifted != curr_desire.amount {
+                    if shifted != current_desire.amount {
                         // First try to get via ownership
-                        // TODO: DO this!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                        let want = data.get_want(id);
+                        // get the goods we can use for this.
+                        for good in want.ownership_sources.iter().filter(|x| self.property.contains_key(x)) {
+                            // with a good gotten, reserve as much as necessary to satisfy it.
+                        }
                     }
                     // then try for use
                     // lastly consumption
@@ -143,36 +157,34 @@ impl Pop {
                     for member in members.iter() {
                         if let Some(rec) = self.property.get_mut(member) {
                             // get how much we can shift over, capping at the target sans already moved goods.
-                            let shift = rec.available().min(curr_desire.amount - shifted);
+                            let shift = rec.available().min(current_desire.amount - shifted);
                             rec.reserved += shift;
-                            curr_desire.satisfaction += shift;
+                            current_desire.satisfaction += shift;
                             shifted += shift;
                         }
-                        if shifted == curr_desire.amount {
+                        if shifted == current_desire.amount {
                             // if shifted in total enough to cover desire, break out of loop.
                             break;
                         }
-                    }
-                    if shifted < curr_desire.amount {
-                        finished.push(curr_desire);
                     }
                 },
                 crate::item::Item::Good(id) => {
                     // Good, so just find and insert
                     if let Some(rec) = self.property.get_mut(&id) {
                         // How much we can shift over.
-                        let shift = rec.available().min(curr_desire.amount);
-                        rec.reserved += shift;
-                        curr_desire.satisfaction += shift;
-                        if curr_desire.amount > shift { 
-                            // if couldn't satisfy the level totally, mark finished.
-                            finished.push(curr_desire);
-                        }
-                    } else {
-                        // If we can't find the good in property, GTFO.
-                        finished.push(curr_desire);
+                        let shift = rec.available().min(current_desire.amount);
+                        shifted += shift; // add to shifted for later checking
+                        rec.reserved += shift; // add to reserved.
+                        current_desire.satisfaction += shift; // and to satisfaction.
                     }
                 },
+            }
+            // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
+            if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
+                finished.push(current_desire);
+            } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
+                let next_step = current_desire.next_step(current_step.0);
+                
             }
         }
     }

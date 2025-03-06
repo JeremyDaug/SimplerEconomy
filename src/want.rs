@@ -12,9 +12,11 @@ pub struct Want {
     pub name: String,
     /// The additional effects of a want that are applied to the owner at day's end.
     pub effects: Vec<WantEffect>,
-    /// All sources which 
+    /// All sources which produce the want via ownership.
     pub ownership_sources: Vec<usize>,
+    /// Sources which produce via use.
     pub use_sources: Vec<usize>,
+    /// Sources which produce via consumption.
     pub consumption_sources: Vec<usize>,
 }
 

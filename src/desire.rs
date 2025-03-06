@@ -266,6 +266,51 @@ impl Desire {
             self.start * interval.powf(step)
         } else { self.start }
     }
+    
+    /// # Get Step
+    /// 
+    /// Gets the value of the step given, if not a valid step it returns None.
+    /// 
+    /// This can be given fractional steps and will return properly.
+    /// 
+    /// self.start * self.interval.powf(step)
+    pub(crate) fn get_step(&self, step: f64) -> Option<f64> {
+        if step < 0.0 { // if negative value, just return None, no step should be negative.
+            None
+        } else if let Some(interval) = self.interval { // if it has interval, check if in interval
+            if let Some(max_steps) = self.steps { // if we have a max number of steps.
+                if (max_steps.get() as f64) < step { // and we're above that max step
+                    None
+                } else { // if within that number of steps, get step
+                    Some(self.start * interval.powf(step))
+                }
+            } else { // If no end step
+                Some(self.start * interval.powf(step))
+            }
+        } else if step == 0.0 { // if no interval, only step 0.0 returns value.
+            Some(self.start)
+        } else { // all other cases are always None.
+            None
+        }
+    }
+    
+    /// # Is Fully Satisfied
+    /// 
+    /// Checks if a desire has been fully satisfied.
+    /// 
+    /// IE, the amount of satisfaction is equal to
+    /// self.amount * self.steps. 
+    pub fn is_fully_satisfied(&self) -> bool {
+        if let Some(_) = self.interval { // if we have an interval
+            if let Some(steps) = self.steps { // and are finite
+                return ((steps.get() as f64) * self.amount) == self.satisfaction;
+            } else { // if not finite, can never be satisfied
+                return true;
+            }
+        }
+        // if no interval amount needs to be equal to satisfaction.
+        return self.amount == self.satisfaction;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
