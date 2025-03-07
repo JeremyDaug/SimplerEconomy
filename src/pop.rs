@@ -140,7 +140,7 @@ impl Pop {
                         current_desire.satisfaction += shift;
                         shifted += shift;
                     }
-                    if shifted != current_desire.amount {
+                    if shifted < current_desire.amount {
                         // First try to get via ownership
                         let want = data.get_want(id);
                         // get the goods we can use for this.
@@ -152,9 +152,10 @@ impl Pop {
                     // lastly consumption
                 },
                 crate::item::Item::Class(id) => {
+                    // get members of the class
                     let members = data.get_class(id);
-                    let mut shifted = 0.0;
                     for member in members.iter() {
+                        // if we have the member, use it.
                         if let Some(rec) = self.property.get_mut(member) {
                             // get how much we can shift over, capping at the target sans already moved goods.
                             let shift = rec.available().min(current_desire.amount - shifted);
@@ -183,7 +184,8 @@ impl Pop {
             if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
                 finished.push(current_desire);
             } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
-                let next_step = current_desire.next_step(current_step.0);
+                let next_step = current_desire.next_step(current_step.0)
+                    .expect("Next Step should exist, but seemingly does not. Investigate why.");
                 
             }
         }
