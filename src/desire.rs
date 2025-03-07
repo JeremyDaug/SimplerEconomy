@@ -117,7 +117,7 @@ impl Desire {
     /// Panics if interval is not positive.
     pub fn with_interval(mut self, interval: f64, steps: usize) -> Self {
         assert!(interval > 1.0, "Interval must Greater than 1.0.");
-        assert!(!interval.is_nan(), "Interval must be a number.");
+        assert!(interval.is_finite(), "Interval must be a finite number.");
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }

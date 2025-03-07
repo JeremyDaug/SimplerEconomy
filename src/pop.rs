@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, HashMap, VecDeque}, mem::discriminant};
+use std::{collections::{BTreeMap, HashMap, VecDeque}, env::current_exe, mem::discriminant};
 
 use itertools::Itertools;
 
@@ -133,23 +133,54 @@ impl Pop {
                 crate::item::Item::Want(id) => {
                     // want is the most complicated, but follows a standard priority method.
                     // First, try to get wants from storage.
-                    let mut shifted = 0.0;
                     if let Some(want_rec) = self.wants.get_mut(&id) {
+                        // get available want
                         let shift = want_rec.available().min(current_desire.amount - shifted);
-                        want_rec.reserved += shift;
+                        want_rec.reserved += shift; // shift
                         current_desire.satisfaction += shift;
                         shifted += shift;
                     }
-                    if shifted < current_desire.amount {
+                    if shifted < current_desire.amount { // check if we need more.
                         // First try to get via ownership
                         let want = data.get_want(id);
                         // get the goods we can use for this.
-                        for good in want.ownership_sources.iter().filter(|x| self.property.contains_key(x)) {
+                        for good in want.ownership_sources.iter() {
                             // with a good gotten, reserve as much as necessary to satisfy it.
+                            if let Some(good_rec) = self.property.get_mut(good) {
+                                // Get how many of the good we need to reserve for it.
+                                let good_data = data.get_good(*good);
+                                let eff = *good_data.own_wants.get(&id)
+                                    .expect("Want not found in good ownership effects.");
+                                let target = current_desire.amount / eff;
+                                let shift = target.min(good_rec.available());
+                                // shift and reserve
+                                shifted += shift * eff;
+                                good_rec.reserved += shift;
+                                current_desire.satisfaction += shift * eff;
+                                // add the extra wants to expected for later uses.
+                                for (&want, &eff) in good_data.own_wants.iter()
+                                .filter(|(&x, _)| *good != x) { 
+                                    // add the wants to expected.
+                                    self.wants.entry(want)
+                                    .and_modify(|x| x.expected += eff * shift)
+                                    .or_insert({
+                                        let mut t = WantRecord::new();
+                                        t.expected += eff * shift;
+                                        t
+                                    });
+                                }
+                            }
+                            if shifted > current_desire.amount {
+                                break;
+                            }
                         }
                     }
-                    // then try for use
-                    // lastly consumption
+                    if shifted < current_desire.amount {
+                        // then try for use
+                    }
+                    if shifted < current_desire.amount {
+                        // lastly consumption
+                    }
                 },
                 crate::item::Item::Class(id) => {
                     // get members of the class
@@ -164,7 +195,7 @@ impl Pop {
                             shifted += shift;
                         }
                         if shifted == current_desire.amount {
-                            // if shifted in total enough to cover desire, break out of loop.
+                            // if shifted enough to cover desire, stop trying.
                             break;
                         }
                     }
@@ -307,6 +338,7 @@ pub struct PropertyRecord {
     /// How many they want to keep at all times. This also covers
     /// reservations to satisfy desires.
     pub reserved: f64,
+    // We don't use expected goods here as all consumption happens simultaniously.
     /// How many they have used today to satisfy desires.
     pub expended: f64,
     /// How many were given up in trade.
@@ -345,20 +377,29 @@ pub struct WantRecord {
     pub owned: f64,
     /// How much has been reserved for desires
     pub reserved: f64,
+    /// How many we are expecting to get during consumption.
+    /// 
+    pub expected: f64,
 }
 
 impl WantRecord {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            owned: 0.0,
+            reserved: 0.0,
+            expected: 0.0,
+        }
     }
     
+    /// # Available 
+    /// 
+    /// How many wants are available for planning purposes.
+    /// 
+    /// Includes currently owned and expected and removes wants that are 
+    /// already reserved.
+    /// 
+    /// As wants cannot be traded, this should be safe in all cases.
     fn available(&self) -> f64 {
-        self.owned - self.reserved
-    }
-}
-
-impl Default for WantRecord {
-    fn default() -> Self {
-        Self::new()
+        self.owned - self.reserved + self.expected
     }
 }
