@@ -104,6 +104,8 @@ impl Good {
     /// 
     /// 1.0 Is alwasy decays, 0.0 is never decays.
     /// 
+    /// Default value from new is 0.0.
+    /// 
     /// # Panics
     /// 
     /// If Decay Rate is not between 0.0 and 1.0 inclusive.

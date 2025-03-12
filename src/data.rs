@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{culture::Culture, good::Good, process::Process, species::Species, want::Want};
+use crate::{constants::TIME_ID, culture::Culture, good::Good, process::Process, species::Species, want::Want};
 
 /// # Data
 pub struct Data {
@@ -37,7 +37,7 @@ impl Data {
     /// If unable to add, it returns Err instead of OK().
     pub fn try_add_good(&mut self, good: Good) -> Result<(), String>{
         // Keep out duplicates.
-        if !self.goods.contains_key(&good.id) {
+        if self.goods.contains_key(&good.id) {
             return Err(format!("Good '{}' already exists in data.", good.id));
         }
         // check class membership is valid.
@@ -157,5 +157,15 @@ impl Data {
     pub fn get_want(&self, id: usize) -> &Want {
         self.wants.get(&id)
         .expect(format!("Want '{}' not found!", id).as_str())
+    }
+    
+    /// # Add Time
+    /// 
+    /// Adds time, the default product, to the data. Overrides whatever
+    /// is in Good ID 0.
+    pub fn add_time(&mut self) {
+        self.goods.insert(TIME_ID, 
+        Good::new(TIME_ID, String::from("Time"), String::new())
+        .with_decay_rate(1.0));
     }
 }

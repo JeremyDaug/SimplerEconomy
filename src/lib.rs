@@ -718,5 +718,29 @@ mod tests {
                 assert_eq!(new_des.amount, 3.0);
             }
         }
+        
+        mod satisfy_desires_should {
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 1.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(100.0)); 
+
+                test.satisfy_desires(&data);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 100.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
+            }
+        }
     }
 }

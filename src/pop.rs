@@ -205,7 +205,7 @@ impl Pop {
                                 // get our available time, capped at our target.
                                 let available_time = time_target
                                     .min(self.property.get(&TIME_ID)
-                                        .unwrap_or(&PropertyRecord::new()).available()
+                                        .unwrap_or(&PropertyRecord::new(0.0)).available()
                                     );
                                 if available_time != time_target { // if available time is not enough
                                     // reduce target by available time.
@@ -265,7 +265,7 @@ impl Pop {
                                 // get our available time, capped at our target.
                                 let available_time = time_target
                                     .min(self.property.get(&TIME_ID)
-                                        .unwrap_or(&PropertyRecord::new()).available()
+                                        .unwrap_or(&PropertyRecord::new(0.0)).available()
                                     );
                                 if available_time != time_target { // if available time is not enough
                                     // reduce target by available time.
@@ -473,9 +473,9 @@ pub struct PropertyRecord {
 }
 
 impl PropertyRecord {
-    pub fn new() -> Self {
+    pub fn new(owned: f64) -> Self {
         Self {
-            owned: 0.0,
+            owned,
             reserved: 0.0,
             expended: 0.0,
             traded: 0.0,
