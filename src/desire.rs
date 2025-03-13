@@ -195,7 +195,7 @@ impl Desire {
     /// # Equals
     /// 
     /// A specific check for desires that ensures they are effectively the same.
-    /// It checks that everything BUT amount is the same.
+    /// It checks that everything BUT amount and satisfaction is the same.
     pub fn equals(&self, other: &Desire) -> bool {
         if self.item == other.item &&
         self.start == other.start &&
@@ -305,7 +305,7 @@ impl Desire {
             if let Some(steps) = self.steps { // and are finite
                 return ((steps.get() as f64) * self.amount) == self.satisfaction;
             } else { // if not finite, can never be satisfied
-                return true;
+                return false;
             }
         }
         // if no interval amount needs to be equal to satisfaction.

@@ -720,7 +720,9 @@ mod tests {
         }
         
         mod satisfy_desires_should {
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -739,7 +741,66 @@ mod tests {
                 test.satisfy_desires(&data);
 
                 assert_eq!(test.desires.get(0).unwrap().satisfaction, 100.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 100.0);
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
+
+                let desire = Desire::new(Item::Class(4), 1.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+
+                test.satisfy_desires(&data);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Class(4), 1.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+
+                test.satisfy_desires(&data);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
             }
         }
     }

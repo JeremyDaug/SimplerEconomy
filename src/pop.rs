@@ -99,12 +99,14 @@ impl Pop {
     /// Combines the households of the pop and combines them into one in the pop.
     /// 
     /// Does not handle Demographic Desires.
-    pub fn combine_households(&mut self, data: &Data) {
+    pub fn combine_households(&mut self, _data: &Data) {
         self.households = Household::zeroed_household();
         for row in self.demo_breakdown.iter() {
             self.households.combine(&row.household);
         }
     }
+
+    // TODO: Insert here a 'satsify til incomplete' which satsifies as satisfy_desires below, but exits at the first unsatisfied step. This will be used for purchasing priorities.
 
     /// # Satisfy Desires
     /// 
@@ -114,17 +116,19 @@ impl Pop {
     /// the first, and go from there. 
     pub fn satisfy_desires(&mut self, data: &Data) {
         // Move current desires into a working btreemap for easier organization and management.
-        let mut working_desires: BTreeMap<OrderedFloat<f64>, Desire> = BTreeMap::new();
-        for desire in self.desires.iter() {
-            let start = OrderedFloat(desire.start);
-            working_desires.insert(start, desire.clone());
+        println!("Satisfying Desires.");
+        // Working desires, includes the current tier it's on, and the desire.
+        let mut working_desires: VecDeque<(f64, Desire)> = VecDeque::new();
+        for desire in self.desires.iter() { // initial list is always sorted, so just move over.
+            working_desires.push_back((desire.start, desire.clone()));
         }
         // A holding space for desires that have been totally satisfied to simplify
         let mut finished: Vec<Desire> = vec![];
         loop {
             // Get current step and desire from the front of the working desires. If no next one, leave loop.
             let (current_step, mut current_desire) = 
-            if let Some((current_step, current_desire)) = working_desires.pop_first() {
+            if let Some((current_step, current_desire)) = working_desires.pop_front() {
+                println!("Current Step: {}", current_step);
                 (current_step, current_desire)
             } else {
                 break;
@@ -314,7 +318,11 @@ impl Pop {
                         // if we have the member, use it.
                         if let Some(rec) = self.property.get_mut(member) {
                             // get how much we can shift over, capping at the target sans already moved goods.
-                            let shift = rec.available().min(current_desire.amount - shifted);
+                            let shift = if rec.available() == 0.0 {
+                                continue;
+                            } else {
+                                rec.available().min(current_desire.amount - shifted)
+                            };
                             rec.reserved += shift;
                             current_desire.satisfaction += shift;
                             shifted += shift;
@@ -326,24 +334,37 @@ impl Pop {
                     }
                 },
                 crate::item::Item::Good(id) => {
+                    println!("Satisfying Good: {}.", id);
                     // Good, so just find and insert
                     if let Some(rec) = self.property.get_mut(&id) {
+                        println!("Has in property.");
                         // How much we can shift over.
                         let shift = rec.available().min(current_desire.amount);
+                        println!("Shifting: {}", shift);
                         shifted += shift; // add to shifted for later checking
                         rec.reserved += shift; // add to reserved.
                         current_desire.satisfaction += shift; // and to satisfaction.
+                        println!("Current Satisfaction: {}", current_desire.satisfaction);
                     }
                 },
             }
             // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
             if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
+                println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
+                println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
                 finished.push(current_desire);
             } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
-                let next_step = current_desire.next_step(current_step.0)
+                println!("Repeat Desire.");
+                let next_step = current_desire.next_step(current_step)
                     .expect("Next Step should exist, but seemingly does not. Investigate why.");
-                
+                Self::ordered_desire_insert(&mut working_desires, current_desire, next_step);
             }
+        }
+        // after doing all satisfactions, put them back in.
+        for des in finished {
+            println!("Inserting Finished Desires.");
+            let (idx, _) = self.desires.iter().find_position(|x| x.equals(&des)).expect("Could not find desire.");
+            self.desires.get_mut(idx).unwrap().satisfaction = des.satisfaction;
         }
     }
 
@@ -452,6 +473,21 @@ impl Pop {
         }
         // multiply the desrie amount by the multiplier.
         new_des.amount = new_des.amount * multiplier;
+    }
+    
+    /// Helper function
+    /// 
+    /// Adds a desire at a given tier to our working desires vecdeque.
+    /// 
+    /// If multiples of the tier exist, it adds after all existing ones.
+    fn ordered_desire_insert(working_desires: &mut VecDeque<(f64, Desire)>, desire: Desire, tier: f64) {
+        for idx in 0..working_desires.len() {
+            if tier < working_desires.get(idx).unwrap().0 {
+                working_desires.insert(idx, (tier, desire));
+                return;
+            }
+        }
+        working_desires.push_back((tier, desire));
     }
 }
 
