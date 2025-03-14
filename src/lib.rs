@@ -787,7 +787,7 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Want(4), 1.0, 1.0)
+                let desire = Desire::new(Item::Want(4), 10.0, 1.0)
                     .with_interval(2.0, 0);
 
                 let mut test = Pop::new(0, 0, 0);
@@ -812,8 +812,8 @@ mod tests {
                 assert_eq!(test.wants.get(&4).unwrap().owned, 10.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
                 assert_eq!(test.wants.get(&5).unwrap().expected, 60.0);
-                assert_eq!(test.wants.get(&4).unwrap().expected, 15.0);
-                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
+                assert_eq!(test.wants.get(&6).unwrap().expected, 15.0);
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 40.0);
             }
         }
     }
