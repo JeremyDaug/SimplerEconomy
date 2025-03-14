@@ -137,14 +137,18 @@ impl Pop {
             let mut shifted = 0.0;
             match current_desire.item {
                 crate::item::Item::Want(id) => {
+                    println!("Getting Wants");
                     // want is the most complicated, but follows a standard priority method.
                     // First, try to get wants from storage.
                     if let Some(want_rec) = self.wants.get_mut(&id) {
                         // get available want
                         let shift = want_rec.available().min(current_desire.amount - shifted);
-                        want_rec.reserved += shift; // shift
-                        current_desire.satisfaction += shift;
-                        shifted += shift;
+                        if shift > 0.0 {
+                            println!("Have want already, reserving.");
+                            want_rec.reserved += shift; // shift
+                            current_desire.satisfaction += shift;
+                            shifted += shift;
+                        }
                     }
                     // First try to get via ownership
                     if shifted < current_desire.amount { // check if we need more.
@@ -159,29 +163,32 @@ impl Pop {
                                     .expect("Want not found in good ownership effects.");
                                 let target = current_desire.amount / eff;
                                 let shift = target.min(good_rec.available());
-                                // shift and reserve
-                                shifted += shift * eff;
-                                good_rec.reserved += shift;
-                                current_desire.satisfaction += shift * eff;
-                                // add the extra wants to expected for later uses.
-                                for (&want, &eff) in good_data.own_wants.iter()
-                                .filter(|(&x, _)| *good != x) { 
-                                    // add the wants to expected.
-                                    self.wants.entry(want)
-                                    .and_modify(|x| {
-                                        x.expected += eff * shift;
-                                        if want == id {
-                                            x.reserved += eff * shift;
-                                        }
-                                    })
-                                    .or_insert({
-                                        let mut t = WantRecord::new();
-                                        t.expected += eff * shift;
-                                        if want == id {
-                                            t.reserved += eff * shift;
-                                        }
-                                        t
-                                    });
+                                if shift > 0.0 {
+                                    println!("Getting Ownership Source.");
+                                    // shift and reserve
+                                    shifted += shift * eff;
+                                    good_rec.reserved += shift;
+                                    current_desire.satisfaction += shift * eff;
+                                    // add the extra wants to expected for later uses.
+                                    for (&want, &eff) in good_data.own_wants.iter()
+                                    .filter(|(&x, _)| *good != x) { 
+                                        // add the wants to expected.
+                                        self.wants.entry(want)
+                                        .and_modify(|x| {
+                                            x.expected += eff * shift;
+                                            if want == id {
+                                                x.reserved += eff * shift;
+                                            }
+                                        })
+                                        .or_insert({
+                                            let mut t = WantRecord::new();
+                                            t.expected += eff * shift;
+                                            if want == id {
+                                                t.reserved += eff * shift;
+                                            }
+                                            t
+                                        });
+                                    }
                                 }
                             }
                             if shifted > current_desire.amount {
@@ -217,32 +224,34 @@ impl Pop {
                                 }
                                 // with target gotten and possibly corrected, do the shift
                                 let shift = target.min(good_rec.available());
-                                // shift and reserve good and the want
-                                shifted += shift * eff;
-                                good_rec.reserved += shift;
-                                current_desire.satisfaction += shift * eff;
-                                // shift time as well
-                                self.property.get_mut(&TIME_ID).unwrap()
-                                    .reserved += shifted * good_data.use_time;
-                                // add the extra wants to expected for later uses.
-                                for (&want, &eff) in good_data.own_wants.iter()
-                                .filter(|(&x, _)| *good != x) { 
-                                    // add the wants to expected.
-                                    self.wants.entry(want)
-                                    .and_modify(|x| {
-                                        x.expected += eff * shift;
-                                        if want == id {
-                                            x.reserved += eff * shift;
-                                        }
-                                    })
-                                    .or_insert({
-                                        let mut t = WantRecord::new();
-                                        t.expected += eff * shift;
-                                        if want == id {
-                                            t.reserved += eff * shift;
-                                        }
-                                        t
-                                    });
+                                if shift > 0.0 {
+                                    // shift and reserve good and the want
+                                    shifted += shift * eff;
+                                    good_rec.reserved += shift;
+                                    current_desire.satisfaction += shift * eff;
+                                    // shift time as well
+                                    self.property.get_mut(&TIME_ID).unwrap()
+                                        .reserved += shifted * good_data.use_time;
+                                    // add the extra wants to expected for later uses.
+                                    for (&want, &eff) in good_data.own_wants.iter()
+                                    .filter(|(&x, _)| *good != x) { 
+                                        // add the wants to expected.
+                                        self.wants.entry(want)
+                                        .and_modify(|x| {
+                                            x.expected += eff * shift;
+                                            if want == id {
+                                                x.reserved += eff * shift;
+                                            }
+                                        })
+                                        .or_insert({
+                                            let mut t = WantRecord::new();
+                                            t.expected += eff * shift;
+                                            if want == id {
+                                                t.reserved += eff * shift;
+                                            }
+                                            t
+                                        });
+                                    }
                                 }
                             }
                             if shifted > current_desire.amount {

@@ -722,7 +722,7 @@ mod tests {
         mod satisfy_desires_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}, want::Want};
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -784,23 +784,36 @@ mod tests {
                     .with_ownership(wants.clone()));
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
                     .with_uses(2.0, wants.clone()));
-                data.add_good(Good::new(5, String::from("testGood3"), String::new())
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Class(4), 1.0, 1.0)
+                let desire = Desire::new(Item::Want(4), 1.0, 1.0)
                     .with_interval(2.0, 0);
 
                 let mut test = Pop::new(0, 0, 0);
 
                 test.desires.push_back(desire);
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
                 test.property.insert(4, PropertyRecord::new(10.0)); 
                 test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
 
                 test.satisfy_desires(&data);
 
-                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 60.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 15.0);
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
             }
         }
     }
