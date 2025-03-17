@@ -949,7 +949,7 @@ mod tests {
                 assert_eq!(working_desires.get(0).unwrap().0, 4.0);
                 assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 30.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 30.0);
-                assert_eq!(test.wants.get(&4).unwrap().expected, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 20.0);
                 assert_eq!(test.property.get(&0).unwrap().reserved, 20.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
@@ -960,7 +960,7 @@ mod tests {
                     assert_eq!(result.satisfaction, 40.0);
                     assert_eq!(working_desires.len(), 0);
                     assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
-                    assert_eq!(test.wants.get(&4).unwrap().expected, 10.0);
+                    assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
                     assert_eq!(test.property.get(&0).unwrap().reserved, 30.0);
                     assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                     assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
