@@ -146,10 +146,10 @@ impl Desire {
     /// let d = Desire::new(Item::Want(0), 1.0, 1.0);
     /// assert_eq!(d.end(), Some(1.0));
     /// let d = Desire::new(Item::Want(0), 1.0, 1.0)
-    ///     .with_interval(2.0, Some(2));
+    ///     .with_interval(2.0, 2);
     /// assert_eq!(d.end(), Some(4.0));
     /// let d = Desire::new(Item::Want(0), 1.0, 1.0)
-    ///     .with_interval(2.0, None);
+    ///     .with_interval(2.0, 0);
     /// assert_eq!(d.end(), None);
     /// ```
     pub fn end(&self) -> Option<f64> {

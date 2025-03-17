@@ -2,7 +2,7 @@ use std::{collections::{BTreeMap, HashMap, VecDeque}, env::current_exe, mem::dis
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market, species::Species};
+use crate::{data::{self, Data}, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market, species::Species};
 
 use ordered_float::OrderedFloat;
 
@@ -107,6 +107,265 @@ impl Pop {
     }
 
     // TODO: Insert here a 'satsify til incomplete' which satsifies as satisfy_desires below, but exits at the first unsatisfied step. This will be used for purchasing priorities.
+
+    /// # Satisfy Next desire
+    /// 
+    /// Satisfies the next desire in working_desires.
+    /// 
+    /// This will reserve wants and goods for 
+    pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<(f64, Desire)>, 
+    data: &Data) -> Option<Desire> {
+        // Get current step and desire from the front of the working desires. If no next one, leave loop.
+        let (current_step, mut current_desire) = 
+        if let Some((current_step, current_desire)) = working_desires.pop_front() {
+            println!("Current Step: {}", current_step);
+            (current_step, current_desire)
+        } else {
+            return None;
+        };
+        // prep our shifted record for checking if we succeeded at satisfying the desire.
+        let mut shifted = 0.0;
+        match current_desire.item {
+            crate::item::Item::Want(id) => {
+                println!("Getting Wants");
+                // want is the most complicated, but follows a standard priority method.
+                // First, try to get wants from storage.
+                if let Some(want_rec) = self.wants.get_mut(&id) {
+                    // get available want
+                    let shift = want_rec.available().min(current_desire.amount - shifted);
+                    if shift > 0.0 {
+                        println!("Have want already, reserving.");
+                        want_rec.reserved += shift; // shift
+                        current_desire.satisfaction += shift;
+                        shifted += shift;
+                    }
+                }
+                // First try to get via ownership
+                if shifted < current_desire.amount { // check if we need more.
+                    let want = data.get_want(id);
+                    // get the goods we can use for this.
+                    for good in want.ownership_sources.iter() {
+                        // with a good gotten, reserve as much as necessary to satisfy it.
+                        if let Some(good_rec) = self.property.get_mut(good) {
+                            // Get how many of the good we need to reserve for it.
+                            let good_data = data.get_good(*good);
+                            let eff = *good_data.own_wants.get(&id)
+                                .expect("Want not found in good ownership effects.");
+                            let target = current_desire.amount / eff;
+                            let shift = target.min(good_rec.available());
+                            if shift > 0.0 {
+                                println!("Getting Ownership Source.");
+                                // shift and reserve
+                                shifted += shift * eff;
+                                good_rec.reserved += shift;
+                                current_desire.satisfaction += shift * eff;
+                                // add the extra wants to expected for later uses.
+                                for (&want, &eff) in good_data.own_wants.iter() { 
+                                    // add the wants to expected.
+                                    if let Some(rec) = self.wants.get_mut(&want) {
+                                        rec.expected += eff * shift;
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                    } else {
+                                        let mut rec = WantRecord {
+                                            owned: 0.0,
+                                            reserved: 0.0,
+                                            expected: eff * shift,
+                                        };
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                        self.wants.insert(want, rec);
+                                    }
+                                }
+                            }
+                        }
+                        if shifted > current_desire.amount {
+                            break;
+                        }
+                    }
+                }
+                // Then try for use if we still need more.
+                if shifted < current_desire.amount { // then try for use
+                    let want = data.get_want(id);
+                    // get the goods we can use for this.
+                    for good in want.use_sources.iter() {
+                        // with a good gotten, reserve as much as necessary to satisfy it.
+                        if self.property.contains_key(good) {
+                            // get time and the good
+                            let mut good_rec = self.property.remove(good).unwrap();
+                            // Get how many of the good we need to reserve for it.
+                            let good_data = data.get_good(*good);
+                            // get efficiency of producing that want.
+                            let eff = *good_data.use_wants.get(&id)
+                                .expect("Want not found in good ownership effects.");
+                            let mut target = current_desire.amount / eff;
+                            // get time target
+                            let time_target = good_data.use_time * target;
+                            // get our available time, capped at our target.
+                            let available_time = time_target
+                                .min(self.property.get(&TIME_ID)
+                                    .unwrap_or(&PropertyRecord::new(0.0)).available()
+                                );
+                            if available_time != time_target { // if available time is not enough
+                                // reduce target by available time.
+                                target = available_time / time_target * target;
+                            }
+                            // with target gotten and possibly corrected, do the shift
+                            let shift = target.min(good_rec.available());
+                            if shift > 0.0 {
+                                // shift and reserve good and the want
+                                shifted += shift * eff;
+                                good_rec.reserved += shift;
+                                current_desire.satisfaction += shift * eff;
+                                // shift time as well
+                                self.property.get_mut(&TIME_ID).unwrap()
+                                    .reserved += shifted * good_data.use_time;
+                                // add the extra wants to expected for later uses.
+                                for (&want, &eff) in good_data.use_wants.iter() { 
+                                    // add the wants to expected.
+                                    if let Some(rec) = self.wants.get_mut(&want) {
+                                        rec.expected += eff * shift;
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                    } else {
+                                        let mut rec = WantRecord {
+                                            owned: 0.0,
+                                            reserved: 0.0,
+                                            expected: eff * shift,
+                                        };
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                        self.wants.insert(want, rec);
+                                    }
+                                }
+                            }
+                            // put good_rec back in regardless of result
+                            self.property.insert(*good, good_rec);
+                        }
+                        if shifted > current_desire.amount {
+                            break;
+                        }
+                    }
+                }
+                if shifted < current_desire.amount { // lastly consumption
+                    let want = data.get_want(id);
+                    // get the goods we can consume for this.
+                    for good in want.consumption_sources.iter() {
+                        // with a good gotten, reserve as much as necessary to satisfy it.
+                        if self.property.contains_key(good) {
+                            // get time and the good
+                            let mut good_rec = self.property.remove(good).unwrap();
+                            // Get how many of the good we need to reserve for it.
+                            let good_data = data.get_good(*good);
+                            // get efficiency of producing that want.
+                            let eff = *good_data.consumption_wants.get(&id)
+                                .expect("Want not found in good ownership effects.");
+                            let mut target = current_desire.amount / eff;
+                            // get time target
+                            let time_target = good_data.consumption_time * target;
+                            // get our available time, capped at our target.
+                            let available_time = time_target
+                                .min(self.property.get(&TIME_ID)
+                                    .unwrap_or(&PropertyRecord::new(0.0)).available()
+                                );
+                            if available_time != time_target { // if available time is not enough
+                                // reduce target by available time.
+                                target = available_time / time_target * target;
+                            }
+                            // with target gotten and possibly corrected, do the shift
+                            let shift = target.min(good_rec.available());
+                            if shift > 0.0 {
+                                // shift and reserve good and the want
+                                shifted += shift * eff;
+                                good_rec.reserved += shift;
+                                current_desire.satisfaction += shift * eff;
+                                // shift time as well
+                                self.property.get_mut(&TIME_ID).unwrap()
+                                    .reserved += shifted * good_data.consumption_time;
+                                // add the extra wants to expected for later uses.
+                                for (&want, &eff) in good_data.consumption_wants.iter() {
+                                    // add the wants to expected.
+                                    if let Some(rec) = self.wants.get_mut(&want) {
+                                        rec.expected += eff * shift;
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                    } else {
+                                        let mut rec = WantRecord {
+                                            owned: 0.0,
+                                            reserved: 0.0,
+                                            expected: eff * shift,
+                                        };
+                                        if want == id {
+                                            rec.reserved += eff * shift;
+                                        }
+                                        self.wants.insert(want, rec);
+                                    }
+                                }
+                            }
+                            // put good_rec back in regardless of result
+                            self.property.insert(*good, good_rec);
+                        }
+                        if shifted > current_desire.amount {
+                            break;
+                        }
+                    }
+                }
+            },
+            crate::item::Item::Class(id) => {
+                // get members of the class
+                let members = data.get_class(id);
+                for member in members.iter() {
+                    // if we have the member, use it.
+                    if let Some(rec) = self.property.get_mut(member) {
+                        // get how much we can shift over, capping at the target sans already moved goods.
+                        let shift = if rec.available() == 0.0 {
+                            continue;
+                        } else {
+                            rec.available().min(current_desire.amount - shifted)
+                        };
+                        rec.reserved += shift;
+                        current_desire.satisfaction += shift;
+                        shifted += shift;
+                    }
+                    if shifted == current_desire.amount {
+                        // if shifted enough to cover desire, stop trying.
+                        break;
+                    }
+                }
+            },
+            crate::item::Item::Good(id) => {
+                println!("Satisfying Good: {}.", id);
+                // Good, so just find and insert
+                if let Some(rec) = self.property.get_mut(&id) {
+                    println!("Has in property.");
+                    // How much we can shift over.
+                    let shift = rec.available().min(current_desire.amount);
+                    println!("Shifting: {}", shift);
+                    shifted += shift; // add to shifted for later checking
+                    rec.reserved += shift; // add to reserved.
+                    current_desire.satisfaction += shift; // and to satisfaction.
+                    println!("Current Satisfaction: {}", current_desire.satisfaction);
+                }
+            },
+        }
+        // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
+        if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
+            println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
+            println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
+            return Some(current_desire);
+        } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
+            println!("Repeat Desire.");
+            let next_step = current_desire.next_step(current_step)
+                .expect("Next Step should exist, but seemingly does not. Investigate why.");
+            Self::ordered_desire_insert(working_desires, current_desire, next_step);
+            None
+        }
+    }
 
     /// # Satisfy Desires
     /// 

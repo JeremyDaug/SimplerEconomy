@@ -816,5 +816,159 @@ mod tests {
                 assert_eq!(test.desires.get(0).unwrap().satisfaction, 40.0);
             }
         }
+
+        mod satisfy_next_desire_should {
+            use std::collections::{HashMap, VecDeque};
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(3.0)); 
+
+                let mut working_desires = VecDeque::new();
+
+                working_desires.push_front((desire.start, desire));
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(working_desires.front().unwrap().0, 2.0);
+                assert_eq!(working_desires.front().unwrap().1.satisfaction, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 2.0);
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                if let Some(desire) = result {
+                    assert_eq!(desire.satisfaction, 3.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+                } else {
+                    assert!(false, "Did not return unsatisfied desire as expected.");
+                }
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
+
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front((1.0, desire));
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(5.0)); 
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 10.0);
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                if let Some(desire) = result {
+                    assert_eq!(desire.satisfaction, 15.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                    assert_eq!(working_desires.len(), 0);
+                } else {
+                    assert!(false, "Did not return as expected.");
+                }
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front((1.0, desire));
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                // first pass.
+                assert!(result.is_none());
+                assert_eq!(working_desires.get(0).unwrap().0, 2.0);
+                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 5.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+
+                // Second pass
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+                assert!(result.is_none());
+                assert_eq!(working_desires.get(0).unwrap().0, 4.0);
+                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 10.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+
+                // third pass
+                if let Some(result) =  test.satisfy_next_desire(&mut working_desires, &data) {
+                    assert_eq!(result.satisfaction, 40.0);
+                    assert_eq!(working_desires.len(), 0);
+                    assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                    assert_eq!(test.wants.get(&4).unwrap().expected, 10.0);
+                    assert_eq!(test.property.get(&0).unwrap().reserved, 30.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                } else {
+                    assert!(false, "Did not end as expected.");
+                }
+            }
+        }
     }
 }
