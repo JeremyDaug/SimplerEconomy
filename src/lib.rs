@@ -847,8 +847,9 @@ mod tests {
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
-                if let Some(desire) = result {
-                    assert_eq!(desire.satisfaction, 3.0);
+                if let Some(result) = result {
+                    assert_eq!(result.0, 2.0);
+                    assert_eq!(result.1.satisfaction, 3.0);
                     assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
                 } else {
                     assert!(false, "Did not return unsatisfied desire as expected.");
@@ -880,12 +881,14 @@ mod tests {
                 assert!(result.is_none());
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(working_desires.get(0).unwrap().0, 2.0);
                 assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 10.0);
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
-                if let Some(desire) = result {
-                    assert_eq!(desire.satisfaction, 15.0);
+                if let Some(result) = result {
+                    assert_eq!(result.0, 2.0);
+                    assert_eq!(result.1.satisfaction, 15.0);
                     assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                     assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
                     assert_eq!(working_desires.len(), 0);
@@ -957,7 +960,8 @@ mod tests {
 
                 // third pass
                 if let Some(result) =  test.satisfy_next_desire(&mut working_desires, &data) {
-                    assert_eq!(result.satisfaction, 40.0);
+                    assert_eq!(result.0, 4.0);
+                    assert_eq!(result.1.satisfaction, 40.0);
                     assert_eq!(working_desires.len(), 0);
                     assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
                     assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);

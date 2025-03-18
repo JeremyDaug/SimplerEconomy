@@ -118,6 +118,7 @@ impl Pop {
     /// at which it failed to satisfy.
     pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<(f64, Desire)>, 
     data: &Data) -> Option<(f64, Desire)> {
+        assert!(working_desires.len() > 0, "Working Desires cannot be empty.");
         // Get current step and desire from the front of the working desires. If no next one, leave loop.
         let (current_step, mut current_desire) = 
         if let Some((current_step, current_desire)) = working_desires.pop_front() {
@@ -374,10 +375,20 @@ impl Pop {
     /// 
     /// Satisfies desires until an desire is unable to satisfy itself.
     /// 
+    /// The working desires starts with the next desire this will start with. So no need
+    /// to give a starting vaule or desire.
+    /// 
     /// Returns the desire that was incomplete and the tier at which it was incomplete.
-    pub fn satisfy_until_incomplete(&mut self, working_desires: &mut VecDeque<(f64, Desire)>,
+    pub fn satisfy_until_incomplete(&mut self, working_desires: &mut VecDeque<(f64, Desire)>, 
     data: &Data) -> Option<(f64, Desire)> {
-        
+        loop {
+            // satisfy the next desire
+            if let Some(result) = self.satisfy_next_desire(working_desires, data) {
+                // if we get a desire here, escape out. We're done.
+                return Some(result);
+            }
+            // if didn't find anything to stop us, go to the next.
+        }
     }
 
     /// # Satisfy Desires
@@ -399,7 +410,7 @@ impl Pop {
         loop {
             // satisfy the next desire.
             if let Some(result ) = self.satisfy_next_desire(&mut working_desires, data) {
-                finished.push(result);
+                finished.push(result.1);
             }
             // if no more desires to work on, gtfo.
             if working_desires.len() == 0 {
