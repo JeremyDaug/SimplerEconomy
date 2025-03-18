@@ -974,5 +974,12 @@ mod tests {
                 }
             }
         }
+    
+        mod satisfy_until_incomplete_should {
+            #[test]
+            pub fn correctly_stop_when_finished_incomplete() {
+                
+            }
+        }
     }
 }

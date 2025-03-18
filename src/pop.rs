@@ -106,8 +106,6 @@ impl Pop {
         }
     }
 
-    // TODO: Insert here a 'satsify til incomplete' which satsifies as satisfy_desires below, but exits at the first unsatisfied step. This will be used for purchasing priorities.
-
     /// # Satisfy Next desire
     /// 
     /// Satisfies the next desire in working_desires.
