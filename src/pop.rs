@@ -116,7 +116,8 @@ impl Pop {
     /// 
     /// Returns true if successful, false if not.
     /// 
-    /// If desires satisfaction has already been calculated, it will also remove from reserved.
+    /// This does not alter reservation amounts. Instead, it adds to expended
+    /// and we can sanity check that reservations matched our expended values.
     pub(crate) fn consume_desire(&mut self, current_desire: &mut Desire, data: &Data) -> bool{
         let mut shifted = 0.0;
         match current_desire.item {
@@ -129,8 +130,8 @@ impl Pop {
                     let shift = want_rec.owned.min(current_desire.amount - shifted);
                     if shift > 0.0 {
                         println!("Have want already, reserving.");
-                        want_rec.owned -= shift; // shift from owned
-                        want_rec.reserved = (want_rec.reserved - shift).max(0.0);
+                        want_rec.owned -= shift; // remove from owned
+                        want_rec.expended += shift; // add to expended.
                         current_desire.satisfaction += shift;
                         shifted += shift;
                     }
@@ -152,24 +153,35 @@ impl Pop {
                                 println!("Getting Ownership Source.");
                                 // shift and reserve
                                 shifted += shift * eff;
-                                good_rec.reserved = (good_rec.reserved - shift).max(0.0);
+                                good_rec.owned -= shift; // remove from owned
+                                good_rec.expended += shift; // add to expended.
                                 current_desire.satisfaction += shift * eff;
                                 // add the extra wants to expected for later uses.
                                 for (&want, &eff) in good_data.own_wants.iter() { 
-                                    // add the wants to expected.
                                     if let Some(rec) = self.wants.get_mut(&want) {
-                                        rec.expected += eff * shift;
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // if this is the want we're consuming, remove from owned
+                                            rec.owned -= eff * shift;
+                                            // and add to expended
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not what we're consuming, add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                     } else {
+                                        // new want entirely, just make new.
                                         let mut rec = WantRecord {
                                             owned: 0.0,
                                             reserved: 0.0,
-                                            expected: eff * shift,
+                                            expected: 0.0,
+                                            expended: 0.0,
                                         };
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // If what we're consuming, add to expended.
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not, add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                         self.wants.insert(want, rec);
                                     }
@@ -208,11 +220,12 @@ impl Pop {
                                 target = available_time / time_target * target;
                             }
                             // with target gotten and possibly corrected, do the shift
-                            let shift = target.min(good_rec.available());
+                            let shift = target.min(good_rec.owned);
                             if shift > 0.0 {
                                 // shift and reserve good and the want
                                 shifted += shift * eff;
-                                good_rec.reserved += shift;
+                                good_rec.owned -= shift; // remove from owned.
+                                good_rec.expended += shift; // add to expended.
                                 current_desire.satisfaction += shift * eff;
                                 // shift time as well
                                 self.property.get_mut(&TIME_ID).unwrap()
@@ -221,18 +234,28 @@ impl Pop {
                                 for (&want, &eff) in good_data.use_wants.iter() { 
                                     // add the wants to expected.
                                     if let Some(rec) = self.wants.get_mut(&want) {
-                                        rec.expected += eff * shift;
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // if the want we're consuming, remove from owned
+                                            // and add to expended
+                                            rec.owned -= eff * shift;
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not what we're consuming, just add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                     } else {
                                         let mut rec = WantRecord {
                                             owned: 0.0,
                                             reserved: 0.0,
-                                            expected: eff * shift,
+                                            expected: 0.0,
+                                            expended: 0.0,
                                         };
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // If what we're consuming, add to expended.
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not, add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                         self.wants.insert(want, rec);
                                     }
@@ -285,18 +308,28 @@ impl Pop {
                                 for (&want, &eff) in good_data.consumption_wants.iter() {
                                     // add the wants to expected.
                                     if let Some(rec) = self.wants.get_mut(&want) {
-                                        rec.expected += eff * shift;
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // if the want we're consuming, remove from owned
+                                            // and add to expended
+                                            rec.owned -= eff * shift;
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not what we're consuming, just add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                     } else {
                                         let mut rec = WantRecord {
                                             owned: 0.0,
                                             reserved: 0.0,
-                                            expected: eff * shift,
+                                            expected: 0.0,
+                                            expended: 0.0,
                                         };
                                         if want == id {
-                                            rec.reserved += eff * shift;
+                                            // If what we're consuming, add to expended.
+                                            rec.expended += eff * shift;
+                                        } else {
+                                            // if not, add to owned.
+                                            rec.owned += eff * shift;
                                         }
                                         self.wants.insert(want, rec);
                                     }
@@ -318,12 +351,13 @@ impl Pop {
                     // if we have the member, use it.
                     if let Some(rec) = self.property.get_mut(member) {
                         // get how much we can shift over, capping at the target sans already moved goods.
-                        let shift = if rec.available() == 0.0 {
+                        let shift = if rec.owned == 0.0 {
                             continue;
                         } else {
-                            rec.available().min(current_desire.amount - shifted)
+                            rec.owned.min(current_desire.amount - shifted)
                         };
-                        rec.reserved += shift;
+                        rec.owned -= shift;
+                        rec.expended += shift; // and add to expended for checking.
                         current_desire.satisfaction += shift;
                         shifted += shift;
                     }
@@ -339,10 +373,11 @@ impl Pop {
                 if let Some(rec) = self.property.get_mut(&id) {
                     println!("Has in property.");
                     // How much we can shift over.
-                    let shift = rec.available().min(current_desire.amount);
+                    let shift = rec.owned.min(current_desire.amount);
                     println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
-                    rec.reserved += shift; // add to reserved.
+                    rec.owned -= shift;
+                    rec.expended += shift; // and add to expended for checking.
                     current_desire.satisfaction += shift; // and to satisfaction.
                     println!("Current Satisfaction: {}", current_desire.satisfaction);
                 }
@@ -423,6 +458,7 @@ impl Pop {
                                             owned: 0.0,
                                             reserved: 0.0,
                                             expected: eff * shift,
+                                            expended: 0.0,
                                         };
                                         if want == id {
                                             rec.reserved += eff * shift;
@@ -486,6 +522,7 @@ impl Pop {
                                             owned: 0.0,
                                             reserved: 0.0,
                                             expected: eff * shift,
+                                            expended: 0.0,
                                         };
                                         if want == id {
                                             rec.reserved += eff * shift;
@@ -550,6 +587,7 @@ impl Pop {
                                             owned: 0.0,
                                             reserved: 0.0,
                                             expected: eff * shift,
+                                            expended: 0.0,
                                         };
                                         if want == id {
                                             rec.reserved += eff * shift;
@@ -805,8 +843,10 @@ pub struct PropertyRecord {
     /// How many they want to keep at all times. This also covers
     /// reservations to satisfy desires.
     pub reserved: f64,
-    // We don't use expected goods here as all consumption happens simultaniously.
     /// How many they have used today to satisfy desires.
+    /// This records how many were consumed today.
+    /// 
+    /// At the end of the day, this should be equivalent to reserved goods.
     pub expended: f64,
     /// How many were given up in trade.
     pub traded: f64,
@@ -838,6 +878,8 @@ impl PropertyRecord {
 /// 
 /// Records want data for the pop, including how much is available today,
 /// reserved wants,
+/// 
+/// At the end of the day, reserved and expended should be equvialent.
 #[derive(Debug, Clone)]
 pub struct WantRecord {
     /// How much is currnetly owned.
@@ -845,8 +887,12 @@ pub struct WantRecord {
     /// How much has been reserved for desires
     pub reserved: f64,
     /// How many we are expecting to get during consumption.
-    /// 
     pub expected: f64,
+    /// How many we have expended. Used do record wants that have been
+    /// expended in consuming desires.
+    /// 
+    /// this should be equal to reserved at the end of the day.
+    pub expended: f64,
 }
 
 impl WantRecord {
@@ -855,6 +901,7 @@ impl WantRecord {
             owned: 0.0,
             reserved: 0.0,
             expected: 0.0,
+            expended: 0.0
         }
     }
     

@@ -85,7 +85,7 @@ mod tests {
         mod do_process_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, process::{InputTag, OutputTag, Process, ProcessInput, ProcessOutput}, want::Want};
+            use crate::{data::Data, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, process::{InputTag, Process, ProcessInput, ProcessOutput}, want::Want};
 
             #[test]
             pub fn run_simple_full_process_correctly() {
@@ -797,6 +797,7 @@ mod tests {
                     owned: 10.0,
                     reserved: 0.0,
                     expected: 0.0,
+                    expended: 0.0,
                 });
                 test.property.insert(0, PropertyRecord::new(100.0)); 
                 test.property.insert(4, PropertyRecord::new(10.0)); 
@@ -927,6 +928,7 @@ mod tests {
                     owned: 10.0,
                     reserved: 0.0,
                     expected: 0.0,
+                    expended: 0.0,
                 });
                 test.property.insert(0, PropertyRecord::new(100.0)); 
                 test.property.insert(4, PropertyRecord::new(10.0)); 
@@ -1024,6 +1026,97 @@ mod tests {
                     assert_eq!(working_desires.get(2).unwrap().0, 16.0);
                     assert_eq!(working_desires.get(2).unwrap().1.satisfaction, 40.0);
                 }
+            }
+        }
+
+        mod consume_desire_should {
+            use std::collections::{HashMap, VecDeque};
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(3.0)); 
+
+                test.satisfy_desires(&data);
+
+                // TODO: Test out this.
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
+
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front((1.0, desire));
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(5.0)); 
+
+                test.satisfy_desires(&data);
+
+                assert!(false);
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front((1.0, desire));
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                    expended: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+                
+                assert!(false);
             }
         }
     }
