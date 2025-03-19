@@ -976,9 +976,54 @@ mod tests {
         }
     
         mod satisfy_until_incomplete_should {
+            use std::collections::VecDeque;
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+
             #[test]
             pub fn correctly_stop_when_finished_incomplete() {
-                
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood4"), String::new()));
+                data.add_good(Good::new(5, String::from("testGood5"), String::new()));
+                data.add_good(Good::new(6, String::from("testGood6"), String::new()));
+                data.add_good(Good::new(7, String::from("testGood7"), String::new()));
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0)
+                    .with_interval(2.0, 0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_back((1.0, desire1));
+                working_desires.push_back((1.0, desire2));
+                working_desires.push_back((1.0, desire3));
+                working_desires.push_back((1.0, desire4));
+
+                let mut test = Pop::new(0, 0, 0);
+                test.property.insert(0, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(100.0));
+                test.property.insert(5, PropertyRecord::new(100.0));
+                test.property.insert(6, PropertyRecord::new(30.0));
+                test.property.insert(7, PropertyRecord::new(100.0));
+
+                let result = test.satisfy_until_incomplete(&mut working_desires, &data);
+
+                if let Some((value, desire)) = result {
+                    assert_eq!(value, 8.0);
+                    assert_eq!(desire.satisfaction, 30.0);
+                    assert_eq!(working_desires.len(), 3);
+                    assert_eq!(working_desires.get(0).unwrap().0, 8.0);
+                    assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 30.0);
+                    assert_eq!(working_desires.get(1).unwrap().0, 16.0);
+                    assert_eq!(working_desires.get(1).unwrap().1.satisfaction, 40.0);
+                    assert_eq!(working_desires.get(2).unwrap().0, 16.0);
+                    assert_eq!(working_desires.get(2).unwrap().1.satisfaction, 40.0);
+                }
             }
         }
     }
