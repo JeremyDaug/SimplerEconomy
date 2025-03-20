@@ -1,16 +1,19 @@
-use std::{collections::{BTreeMap, HashMap, VecDeque}, env::current_exe, mem::discriminant, thread::current};
+use std::collections::{HashMap, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{data::{self, Data}, desire::{Desire, DesireTag}, drow::DRow, household::Household, market::Market, species::Species};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household};
 
-use ordered_float::OrderedFloat;
 
 use crate::constants::TIME_ID;
 
 /// # Pop
 /// 
 /// A number of households grouped together into one unit.
+/// 
+/// ## Satisfaction
+/// 
+/// Satisfaction is currently calculated.
 #[derive(Debug, Clone)]
 pub struct Pop {
     /// Unique Id of the pop.
@@ -108,6 +111,17 @@ impl Pop {
         for row in self.demo_breakdown.iter() {
             self.households.combine(&row.household);
         }
+    }
+
+    /// # Consume Desires
+    /// 
+    /// Consumes all goods to satisfy desires.
+    /// 
+    /// This will destroy wants and goods.
+    /// 
+    /// It returns the final satisfaction level achieved.
+    pub fn consume_desires(&mut self, data: &Data) -> f64 {
+        todo!()
     }
 
     /// # Consume Desire
