@@ -4,7 +4,7 @@ use crate::{household::HouseholdMember, item::Item};
 
 /// # Desire
 /// 
-/// A desired good. All pops want 1 per household. Desires may be repeated.
+/// A desired good. All pops want 1 per person. Desires may be repeated.
 /// The usize contained in both is the specific item desired.
 /// 
 /// The start is used to define equvialence between desires of different levels.
@@ -21,9 +21,9 @@ pub struct Desire {
     /// The amount desired per tier.
     pub amount: f64,
     /// The starting value. Must be positive.
-    pub start: f64,
-    /// The size of intervals (if any). Interval is always Positive.
-    pub interval: Option<f64>,
+    pub start_value: f64,
+    /// The size of intervals (if any). Interval is always and between 0.0 and 1.0.
+    pub reduction_factor: Option<f64>,
     /// The number of steps that can be taken.
     /// 
     /// Value should be Positive.
@@ -62,8 +62,8 @@ impl Desire {
         Self {
             item,
             amount,
-            start,
-            interval: None,
+            start_value: start,
+            reduction_factor: None,
             steps: None,
             tags: vec![],
             satisfaction: 0.0,
@@ -83,7 +83,7 @@ impl Desire {
         // ensure this desire has proper ending if we're addign a life need.
         match tag {
             DesireTag::LifeNeed(_) => {
-                assert!(self.interval.is_none() || (self.interval.is_some() && self.steps.is_some()), 
+                assert!(self.reduction_factor.is_none() || (self.reduction_factor.is_some() && self.steps.is_some()), 
                 "A Desire with the tag LifeNeed must have a finite number of steps.");
             },
             _ => {}
@@ -116,12 +116,12 @@ impl Desire {
     /// 
     /// Panics if interval is not positive.
     pub fn with_interval(mut self, interval: f64, steps: usize) -> Self {
-        assert!(interval > 1.0, "Interval must Greater than 1.0.");
+        assert!(0.0 < interval && interval < 1.0, "Interval must be between 0.0 and 1.0, exclusive.");
         assert!(interval.is_finite(), "Interval must be a finite number.");
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }
-        self.interval = Some(interval);
+        self.reduction_factor = Some(interval);
         if steps > 0 { // If given a value, convert to Option<NonZeroUsize>
             self.steps = NonZero::new(steps);
         } else { // if no steps given, just set to None.
@@ -130,34 +130,44 @@ impl Desire {
         self
     }
 
+    /// # Current Valuation
+    /// 
+    /// Gets the current value of the desire based on existing satisfaction.
+    /// 
+    /// This is a step valuation function, where each full amount of satisfaction is
+    /// linear in adding value, and then it steps to the next value in line.
+    pub fn current_valuation(&self) -> f64 {
+        if let Some(factor) = self.reduction_factor {
+            let normalized_sat = self.satisfaction / self.amount;
+            let steps = normalized_sat.floor() as i32;
+            let mut result = 0.0;
+            // whole steps
+            for step in 0..steps {
+                result += self.start_value * factor.powi(step) * self.amount;
+            }
+            result += self.start_value * factor.powi(steps) * self.amount 
+                * (normalized_sat - normalized_sat.floor());
+            result
+        } else {
+            self.start_value * self.satisfaction
+        }
+    }
+
     /// # End
     /// 
-    /// Gets the value of the final step it lands on. 
+    /// Gets the value of the final value it lands on.
     /// 
     /// If it takes no steps, it returns the start.
     /// 
     /// If it takes steps, but does not end, it returns None.
     /// 
     /// TODO: Test this to ensure correctness.
-    /// 
-    /// ```
-    /// use simpler_economy::item::Item;
-    /// use simpler_economy::desire::Desire;
-    /// let d = Desire::new(Item::Want(0), 1.0, 1.0);
-    /// assert_eq!(d.end(), Some(1.0));
-    /// let d = Desire::new(Item::Want(0), 1.0, 1.0)
-    ///     .with_interval(2.0, 2);
-    /// assert_eq!(d.end(), Some(4.0));
-    /// let d = Desire::new(Item::Want(0), 1.0, 1.0)
-    ///     .with_interval(2.0, 0);
-    /// assert_eq!(d.end(), None);
-    /// ```
     pub fn end(&self) -> Option<f64> {
-        if let Some(interval) = self.interval {
+        if let Some(interval) = self.reduction_factor {
             if let Some(steps) = self.steps {
-                Some(self.start * interval.powf(steps.get() as f64))
+                Some(self.start_value * interval.powf(steps.get() as f64))
             } else { None }
-        } else { Some(self.start) }
+        } else { Some(self.start_value) }
     }
 
     /// # Next Step
@@ -173,8 +183,8 @@ impl Desire {
     /// TODO: Test this to ensure correctness.
     pub fn next_step(&self, current:  f64) -> Option<f64> {
         assert!(current > 0.0, "Current must be a positive value.");
-        if current < self.start {
-            return Some(self.start);
+        if current < self.start_value {
+            return Some(self.start_value);
         } else if let Some(end) = self.end() {
             if current >= end {
                 return None;
@@ -182,14 +192,14 @@ impl Desire {
         }
         // base formula is Start * Interval ^ Step = Point
         // This solves for step. Log_Interval(Point / Step ) = Step
-        let step = (current / self.start).log(self.interval.unwrap());
+        let step = (current / self.start_value).log(self.reduction_factor.unwrap());
         // with step, round up
         let mut fin_step = step.ceil();
         if fin_step == step {
             fin_step += 1.0;
         }
         // and recalculate the step.
-        Some(self.start * self.interval.unwrap().powf(fin_step))
+        Some(self.start_value * self.reduction_factor.unwrap().powf(fin_step))
     }
 
     /// # Equals
@@ -198,8 +208,8 @@ impl Desire {
     /// It checks that everything BUT amount and satisfaction is the same.
     pub fn equals(&self, other: &Desire) -> bool {
         if self.item == other.item &&
-        self.start == other.start &&
-        self.interval == other.interval &&
+        self.start_value == other.start_value &&
+        self.reduction_factor == other.reduction_factor &&
         self.steps == other.steps { // if easy stuff is true, check tags.
             if self.tags.len() == other.tags.len() { // need same number
                 for idx in 0..self.tags.len() {
@@ -228,7 +238,7 @@ impl Desire {
     /// If N is a decimal value, then it's not a whole step we're on.
     pub fn on_step(&self, val: f64) -> Option<f64> {
         assert!(val > 0.0, "Val must be a positive number.");
-        if val < self.start {
+        if val < self.start_value {
             return None;
         } else if let Some(end) = self.end() {
             if val >= end {
@@ -237,7 +247,7 @@ impl Desire {
         }
         // base formula is Start * Interval ^ Step = Point
         // This solves for step. Log_Interval(Point / Step ) = Step
-        Some((val / self.start).log(self.interval.unwrap()))
+        Some((val / self.start_value).log(self.reduction_factor.unwrap()))
     }
 
     /// # Satsfied Up To
@@ -259,12 +269,12 @@ impl Desire {
     /// applying the interval that many times.
     pub fn satisfied_to_value(&self) -> f64 {
         let mut step = self.satisfied_up_to();
-        if let Some(interval) = self.interval {
+        if let Some(interval) = self.reduction_factor {
             if let Some(steps) = self.steps {
                 step = step.min(steps.get() as f64);
             }
-            self.start * interval.powf(step)
-        } else { self.start }
+            self.start_value * interval.powf(step)
+        } else { self.start_value }
     }
     
     /// # Get Step
@@ -277,18 +287,18 @@ impl Desire {
     pub(crate) fn get_step(&self, step: f64) -> Option<f64> {
         if step < 0.0 { // if negative value, just return None, no step should be negative.
             None
-        } else if let Some(interval) = self.interval { // if it has interval, check if in interval
+        } else if let Some(interval) = self.reduction_factor { // if it has interval, check if in interval
             if let Some(max_steps) = self.steps { // if we have a max number of steps.
                 if (max_steps.get() as f64) < step { // and we're above that max step
                     None
                 } else { // if within that number of steps, get step
-                    Some(self.start * interval.powf(step))
+                    Some(self.start_value * interval.powf(step))
                 }
             } else { // If no end step
-                Some(self.start * interval.powf(step))
+                Some(self.start_value * interval.powf(step))
             }
         } else if step == 0.0 { // if no interval, only step 0.0 returns value.
-            Some(self.start)
+            Some(self.start_value)
         } else { // all other cases are always None.
             None
         }
@@ -301,7 +311,7 @@ impl Desire {
     /// IE, the amount of satisfaction is equal to
     /// self.amount * self.steps. 
     pub fn is_fully_satisfied(&self) -> bool {
-        if let Some(_) = self.interval { // if we have an interval
+        if let Some(_) = self.reduction_factor { // if we have an interval
             if let Some(steps) = self.steps { // and are finite
                 return ((steps.get() as f64) * self.amount) == self.satisfaction;
             } else { // if not finite, can never be satisfied

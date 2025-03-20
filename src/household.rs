@@ -1,5 +1,3 @@
-use std::default;
-
 /// # Household
 /// 
 /// This stores the number and makeup of household(s).

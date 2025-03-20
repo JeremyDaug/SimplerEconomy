@@ -11,9 +11,9 @@ use crate::constants::TIME_ID;
 /// 
 /// A number of households grouped together into one unit.
 /// 
-/// ## Satisfaction
+/// ## Satisfaction and Desires
 /// 
-/// Satisfaction is currently calculated.
+/// Currently, each desire has a starting valuation
 #[derive(Debug, Clone)]
 pub struct Pop {
     /// Unique Id of the pop.
@@ -700,7 +700,7 @@ impl Pop {
         // Working desires, includes the current tier it's on, and the desire.
         let mut working_desires: VecDeque<(f64, Desire)> = VecDeque::new();
         for desire in self.desires.iter() { // initial list is always sorted, so just move over.
-            working_desires.push_back((desire.start, desire.clone()));
+            working_desires.push_back((desire.start_value, desire.clone()));
         }
         // A holding space for desires that have been totally satisfied to simplify
         let mut finished: Vec<Desire> = vec![];
@@ -768,7 +768,7 @@ impl Pop {
             // with desire scaled properly, find if it already exists in our desires
             // desires are always sorted.
             let mut current = if let Some((est, _)) = desires.iter()
-            .find_position(|x| x.start >= new_des.start) {
+            .find_position(|x| x.start_value >= new_des.start_value) {
                 // find the first one which is equal to or greater than our new destination.
                 est
             } else { desires.len() }; // if none was found then it is either the last or only one.
@@ -785,7 +785,7 @@ impl Pop {
                     //println!("Insert Position: {}", current);
                     desires.get_mut(current).unwrap().amount += new_des.amount;
                     break;
-                } else if desires.get(current).unwrap().start > new_des.start {
+                } else if desires.get(current).unwrap().start_value > new_des.start_value {
                     // If the desire we're looking at is greater than our current, insert
                     //println!("Insert Position: {}", current);
                     desires.insert(current, new_des);

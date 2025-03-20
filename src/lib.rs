@@ -534,16 +534,72 @@ mod tests {
     }
 
     mod desire_tests {
+        mod current_valuation_should {
+            use crate::{desire::Desire, item::Item};
+
+            #[test]
+            pub fn calculate_stepless_value_correctly() {
+                let mut stepless = Desire::new(Item::Good(0), 2.0, 2.0);
+
+                stepless.satisfaction = 1.0;
+                // partial satisfaction
+                let val = stepless.current_valuation();
+                assert_eq!(val, 2.0);
+                
+                // full satisfaction
+                stepless.satisfaction = 2.0;
+                let val = stepless.current_valuation();
+                assert_eq!(val, 4.0);
+            }
+
+            #[test]
+            pub fn calculate_stepping_value_correctly() {
+                let mut stepping = Desire::new(Item::Good(0), 2.0, 2.0)
+                    .with_interval(0.5, 0);
+
+                // partial satisfaction, no full step
+                stepping.satisfaction = 1.0;
+                let val = stepping.current_valuation();
+                assert_eq!(val, 2.0);
+
+                // partial satisfaciton, full step
+                stepping.satisfaction = 3.0;
+                let val = stepping.current_valuation();
+                assert_eq!(val, 5.0);
+
+                // partial satisfaciton, multiple full steps
+                stepping.satisfaction = 5.0;
+                let val = stepping.current_valuation();
+                assert_eq!(val, 6.5);
+            }
+        }
+
         mod next_step_should {
             use crate::{desire::Desire, item::Item};
 
             #[test]
             pub fn step_up_when_matching_current_step() {
                 let test = Desire::new(Item::Class(0), 1.0, 1.0)
-                    .with_interval(2.0, 0);
+                    .with_interval(0.5, 0);
 
                 let result = test.next_step(2.0).expect("Did not return correctly!");
                 assert_eq!(result, 4.0);
+            }
+        }
+
+        mod end_should {
+            use crate::{desire::Desire, item::Item};
+
+            #[test]
+            pub fn correctly_calculate_end_value() {
+                let d = Desire::new(Item::Want(0), 1.0, 1.0);
+                assert_eq!(d.end(), Some(1.0));
+                let d = Desire::new(Item::Want(0), 1.0, 1.0)
+                    .with_interval(0.5, 2);
+                assert_eq!(d.end(), Some(0.25));
+                let d = Desire::new(Item::Want(0), 1.0, 1.0)
+                    .with_interval(0.5, 0);
+                assert_eq!(d.end(), None);
             }
         }
 
@@ -556,7 +612,7 @@ mod tests {
             #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
             pub fn fail_when_lifeneed_tag_and_no_end() {
                 Desire::new(Item::Good(0), 1.0, 1.0)
-                .with_interval(2.0, 0)
+                .with_interval(0.5, 0)
                 .with_tag(DesireTag::life_need(0.5));
             }
 
@@ -565,7 +621,7 @@ mod tests {
             pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
                 Desire::new(Item::Good(0), 1.0, 1.0)
                 .with_tag(DesireTag::life_need(0.5))
-                .with_interval(2.0, 0);
+                .with_interval(0.5, 0);
             }
 
             #[test]
@@ -631,15 +687,15 @@ mod tests {
                 Pop::integrate_desires(&source_desires, &row, &mut desires);
                 // check that initials were added in correctly.
                 assert_eq!(desires.len(), 5);
-                assert_eq!(desires.get(0).unwrap().start, 0.3);
+                assert_eq!(desires.get(0).unwrap().start_value, 0.3);
                 assert_eq!(desires.get(0).unwrap().amount, 18.0);
-                assert_eq!(desires.get(1).unwrap().start, 1.0);
+                assert_eq!(desires.get(1).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(1).unwrap().amount, 3.0);
-                assert_eq!(desires.get(2).unwrap().start, 1.0);
+                assert_eq!(desires.get(2).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(2).unwrap().amount, 9.0);
-                assert_eq!(desires.get(3).unwrap().start, 1.0);
+                assert_eq!(desires.get(3).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(3).unwrap().amount, 6.0);
-                assert_eq!(desires.get(4).unwrap().start, 1.0);
+                assert_eq!(desires.get(4).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(4).unwrap().amount, 3.0);
 
                 let source_desires = vec![
@@ -653,19 +709,19 @@ mod tests {
                 Pop::integrate_desires(&source_desires, &row, &mut desires);
 
                 assert_eq!(desires.len(), 7);
-                assert_eq!(desires.get(0).unwrap().start, 0.3); // added to by 2nd
+                assert_eq!(desires.get(0).unwrap().start_value, 0.3); // added to by 2nd
                 assert_eq!(desires.get(0).unwrap().amount, 36.0);
-                assert_eq!(desires.get(1).unwrap().start, 0.6); // inserted by 2nd
+                assert_eq!(desires.get(1).unwrap().start_value, 0.6); // inserted by 2nd
                 assert_eq!(desires.get(1).unwrap().amount, 3.0);
-                assert_eq!(desires.get(2).unwrap().start, 1.0);
+                assert_eq!(desires.get(2).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(2).unwrap().amount, 3.0);
-                assert_eq!(desires.get(3).unwrap().start, 1.0);
+                assert_eq!(desires.get(3).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(3).unwrap().amount, 9.0);
-                assert_eq!(desires.get(4).unwrap().start, 1.0);
+                assert_eq!(desires.get(4).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(4).unwrap().amount, 6.0);
-                assert_eq!(desires.get(5).unwrap().start, 1.0);
+                assert_eq!(desires.get(5).unwrap().start_value, 1.0);
                 assert_eq!(desires.get(5).unwrap().amount, 3.0);
-                assert_eq!(desires.get(6).unwrap().start, 1.5); // last insertion.
+                assert_eq!(desires.get(6).unwrap().start_value, 1.5); // last insertion.
                 assert_eq!(desires.get(6).unwrap().amount, 9.0);
             }
         }
@@ -681,8 +737,8 @@ mod tests {
                 let mut desire = Desire {
                     item: Item::Good(0),
                     amount: 1.0,
-                    start: 1.0,
-                    interval: None,
+                    start_value: 1.0,
+                    reduction_factor: None,
                     steps: None,
                     tags: vec![],
                     satisfaction: 0.0,
@@ -838,7 +894,7 @@ mod tests {
 
                 let mut working_desires = VecDeque::new();
 
-                working_desires.push_front((desire.start, desire));
+                working_desires.push_front((desire.start_value, desire));
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 assert!(result.is_none());

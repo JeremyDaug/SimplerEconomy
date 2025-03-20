@@ -1,5 +1,3 @@
-use std::cmp;
-
 /// # Item
 /// 
 /// Item is an enum for pointing to a want, class, or specific good.

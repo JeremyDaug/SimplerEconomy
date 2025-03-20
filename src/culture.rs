@@ -56,7 +56,7 @@ impl Culture {
         // find where to insert it.
         let mut index = 0; 
         for (idx, des) in self.desires.iter().enumerate() {
-            if des.start < desire.start {
+            if des.start_value < desire.start_value {
                 index = idx;
             }
         }
