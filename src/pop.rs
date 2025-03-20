@@ -114,11 +114,11 @@ impl Pop {
     /// 
     /// Given a desire, it satisfies one level of it.
     /// 
-    /// Returns true if successful, false if not.
+    /// Returns true if succeeded at fully satisfying the desire, false otherwise.
     /// 
     /// This does not alter reservation amounts. Instead, it adds to expended
     /// and we can sanity check that reservations matched our expended values.
-    pub(crate) fn consume_desire(&mut self, current_desire: &mut Desire, data: &Data) -> bool{
+    pub(crate) fn consume_desire(&mut self, current_desire: &mut Desire, data: &Data) -> bool {
         let mut shifted = 0.0;
         match current_desire.item {
             crate::item::Item::Want(id) => {
@@ -128,6 +128,7 @@ impl Pop {
                 if let Some(want_rec) = self.wants.get_mut(&id) {
                     // get available want
                     let shift = want_rec.owned.min(current_desire.amount - shifted);
+                    println!("Shifting: {}", shift);
                     if shift > 0.0 {
                         println!("Have want already, reserving.");
                         want_rec.owned -= shift; // remove from owned
@@ -160,9 +161,7 @@ impl Pop {
                                 for (&want, &eff) in good_data.own_wants.iter() { 
                                     if let Some(rec) = self.wants.get_mut(&want) {
                                         if want == id {
-                                            // if this is the want we're consuming, remove from owned
-                                            rec.owned -= eff * shift;
-                                            // and add to expended
+                                            // add to expended
                                             rec.expended += eff * shift;
                                         } else {
                                             // if not what we're consuming, add to owned.
@@ -213,7 +212,7 @@ impl Pop {
                             // get our available time, capped at our target.
                             let available_time = time_target
                                 .min(self.property.get(&TIME_ID)
-                                    .unwrap_or(&PropertyRecord::new(0.0)).available()
+                                    .unwrap_or(&PropertyRecord::new(0.0)).owned
                                 );
                             if available_time != time_target { // if available time is not enough
                                 // reduce target by available time.
@@ -237,7 +236,6 @@ impl Pop {
                                         if want == id {
                                             // if the want we're consuming, remove from owned
                                             // and add to expended
-                                            rec.owned -= eff * shift;
                                             rec.expended += eff * shift;
                                         } else {
                                             // if not what we're consuming, just add to owned.
@@ -288,14 +286,14 @@ impl Pop {
                             // get our available time, capped at our target.
                             let available_time = time_target
                                 .min(self.property.get(&TIME_ID)
-                                    .unwrap_or(&PropertyRecord::new(0.0)).available()
+                                    .unwrap_or(&PropertyRecord::new(0.0)).owned
                                 );
                             if available_time != time_target { // if available time is not enough
                                 // reduce target by available time.
                                 target = available_time / time_target * target;
                             }
                             // with target gotten and possibly corrected, do the shift
-                            let shift = target.min(good_rec.available());
+                            let shift = target.min(good_rec.owned);
                             if shift > 0.0 {
                                 // shift and reserve good and the want
                                 shifted += shift * eff;
@@ -309,9 +307,7 @@ impl Pop {
                                     // add the wants to expected.
                                     if let Some(rec) = self.wants.get_mut(&want) {
                                         if want == id {
-                                            // if the want we're consuming, remove from owned
-                                            // and add to expended
-                                            rec.owned -= eff * shift;
+                                            // Add to expended
                                             rec.expended += eff * shift;
                                         } else {
                                             // if not what we're consuming, just add to owned.
@@ -404,7 +400,7 @@ impl Pop {
         // Get current step and desire from the front of the working desires. If no next one, leave loop.
         let (current_step, mut current_desire) = 
         if let Some((current_step, current_desire)) = working_desires.pop_front() {
-            println!("Current Step: {}", current_step);
+            //println!("Current Step: {}", current_step);
             (current_step, current_desire)
         } else {
             return None;
@@ -413,14 +409,14 @@ impl Pop {
         let mut shifted = 0.0;
         match current_desire.item {
             crate::item::Item::Want(id) => {
-                println!("Getting Wants");
+                //println!("Getting Wants");
                 // want is the most complicated, but follows a standard priority method.
                 // First, try to get wants from storage.
                 if let Some(want_rec) = self.wants.get_mut(&id) {
                     // get available want
                     let shift = want_rec.available().min(current_desire.amount - shifted);
                     if shift > 0.0 {
-                        println!("Have want already, reserving.");
+                        //println!("Have want already, reserving.");
                         want_rec.reserved += shift; // shift
                         current_desire.satisfaction += shift;
                         shifted += shift;
@@ -440,7 +436,7 @@ impl Pop {
                             let target = (current_desire.amount - shifted) / eff;
                             let shift = target.min(good_rec.available());
                             if shift > 0.0 {
-                                println!("Getting Ownership Source.");
+                                //println!("Getting Ownership Source.");
                                 // shift and reserve
                                 shifted += shift * eff;
                                 good_rec.reserved += shift;
@@ -631,24 +627,24 @@ impl Pop {
                 println!("Satisfying Good: {}.", id);
                 // Good, so just find and insert
                 if let Some(rec) = self.property.get_mut(&id) {
-                    println!("Has in property.");
+                    //println!("Has in property.");
                     // How much we can shift over.
                     let shift = rec.available().min(current_desire.amount);
-                    println!("Shifting: {}", shift);
+                    //println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
                     rec.reserved += shift; // add to reserved.
                     current_desire.satisfaction += shift; // and to satisfaction.
-                    println!("Current Satisfaction: {}", current_desire.satisfaction);
+                    //println!("Current Satisfaction: {}", current_desire.satisfaction);
                 }
             },
         }
         // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
         if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
-            println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
-            println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
+            //println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
+            //println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
             return Some((current_step, current_desire));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
-            println!("Repeat Desire.");
+            //println!("Repeat Desire.");
             let next_step = current_desire.next_step(current_step)
                 .expect("Next Step should exist, but seemingly does not. Investigate why.");
             Self::ordered_desire_insert(working_desires, current_desire, next_step);
@@ -686,7 +682,7 @@ impl Pop {
     /// the first, and go from there. 
     pub fn satisfy_desires(&mut self, data: &Data) {
         // Move current desires into a working btreemap for easier organization and management.
-        println!("Satisfying Desires.");
+        //println!("Satisfying Desires.");
         // Working desires, includes the current tier it's on, and the desire.
         let mut working_desires: VecDeque<(f64, Desire)> = VecDeque::new();
         for desire in self.desires.iter() { // initial list is always sorted, so just move over.
@@ -706,7 +702,7 @@ impl Pop {
         }
         // after doing all satisfactions, put them back in.
         for des in finished {
-            println!("Inserting Finished Desires.");
+            //println!("Inserting Finished Desires.");
             let (idx, _) = self.desires.iter().find_position(|x| x.equals(&des)).expect("Could not find desire.");
             self.desires.get_mut(idx).unwrap().satisfaction = des.satisfaction;
         }
@@ -747,10 +743,10 @@ impl Pop {
     /// self.desires to.
     pub(crate) fn integrate_desires(source_desires: &Vec<Desire>, row: &DRow, desires: &mut Vec<Desire>) {
         for desire in source_desires.iter() {
-            println!("---");
-            println!("Start: {}", desire.start);
-            println!("Good: {}", desire.item.unwrap());
-            println!("Amount: {}", desire.amount);
+            //println!("---");
+            //println!("Start: {}", desire.start);
+            //println!("Good: {}", desire.item.unwrap());
+            //println!("Amount: {}", desire.amount);
             // copy base over
             let mut new_des = desire.clone();
             // get multiplier
@@ -762,22 +758,22 @@ impl Pop {
                 // find the first one which is equal to or greater than our new destination.
                 est
             } else { desires.len() }; // if none was found then it is either the last or only one.
-            println!("First Pos: {}", current);
+            //println!("First Pos: {}", current);
             // with first match found, try to find duplicates while walking up. 
             loop {
                 if current >= desires.len() {
                     // if at or past the end, insert at the end and continue.
-                    println!("Insert Position: {}", current);
+                    //println!("Insert Position: {}", current);
                     desires.push(new_des);
                     break;
                 } else if desires.get(current).unwrap().equals(&new_des) {
                     // if new_desire matches existing desire, add to it.
-                    println!("Insert Position: {}", current);
+                    //println!("Insert Position: {}", current);
                     desires.get_mut(current).unwrap().amount += new_des.amount;
                     break;
                 } else if desires.get(current).unwrap().start > new_des.start {
                     // If the desire we're looking at is greater than our current, insert
-                    println!("Insert Position: {}", current);
+                    //println!("Insert Position: {}", current);
                     desires.insert(current, new_des);
                     break;
                 }
@@ -785,7 +781,7 @@ impl Pop {
                 // and we haven't found a match
                 // AND we the current is still less than or equal to our new desires start
                 // step up 1 and try again.
-                println!("Current Start: {}", desires.get(current).unwrap().start);
+                //println!("Current Start: {}", desires.get(current).unwrap().start);
                 current += 1;
             }
         }

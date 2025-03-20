@@ -1,4 +1,4 @@
-use crate::{desire::Desire, household::{Household, HouseholdMod}};
+use crate::{desire::Desire, household::HouseholdMod};
 
 
 /// # Culture

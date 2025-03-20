@@ -1030,7 +1030,7 @@ mod tests {
         }
 
         mod consume_desire_should {
-            use std::collections::{HashMap, VecDeque};
+            use std::collections::HashMap;
 
             use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
@@ -1044,12 +1044,28 @@ mod tests {
                     .with_interval(2.0, 0);
 
                 let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire);
 
                 test.property.insert(4, PropertyRecord::new(3.0)); 
 
                 test.satisfy_desires(&data);
 
-                // TODO: Test out this.
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0; // reset desire's satisfaction.
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 1.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
             }
 
             #[test]
@@ -1064,17 +1080,38 @@ mod tests {
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0)
                     .with_interval(2.0, 0);
 
-                let mut working_desires = VecDeque::new();
-                working_desires.push_front((1.0, desire));
-
                 let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire);
 
-                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(4, PropertyRecord::new(7.0)); 
                 test.property.insert(5, PropertyRecord::new(5.0)); 
 
                 test.satisfy_desires(&data);
 
-                assert!(false);
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 2.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 12.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 5.0);
             }
 
             #[test]
@@ -1098,10 +1135,8 @@ mod tests {
                 let desire = Desire::new(Item::Want(4), 15.0, 1.0)
                     .with_interval(2.0, 0);
 
-                let mut working_desires = VecDeque::new();
-                working_desires.push_front((1.0, desire));
-
                 let mut test = Pop::new(0, 0, 0);
+                test.desires.push_front(desire);
 
                 test.wants.insert(4, WantRecord {
                     owned: 10.0,
@@ -1114,9 +1149,82 @@ mod tests {
                 test.property.insert(5, PropertyRecord::new(10.0)); 
                 test.property.insert(6, PropertyRecord::new(10.0)); 
 
-                let result = test.satisfy_next_desire(&mut working_desires, &data);
-                
-                assert!(false);
+                test.satisfy_desires(&data);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                // first pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 2.5);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 5.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+
+                // second pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+
+                // third pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 60.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 15.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 00.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 20.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
             }
         }
     }
