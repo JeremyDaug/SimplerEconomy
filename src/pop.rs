@@ -768,7 +768,7 @@ impl Pop {
             // with desire scaled properly, find if it already exists in our desires
             // desires are always sorted.
             let mut current = if let Some((est, _)) = desires.iter()
-            .find_position(|x| x.start_value >= new_des.start_value) {
+            .find_position(|x| x.start_value <= new_des.start_value) {
                 // find the first one which is equal to or greater than our new destination.
                 est
             } else { desires.len() }; // if none was found then it is either the last or only one.
@@ -785,7 +785,7 @@ impl Pop {
                     //println!("Insert Position: {}", current);
                     desires.get_mut(current).unwrap().amount += new_des.amount;
                     break;
-                } else if desires.get(current).unwrap().start_value > new_des.start_value {
+                } else if desires.get(current).unwrap().start_value < new_des.start_value {
                     // If the desire we're looking at is greater than our current, insert
                     //println!("Insert Position: {}", current);
                     desires.insert(current, new_des);
@@ -829,19 +829,19 @@ impl Pop {
         new_des.amount = new_des.amount * multiplier;
     }
     
-    /// Helper function
+    /// # Ordered Desire Insert
     /// 
-    /// Adds a desire at a given tier to our working desires vecdeque.
+    /// Helper function, inserts a desire into the working desires list.
     /// 
-    /// If multiples of the tier exist, it adds after all existing ones.
-    fn ordered_desire_insert(working_desires: &mut VecDeque<(f64, Desire)>, desire: Desire, tier: f64) {
+    /// Highest value to lowest order. Any duplicates values are added at the end of the duplicates.
+    pub(crate) fn ordered_desire_insert(working_desires: &mut VecDeque<(f64, Desire)>, desire: Desire, value: f64) {
         for idx in 0..working_desires.len() {
-            if tier < working_desires.get(idx).unwrap().0 {
-                working_desires.insert(idx, (tier, desire));
+            if value > working_desires.get(idx).unwrap().0 {
+                working_desires.insert(idx, (value, desire));
                 return;
             }
         }
-        working_desires.push_back((tier, desire));
+        working_desires.push_back((value, desire));
     }
 }
 
