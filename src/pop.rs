@@ -121,7 +121,25 @@ impl Pop {
     /// 
     /// It returns the final satisfaction level achieved.
     pub fn consume_desires(&mut self, data: &Data) -> f64 {
-        todo!()
+        let mut working_desires = VecDeque::new();
+        // get desires and reset satisfaction while we're at it.
+        for desire in self.desires.iter() {
+            let mut d = desire.clone();
+            d.satisfaction = 0.0;
+            working_desires.push_back((d.start_value, d));
+        }
+        let mut finished = vec![];
+        loop {
+            let (value, mut current_desire) = working_desires.pop_front().unwrap();
+            if self.consume_desire(&mut current_desire, data) {
+
+            }
+
+            if working_desires.len() == 0 {
+                break;
+            }
+        }
+        0.0
     }
 
     /// # Consume Desire

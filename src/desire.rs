@@ -183,10 +183,10 @@ impl Desire {
     /// TODO: Test this to ensure correctness.
     pub fn next_step(&self, current:  f64) -> Option<f64> {
         assert!(current > 0.0, "Current must be a positive value.");
-        if current < self.start_value {
+        if current > self.start_value {
             return Some(self.start_value);
         } else if let Some(end) = self.end() {
-            if current >= end {
+            if current <= end {
                 return None;
             }
         }
