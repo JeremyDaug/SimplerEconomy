@@ -13,7 +13,7 @@ use crate::constants::TIME_ID;
 /// 
 /// ## Satisfaction and Desires
 /// 
-/// Currently, each desire has a starting valuation
+/// Currently, each desire 
 #[derive(Debug, Clone)]
 pub struct Pop {
     /// Unique Id of the pop.
@@ -119,8 +119,9 @@ impl Pop {
     /// 
     /// This will destroy wants and goods.
     /// 
-    /// It returns the final satisfaction level achieved.
-    pub fn consume_desires(&mut self, data: &Data) -> f64 {
+    /// It returns the levels of satisfaction achieved total, and the sum
+    /// of all the valuations.
+    pub fn consume_desires(&mut self, data: &Data) -> (f64, f64) {
         let mut working_desires = VecDeque::new();
         // get desires and reset satisfaction while we're at it.
         for desire in self.desires.iter() {
@@ -131,15 +132,39 @@ impl Pop {
         let mut finished = vec![];
         loop {
             let (value, mut current_desire) = working_desires.pop_front().unwrap();
-            if self.consume_desire(&mut current_desire, data) {
 
+            if self.consume_desire(&mut current_desire, data) { // if successful at satisfying
+                if let Some(next_step) = current_desire.next_step(value) { // and there's a next step
+                    // put back
+                    Pop::ordered_desire_insert(&mut working_desires, current_desire, next_step);
+                } else { // if no next step, put away.
+                    finished.push(current_desire);
+                }
+            } else {
+                // if did not satisfy the desire level completely, add to finished.
+                finished.push(current_desire);
             }
 
+            // if no working desires left. GTFO.
             if working_desires.len() == 0 {
                 break;
             }
         }
-        0.0
+
+        // push satisfaction back into original desires.
+        let mut total = 0.0;
+        let mut summation = 0.0;
+        for desire in finished.into_iter() {
+            let (curr_tot, curr_sum) = desire.current_valuation();
+            total += curr_tot;
+            summation += curr_sum;
+            let des = self.desires.iter_mut()
+                .find(|x| x.equals(&desire)).expect("Did not find desire whish should match.");
+
+            des.satisfaction = desire.satisfaction;
+        }
+
+        (total, summation)
     }
 
     /// # Consume Desire

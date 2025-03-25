@@ -544,12 +544,12 @@ mod tests {
                 stepless.satisfaction = 1.0;
                 // partial satisfaction
                 let val = stepless.current_valuation();
-                assert_eq!(val, 2.0);
+                assert_eq!(val, (0.0, 2.0));
                 
                 // full satisfaction
                 stepless.satisfaction = 2.0;
                 let val = stepless.current_valuation();
-                assert_eq!(val, 4.0);
+                assert_eq!(val, (1.0, 4.0));
             }
 
             #[test]
@@ -560,17 +560,17 @@ mod tests {
                 // partial satisfaction, no full step
                 stepping.satisfaction = 1.0;
                 let val = stepping.current_valuation();
-                assert_eq!(val, 2.0);
+                assert_eq!(val, (0.0, 2.0));
 
                 // partial satisfaciton, full step
                 stepping.satisfaction = 3.0;
                 let val = stepping.current_valuation();
-                assert_eq!(val, 5.0);
+                assert_eq!(val, (1.0, 5.0));
 
                 // partial satisfaciton, multiple full steps
                 stepping.satisfaction = 5.0;
                 let val = stepping.current_valuation();
-                assert_eq!(val, 6.5);
+                assert_eq!(val, (2.0, 6.5));
             }
         }
 
@@ -1403,6 +1403,71 @@ mod tests {
                 assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().reserved, 20.0);
                 assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+            }
+        }
+    
+        mod consume_desires_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn correctly_consume_desires() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0);
+                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0);
+                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0);
+                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0);
+                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire1);
+                test.desires.push_back(desire2);
+                test.desires.push_back(desire3);
+                test.desires.push_back(desire4);
+                test.desires.push_back(desire5);
+
+                test.property.insert(4, PropertyRecord::new(20.0));
+                test.property.insert(5, PropertyRecord::new(20.0));
+                test.property.insert(6, PropertyRecord::new(20.0)); 
+                test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
+
+                let result = test.consume_desires(&data);
+
+                assert_eq!(result.0, 4.0);
+                assert_eq!(result.1, 80.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 20.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 00.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
             }
         }
     }

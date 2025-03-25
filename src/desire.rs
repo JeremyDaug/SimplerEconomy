@@ -134,23 +134,35 @@ impl Desire {
     /// 
     /// Gets the current value of the desire based on existing satisfaction.
     /// 
+    /// Returns the numebr of steps satisfied and the total summation.
+    /// 
     /// This is a step valuation function, where each full amount of satisfaction is
     /// linear in adding value, and then it steps to the next value in line.
-    pub fn current_valuation(&self) -> f64 {
+    pub fn current_valuation(&self) -> (f64, f64) {
+        let mut fin_steps = 0.0;
+        let mut summation = 0.0;
         if let Some(factor) = self.reduction_factor {
-            let normalized_sat = self.satisfaction / self.amount;
-            let steps = normalized_sat.floor() as i32;
-            let mut result = 0.0;
+            let normalized_sat = (self.satisfaction / self.amount);
+            println!("Normalized Satisfaction: {}", normalized_sat);
+            fin_steps = normalized_sat.floor();
+            let steps = fin_steps as i32;
             // whole steps
             for step in 0..steps {
-                result += self.start_value * factor.powi(step) * self.amount;
+                let val = self.start_value * factor.powi(step) * self.amount;
+                println!("Step Val: {}", val);
+                summation += self.start_value * factor.powi(step) * self.amount;
             }
-            result += self.start_value * factor.powi(steps) * self.amount 
+            summation += self.start_value * factor.powi(steps) * self.amount 
                 * (normalized_sat - normalized_sat.floor());
-            result
+            println!("Summation: {}", summation);
+            println!("Steps: {}", fin_steps);
         } else {
-            self.start_value * self.satisfaction
+            summation = self.start_value * self.satisfaction;
+            fin_steps = (self.satisfaction / self.amount).floor();
+            println!("Summation: {}", summation);
+            println!("Steps: {}", fin_steps);
         }
+        (fin_steps, summation)
     }
 
     /// # End
