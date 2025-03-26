@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, markethistory::MarketHistory};
 
 
 use crate::constants::TIME_ID;
@@ -113,6 +113,28 @@ impl Pop {
         }
     }
 
+    // offer logic, when purchasing something, figure out what to offer in return.
+    /// # Make Offer
+    /// 
+    /// Takes in the good(s) which is attempting to be purchased, market and good data
+    /// and returns the goods being offered in return for those goods.
+    /// 
+    /// The goods being requested should satisfy more than is being sacrifised and
+    /// the AMV cost gained should be higher than what is lost.
+    pub fn make_offer(&self, request: HashMap<usize, f64>, data: &Data, 
+    market: &MarketHistory) -> HashMap<usize, f64>{
+        todo!()
+    }
+
+    // accepting offer logic, when given an offer for some good, check if the offer is good enough.
+
+    // purchase logic, figure out what to buy and if we have anything to offer for it.
+    // selling logic, create a list of things the pop is willing to offer in exchange for other things.
+
+    // day startup, does the initial work needed for the pop before the day begins, for pops, this typically includes exchanging their time and skills for payment in work.
+    // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
+    // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
+
     /// # Consume Desires
     /// 
     /// Consumes all goods to satisfy desires.
@@ -179,15 +201,15 @@ impl Pop {
         let mut shifted = 0.0;
         match current_desire.item {
             crate::item::Item::Want(id) => {
-                println!("Getting Wants");
+                //println!("Getting Wants");
                 // want is the most complicated, but follows a standard priority method.
                 // First, try to get wants from storage.
                 if let Some(want_rec) = self.wants.get_mut(&id) {
                     // get available want
                     let shift = want_rec.owned.min(current_desire.amount - shifted);
-                    println!("Shifting: {}", shift);
+                    //println!("Shifting: {}", shift);
                     if shift > 0.0 {
-                        println!("Have want already, reserving.");
+                        //println!("Have want already, reserving.");
                         want_rec.owned -= shift; // remove from owned
                         want_rec.expended += shift; // add to expended.
                         current_desire.satisfaction += shift;
@@ -208,11 +230,11 @@ impl Pop {
                             let target = (current_desire.amount - shifted) / eff;
                             let shift = target.min(good_rec.owned);
                             if shift > 0.0 {
-                                println!("Getting Ownership Source.");
+                                //println!("Getting Ownership Source.");
                                 // shift and reserve
                                 shifted += shift * eff;
                                 good_rec.owned -= shift; // remove from owned
-                                good_rec.expended += shift; // add to expended.
+                                good_rec.used += shift; // add to expended.
                                 current_desire.satisfaction += shift * eff;
                                 // add the extra wants to expected for later uses.
                                 for (&want, &eff) in good_data.own_wants.iter() { 
@@ -281,11 +303,13 @@ impl Pop {
                                 // shift and reserve good and the want
                                 shifted += shift * eff;
                                 good_rec.owned -= shift; // remove from owned.
-                                good_rec.expended += shift; // add to expended.
+                                good_rec.used += shift; // add to expended.
                                 current_desire.satisfaction += shift * eff;
                                 // shift time as well
                                 self.property.get_mut(&TIME_ID).unwrap()
-                                    .reserved += shift * good_data.use_time;
+                                    .owned -= shift * good_data.consumption_time;
+                                self.property.get_mut(&TIME_ID).unwrap()
+                                    .expended += shift * good_data.consumption_time;
                                 // add the extra wants to expected for later uses.
                                 for (&want, &eff) in good_data.use_wants.iter() { 
                                     // add the wants to expected.
@@ -354,11 +378,14 @@ impl Pop {
                             if shift > 0.0 {
                                 // shift and reserve good and the want
                                 shifted += shift * eff;
-                                good_rec.reserved += shift;
+                                good_rec.owned -= shift;
+                                good_rec.expended += shift;
                                 current_desire.satisfaction += shift * eff;
                                 // shift time as well
                                 self.property.get_mut(&TIME_ID).unwrap()
-                                    .reserved += shift * good_data.consumption_time;
+                                    .owned -= shift * good_data.consumption_time;
+                                self.property.get_mut(&TIME_ID).unwrap()
+                                    .expended += shift * good_data.consumption_time;
                                 // add the extra wants to expected for later uses.
                                 for (&want, &eff) in good_data.consumption_wants.iter() {
                                     // add the wants to expected.
@@ -421,18 +448,18 @@ impl Pop {
                 }
             },
             crate::item::Item::Good(id) => {
-                println!("Satisfying Good: {}.", id);
+                //println!("Satisfying Good: {}.", id);
                 // Good, so just find and insert
                 if let Some(rec) = self.property.get_mut(&id) {
-                    println!("Has in property.");
+                    //println!("Has in property.");
                     // How much we can shift over.
                     let shift = rec.owned.min(current_desire.amount);
-                    println!("Shifting: {}", shift);
+                    //println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
                     rec.owned -= shift;
                     rec.expended += shift; // and add to expended for checking.
                     current_desire.satisfaction += shift; // and to satisfaction.
-                    println!("Current Satisfaction: {}", current_desire.satisfaction);
+                    //println!("Current Satisfaction: {}", current_desire.satisfaction);
                 }
             },
         }
@@ -681,7 +708,7 @@ impl Pop {
                 }
             },
             crate::item::Item::Good(id) => {
-                println!("Satisfying Good: {}.", id);
+                //println!("Satisfying Good: {}.", id);
                 // Good, so just find and insert
                 if let Some(rec) = self.property.get_mut(&id) {
                     //println!("Has in property.");
@@ -901,6 +928,10 @@ pub struct PropertyRecord {
     /// 
     /// At the end of the day, this should be equivalent to reserved goods.
     pub expended: f64,
+    /// How many has been 'used' and cannot be used or expended again.
+    /// 
+    /// This covers storage for both ownership and used products.
+    pub used: f64,
     /// How many were given up in trade.
     pub traded: f64,
     /// How many were offered, but not accepted.
@@ -913,6 +944,7 @@ impl PropertyRecord {
             owned,
             reserved: 0.0,
             expended: 0.0,
+            used: 0.0,
             traded: 0.0,
             offered: 0.0,
         }

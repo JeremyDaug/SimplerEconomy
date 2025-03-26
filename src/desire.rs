@@ -143,24 +143,24 @@ impl Desire {
         let mut summation = 0.0;
         if let Some(factor) = self.reduction_factor {
             let normalized_sat = (self.satisfaction / self.amount);
-            println!("Normalized Satisfaction: {}", normalized_sat);
+            //println!("Normalized Satisfaction: {}", normalized_sat);
             fin_steps = normalized_sat.floor();
             let steps = fin_steps as i32;
             // whole steps
             for step in 0..steps {
                 let val = self.start_value * factor.powi(step) * self.amount;
-                println!("Step Val: {}", val);
+                //println!("Step Val: {}", val);
                 summation += self.start_value * factor.powi(step) * self.amount;
             }
             summation += self.start_value * factor.powi(steps) * self.amount 
                 * (normalized_sat - normalized_sat.floor());
-            println!("Summation: {}", summation);
-            println!("Steps: {}", fin_steps);
+            //println!("Summation: {}", summation);
+            //println!("Steps: {}", fin_steps);
         } else {
             summation = self.start_value * self.satisfaction;
             fin_steps = (self.satisfaction / self.amount).floor();
-            println!("Summation: {}", summation);
-            println!("Steps: {}", fin_steps);
+            //println!("Summation: {}", summation);
+            //println!("Steps: {}", fin_steps);
         }
         (fin_steps, summation)
     }

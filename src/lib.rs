@@ -1348,13 +1348,16 @@ mod tests {
 
                 assert_eq!(test.property.get(&4).unwrap().owned, 5.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 5.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
                 assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
                 assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
 
                 // second pass
                 let result = test.consume_desire(&mut current_desire, &data);
@@ -1372,13 +1375,16 @@ mod tests {
 
                 assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
 
                 // third pass
                 let result = test.consume_desire(&mut current_desire, &data);
@@ -1396,20 +1402,23 @@ mod tests {
 
                 assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().owned, 00.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 20.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
             }
         }
     
         mod consume_desires_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{constants::TIME_ID, data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn correctly_consume_desires() {
@@ -1431,11 +1440,16 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0);
-                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0);
-                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0);
-                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0);
-                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0);
+                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0)
+                    .with_interval(0.5, 0);
+                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0)
+                    .with_interval(0.5, 0);
+                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0)
+                    .with_interval(0.5, 0);
+                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0)
+                    .with_interval(0.5, 0);
+                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0)
+                    .with_interval(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire1);
@@ -1444,6 +1458,7 @@ mod tests {
                 test.desires.push_back(desire4);
                 test.desires.push_back(desire5);
 
+                test.property.insert(TIME_ID, PropertyRecord::new(100.0));
                 test.property.insert(4, PropertyRecord::new(20.0));
                 test.property.insert(5, PropertyRecord::new(20.0));
                 test.property.insert(6, PropertyRecord::new(20.0)); 
@@ -1451,23 +1466,34 @@ mod tests {
 
                 let result = test.consume_desires(&data);
 
-                assert_eq!(result.0, 4.0);
-                assert_eq!(result.1, 80.0);
+                assert_eq!(result.0, 11.0);
+                assert_eq!(result.1, 140.0);
 
+                assert_eq!(test.property.get(&0).unwrap().owned, 80.0);
+                assert_eq!(test.property.get(&0).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&0).unwrap().used, 0.0);
                 assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
                 assert_eq!(test.property.get(&4).unwrap().expended, 20.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 15.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 20.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 00.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 20.0);
                 assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().used, 0.0);
 
                 assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 35.0);
                 assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 50.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
             }
         }
     }
