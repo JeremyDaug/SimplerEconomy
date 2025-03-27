@@ -59,6 +59,11 @@ pub struct Pop {
     /// Storage for satisfying desires between functions. This should be empty by the 
     /// end of the day.
     pub working_desires: VecDeque<(f64, Desire)>,
+    /// The number of level whih has been satisfied (or expected to be satisfied).
+    pub current_satisfied_levels: f64, 
+    /// The total value of satisfaction that has been satisfied (or is expected 
+    /// to be satisfied).
+    pub current_satisfaction_level: f64,
 }
 
 impl Pop {
@@ -113,6 +118,29 @@ impl Pop {
         }
     }
 
+    /// # Reset
+    /// 
+    /// Resets property and want's to just owned, zeroing out remainder.
+    /// 
+    /// Resets desire satisaction as well.
+    pub fn reset(&mut self) {
+        for (_, prop) in self.property.iter_mut() {
+            prop.expended = 0.0;
+            prop.offered = 0.0;
+            prop.reserved = 0.0;
+            prop.traded = 0.0;
+            prop.used = 0.0;
+        }
+        for (_, want) in self.wants.iter_mut() {
+            want.expected = 0.0;
+            want.expended = 0.0;
+            want.reserved = 0.0;
+        }
+        for desire in self.desires.iter_mut() {
+            desire.satisfaction = 0.0;
+        }
+    }
+
     // offer logic, when purchasing something, figure out what to offer in return.
     /// # Make Offer
     /// 
@@ -139,10 +167,7 @@ impl Pop {
     /// 
     /// Calculates the satisfaction gained by adding these goods.
     /// 
-    /// Calculates it by taking the current desires and satisfaction, and tries 
-    /// to add them. to our desires.
-    /// 
-    /// This assumes that desires have already been satisfied to the best of our ability.
+    /// Calculates it by cloning the pop, adding the desire, then satisfying desires.
     pub fn satisfaction_gain(&self, adding: HashMap<usize, f64>) -> (f64, f64) {
         // clone existing property.
         let mut prop = self.property.clone();
@@ -170,6 +195,24 @@ impl Pop {
         }
 
         (0.0, 0.0)
+    }
+
+    /// # Get Satisfaction
+    /// 
+    /// Calculates the current satisfaction of the pop, returning the total levels 
+    /// satisfied and the value of those levels.
+    /// 
+    /// Does not save to the pop.
+    pub fn get_satisfaction(&self) -> (f64, f64) {
+        let mut total = 0.0;
+        let mut summation = 0.0;
+        for desire in self.desires.iter() {
+            let (t, s) = desire.current_valuation();
+            total += t;
+            summation += s;
+        }
+
+        (total, summation)
     }
 
     /// # Consume Desires
@@ -765,7 +808,6 @@ impl Pop {
             None
         }
     }
-
 
     /// # Satisfy Next desire
     /// 
