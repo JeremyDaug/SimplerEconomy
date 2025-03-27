@@ -333,6 +333,25 @@ impl Desire {
         // if no interval amount needs to be equal to satisfaction.
         return self.amount == self.satisfaction;
     }
+    
+    /// # Satisfied At
+    /// 
+    /// Checks if the current value is fully satisfied or not.
+    /// 
+    /// If step is not valid, it returns false.
+    pub(crate) fn satisfied_at(&self, current_value: f64) -> bool {
+        if let Some(step) = self.on_step(current_value) {
+            // if we have an equal or greater amount of satisfaction than 
+            // the amount * steps, then it's satisfied at that level.
+            if self.amount * step <= self.satisfaction {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
