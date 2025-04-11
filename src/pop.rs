@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, markethistory::MarketHistory};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory};
 
 
 use crate::constants::TIME_ID;
@@ -60,10 +60,10 @@ pub struct Pop {
     /// end of the day.
     pub working_desires: VecDeque<(f64, Desire)>,
     /// The number of level whih has been satisfied (or expected to be satisfied).
-    pub current_satisfied_levels: f64, 
+    pub satisfied_levels: f64, 
     /// The total value of satisfaction that has been satisfied (or is expected 
     /// to be satisfied).
-    pub current_satisfaction_level: f64,
+    pub satisfaction: f64,
 }
 
 impl Pop {
@@ -80,6 +80,8 @@ impl Pop {
             property: HashMap::new(),
             wants: HashMap::new(),
             working_desires: VecDeque::new(),
+            satisfied_levels: 0.0,
+            satisfaction: 0.0,
         }
     }
 
@@ -139,6 +141,9 @@ impl Pop {
         for desire in self.desires.iter_mut() {
             desire.satisfaction = 0.0;
         }
+
+        self.satisfied_levels = 0.0;
+        self.satisfaction = 0.0;
     }
 
     // offer logic, when purchasing something, figure out what to offer in return.
@@ -163,38 +168,103 @@ impl Pop {
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
     // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
 
+    /// # Get Shopping Target
+    /// 
+    /// When called, this looks at the current desires of the pop which have not been satisfied
+    /// and selects the most highly desired one (first in working desires).
+    /// 
+    /// It returns how much it needs to satisfy the current tier as well.
+    /// 
+    /// If a specific good, it returns a planned target which should be gotten immediately.
+    /// 
+    /// All others return just what is needed. The Market decides which to get based on availablity.
+    pub fn get_shopping_target(&self) -> Option<(Item, f64)> {
+         if let Some((_weight, desire)) = self.working_desires.front()
+         {
+            match desire.item {
+                Item::Want(_) | Item::Class(_) => {
+                    return Some((desire.item, desire.amount));
+                },
+                Item::Good(id) => {
+                    // if we have this in our property, and it has a target, try to get that target.
+                    if let Some(property) = self.property.get(&id) {
+                        let target = property.current_target();
+                        return Some((Item::Good(id), target));
+                    } else {
+                        return Some((Item::Good(id), desire.amount));
+                    }
+                },
+            }
+         }
+         return None
+    }
+
+    /// # Satisfaction Change
+    /// 
+    /// Given a number of goods added/removed 
+    /// 
+    /// # Note Not tested
+    pub fn satisfaction_change(&self, change: HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+        let mut temp_pop = self.clone();
+        temp_pop.reset();
+        for (good, val) in change.iter() {
+            temp_pop.property.entry(*good)
+                .and_modify(|x| x.owned += val)
+                .or_insert(PropertyRecord::new(*val));
+        }
+        temp_pop.satisfy_desires(data);
+        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
+        let satisfied = self.satisfaction - temp_pop.satisfaction;
+        (levels, satisfied)
+    }
+
+    /// # Satisfaction Lost
+    /// 
+    /// Calculates the satisfaction lost by removing goods and wants from the 
+    /// 
+    /// Calculates it by cloning the pop, removing goods, then satisfying desires.
+    /// 
+    /// # Note Not tested
+    pub fn satisfaction_lost(&self, removing: HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+        // Clone existing pop.
+        let mut temp_pop = self.clone();
+        // Reset the 
+        temp_pop.reset(); 
+        for (good, val) in removing.iter() {
+            temp_pop.property.get_mut(good).unwrap().owned -= *val;
+        }
+        // satisfy the desires of the temporary pop.
+        temp_pop.satisfy_desires(data);
+        // with satisfaciton done, return the difference between the current and possible new
+        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
+        let satisfied = self.satisfaction - temp_pop.satisfaction;
+        (levels, satisfied)
+    }
+
     /// # Satisfaction Gain
     /// 
     /// Calculates the satisfaction gained by adding these goods.
     /// 
     /// Calculates it by cloning the pop, adding the desire, then satisfying desires.
-    pub fn satisfaction_gain(&self, adding: HashMap<usize, f64>) -> (f64, f64) {
-        // clone existing property.
-        let mut prop = self.property.clone();
-        // add new property to the clone.
-        for (good, val) in adding.iter() {
-            prop.entry(*good)
+    /// 
+    /// # Note Not tested
+    pub fn satisfaction_gain(&self, new_goods: HashMap<usize, f64>, 
+    data: &Data) -> (f64, f64) {
+        // Clone existing pop.
+        let mut temp_pop = self.clone();
+        // Reset the 
+        temp_pop.reset(); 
+        for (good, val) in new_goods.iter() {
+            temp_pop.property.entry(*good)
                 .and_modify(|x| x.owned += val)
                 .or_insert(PropertyRecord::new(*val));
         }
-        // clone desires as they've been worked.
-        let mut desires = VecDeque::new();
-        for desire in self.desires.iter() {
-            desires.push_back((desire.start_value, desire.clone()));
-        }
-        // iterate over desires, trying to add the new goods.
-        loop {
-            let (current_value, mut current_desire) = desires.pop_front().unwrap();
-            if !current_desire.satisfied_at(current_value) {
-                // if not currently satisfied, see if we can.
-                Pop::satisfy_desire()
-            }
-            if desires.len() == 0 {
-                break;
-            }
-        }
-
-        (0.0, 0.0)
+        // satisfy the desires of the temporary pop.
+        temp_pop.satisfy_desires(data);
+        // with satisfaciton done, return the difference between the current and possible new
+        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
+        let satisfied = self.satisfaction - temp_pop.satisfaction;
+        (levels, satisfied)
     }
 
     /// # Get Satisfaction
@@ -560,7 +630,8 @@ impl Pop {
     /// at which it failed to satisfy.
     pub(crate) fn satisfy_desire(value: f64, desire: &mut Desire, 
     property: &mut HashMap<usize, PropertyRecord>, 
-    wants: &mut HashMap<usize, WantRecord>, data: &Data) 
+    wants: &mut HashMap<usize, WantRecord>, working_desires: &mut VecDeque<(f64, Desire)>,
+    data: &Data) 
     -> Option<(f64, Desire)> {
         // prep our shifted record for checking if we succeeded at satisfying the desire.
         let mut shifted = 0.0;
@@ -799,12 +870,12 @@ impl Pop {
         if shifted < desire.amount || desire.is_fully_satisfied() {
             //println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
             //println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
-            return Some((value, desire));
+            return Some((value, desire.clone()));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");
             let next_step = desire.next_step(value)
                 .expect("Next Step should exist, but seemingly does not. Investigate why.");
-            Self::ordered_desire_insert(working_desires, desire, next_step);
+            Self::ordered_desire_insert(working_desires, desire.clone(), next_step);
             None
         }
     }
@@ -1103,6 +1174,8 @@ impl Pop {
     /// 
     /// There's no special prioritization, start at the bottom of desires, add to
     /// the first, and go from there. 
+    /// 
+    /// After all is done, it saves the work, and records the satisfaction achieved.
     pub fn satisfy_desires(&mut self, data: &Data) {
         // Move current desires into a working btreemap for easier organization and management.
         //println!("Satisfying Desires.");
@@ -1129,6 +1202,10 @@ impl Pop {
             let (idx, _) = self.desires.iter().find_position(|x| x.equals(&des)).expect("Could not find desire.");
             self.desires.get_mut(idx).unwrap().satisfaction = des.satisfaction;
         }
+        // wrap up by getting satisfaciton and saving it.
+        let (levels, value) = self.get_satisfaction();
+        self.satisfied_levels = levels;
+        self.satisfaction = value;
     }
 
     /// # Update Desires Full
@@ -1275,6 +1352,8 @@ pub struct PropertyRecord {
     pub traded: f64,
     /// How many were offered, but not accepted.
     pub offered: f64,
+    /// A Target number of the good we want to have by day end.
+    pub target: f64,
 }
 
 impl PropertyRecord {
@@ -1286,6 +1365,7 @@ impl PropertyRecord {
             used: 0.0,
             traded: 0.0,
             offered: 0.0,
+            target: 0.0,
         }
     }
 
@@ -1295,6 +1375,15 @@ impl PropertyRecord {
     /// This is effectively the difference between owned and reserved.
     pub fn available(&self) -> f64 {
         self.owned - self.reserved
+    }
+
+    /// # Current Target
+    /// 
+    /// How many more goods we need to reach our target.
+    /// 
+    /// Equal to target - owned
+    pub fn current_target(&self) -> f64 {
+        self.target - self.owned
     }
 }
 
