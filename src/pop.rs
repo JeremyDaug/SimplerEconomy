@@ -146,7 +146,6 @@ impl Pop {
         self.satisfaction = 0.0;
     }
 
-    // offer logic, when purchasing something, figure out what to offer in return.
     /// # Make Offer
     /// 
     /// Takes in the good(s) which is attempting to be purchased, market and good data
@@ -156,7 +155,66 @@ impl Pop {
     /// the AMV cost gained should be higher than what is lost.
     pub fn make_offer(&self, request: HashMap<usize, f64>, data: &Data, 
     market: &MarketHistory) -> HashMap<usize, f64>{
-        todo!()
+        // get the AMV of the request
+        let mut req_amv = 0.0;
+        for (good, amt) in request.iter() {
+            req_amv += market.get_record(*good).price * amt;
+        }
+        // get the satisfaction gain from the request.
+        let (levels_gained, sat_gained) = self.satisfaction_gain(request, data);
+
+        // with our amv, and satisfaction gains, try to find things to give up that are worth more than
+        // the AMV but less then our sat and levels gained.
+
+        // Effectively, make change with our money, then do so with the rest of our goods.
+        let mut offer_goods = HashMap::new();
+        let mut offer_amv = 0.0;
+        // Start by using any currencies of the market.
+        for (good, prop_info) in self.property.iter()
+        .filter(|x| market.currencies.contains(x.0))
+        .sorted_by(|a, b| {
+            // iterate over our goods, sorting by current AMV value.
+            let val_a = market.get_record(*a.0).price;
+            let val_b = market.get_record(*b.0).price;
+            val_a.total_cmp(&val_b)
+        }) {
+            // start with most valuable and either get just enough, or all available for it.
+            let unit_amv = market.get_record(*good).price;
+            let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
+             // get target, capped at available, and rounded down.
+            let shift = target_amt.min(prop_info.available()).floor();
+            if shift > 0.0 { // check we can shift anything, if so, shift.
+                loop { // find if we can add without hurting satisfaction too much.
+                    offer_goods.insert(*good, shift);
+                    // check that the sacrifice is worth it
+                    let (levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                        shift = (shift / 2.0).floor();
+                        offer_goods.remove(good);
+                    } else { // if not overdrawing, break out and stay there.
+                        // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                        break; 
+                    }
+                }
+            }
+            offer_amv += shift * unit_amv;
+            // if we get enough AMV, break out here
+            // TODO: Pick up here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
+        }
+        
+
+        for (good, prop_info) in self.property.iter()
+        .sorted_by(|a, b| {
+            // iterate over our goods, sorting by current AMV value.
+            let val_a = market.get_record(*a.0).price;
+            let val_b = market.get_record(*b.0).price;
+            val_a.total_cmp(&val_b)
+        }) {
+            // most valuable good first. Get just enough to cover AMV or max below.
+
+        }
+
+        HashMap::new()
     }
 
     // accepting offer logic, when given an offer for some good, check if the offer is good enough.
@@ -167,6 +225,8 @@ impl Pop {
     // day startup, does the initial work needed for the pop before the day begins, for pops, this typically includes exchanging their time and skills for payment in work.
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
     // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
+
+
 
     /// # Get Shopping Target
     /// 
@@ -201,10 +261,12 @@ impl Pop {
 
     /// # Satisfaction Change
     /// 
-    /// Given a number of goods added/removed 
+    /// Given a number of goods added/removed returns the result of that change in goods.
+    /// 
+    /// Returns levels satisfied and levels
     /// 
     /// # Note Not tested
-    pub fn satisfaction_change(&self, change: HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+    pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data) -> (f64, f64) {
         let mut temp_pop = self.clone();
         temp_pop.reset();
         for (good, val) in change.iter() {
@@ -224,8 +286,10 @@ impl Pop {
     /// 
     /// Calculates it by cloning the pop, removing goods, then satisfying desires.
     /// 
+    /// Returns levels satisfied and levels
+    /// 
     /// # Note Not tested
-    pub fn satisfaction_lost(&self, removing: HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+    pub fn satisfaction_lost(&self, removing: &HashMap<usize, f64>, data: &Data) -> (f64, f64) {
         // Clone existing pop.
         let mut temp_pop = self.clone();
         // Reset the 
@@ -247,8 +311,10 @@ impl Pop {
     /// 
     /// Calculates it by cloning the pop, adding the desire, then satisfying desires.
     /// 
+    /// Returns levels satisfied and levels
+    /// 
     /// # Note Not tested
-    pub fn satisfaction_gain(&self, new_goods: HashMap<usize, f64>, 
+    pub fn satisfaction_gain(&self, new_goods: &HashMap<usize, f64>, 
     data: &Data) -> (f64, f64) {
         // Clone existing pop.
         let mut temp_pop = self.clone();
