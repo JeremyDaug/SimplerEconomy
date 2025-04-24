@@ -555,7 +555,7 @@ mod tests {
             #[test]
             pub fn calculate_stepping_value_correctly() {
                 let mut stepping = Desire::new(Item::Good(0), 2.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 // partial satisfaction, no full step
                 stepping.satisfaction = 1.0;
@@ -592,7 +592,7 @@ mod tests {
                 let result = test.next_step(0.5);
                 assert!(result.is_none());
 
-                let test = test.with_interval(0.5, 2);
+                let test = test.with_step_factor(0.5, 2);
                 let result = test.next_step(0.1);
                 assert!(result.is_none());
             }
@@ -600,7 +600,7 @@ mod tests {
             #[test]
             pub fn get_next_step_down_successfully() {
                 let test = Desire::new(Item::Good(0), 1.0, 20.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let result = test.next_step(15.0).unwrap();
                 assert_eq!(result, 10.0);
@@ -612,7 +612,7 @@ mod tests {
             #[test]
             pub fn step_up_when_matching_current_step() {
                 let test = Desire::new(Item::Class(0), 1.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let result = test.next_step(1.0).expect("Did not return correctly!");
                 assert_eq!(result, 0.5);
@@ -627,10 +627,10 @@ mod tests {
                 let d = Desire::new(Item::Want(0), 1.0, 1.0);
                 assert_eq!(d.end(), Some(1.0));
                 let d = Desire::new(Item::Want(0), 1.0, 1.0)
-                    .with_interval(0.5, 2);
+                    .with_step_factor(0.5, 2);
                 assert_eq!(d.end(), Some(0.25));
                 let d = Desire::new(Item::Want(0), 1.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 assert_eq!(d.end(), None);
             }
         }
@@ -644,7 +644,7 @@ mod tests {
             #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
             pub fn fail_when_lifeneed_tag_and_no_end() {
                 Desire::new(Item::Good(0), 1.0, 1.0)
-                .with_interval(0.5, 0)
+                .with_step_factor(0.5, 0)
                 .with_tag(DesireTag::life_need(0.5));
             }
 
@@ -653,7 +653,7 @@ mod tests {
             pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
                 Desire::new(Item::Good(0), 1.0, 1.0)
                 .with_tag(DesireTag::life_need(0.5))
-                .with_interval(0.5, 0);
+                .with_step_factor(0.5, 0);
             }
 
             #[test]
@@ -694,6 +694,47 @@ mod tests {
     }
 
     mod pop_tests {
+        mod make_offer_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+
+            /// Tests when sat_lost == 0.0. This includes testing out money.
+            #[test]
+            pub fn correctly_make_offer_no_satisfaction_loss_and_money() {
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+
+                let mut test_pop = Pop::new(0, 0, 0);
+
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                
+            }
+
+            /// Tests when sat_lost > 0.0 but always < sat_gained
+            #[test]
+            pub fn correctly_make_offer_minor_satisfaction_loss() {
+            }
+
+            /// Tests when sat_loss > 0.0, and some steps result in loss > sat_gained
+            #[test]
+            pub fn correctly_make_offer_excess_satisfaction_loss() {
+            }
+        }
+
         mod integrate_desires_should {
             use crate::{desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
 
@@ -831,7 +872,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 1.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -854,7 +895,7 @@ mod tests {
                 .in_class(4));
 
                 let desire = Desire::new(Item::Class(4), 1.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -888,7 +929,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -930,7 +971,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 2.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -967,7 +1008,7 @@ mod tests {
                 .in_class(4));
 
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_front((1.0, desire));
@@ -1017,7 +1058,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 15.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_front((1.0, desire));
@@ -1092,13 +1133,13 @@ mod tests {
                 data.add_good(Good::new(7, String::from("testGood7"), String::new()));
 
                 let desire1 = Desire::new(Item::Good(4), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire2 = Desire::new(Item::Good(5), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire3 = Desire::new(Item::Good(6), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire4 = Desire::new(Item::Good(7), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_back((1.0, desire1));
@@ -1219,7 +1260,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 2.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire);
@@ -1256,7 +1297,7 @@ mod tests {
                 .in_class(4));
 
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire);
@@ -1311,7 +1352,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 15.0, 1.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_front(desire);
@@ -1441,15 +1482,15 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire1 = Desire::new(Item::Good(4), 10.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire2 = Desire::new(Item::Class(4), 10.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire3 = Desire::new(Item::Want(4), 10.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire4 = Desire::new(Item::Good(5), 10.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
                 let desire5 = Desire::new(Item::Want(5), 10.0, 2.0)
-                    .with_interval(0.5, 0);
+                    .with_step_factor(0.5, 0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire1);

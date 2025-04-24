@@ -106,22 +106,24 @@ impl Desire {
         self
     }
 
-    /// # With Interval
+    /// # With Step Factor
     /// 
-    /// Consuming setter for interval and steps.
+    /// Consuming setter for Step Factor and number of steps
     /// 
     /// Putting in 0 steps means that it has no end.
     /// 
+    /// Factor must be between 0.0 and 1.0 exclusive.
+    /// 
     /// # Panics
     /// 
-    /// Panics if interval is not positive.
-    pub fn with_interval(mut self, interval: f64, steps: usize) -> Self {
-        assert!(0.0 < interval && interval < 1.0, "Interval must be between 0.0 and 1.0, exclusive.");
-        assert!(interval.is_finite(), "Interval must be a finite number.");
+    /// Factor must be a finite number between 0.0 and 1.0 exclusive.
+    pub fn with_step_factor(mut self, factor: f64, steps: usize) -> Self {
+        assert!(0.0 < factor && factor < 1.0, "Factor must be between 0.0 and 1.0, exclusive.");
+        assert!(factor.is_finite(), "Factor must be a finite number.");
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }
-        self.reduction_factor = Some(interval);
+        self.reduction_factor = Some(factor);
         if steps > 0 { // If given a value, convert to Option<NonZeroUsize>
             self.steps = NonZero::new(steps);
         } else { // if no steps given, just set to None.

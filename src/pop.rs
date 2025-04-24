@@ -153,15 +153,24 @@ impl Pop {
     /// 
     /// The goods being requested should satisfy more than is being sacrifised and
     /// the AMV cost gained should be higher than what is lost.
-    pub fn make_offer(&self, request: HashMap<usize, f64>, data: &Data, 
-    market: &MarketHistory) -> HashMap<usize, f64>{
+    /// 
+    /// It also has an optional input for a pre-defined AMV value, typically given by
+    pub fn make_offer(&self, request: &HashMap<usize, f64>, data: &Data, 
+    market: &MarketHistory, price_hint: &HashMap<usize, f64>) -> HashMap<usize, f64>{
         // get the AMV of the request
         let mut req_amv = 0.0;
-        for (good, amt) in request.iter() {
-            req_amv += market.get_record(*good).price * amt;
+        // check if we have been given a price hint.
+        if price_hint.len() > 0 {
+            for (&good, &amt) in price_hint.iter() {
+                req_amv += market.get_record(good).price * amt;
+            }
+        } else { // if no price hint, get market AMV for hint value.
+            for (good, amt) in request.iter() {
+                req_amv += market.get_record(*good).price * amt;
+            }
         }
         // get the satisfaction gain from the request.
-        let (levels_gained, sat_gained) = self.satisfaction_gain(request, data);
+        let (_levels_gained, sat_gained) = self.satisfaction_gain(request, data);
 
         // with our amv, and satisfaction gains, try to find things to give up that are worth more than
         // the AMV but less then our sat and levels gained.
@@ -182,7 +191,44 @@ impl Pop {
             let unit_amv = market.get_record(*good).price;
             let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
              // get target, capped at available, and rounded down.
-            let shift = target_amt.min(prop_info.available()).floor();
+            let mut shift = target_amt.min(prop_info.available()).floor();
+            if shift > 0.0 { // check we can shift anything, if so, shift.
+                loop { // find if we can add without hurting satisfaction too much.
+                    offer_goods.insert(*good, shift);
+                    // check that the sacrifice is worth it
+                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                        shift = (shift / 2.0).floor();
+                        offer_goods.remove(good);
+                    } else { // if not overdrawing, break out and stay there.
+                        // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                        break; 
+                    }
+                }
+            }
+            offer_amv += shift * unit_amv;
+            // if we get enough AMV, break out here
+            if offer_amv >= req_amv {
+                break;
+            }
+        }
+        // check we're done or not.
+        if offer_amv >= req_amv { // if so, return our offer.
+            return offer_goods;
+        }
+
+        for (good, prop_info) in self.property.iter()
+        .sorted_by(|a, b| {
+            // iterate over our goods, sorting by current AMV value.
+            let val_a = market.get_record(*a.0).price;
+            let val_b = market.get_record(*b.0).price;
+            val_a.total_cmp(&val_b)
+        }) {
+            // start with most valuable and either get just enough, or all available for it.
+            let unit_amv = market.get_record(*good).price;
+            let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
+             // get target, capped at available, and rounded down.
+            let mut shift = target_amt.min(prop_info.available()).floor();
             if shift > 0.0 { // check we can shift anything, if so, shift.
                 loop { // find if we can add without hurting satisfaction too much.
                     offer_goods.insert(*good, shift);
@@ -199,22 +245,13 @@ impl Pop {
             }
             offer_amv += shift * unit_amv;
             // if we get enough AMV, break out here
-            // TODO: Pick up here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!11
+            if offer_amv >= req_amv {
+                break;
+            }
         }
-        
-
-        for (good, prop_info) in self.property.iter()
-        .sorted_by(|a, b| {
-            // iterate over our goods, sorting by current AMV value.
-            let val_a = market.get_record(*a.0).price;
-            let val_b = market.get_record(*b.0).price;
-            val_a.total_cmp(&val_b)
-        }) {
-            // most valuable good first. Get just enough to cover AMV or max below.
-
-        }
-
-        HashMap::new()
+        // if we get here, regardless of whether we actually have a 'good' offer or not
+        // return it and see what happens.
+        offer_goods
     }
 
     // accepting offer logic, when given an offer for some good, check if the offer is good enough.
@@ -225,6 +262,7 @@ impl Pop {
     // day startup, does the initial work needed for the pop before the day begins, for pops, this typically includes exchanging their time and skills for payment in work.
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
     // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
+
 
 
 
@@ -258,6 +296,15 @@ impl Pop {
          }
          return None
     }
+
+
+
+    // TODO: Satisfaction Lost and Gained, should be smarter. Improvement. Using partial satisfaction, 
+    // they only add or remove once from there, rather than doing it all again. This builds on the simplification
+    // that if previously solved, then adding guarantees it's use immediately.
+    // For lost, this assumption makes it so that it can strip from as yet un-reserved goods, meaning that it will
+    // always result in a satisfaction loss (per unit) less than the current level being looked at, and 
+    // could be used 
 
     /// # Satisfaction Change
     /// 
