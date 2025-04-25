@@ -702,26 +702,42 @@ mod tests {
             /// Tests when sat_lost == 0.0. This includes testing out money.
             #[test]
             pub fn correctly_make_offer_no_satisfaction_loss_and_money() {
+                // set up product data.
                 let mut data = Data::new();
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
 
+                // set up market data for goods.
                 let mut market = MarketHistory::new();
                 market.good_records.insert(5, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(6, GoodRecord::new().with_price(0.5));
                 market.good_records.insert(7, GoodRecord::new().with_price(0.25));
-
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                // set up the pop
                 let mut test_pop = Pop::new(0, 0, 0);
-
+                // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
                     .with_step_factor(0.5, 0));
+                // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(5.0));
 
+                // setup what we want to buy.
                 let mut request = HashMap::new();
                 request.insert(5, 2.0);
 
-                
+                // setup the price hint (not used in this test)
+                let price_hint: HashMap<usize, f64> = HashMap::new();
+
+                // now, do the test
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 4.0);
             }
 
             /// Tests when sat_lost > 0.0 but always < sat_gained
