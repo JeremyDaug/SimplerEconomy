@@ -154,7 +154,14 @@ impl Pop {
     /// The goods being requested should satisfy more than is being sacrifised and
     /// the AMV cost gained should be higher than what is lost.
     /// 
-    /// It also has an optional input for a pre-defined AMV value, typically given by
+    /// It also has an optional input for a pre-defined AMV value, typically given by.
+    /// 
+    /// ## Notes
+    /// 
+    /// price_hint should generally have a lower AMV value than the request itself. 
+    /// This makes satisfying via the price a better AMV deal for the buyer.
+    /// 
+    /// This is not a hard rule, just a suggestion for later coding.
     pub fn make_offer(&self, request: &HashMap<usize, f64>, data: &Data, 
     market: &MarketHistory, price_hint: &HashMap<usize, f64>) -> HashMap<usize, f64>{
         // get the AMV of the request
@@ -169,41 +176,100 @@ impl Pop {
                 req_amv += market.get_record(*good).price * amt;
             }
         }
+        println!("Requested AMV: {}", req_amv);
         // get the satisfaction gain from the request.
+        println!("Satisfaction Gain starting.");
         let (_levels_gained, sat_gained) = self.satisfaction_gain(request, data);
+        println!("Sat Gained: {}", sat_gained);
 
         // with our amv, and satisfaction gains, try to find things to give up that are worth more than
         // the AMV but less then our sat and levels gained.
-
         // Effectively, make change with our money, then do so with the rest of our goods.
+        // start by trying to use just the price hint
         let mut offer_goods = HashMap::new();
         let mut offer_amv = 0.0;
+        println!("Hint Section ---");
+        for (good, prop_info) in self.property.iter()
+        .filter(|x| price_hint.contains_key(x.0))
+        .sorted_by(|a, b| {
+            // iterate over our goods, sorting by current AMV value.
+            let val_a = market.get_record(*a.0).price;
+            let val_b = market.get_record(*b.0).price;
+            val_b.total_cmp(&val_a)
+        }) {
+            println!("Good: {}", good);
+            // start with most valuable and either get just enough, or all available for it.
+            let unit_amv = market.get_record(*good).price;
+            println!("Good AMV: {}", unit_amv);
+             // get target, capped at available, and rounded down.
+            let mut shift = price_hint.get(good).unwrap().min(prop_info.available()).floor();
+            let mut debug_counter = 0;
+            if shift > 0.0 { // check we can shift anything, if so, shift.
+                loop { // find if we can add without hurting satisfaction too much.
+                    println!("Shifting: {}", shift);
+                    offer_goods.insert(*good, shift);
+                    // check that the sacrifice is worth it
+                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                        shift = (shift / 2.0).floor();
+                        println!("Updated shift to: {}", shift);
+                        offer_goods.remove(good);
+                    } else { // if not overdrawing, break out and stay there.
+                        // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                        break; 
+                    }
+                    if debug_counter > 9 {
+                        assert!(false);
+                    }
+                    debug_counter += 1;
+                }
+            }
+            offer_amv += shift * unit_amv;
+            // if we get enough AMV, break out here
+            if offer_amv >= req_amv {
+                break;
+            }
+        }
+        // check we're done or not.
+        if offer_amv >= req_amv { // if so, return our offer.
+            return offer_goods;
+        }
         // Start by using any currencies of the market.
+        println!("Money Section ---");
         for (good, prop_info) in self.property.iter()
         .filter(|x| market.currencies.contains(x.0))
         .sorted_by(|a, b| {
             // iterate over our goods, sorting by current AMV value.
             let val_a = market.get_record(*a.0).price;
             let val_b = market.get_record(*b.0).price;
-            val_a.total_cmp(&val_b)
+            val_b.total_cmp(&val_a)
         }) {
+            println!("Good: {}", good);
             // start with most valuable and either get just enough, or all available for it.
             let unit_amv = market.get_record(*good).price;
+            println!("Good AMV: {}", unit_amv);
             let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
              // get target, capped at available, and rounded down.
             let mut shift = target_amt.min(prop_info.available()).floor();
+            let mut debug_counter = 0;
             if shift > 0.0 { // check we can shift anything, if so, shift.
                 loop { // find if we can add without hurting satisfaction too much.
+                    println!("Shifting: {}", shift);
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
                     let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
                     if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
+                        println!("Updated shift to: {}", shift);
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
                         // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
                         break; 
                     }
+                    if debug_counter > 9 {
+                        assert!(false);
+                    }
+                    debug_counter += 1;
                 }
             }
             offer_amv += shift * unit_amv;
@@ -222,10 +288,11 @@ impl Pop {
             // iterate over our goods, sorting by current AMV value.
             let val_a = market.get_record(*a.0).price;
             let val_b = market.get_record(*b.0).price;
-            val_a.total_cmp(&val_b)
+            val_b.total_cmp(&val_a)
         }) {
             // start with most valuable and either get just enough, or all available for it.
             let unit_amv = market.get_record(*good).price;
+            println!("Good AMV: {}", unit_amv);
             let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
              // get target, capped at available, and rounded down.
             let mut shift = target_amt.min(prop_info.available()).floor();
@@ -233,7 +300,7 @@ impl Pop {
                 loop { // find if we can add without hurting satisfaction too much.
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
-                    let (levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
                     if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);
@@ -375,8 +442,9 @@ impl Pop {
         // satisfy the desires of the temporary pop.
         temp_pop.satisfy_desires(data);
         // with satisfaciton done, return the difference between the current and possible new
-        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
-        let satisfied = self.satisfaction - temp_pop.satisfaction;
+        let levels = temp_pop.satisfied_levels - self.satisfied_levels;
+        let satisfied = temp_pop.satisfaction - self.satisfaction;
+        debug_assert!(satisfied >= 0.0, "Satisfaction Gained must be non-negative.");
         (levels, satisfied)
     }
 

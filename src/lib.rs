@@ -702,6 +702,7 @@ mod tests {
             /// Tests when sat_lost == 0.0. This includes testing out money.
             #[test]
             pub fn correctly_make_offer_no_satisfaction_loss_and_money() {
+                //println!("Starting Function");
                 // set up product data.
                 let mut data = Data::new();
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
@@ -717,6 +718,7 @@ mod tests {
                 market.currencies.insert(6);
                 market.currencies.insert(7);
                 // set up the pop
+                //println!("Making pop.");
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
@@ -725,6 +727,111 @@ mod tests {
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.property.insert(7, PropertyRecord::new(5.0));
+                test_pop.satisfy_desires(&data);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let mut price_hint: HashMap<usize, f64> = HashMap::new();
+                price_hint.insert(6, 2.0);
+                price_hint.insert(7, 4.0);
+
+                // now, do the test
+                //println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 4.0);
+            }
+
+            /// Tests when sat_lost > 0.0 but always < sat_gained
+            #[test]
+            pub fn correctly_make_offer_enough_money_not_satisfying_hint() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                market.currencies.insert(8);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(10.0));
+                test_pop.satisfy_desires(&data);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let mut price_hint: HashMap<usize, f64> = HashMap::new();
+                price_hint.insert(6, 2.0);
+                price_hint.insert(7, 4.0);
+
+                // now, do the test
+                println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 3.0);
+                assert_eq!(*result.get(&8).unwrap(), 3.0);
+                assert!(false)
+            }
+
+            /// Tests when sat_loss > 0.0, and some steps result in loss > sat_gained
+            #[test]
+            pub fn correctly_make_offer_no_hint_just_money() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                market.currencies.insert(8);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(10.0));
+                test_pop.satisfy_desires(&data);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -734,20 +841,90 @@ mod tests {
                 let price_hint: HashMap<usize, f64> = HashMap::new();
 
                 // now, do the test
+                println!("Starting Function");
                 let result = test_pop.make_offer(&request, &data, &market, &price_hint);
 
                 assert_eq!(*result.get(&6).unwrap(), 2.0);
-                assert_eq!(*result.get(&7).unwrap(), 4.0);
+                assert_eq!(*result.get(&7).unwrap(), 3.0);
+                assert_eq!(*result.get(&8).unwrap(), 3.0);
             }
 
-            /// Tests when sat_lost > 0.0 but always < sat_gained
             #[test]
-            pub fn correctly_make_offer_minor_satisfaction_loss() {
-            }
+            pub fn correctly_make_offer_no_hint_no_money_just_barter() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
 
-            /// Tests when sat_loss > 0.0, and some steps result in loss > sat_gained
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                //test_pop.property.insert(6, PropertyRecord::new(2.0));
+                //test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(100.0));
+                test_pop.satisfy_desires(&data);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let price_hint: HashMap<usize, f64> = HashMap::new();
+
+                // now, do the test
+                println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 3.0);
+                assert_eq!(*result.get(&8).unwrap(), 20.0);
+            }
+        }
+
+        mod satisfaction_gain_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+
             #[test]
-            pub fn correctly_make_offer_excess_satisfaction_loss() {
+            pub fn correctly_return_satisfaction_gained() {
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(1.0));
+                test_pop.satisfy_desires(&data);
+
+                let mut new_goods = HashMap::new();
+                new_goods.insert(5, 1.0);
+                let result = test_pop.satisfaction_gain(&new_goods, &data);
+
+                assert_eq!(result.0, 1.0);
+                assert_eq!(result.1, 0.5);
             }
         }
 
