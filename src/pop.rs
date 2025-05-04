@@ -178,7 +178,6 @@ impl Pop {
         }
         println!("Requested AMV: {}", req_amv);
         // get the satisfaction gain from the request.
-        println!("Satisfaction Gain starting.");
         let (_levels_gained, sat_gained) = self.satisfaction_gain(request, data);
         println!("Sat Gained: {}", sat_gained);
 
@@ -210,12 +209,13 @@ impl Pop {
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
                     let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    // TODO: Update this to target properly instead of estimating half reductions.
                     if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
-                        println!("Updated shift to: {}", shift);
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
                         // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                        println!("Shifted: {}", shift);
                         break; 
                     }
                     if debug_counter > 9 {
@@ -237,7 +237,8 @@ impl Pop {
         // Start by using any currencies of the market.
         println!("Money Section ---");
         for (good, prop_info) in self.property.iter()
-        .filter(|x| market.currencies.contains(x.0))
+        .filter(|x| market.currencies.contains(x.0) && // In currencies
+            !price_hint.contains_key(x.0)) // and not the hint.
         .sorted_by(|a, b| {
             // iterate over our goods, sorting by current AMV value.
             let val_a = market.get_record(*a.0).price;
@@ -258,12 +259,14 @@ impl Pop {
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
                     let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    // TODO: Update this to target properly instead of estimating half reductions.
+                    println!("Satisfaciton Lost: {}", sat_lost);
                     if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
-                        println!("Updated shift to: {}", shift);
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
                         // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                        println!("Updated shift to: {}", shift);
                         break; 
                     }
                     if debug_counter > 9 {
@@ -284,6 +287,8 @@ impl Pop {
         }
 
         for (good, prop_info) in self.property.iter()
+        .filter(|x| !market.currencies.contains(x.0) || // not in currencies
+        !price_hint.contains_key(x.0)) // or not the hint.
         .sorted_by(|a, b| {
             // iterate over our goods, sorting by current AMV value.
             let val_a = market.get_record(*a.0).price;
@@ -301,6 +306,7 @@ impl Pop {
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
                     let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    // TODO: Update this to target properly instead of estimating half reductions.
                     if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);

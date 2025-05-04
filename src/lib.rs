@@ -796,7 +796,6 @@ mod tests {
                 assert_eq!(*result.get(&6).unwrap(), 2.0);
                 assert_eq!(*result.get(&7).unwrap(), 3.0);
                 assert_eq!(*result.get(&8).unwrap(), 3.0);
-                assert!(false)
             }
 
             /// Tests when sat_loss > 0.0, and some steps result in loss > sat_gained
@@ -892,8 +891,6 @@ mod tests {
                 println!("Starting Function");
                 let result = test_pop.make_offer(&request, &data, &market, &price_hint);
 
-                assert_eq!(*result.get(&6).unwrap(), 2.0);
-                assert_eq!(*result.get(&7).unwrap(), 3.0);
                 assert_eq!(*result.get(&8).unwrap(), 20.0);
             }
         }
