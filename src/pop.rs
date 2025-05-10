@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory};
+use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory, offerresult::OfferResult};
 
 
 use crate::constants::TIME_ID;
@@ -327,7 +327,19 @@ impl Pop {
         offer_goods
     }
 
-    // accepting offer logic, when given an offer for some good, check if the offer is good enough.
+    /// # Check Offer
+    /// 
+    /// Takes in the results of an offer made by someone else and checks that the offer is
+    /// worth it to the pop.
+    /// 
+    /// Includes the requested goods, the offer made for it, and the price hint it originally given.
+    /// 
+    /// It's a simple check of satisfaction gained vs lost. 
+    pub fn check_offer(&self, request: &HashMap<usize, f64>, offer: &HashMap<usize, f64>,
+    price_hint: &HashMap<usize, f64>, data: &Data, market: &MarketHistory) -> OfferResult {
+
+        OfferResult::Reject
+    }
 
     // purchase logic, figure out what to buy and if we have anything to offer for it.
     // selling logic, create a list of things the pop is willing to offer in exchange for other things.
@@ -378,6 +390,15 @@ impl Pop {
     // For lost, this assumption makes it so that it can strip from as yet un-reserved goods, meaning that it will
     // always result in a satisfaction loss (per unit) less than the current level being looked at, and 
     // could be used 
+
+    /// # Satisfaction from AMV
+    /// 
+    /// Given an amount of AMV, how much Satisfaction could we (hypothetically) gain.
+    /// 
+    /// Assumes the market price is accurate
+    pub fn satisfaction_from_amv(&self, amv_gain: f64, data: &Data, market: &MarketHistory) -> (f64, f64) {
+
+    }
 
     /// # Satisfaction Change
     /// 
