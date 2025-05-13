@@ -395,9 +395,67 @@ impl Pop {
     /// 
     /// Given an amount of AMV, how much Satisfaction could we (hypothetically) gain.
     /// 
-    /// Assumes the market price is accurate
+    /// Assumes the market price is accurate and all it needs can be gained. Ignores 
+    /// shop time cost in the calculation.
+    /// 
+    /// This assumes that the pop that is calling this is partway through
     pub fn satisfaction_from_amv(&self, amv_gain: f64, data: &Data, market: &MarketHistory) -> (f64, f64) {
+        // create Duplicate for working on.
+        let mut dup = self.clone();
+        let mut amv_remaining = amv_gain;
 
+        loop {
+            // if nothing left to desire, break
+            if dup.working_desires.len() == 0 {
+                break;
+            }
+            if amv_remaining <= 0.0 { // if nothing else to purchase, break.
+                break;
+            }
+            // get the price of the item we want to purchase.
+            let (tier, mut desire) = dup.working_desires.pop_front().unwrap();
+            let unit_price = match desire.item {
+                Item::Want(id) => *market.want_prices.get(&id).unwrap_or(&0.0),
+                Item::Class(id) => *market.class_prices.get(&id).unwrap_or(&0.0),
+                Item::Good(id) => {
+                    if let Some(good) = market.good_records.get(&id) {
+                        good.price
+                    } else {
+                        0.0
+                    }
+                },
+            };
+            // get how many we want to purchase, capping at amount
+            let target = desire.amount - (desire.satisfaction % desire.amount);
+            // how many we can purchase.
+            let can_purchase = amv_remaining / unit_price;
+            // how many we will acutally purchase.
+            let purchase_amt = can_purchase.min(target);
+            // update satisfaction
+            desire.satisfaction += purchase_amt;
+            // reduce our amount.
+            amv_remaining -= purchase_amt * unit_price;
+            // get next step
+            let next_step = desire.next_step(tier);
+            // if desire is fully satisfied, or 
+            if desire.is_fully_satisfied() || next_step.is_none() { 
+                dup.desires.push_back(desire);
+            } else if let Some(next_step) = next_step {
+                Pop::ordered_desire_insert(&mut dup.working_desires, desire, next_step);
+            }
+        }
+        // With desires satisfied by AMV, shift all to the storage for stisfaction calculation.
+        loop {
+            if dup.working_desires.len() == 0 {
+                break;
+            }
+            let (_, desire) = dup.working_desires.pop_front().unwrap();;
+            dup.desires.push_back(desire);
+        }
+        // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
+        let dup_sat = dup.get_satisfaction();
+        let self_sat = self.get_satisfaction();
+        (dup_sat.0 - self_sat.0, dup_sat.1 - self_sat.1)
     }
 
     /// # Satisfaction Change
