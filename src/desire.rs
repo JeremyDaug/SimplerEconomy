@@ -270,7 +270,7 @@ impl Desire {
     /// reaches. Rounds down. Fractional satisfaciton returns the step it is
     /// currently on.
     /// 
-    /// Caps at the maximum nubre of steps (if any).
+    /// Caps at the maximum number of steps (if any).
     pub fn satisfied_up_to(&self) -> f64 {
         (self.satisfaction / self.amount).floor()
     }

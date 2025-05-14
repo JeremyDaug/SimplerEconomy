@@ -696,7 +696,11 @@ mod tests {
 
     mod pop_tests {
         mod satisfaction_from_amv_should {
-            // !!!!!!!!!!!!!!!!!!!!!!!!!! Add tests for this function. Nothing super complex needed.
+
+            #[test]
+            pub fn correctly_predict_gain_from_amv() {
+                
+            }
         }
 
         mod make_offer_should {

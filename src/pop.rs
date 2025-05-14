@@ -402,6 +402,7 @@ impl Pop {
     pub fn satisfaction_from_amv(&self, amv_gain: f64, data: &Data, market: &MarketHistory) -> (f64, f64) {
         // create Duplicate for working on.
         let mut dup = self.clone();
+        dup.recalculate_working_desires();
         let mut amv_remaining = amv_gain;
 
         loop {
@@ -456,6 +457,34 @@ impl Pop {
         let dup_sat = dup.get_satisfaction();
         let self_sat = self.get_satisfaction();
         (dup_sat.0 - self_sat.0, dup_sat.1 - self_sat.1)
+    }
+
+    /// # Add Back to Working Desires
+    /// 
+    /// Resets our desires to be working desires unless they are 
+    /// totally satisfied.
+    /// 
+    /// Useful for satisfaction from AMV as well as possible recalculations
+    /// when we have resources to expend and run out of working desires. 
+    /// ~~(Maybe IDK, probably not that smart to do.)~~
+    fn recalculate_working_desires(&mut self) {
+        let mut idx = 0;
+        loop {
+            if self.desires.len() <= idx {
+                break;
+            }
+            let desire = self.desires.remove(idx).expect("Walked Off desires somehow.");
+            if desire.is_fully_satisfied() { 
+                // if it's fully satisfied, just add back
+                self.desires.insert(idx, desire);
+                idx += 1;
+            } else { // not satisfied, add back to working
+                let tier = desire.satisfied_up_to();
+                Pop::ordered_desire_insert(&mut self.working_desires, desire, tier);
+            }
+
+            idx += 1;
+        }
     }
 
     /// # Satisfaction Change
