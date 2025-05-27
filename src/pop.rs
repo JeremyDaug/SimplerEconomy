@@ -398,13 +398,14 @@ impl Pop {
     /// Assumes the market price is accurate and all it needs can be gained. Ignores 
     /// shop time cost in the calculation.
     /// 
-    /// This assumes that the pop that is calling this is partway through
+    /// Returns the number of levels satisfied and the value of those levels.
     pub fn satisfaction_from_amv(&self, amv_gain: f64, data: &Data, market: &MarketHistory) -> (f64, f64) {
         // create Duplicate for working on.
         let mut dup = self.clone();
-        dup.recalculate_working_desires();
+        dup.recalculate_working_desires(); // recalculate the working desires
         let mut amv_remaining = amv_gain;
 
+        // iterate over desires
         loop {
             // if nothing left to desire, break
             if dup.working_desires.len() == 0 {

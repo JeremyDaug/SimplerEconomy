@@ -696,10 +696,40 @@ mod tests {
 
     mod pop_tests {
         mod satisfaction_from_amv_should {
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
             pub fn correctly_predict_gain_from_amv() {
-                
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                // set up pop with empty desires
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
+                    .with_step_factor(0.5, 0));
+                // then check the gain when given X amv
+                let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &data, &market);
+
+                assert_eq!(levels, 4.0);
+                assert_eq!(sat, 1.875);
             }
         }
 
