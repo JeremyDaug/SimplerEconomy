@@ -723,7 +723,7 @@ mod tests {
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
                     .with_step_factor(0.5, 0));
                 // then check the gain when given X amv
-                let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &data, &market);
+                let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &market);
 
                 assert_eq!(levels, 4.0);
                 assert_eq!(sat, 1.875);
@@ -757,7 +757,7 @@ mod tests {
                 test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0)
                     .with_step_factor(0.5, 0));
                 // then check the gain when given X amv
-                let (levels, sat) = test_pop.satisfaction_from_amv(20.0, &data, &market);
+                let (levels, sat) = test_pop.satisfaction_from_amv(20.0, &market);
 
                 assert_eq!(levels, 37.0);
                 assert!(sat > 35.99 && sat < 36.0);

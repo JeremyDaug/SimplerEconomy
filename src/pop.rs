@@ -337,7 +337,12 @@ impl Pop {
     /// It's a simple check of satisfaction gained vs lost. 
     pub fn check_offer(&self, request: &HashMap<usize, f64>, offer: &HashMap<usize, f64>,
     price_hint: &HashMap<usize, f64>, data: &Data, market: &MarketHistory) -> OfferResult {
+        // start by checking against the price hint, 
+        // if it's valid (greater than or equal to on all parts) accept
+        // we assume that the price hint was correctly calculated in the first place.
 
+        // if it doesn't meet the price hint, check sat change and include possible
+        // gain from AMV.
         OfferResult::Reject
     }
 
@@ -348,8 +353,17 @@ impl Pop {
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
     // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
 
-
-
+    /// # Excess AMV
+    /// 
+    /// Get's the pop's unused goods and calculate it's current running AMV of these
+    /// goods.
+    pub fn excess_amv(&self, market: &MarketHistory) -> f64 {
+        let mut amv = 0.0;
+        for (&good, &data) in self.property.iter() {
+            amv += market.get_record(good).price * data.available();
+        }
+        amv
+    }
 
     /// # Get Shopping Target
     /// 
@@ -382,15 +396,6 @@ impl Pop {
          return None
     }
 
-
-
-    // TODO: Satisfaction Lost and Gained, should be smarter. Improvement. Using partial satisfaction, 
-    // they only add or remove once from there, rather than doing it all again. This builds on the simplification
-    // that if previously solved, then adding guarantees it's use immediately.
-    // For lost, this assumption makes it so that it can strip from as yet un-reserved goods, meaning that it will
-    // always result in a satisfaction loss (per unit) less than the current level being looked at, and 
-    // could be used 
-
     /// # Satisfaction from AMV
     /// 
     /// Given an amount of AMV, how much Satisfaction could we (hypothetically) gain.
@@ -399,7 +404,7 @@ impl Pop {
     /// shop time cost in the calculation.
     /// 
     /// Returns the number of levels satisfied and the value of those levels.
-    pub fn satisfaction_from_amv(&self, amv_gain: f64, data: &Data, market: &MarketHistory) -> (f64, f64) {
+    pub fn satisfaction_from_amv(&self, amv_gain: f64, market: &MarketHistory) -> (f64, f64) {
         // create Duplicate for working on.
         let mut dup = self.clone();
         dup.recalculate_working_desires(); // recalculate the working desires
@@ -488,6 +493,13 @@ impl Pop {
             idx += 1;
         }
     }
+
+    // TODO: Satisfaction Lost and Gained, should be smarter. Improvement. Using partial satisfaction, 
+    // they only add or remove once from there, rather than doing it all again. This builds on the simplification
+    // that if previously solved, then adding guarantees it's use immediately.
+    // For lost, this assumption makes it so that it can strip from as yet un-reserved goods, meaning that it will
+    // always result in a satisfaction loss (per unit) less than the current level being looked at, and 
+    // could be used 
 
     /// # Satisfaction Change
     /// 
