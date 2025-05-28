@@ -481,7 +481,8 @@ impl Pop {
                 idx += 1;
             } else { // not satisfied, add back to working
                 let tier = desire.satisfied_up_to();
-                Pop::ordered_desire_insert(&mut self.working_desires, desire, tier);
+                let step = desire.get_step(tier).expect("Tier returned somehow was fraction. WTF?");
+                Pop::ordered_desire_insert(&mut self.working_desires, desire, step);
             }
 
             idx += 1;

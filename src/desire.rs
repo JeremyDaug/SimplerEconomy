@@ -108,11 +108,13 @@ impl Desire {
 
     /// # With Step Factor
     /// 
-    /// Consuming setter for Step Factor and number of steps
+    /// Consuming setter for Step Factor and number of steps.
+    /// 
     /// 
     /// Putting in 0 steps means that it has no end.
     /// 
     /// Factor must be between 0.0 and 1.0 exclusive.
+    /// Factor is the multiplier reduction to the value for each step.
     /// 
     /// # Panics
     /// 
