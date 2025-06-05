@@ -695,6 +695,55 @@ mod tests {
     }
 
     mod pop_tests {
+        mod satisfaction_from_multiple_amvs_should {
+            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+
+            #[test]
+            pub fn correctly_predict_gain_from_amv_complex() {
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up pop with empty desires
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0)
+                    .with_step_factor(0.75, 2));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0)
+                    .with_step_factor(0.5, 0));
+                // then check the gain when given X amv
+                let results = test_pop.satisfaction_from_multiple_amvs(vec![10.0, 10.0], &market);
+
+                assert_eq!(results.len(), 3);
+
+                let (levels, sat) = results.get(0).unwrap();
+                assert_eq!(*levels, 17.0);
+                assert!(*sat > 35.99 && *sat < 36.0);
+
+                let (levels, sat) = results.get(1).unwrap();
+                assert_eq!(*levels, 20.0);
+                assert!(*sat > 35.99 && *sat < 36.0);
+
+                let (levels, sat) = results.get(3).unwrap();
+                assert_eq!(*levels, 37.0);
+                assert!(*sat > 35.99 && *sat < 36.0);
+            }
+        }
+
         mod satisfaction_from_amv_should {
             use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
