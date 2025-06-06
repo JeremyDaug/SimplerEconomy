@@ -4,35 +4,39 @@ use crate::{household::HouseholdMember, item::Item};
 
 /// # Desire
 /// 
-/// A desired good. All pops want 1 per person. Desires may be repeated.
+/// A desired good. All pops want self.amount per person. Desires may be repeated.
 /// The usize contained in both is the specific item desired.
 /// 
-/// The start is used to define equvialence between desires of different levels.
+/// Starting Priority defines the priority of the good for buying. Lower values is
+/// higher priority.
 /// 
-/// 1 / start is the 'desireablity factor' of a good. 
+/// The 'value' of a desire is inversly proportional to the 'length' of it's priority curve.
+/// The length when outside of it's range is 1 per level of priority (ie flat).
+/// The further it is away from being flat, the lower it's relative value.
+/// Lagrangian Path style (L - S) ~~Probably not actually Lagrangian done right. Sue me.~~
 /// 
-/// The interval, is the fixed ration between one step of a good and another.
-/// This means that for a desire that has a 3/1 ratio between two steps, this 
-/// valuation ratio persists between each step.
+/// The curve between it's start and end steps is defined by PriorityFn.
+/// 
+/// A step is defined as the satisfaction / amount. each step increases priority
+/// as per the PriorityFn formula.
 #[derive(Clone, Debug)]
 pub struct Desire {
     /// The desired Item.
     pub item: Item,
     /// The amount desired per tier.
     pub amount: f64,
-    /// The starting value. Must be positive.
-    pub start_value: f64,
-    /// The size of intervals (if any). Interval is always and between 0.0 and 1.0.
-    pub reduction_factor: Option<f64>,
-    /// The number of steps that can be taken.
+    /// The starting priority of the desire. May be any value.
+    pub start_priority: f64,
+    /// The function which defines how Priority changes over steps.
     /// 
-    /// Value should be Positive.
+    /// Can smoothly define prioriyt based on 
+    /// satisafction / amount = current priority step.
+    pub priority_fn: PriorityFn,
+    /// The number of steps that can be taken. Value should be Positive.
     /// 
-    /// If no interval, then this is not used.
+    /// If None, then it has no cap and continues indefinitely.
     /// 
-    /// If there is an interval and no Steps, then it can go on indefinitely.
-    /// 
-    /// Cannot be zero, as that should just be a Desire with no interval at all.
+    /// If Some value, then it has an intervale of [0-steps].
     pub steps: Option<NonZeroUsize>,
     /// Tags and effects attached to this desire.
     /// 
@@ -49,22 +53,23 @@ impl Desire {
     /// # New
     /// 
     /// Creates a new basic Desire, allowing you to set
-    /// the desired item and the starting point.
+    /// the desired item and the starting priority.
+    /// 
+    /// Steps defaults to 1.
     /// 
     /// # Panics
     /// 
-    /// If the start Interval is not positive, it panics.
-    pub fn new(item: Item, amount: f64, start: f64) -> Self {
-        assert!(start > 0.0, "Start must have positive value.");
+    /// If Start Priority is not a number or if amount is non-positive or not a number.
+    pub fn new(item: Item, amount: f64, start_priority: f64, priority_fn: PriorityFn) -> Self {
         assert!(amount > 0.0, "Amount must be a positive value.");
         assert!(!amount.is_nan(), "Amount must be a number.");
-        assert!(!start.is_nan(), "Start must be a number.");
+        assert!(!start_priority.is_nan(), "Start must be a number.");
         Self {
             item,
             amount,
-            start_value: start,
-            reduction_factor: None,
-            steps: None,
+            start_priority,
+            priority_fn,
+            steps: NonZero::new(1),
             tags: vec![],
             satisfaction: 0.0,
         }
@@ -83,7 +88,7 @@ impl Desire {
         // ensure this desire has proper ending if we're addign a life need.
         match tag {
             DesireTag::LifeNeed(_) => {
-                assert!(self.reduction_factor.is_none() || (self.reduction_factor.is_some() && self.steps.is_some()), 
+                assert!(self.steps.is_none(), 
                 "A Desire with the tag LifeNeed must have a finite number of steps.");
             },
             _ => {}
@@ -108,7 +113,7 @@ impl Desire {
 
     /// # With Step Factor
     /// 
-    /// Consuming setter for Step Factor and number of steps.
+    /// Consuming setter for Number of Steps.
     /// 
     /// 
     /// Putting in 0 steps means that it has no end.
@@ -119,13 +124,10 @@ impl Desire {
     /// # Panics
     /// 
     /// Factor must be a finite number between 0.0 and 1.0 exclusive.
-    pub fn with_step_factor(mut self, factor: f64, steps: usize) -> Self {
-        assert!(0.0 < factor && factor < 1.0, "Factor must be between 0.0 and 1.0, exclusive.");
-        assert!(factor.is_finite(), "Factor must be a finite number.");
+    pub fn with_steps(mut self, steps: usize) -> Self {
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
         }
-        self.reduction_factor = Some(factor);
         if steps > 0 { // If given a value, convert to Option<NonZeroUsize>
             self.steps = NonZero::new(steps);
         } else { // if no steps given, just set to None.
@@ -138,52 +140,40 @@ impl Desire {
     /// 
     /// Gets the current value of the desire based on existing satisfaction.
     /// 
-    /// Returns the numebr of steps satisfied and the total summation.
+    /// Returns the numebr of steps satisfied and the valuation in that order.
     /// 
-    /// This is a step valuation function, where each full amount of satisfaction is
-    /// linear in adding value, and then it steps to the next value in line.
+    /// Valuation is based on the arc length of the priority function across the 
+    /// satisfied section subtracted from the number of steps.
+    /// 
+    /// This does not include the pre-priority distance.
+    /// 
+    /// (self.satisfaction / self.amount) - arc_length
     pub fn current_valuation(&self) -> (f64, f64) {
-        let mut fin_steps = 0.0;
-        let mut summation = 0.0;
-        if let Some(factor) = self.reduction_factor {
-            let normalized_sat = (self.satisfaction / self.amount);
-            //println!("Normalized Satisfaction: {}", normalized_sat);
-            fin_steps = normalized_sat.floor();
-            let steps = fin_steps as i32;
-            // whole steps
-            for step in 0..steps {
-                let val = self.start_value * factor.powi(step) * self.amount;
-                //println!("Step Val: {}", val);
-                summation += self.start_value * factor.powi(step) * self.amount;
-            }
-            summation += self.start_value * factor.powi(steps) * self.amount 
-                * (normalized_sat - normalized_sat.floor());
-            //println!("Summation: {}", summation);
-            //println!("Steps: {}", fin_steps);
+        let steps = if let Some(end) = self.steps {
+            let cap = end.get() as f64;
+            (self.satisfaction / self.amount).min(cap)
         } else {
-            summation = self.start_value * self.satisfaction;
-            fin_steps = (self.satisfaction / self.amount).floor();
-            //println!("Summation: {}", summation);
-            //println!("Steps: {}", fin_steps);
-        }
-        (fin_steps, summation)
+            self.satisfaction / self.amount
+        };
+        let valuation = steps - self.priority_fn.arc_length(self.start_priority, steps);
+
+        (steps, valuation)
     }
 
     /// # End
     /// 
-    /// Gets the value of the final value it lands on.
-    /// 
-    /// If it takes no steps, it returns the start.
+    /// Gets the upper priority bound of our prioirity curve.
     /// 
     /// If it takes steps, but does not end, it returns None.
     /// 
     /// TODO: Test this to ensure correctness.
     pub fn end(&self) -> Option<f64> {
-        if let Some(interval) = self.reduction_factor {
-            if let Some(steps) = self.steps {
-                Some(self.start_value * interval.powf(steps.get() as f64))
-            } else { None }
-        } else { Some(self.start_value) }
+        if let Some(steps) = self.steps {
+            let steps = steps.get() as f64;
+            Some(self.priority_fn.priority(self.start_priority, steps))
+        } else {
+            None
+        }
     }
 
     /// # Next Step
@@ -245,78 +235,51 @@ impl Desire {
 
     /// # On Step
     /// 
-    /// Calculates which step a value is on.
-    /// 
-    /// IE, in the formula start * Interval ^ N, this returns N.
+    /// Calculates which step the given priority is on.
     /// 
     /// If outside of the interval, it returns None.
-    /// 
-    /// If N is a decimal value, then it's not a whole step we're on.
-    pub fn on_step(&self, val: f64) -> Option<f64> {
-        assert!(val > 0.0, "Val must be a positive number.");
-        if val < self.start_value {
-            return None;
-        } else if let Some(end) = self.end() {
-            if val >= end {
-                return None;
-            }
+    pub fn on_step(&self, priority: f64) -> Option<f64> {
+        if priority < self.start_priority || priority > self.end() {
+            None
         }
-        // base formula is Start * Interval ^ Step = Point
-        // This solves for step. Log_Interval(Point / Step ) = Step
-        Some((val / self.start_value).log(self.reduction_factor.unwrap()))
+        Some()
     }
 
     /// # Satsfied Up To
     /// 
-    /// Given the current satisfaction of a desire, it returns the step it 
-    /// reaches. Rounds down. Fractional satisfaciton returns the step it is
-    /// currently on.
+    /// Given the current satisfaction of a desire, it returns the current prioirity it 
+    /// reaches. 
     /// 
     /// Caps at the maximum number of steps (if any).
-    pub fn satisfied_up_to(&self) -> f64 {
-        (self.satisfaction / self.amount).floor()
+    pub fn satisfied_steps(&self) -> f64 {
+        self.satisfaction / self.amount
     }
 
-    /// # Satisfied to Value
+    /// # Satisfied to Priority
     /// 
-    /// What value level the desire has been satisfied to.
-    /// 
-    /// This is equivalent to finding the steps, flooring it, then
-    /// applying the interval that many times.
+    /// What Priority level the desire has been satisfied to.
     pub fn satisfied_to_value(&self) -> f64 {
-        let mut step = self.satisfied_up_to();
-        if let Some(interval) = self.reduction_factor {
-            if let Some(steps) = self.steps {
-                step = step.min(steps.get() as f64);
-            }
-            self.start_value * interval.powf(step)
-        } else { self.start_value }
+        let step = self.satisfied_steps();
+        self.priority_fn.priority(self.start_priority, step)
     }
     
-    /// # Get Step
+    /// # Get Priority
     /// 
-    /// Gets the value of the step given, if not a valid step it returns None.
+    /// Gets the priority of the step given, if not a valid step it returns None.
     /// 
     /// This can be given fractional steps and will return properly.
-    /// 
-    /// self.start * self.interval.powf(step)
-    pub(crate) fn get_step(&self, step: f64) -> Option<f64> {
-        if step < 0.0 { // if negative value, just return None, no step should be negative.
+    pub(crate) fn get_priority(&self, step: f64) -> Option<f64> {
+        if step < 0.0 { // if negative value, return None
             None
-        } else if let Some(interval) = self.reduction_factor { // if it has interval, check if in interval
-            if let Some(max_steps) = self.steps { // if we have a max number of steps.
-                if (max_steps.get() as f64) < step { // and we're above that max step
-                    None
-                } else { // if within that number of steps, get step
-                    Some(self.start_value * interval.powf(step))
-                }
-            } else { // If no end step
-                Some(self.start_value * interval.powf(step))
+        } else if let Some(max_steps) = self.steps { // if it has interval, check if in interval
+            let max_steps = max_steps.get() as f64;
+            if max_steps < step { // if above final step, return none.
+                None
+            } else {
+                Some(self.priority_fn.priority(self.start_priority, step))
             }
-        } else if step == 0.0 { // if no interval, only step 0.0 returns value.
-            Some(self.start_value)
-        } else { // all other cases are always None.
-            None
+        } else { // if no end, run calc as normal.
+            Some(self.priority_fn.priority(self.start_priority, step))
         }
     }
     
@@ -327,23 +290,20 @@ impl Desire {
     /// IE, the amount of satisfaction is equal to
     /// self.amount * self.steps. 
     pub fn is_fully_satisfied(&self) -> bool {
-        if let Some(_) = self.reduction_factor { // if we have an interval
-            if let Some(steps) = self.steps { // and are finite
-                return ((steps.get() as f64) * self.amount) == self.satisfaction;
-            } else { // if not finite, can never be satisfied
-                return false;
-            }
+        if let Some(step) = self.steps {
+            let steps = step.get() as f64;
+            steps == (self.satisfaction / self.amount)
+        } else { // if no end, cannot be fully satisfied.
+            false
         }
-        // if no interval amount needs to be equal to satisfaction.
-        return self.amount == self.satisfaction;
     }
     
     /// # Satisfied At
     /// 
-    /// Checks if the current value is fully satisfied or not.
+    /// Checks if the desire is satisdief to a particular step or not.
     /// 
     /// If step is not valid, it returns false.
-    pub(crate) fn satisfied_at(&self, current_value: f64) -> bool {
+    pub(crate) fn satisfied_to_step(&self, current_value: f64) -> bool {
         if let Some(step) = self.on_step(current_value) {
             // if we have an equal or greater amount of satisfaction than 
             // the amount * steps, then it's satisfied at that level.
@@ -416,3 +376,153 @@ impl DesireTag {
     }
 }
 
+/// # Priority Functions
+/// 
+/// Defines how priority of a desire changes over time.
+/// Priority always walks up in ascending order. Don't worry about odd phrasing.
+/// 
+/// Start is defined be Desire.
+/// Step is included in the function as a key parameter
+/// Growth in as additional growth factor, multiplying the
+/// standard growth to be faster or more extreme.
+/// 
+/// step and growth ***must*** be positive values.
+#[derive(Clone, Copy, Debug)]
+pub enum PriorityFn {
+    /// Linear Priority Function. 
+    /// start + slope * n
+    Linear{slope: f64},
+    /// Quadratic Priority Function.
+    /// start + (accel * n) ^ 2
+    Quadratic{accel: f64},
+    /// Exponential Priority Function
+    /// (1.0 + step) ^ (growth * n) -1 + start
+    Exponential{step: f64, growth: f64},
+}
+
+impl PriorityFn {
+    /// # Linear
+    /// 
+    /// Safely creates linear PriorityFn.
+    pub fn linear(slope: f64) -> Self {
+        assert!(slope > 0.0, "Step must be a positive value!");
+        Self::Linear{slope}
+    }
+
+    /// # Quadratic
+    /// 
+    /// Safely creates Quadratic PriorityFn.
+    pub fn quadratic(step: f64) -> Self {
+        assert!(step > 0.0, "Step must be a positive value!");
+        Self::Quadratic{accel: step}
+    }
+
+    /// # Exponential
+    /// 
+    /// Safely creates Exponential PriorityFn.
+    pub fn exponential(step: f64, growth: f64) -> Self {
+        assert!(step > 0.0, "Step must be a positive value!");
+        assert!(growth > 0.0, "Growth must be a positive value!");
+        Self::Exponential{step, growth}
+    }
+
+    /// # Priority
+    /// 
+    /// Calculates and returns the current priority value of the desire.
+    pub fn priority(&self, start: f64, n: f64) -> f64 {
+        match self {
+            PriorityFn::Linear { slope: step } => {
+                start + step * n
+            },
+            PriorityFn::Quadratic { accel} => {
+                start + (accel * n).powf(2.0)
+            },
+            PriorityFn::Exponential { step, growth } => {
+                (1.0 + step).powf(growth * n) - 1.0 + start
+            },
+        }
+    }
+
+    /// # Inverse
+    /// 
+    /// Given a priority, it returns the step it's on.
+    pub fn inverse(&self, start: f64, priority: f64) -> f64 {
+        match self {
+            PriorityFn::Linear { slope } => {
+                (priority - start) / slope
+            },
+            PriorityFn::Quadratic { accel } => {
+                
+            },
+            PriorityFn::Exponential { step, growth } => todo!(),
+        }
+    }
+
+    /// # Derivative
+    /// 
+    /// Calculates the derivative/slope of the function at a particular point.
+    pub fn derivative(&self, value: f64) -> f64 {
+        match self {
+            PriorityFn::Linear { slope } => {
+                *slope
+            },
+            PriorityFn::Quadratic { accel } => {
+                2.0 * accel * value
+            },
+            PriorityFn::Exponential { step, growth } => {
+                growth * (1.0 + step).ln() * (1.0 * step).powf(growth * value)
+            },
+        }
+    }
+
+    /// # Arc Length
+    /// 
+    /// Arc Length Calculator.
+    /// 
+    /// Takes in the endpoint we are calculating to.
+    /// 
+    /// This uses a simple 8 step approximation (2 end points plus 6 evenly 
+    /// spaced steps between), for quadratic and exponential formulas due to
+    /// their bonkers arc length integrals.
+    pub fn arc_length(&self, start: f64, end: f64) -> f64 {
+        assert!(start < end, "Start must come before end!");
+        match self {
+            PriorityFn::Linear { slope } => {
+                (1.0 + slope.powf(2.0)).sqrt() * end -
+                (1.0 + slope.powf(2.0)).sqrt() * start
+            },
+            PriorityFn::Quadratic { .. } => {
+                let diff = end - start; // get distance between start and endof the interval
+                let step_size = diff / 8.0; // divide it up
+                let mut acc = 0.0; // distance accumulator
+                for cl in 0..8 { // step 7 times (8 points)
+                    // get our end point steps
+                    let lower_step = cl as f64 * step_size;
+                    let upper_step = (cl + 1) as f64 * step_size;
+                    // get our end point ys.
+                    let lowery = self.priority(start, lower_step);
+                    let uppery = self.priority(start, upper_step);
+                    // add distance to our accumulator
+                    acc += (step_size.powf(2.0) + (uppery - lowery).powf(2.0)).sqrt();
+                }
+                acc
+            },
+            PriorityFn::Exponential { .. } => {
+                let diff = end - start; // get distance between start and endof the interval
+                let step_size = diff / 8.0; // divide it up
+                let mut acc = 0.0; // distance accumulator
+                for cl in 0..8 { // step 7 times (8 points)
+                    // get our end point steps
+                    let lower_step = cl as f64 * step_size;
+                    let upper_step = (cl + 1) as f64 * step_size;
+                    // get our end point ys.
+                    let lowery = self.priority(start, lower_step);
+                    let uppery = self.priority(start, upper_step);
+                    // add distance to our accumulator
+                    acc += (step_size.powf(2.0) + (uppery - lowery).powf(2.0)).sqrt();
+                }
+                acc
+            },
+        }
+    }
+}

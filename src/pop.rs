@@ -558,8 +558,8 @@ impl Pop {
                 self.desires.insert(idx, desire);
                 idx += 1;
             } else { // not satisfied, add back to working
-                let tier = desire.satisfied_up_to();
-                let step = desire.get_step(tier).expect("Tier returned somehow was fraction. WTF?");
+                let tier = desire.satisfied_steps();
+                let step = desire.get_priority(tier).expect("Tier returned somehow was fraction. WTF?");
                 Pop::ordered_desire_insert(&mut self.working_desires, desire, step);
             }
 
