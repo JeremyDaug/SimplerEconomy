@@ -582,7 +582,7 @@ mod tests {
             pub fn find_start_when_above_start() {
                 let test = Desire::new(Item::Good(0), 1.0,   1.0);
 
-                let result = test.next_step(2.0).unwrap();
+                let result = test.expected_value(2.0).unwrap();
                 assert_eq!(result, 1.0);
             }
 
@@ -590,7 +590,7 @@ mod tests {
             pub fn return_none_when_after_end() {
                 let test = Desire::new(Item::Good(0), 1.0,   1.0);
 
-                let result = test.next_step(0.5);
+                let result = test.expected_value(0.5);
                 assert!(result.is_none());
 
                 let test = test.with_step_factor(0.5, 2);

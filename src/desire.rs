@@ -176,36 +176,29 @@ impl Desire {
         }
     }
 
-    /// # Next Step
+    /// # Expected Value
     /// 
-    /// Given the current value, get the next valid value this desire steps on.
+    /// Given the current satisfaction and given amount of additional satisfaction,
+    /// get the value of the next interval.
     /// 
-    /// If current value is equal to a step, it gets the next step.
-    /// 
-    /// If before the start, it returns start.
-    /// 
-    /// If after the End, it returns None.
+    /// If sat_change reduces satisfaction below 0, it caps the lost value at the 
+    /// current value.
     /// 
     /// TODO: Test this to ensure correctness.
-    pub fn next_step(&self, current:  f64) -> Option<f64> {
-        assert!(current > 0.0, "Current must be a positive value.");
-        if current > self.start_value {
-            return Some(self.start_value);
-        } else if let Some(end) = self.end() {
-            if current <= end {
-                return None;
-            }
+    pub fn expected_value(&self, sat_change:  f64) -> f64 {
+        // if reduces below current satisfaction, just get current valuation.
+        if sat_change <= -self.satisfaction {
+            return -self.current_valuation().0;
         }
-        // base formula is Start * Interval ^ Step = Point
-        // This solves for step. Log_Interval(Point / Step ) = Step
-        let step = (current / self.start_value).log(self.reduction_factor.unwrap());
-        // with step, round up
-        let mut fin_step = step.ceil();
-        if fin_step == step {
-            fin_step += 1.0;
-        }
-        // and recalculate the step.
-        Some(self.start_value * self.reduction_factor.unwrap().powf(fin_step))
+        // cap at maximum steps
+        let steps_added = if let Some(max_steps) = self.steps {
+            ((self.satisfaction + sat_change) / self.amount).min(max_steps.get() as f64)
+        } else {
+            (self.satisfaction + sat_change) / self.amount
+        };
+        // from here, get the arc length of between current and steps added.
+        self.priority_fn.arc_length(self.start_priority, steps_added) *
+        if sat_change < 0.0 { -1.0 } else { 1.0 } // if subtracting sat, ensure it's 'negative'
     }
 
     /// # Equals
@@ -214,8 +207,8 @@ impl Desire {
     /// It checks that everything BUT amount and satisfaction is the same.
     pub fn equals(&self, other: &Desire) -> bool {
         if self.item == other.item &&
-        self.start_value == other.start_value &&
-        self.reduction_factor == other.reduction_factor &&
+        self.start_priority == other.start_priority &&
+        self.priority_fn.eq(&other.priority_fn) &&
         self.steps == other.steps { // if easy stuff is true, check tags.
             if self.tags.len() == other.tags.len() { // need same number
                 for idx in 0..self.tags.len() {
@@ -239,10 +232,16 @@ impl Desire {
     /// 
     /// If outside of the interval, it returns None.
     pub fn on_step(&self, priority: f64) -> Option<f64> {
-        if priority < self.start_priority || priority > self.end() {
-            None
+        if priority < self.start_priority {
+            // if before start
+            return None;
+        } else if let Some(end) = self.end() {
+            if end < priority {
+                // if after end
+                return None;
+            }
         }
-        Some()
+        Some(self.priority_fn.inverse(self.start_priority, priority))
     }
 
     /// # Satsfied Up To
@@ -387,7 +386,7 @@ impl DesireTag {
 /// standard growth to be faster or more extreme.
 /// 
 /// step and growth ***must*** be positive values.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PriorityFn {
     /// Linear Priority Function. 
     /// start + slope * n
@@ -452,9 +451,11 @@ impl PriorityFn {
                 (priority - start) / slope
             },
             PriorityFn::Quadratic { accel } => {
-                
+                (priority - start).sqrt() / accel
             },
-            PriorityFn::Exponential { step, growth } => todo!(),
+            PriorityFn::Exponential { step, growth } => {
+                (priority + 1.0 - start).log(1.0 + step) / growth
+            },
         }
     }
 
@@ -485,7 +486,9 @@ impl PriorityFn {
     /// spaced steps between), for quadratic and exponential formulas due to
     /// their bonkers arc length integrals.
     pub fn arc_length(&self, start: f64, end: f64) -> f64 {
-        assert!(start < end, "Start must come before end!");
+        if start == end { // if start and end are the same, then there's no length, jsut leave.
+            return 0.0;
+        }
         match self {
             PriorityFn::Linear { slope } => {
                 (1.0 + slope.powf(2.0)).sqrt() * end -

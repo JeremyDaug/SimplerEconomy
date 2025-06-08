@@ -452,7 +452,7 @@ impl Pop {
                 // reduce our amount.
                 amv_remaining -= purchase_amt * unit_price;
                 // get next step
-                let next_step = desire.next_step(tier);
+                let next_step = desire.expected_value(tier);
                 // if desire is fully satisfied, or 
                 if desire.is_fully_satisfied() || next_step.is_none() { 
                     dup.desires.push_back(desire);
@@ -524,7 +524,7 @@ impl Pop {
             // reduce our amount.
             amv_remaining -= purchase_amt * unit_price;
             // get next step
-            let next_step = desire.next_step(tier);
+            let next_step = desire.expected_value(tier);
             // if desire is fully satisfied, or 
             if desire.is_fully_satisfied() || next_step.is_none() { 
                 dup.desires.push_back(desire);
@@ -699,7 +699,7 @@ impl Pop {
             let (value, mut current_desire) = working_desires.pop_front().unwrap();
 
             if self.consume_desire(&mut current_desire, data) { // if successful at satisfying
-                if let Some(next_step) = current_desire.next_step(value) { // and there's a next step
+                if let Some(next_step) = current_desire.expected_value(value) { // and there's a next step
                     // put back
                     Pop::ordered_desire_insert(&mut working_desires, current_desire, next_step);
                 } else { // if no next step, put away.
@@ -1266,7 +1266,7 @@ impl Pop {
             return Some((value, desire.clone()));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");
-            let next_step = desire.next_step(value)
+            let next_step = desire.expected_value(value)
                 .expect("Next Step should exist, but seemingly does not. Investigate why.");
             Self::ordered_desire_insert(working_desires, desire.clone(), next_step);
             None
@@ -1532,7 +1532,7 @@ impl Pop {
             return Some((current_step, current_desire));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");
-            let next_step = current_desire.next_step(current_step)
+            let next_step = current_desire.expected_value(current_step)
                 .expect("Next Step should exist, but seemingly does not. Investigate why.");
             Self::ordered_desire_insert(working_desires, current_desire, next_step);
             None
