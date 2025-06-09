@@ -452,11 +452,11 @@ impl Pop {
                 // reduce our amount.
                 amv_remaining -= purchase_amt * unit_price;
                 // get next step
-                let next_step = desire.expected_value(tier);
-                // if desire is fully satisfied, or 
-                if desire.is_fully_satisfied() || next_step.is_none() { 
+                let next_step = desire.satisfied_to_priority();
+                // if desire is fully satisfied, add to finished.
+                if desire.is_fully_satisfied() { // if fully satisfied, push to desires.
                     dup.desires.push_back(desire);
-                } else if let Some(next_step) = next_step {
+                } else { // 
                     Pop::ordered_desire_insert(&mut dup.working_desires, desire, next_step);
                 }
             }
@@ -525,10 +525,10 @@ impl Pop {
             amv_remaining -= purchase_amt * unit_price;
             // get next step
             let next_step = desire.expected_value(tier);
-            // if desire is fully satisfied, or 
-            if desire.is_fully_satisfied() || next_step.is_none() { 
+            // if desire is fully satisfied,
+            if desire.is_fully_satisfied() { 
                 dup.desires.push_back(desire);
-            } else if let Some(next_step) = next_step {
+            } else {
                 Pop::ordered_desire_insert(&mut dup.working_desires, desire, next_step);
             }
         }
@@ -692,17 +692,21 @@ impl Pop {
         for desire in self.desires.iter() {
             let mut d = desire.clone();
             d.satisfaction = 0.0;
-            working_desires.push_back((d.start_value, d));
+            working_desires.push_back((d.start_priority, d));
         }
         let mut finished = vec![];
         loop {
             let (value, mut current_desire) = working_desires.pop_front().unwrap();
 
             if self.consume_desire(&mut current_desire, data) { // if successful at satisfying
-                if let Some(next_step) = current_desire.expected_value(value) { // and there's a next step
-                    // put back
-                    Pop::ordered_desire_insert(&mut working_desires, current_desire, next_step);
-                } else { // if no next step, put away.
+                let next_step = current_desire.satisfied_to_priority();
+                if let Some(end) = current_desire.end() { 
+                    if next_step < end { // if not past the end
+                        // put back
+                        Pop::ordered_desire_insert(&mut working_desires, 
+                            current_desire, next_step);
+                    }
+                } else { // if at or after the end, finish.
                     finished.push(current_desire);
                 }
             } else {
@@ -1266,8 +1270,7 @@ impl Pop {
             return Some((value, desire.clone()));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");
-            let next_step = desire.expected_value(value)
-                .expect("Next Step should exist, but seemingly does not. Investigate why.");
+            let next_step = desire.satisfied_to_priority();
             Self::ordered_desire_insert(working_desires, desire.clone(), next_step);
             None
         }
@@ -1532,8 +1535,7 @@ impl Pop {
             return Some((current_step, current_desire));
         } else { // otherwise, put back into our desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");
-            let next_step = current_desire.expected_value(current_step)
-                .expect("Next Step should exist, but seemingly does not. Investigate why.");
+            let next_step = current_desire.satisfied_to_priority();
             Self::ordered_desire_insert(working_desires, current_desire, next_step);
             None
         }
@@ -1575,7 +1577,7 @@ impl Pop {
         // Working desires, includes the current tier it's on, and the desire.
         let mut working_desires: VecDeque<(f64, Desire)> = VecDeque::new();
         for desire in self.desires.iter() { // initial list is always sorted, so just move over.
-            working_desires.push_back((desire.start_value, desire.clone()));
+            working_desires.push_back((desire.start_priority, desire.clone()));
         }
         // A holding space for desires that have been totally satisfied to simplify
         let mut finished: Vec<Desire> = vec![];
@@ -1647,7 +1649,7 @@ impl Pop {
             // with desire scaled properly, find if it already exists in our desires
             // desires are always sorted.
             let mut current = if let Some((est, _)) = desires.iter()
-            .find_position(|x| x.start_value <= new_des.start_value) {
+            .find_position(|x| x.start_priority <= new_des.start_priority) {
                 // find the first one which is equal to or greater than our new destination.
                 est
             } else { desires.len() }; // if none was found then it is either the last or only one.
@@ -1664,7 +1666,7 @@ impl Pop {
                     //println!("Insert Position: {}", current);
                     desires.get_mut(current).unwrap().amount += new_des.amount;
                     break;
-                } else if desires.get(current).unwrap().start_value < new_des.start_value {
+                } else if desires.get(current).unwrap().start_priority < new_des.start_priority {
                     // If the desire we're looking at is greater than our current, insert
                     //println!("Insert Position: {}", current);
                     desires.insert(current, new_des);

@@ -196,9 +196,10 @@ impl Desire {
         } else {
             (self.satisfaction + sat_change) / self.amount
         };
+        let sign = sat_change.signum();
         // from here, get the arc length of between current and steps added.
-        self.priority_fn.arc_length(self.start_priority, steps_added) *
-        if sat_change < 0.0 { -1.0 } else { 1.0 } // if subtracting sat, ensure it's 'negative'
+        (steps_added - self.priority_fn.arc_length(self.start_priority, steps_added)) * 
+            sign
     }
 
     /// # Equals
@@ -257,7 +258,7 @@ impl Desire {
     /// # Satisfied to Priority
     /// 
     /// What Priority level the desire has been satisfied to.
-    pub fn satisfied_to_value(&self) -> f64 {
+    pub fn satisfied_to_priority(&self) -> f64 {
         let step = self.satisfied_steps();
         self.priority_fn.priority(self.start_priority, step)
     }

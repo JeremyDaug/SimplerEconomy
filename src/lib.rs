@@ -536,103 +536,110 @@ mod tests {
 
     mod desire_tests {
         mod current_valuation_should {
-            use crate::{desire::Desire, item::Item};
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
 
             #[test]
-            pub fn calculate_stepless_value_correctly() {
-                let mut stepless = Desire::new(Item::Good(0), 2.0, 2.0);
+            pub fn calculate_single_step_value_correctly() {
+                let mut stepless = Desire::new(Item::Good(0), 2.0, 2.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                let unit_len = 1.0 - 5.0 / 3.0;
 
                 stepless.satisfaction = 1.0;
                 // partial satisfaction
                 let val = stepless.current_valuation();
-                assert_eq!(val, (0.0, 2.0));
+                assert_eq!(val, (0.5, unit_len / 2.0));
                 
-                // full satisfaction
+                // full step satisfaction
                 stepless.satisfaction = 2.0;
                 let val = stepless.current_valuation();
-                assert_eq!(val, (1.0, 4.0));
-            }
+                assert_eq!(val, (1.0, unit_len));
 
-            #[test]
-            pub fn calculate_stepping_value_correctly() {
-                let mut stepping = Desire::new(Item::Good(0), 2.0, 2.0)
-                    .with_step_factor(0.5, 0);
+                // extra step satisfaction
+                stepless.satisfaction = 3.0;
+                let val = stepless.current_valuation();
+                assert_eq!(val, (1.5, unit_len * 1.5));
 
-                // partial satisfaction, no full step
-                stepping.satisfaction = 1.0;
-                let val = stepping.current_valuation();
-                assert_eq!(val, (0.0, 2.0));
-
-                // partial satisfaciton, full step
-                stepping.satisfaction = 3.0;
-                let val = stepping.current_valuation();
-                assert_eq!(val, (1.0, 5.0));
-
-                // partial satisfaciton, multiple full steps
-                stepping.satisfaction = 5.0;
-                let val = stepping.current_valuation();
-                assert_eq!(val, (2.0, 6.5));
-            }
-        }
-
-        mod next_step_should {
-            use crate::{desire::Desire, item::Item};
-
-            #[test]
-            pub fn find_start_when_above_start() {
-                let test = Desire::new(Item::Good(0), 1.0,   1.0);
-
-                let result = test.expected_value(2.0).unwrap();
-                assert_eq!(result, 1.0);
-            }
-
-            #[test]
-            pub fn return_none_when_after_end() {
-                let test = Desire::new(Item::Good(0), 1.0,   1.0);
-
-                let result = test.expected_value(0.5);
-                assert!(result.is_none());
-
-                let test = test.with_step_factor(0.5, 2);
-                let result = test.next_step(0.1);
-                assert!(result.is_none());
-            }
-
-            #[test]
-            pub fn get_next_step_down_successfully() {
-                let test = Desire::new(Item::Good(0), 1.0, 20.0)
-                    .with_step_factor(0.5, 0);
-
-                let result = test.next_step(15.0).unwrap();
-                assert_eq!(result, 10.0);
-
-                let result = test.next_step(9.0).unwrap();
-                assert_eq!(result, 5.0);
-            }
-
-            #[test]
-            pub fn step_up_when_matching_current_step() {
-                let test = Desire::new(Item::Class(0), 1.0, 1.0)
-                    .with_step_factor(0.5, 0);
-
-                let result = test.next_step(1.0).expect("Did not return correctly!");
-                assert_eq!(result, 0.5);
+                // extra step satisfaction
+                stepless.satisfaction = 4.5;
+                let val = stepless.current_valuation();
+                assert_eq!(val, (2.25, unit_len * 2.25));
             }
         }
 
         mod end_should {
-            use crate::{desire::Desire, item::Item};
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
 
             #[test]
             pub fn correctly_calculate_end_value() {
-                let d = Desire::new(Item::Want(0), 1.0, 1.0);
+                // Base (1) step
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0));
                 assert_eq!(d.end(), Some(1.0));
-                let d = Desire::new(Item::Want(0), 1.0, 1.0)
-                    .with_step_factor(0.5, 2);
+
+                // Dictated ending step.
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(20);
                 assert_eq!(d.end(), Some(0.25));
-                let d = Desire::new(Item::Want(0), 1.0, 1.0)
-                    .with_step_factor(0.5, 0);
+
+                // Unending
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
                 assert_eq!(d.end(), None);
+            }
+        }
+
+        mod expected_value_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn return_positive_and_correct_value_when_positive_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 2.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(3.0);
+                assert_eq!(result, unit_len * 3.0);
+            }
+
+            #[test]
+            pub fn return_negative_and_correct_value_when_negative_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 6.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(-3.0);
+                assert_eq!(result, unit_len * -3.0);
+            }
+
+            #[test]
+            pub fn return_negative_and_correctly_capped_value_when_big_negative_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 2.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(-3.0);
+                assert_eq!(result, unit_len * -2.0);
+            }
+
+            #[test]
+            pub fn return_positive_and_correctly_capped_value_when_big_positive_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(3);
+                test.satisfaction = 2.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(1.0);
+                assert_eq!(result, unit_len);
             }
         }
 
