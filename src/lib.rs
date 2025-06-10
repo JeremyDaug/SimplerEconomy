@@ -646,28 +646,31 @@ mod tests {
         mod assertion_checks {
             use std::mem::discriminant;
 
-            use crate::{desire::{Desire, DesireTag}, household::HouseholdMember, item::Item};
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, household::HouseholdMember, item::Item};
 
             #[test]
             #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
             pub fn fail_when_lifeneed_tag_and_no_end() {
-                Desire::new(Item::Good(0), 1.0, 1.0)
-                .with_step_factor(0.5, 0)
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_steps(0)
                 .with_tag(DesireTag::life_need(0.5));
             }
 
             #[test]
             #[should_panic(expected = "Desire has the LifeNeed tag. It must have a finite number of steps.")]
             pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
-                Desire::new(Item::Good(0), 1.0, 1.0)
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
                 .with_tag(DesireTag::life_need(0.5))
-                .with_step_factor(0.5, 0);
+                .with_steps(0);
             }
 
             #[test]
             #[should_panic(expected = "Same Tags, never safe.")]
             pub fn panic_with_duplicate_tags_put_in() {
-                Desire::new(Item::Good(0), 1.0, 1.0)
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
                 .with_tag(DesireTag::HouseholdNeed)
                 .with_tag(DesireTag::HouseholdNeed);
             }
@@ -675,7 +678,8 @@ mod tests {
             #[test]
             #[should_panic(expected = "Household Need cannot be next to a HouseMemberNeed.")]
             pub fn panic_when_inserting_housememberneed_and_householdneed_exists() {
-                Desire::new(Item::Good(0), 1.0, 1.0)
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
                 .with_tag(DesireTag::HouseholdNeed)
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult));
             }
@@ -683,14 +687,16 @@ mod tests {
             #[test]
             #[should_panic(expected = "HouseMemberNeed cannot be next to a HouseholdNeed.")]
             pub fn panic_when_inserting_householdrneed_and_housememberneed_exists() {
-                Desire::new(Item::Good(0), 1.0, 1.0)
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
                 .with_tag(DesireTag::HouseholdNeed);
             }
 
             #[test]
             pub fn insert_tags_into_desire_sorted() {
-                let test = Desire::new(Item::Good(0), 1.0, 1.0)
+                let test = Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
                 .with_tag(DesireTag::life_need(0.5));
 
@@ -703,7 +709,7 @@ mod tests {
 
     mod pop_tests {
         mod satisfaction_from_multiple_amvs_should {
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
             pub fn correctly_predict_gain_from_amv_complex() {
@@ -727,11 +733,14 @@ mod tests {
                 market.good_records.insert(7, GoodRecord::new().with_price(0.25));
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0));
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0)
-                    .with_step_factor(0.75, 2));
-                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
+                    PriorityFn::linear(1.0)));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // then check the gain when given X amv
                 let results = test_pop.satisfaction_from_multiple_amvs(vec![10.0, 10.0], &market);
 
@@ -752,7 +761,7 @@ mod tests {
         }
 
         mod satisfaction_from_amv_should {
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
             pub fn correctly_predict_gain_from_amv_simple() {
@@ -776,8 +785,9 @@ mod tests {
                 market.good_records.insert(7, GoodRecord::new().with_price(0.25));
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // then check the gain when given X amv
                 let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &market);
 
@@ -807,11 +817,14 @@ mod tests {
                 market.good_records.insert(7, GoodRecord::new().with_price(0.25));
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0));
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0)
-                    .with_step_factor(0.75, 2));
-                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
+                    PriorityFn::linear(1.0)));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // then check the gain when given X amv
                 let (levels, sat) = test_pop.satisfaction_from_amv(20.0, &market);
 
@@ -823,7 +836,7 @@ mod tests {
         mod make_offer_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             /// Tests when sat_lost == 0.0. This includes testing out money.
             #[test]
@@ -847,8 +860,9 @@ mod tests {
                 //println!("Making pop.");
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
@@ -897,8 +911,9 @@ mod tests {
                 println!("Making pop.");
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
@@ -949,8 +964,9 @@ mod tests {
                 println!("Making pop.");
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
@@ -997,8 +1013,9 @@ mod tests {
                 println!("Making pop.");
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 //test_pop.property.insert(6, PropertyRecord::new(2.0));
@@ -1024,7 +1041,7 @@ mod tests {
         mod satisfaction_gain_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_return_satisfaction_gained() {
@@ -1036,8 +1053,9 @@ mod tests {
 
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0)
-                    .with_step_factor(0.5, 0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(1.0));
                 test_pop.satisfy_desires(&data);
@@ -1052,7 +1070,7 @@ mod tests {
         }
 
         mod integrate_desires_should {
-            use crate::{desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
 
             #[test]
             pub fn correctly_integrate_desires() {
@@ -1060,14 +1078,19 @@ mod tests {
                 row.household = Household::new(3.0, 3.0, 2.0, 1.0);
 
                 let source_desires = vec![
-                    Desire::new(Item::Good(0), 1.0, 0.3),
-                    Desire::new(Item::Good(1), 1.0, 1.0)
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)),
+                    Desire::new(Item::Good(1), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
                         .with_tag(DesireTag::HouseholdNeed),
-                    Desire::new(Item::Good(2), 1.0, 1.0)
+                    Desire::new(Item::Good(2), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
-                    Desire::new(Item::Good(3), 1.0, 1.0)
+                    Desire::new(Item::Good(3), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
-                    Desire::new(Item::Good(4), 1.0, 1.0)
+                    Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
                 ];
 
@@ -1076,59 +1099,62 @@ mod tests {
                 Pop::integrate_desires(&source_desires, &row, &mut desires);
                 // check that initials were added in correctly.
                 assert_eq!(desires.len(), 5);
-                assert_eq!(desires.get(0).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(0).unwrap().amount, 3.0);
                 assert_eq!(desires.get(0).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(1).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(1).unwrap().amount, 9.0);
                 assert_eq!(desires.get(1).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(2).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(2).unwrap().amount, 6.0);
                 assert_eq!(desires.get(2).unwrap().item, Item::Good(3));
-                assert_eq!(desires.get(3).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(3).unwrap().amount, 3.0);
                 assert_eq!(desires.get(3).unwrap().item, Item::Good(4));
-                assert_eq!(desires.get(4).unwrap().start_value, 0.3);
+                assert_eq!(desires.get(4).unwrap().start_priority, 0.3);
                 assert_eq!(desires.get(4).unwrap().amount, 18.0);
                 assert_eq!(desires.get(4).unwrap().item, Item::Good(0));
 
                 let source_desires = vec![
-                    Desire::new(Item::Good(0), 1.0, 0.3), // duplicate, combines with 0
-                    Desire::new(Item::Good(1), 1.0, 0.6)
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)), // duplicate, combines with 0
+                    Desire::new(Item::Good(1), 1.0, 0.6,
+                        PriorityFn::linear(1.0))
                         .with_tag(DesireTag::HouseholdNeed), // inserted into 1
-                    Desire::new(Item::Good(2), 1.0, 1.5) // inserted at end near duplicate
+                    Desire::new(Item::Good(2), 1.0, 1.5,
+                        PriorityFn::linear(1.0)) // inserted at end near duplicate
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
                 ];
 
                 Pop::integrate_desires(&source_desires, &row, &mut desires);
 
                 assert_eq!(desires.len(), 7);
-                assert_eq!(desires.get(0).unwrap().start_value, 1.5); // last insertion.
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.5); // last insertion.
                 assert_eq!(desires.get(0).unwrap().amount, 9.0);
                 assert_eq!(desires.get(0).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(1).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(1).unwrap().amount, 3.0);
                 assert_eq!(desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(2).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(2).unwrap().amount, 9.0);
                 assert_eq!(desires.get(2).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(3).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(3).unwrap().amount, 6.0);
                 assert_eq!(desires.get(3).unwrap().item, Item::Good(3));
-                assert_eq!(desires.get(4).unwrap().start_value, 1.0);
+                assert_eq!(desires.get(4).unwrap().start_priority, 1.0);
                 assert_eq!(desires.get(4).unwrap().amount, 3.0);
                 assert_eq!(desires.get(4).unwrap().item, Item::Good(4));
-                assert_eq!(desires.get(5).unwrap().start_value, 0.6); // inserted by 2nd
+                assert_eq!(desires.get(5).unwrap().start_priority, 0.6); // inserted by 2nd
                 assert_eq!(desires.get(5).unwrap().amount, 3.0);
                 assert_eq!(desires.get(5).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(6).unwrap().start_value, 0.3); // added to by 2nd
+                assert_eq!(desires.get(6).unwrap().start_priority, 0.3); // added to by 2nd
                 assert_eq!(desires.get(6).unwrap().amount, 36.0);
                 assert_eq!(desires.get(6).unwrap().item, Item::Good(0));
             }
         }
 
         mod get_desire_multiplier_should {
-            use crate::{desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
 
             #[test]
             pub fn calculate_multiplier_correctly() {
@@ -1138,8 +1164,8 @@ mod tests {
                 let mut desire = Desire {
                     item: Item::Good(0),
                     amount: 1.0,
-                    start_value: 1.0,
-                    reduction_factor: None,
+                    start_priority: 1.0,
+                    priority_fn: PriorityFn::linear(1.0),
                     steps: None,
                     tags: vec![],
                     satisfaction: 0.0,
@@ -1179,7 +1205,7 @@ mod tests {
         mod satisfy_desires_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -1187,8 +1213,9 @@ mod tests {
                 data.add_time();
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
-                let desire = Desire::new(Item::Good(4), 1.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1210,8 +1237,9 @@ mod tests {
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
                 .in_class(4));
 
-                let desire = Desire::new(Item::Class(4), 1.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Class(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1244,8 +1272,9 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Want(4), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Want(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1278,7 +1307,7 @@ mod tests {
         mod satisfy_next_desire_should {
             use std::collections::{HashMap, VecDeque};
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -1286,8 +1315,9 @@ mod tests {
                 data.add_time();
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
-                let desire = Desire::new(Item::Good(4), 2.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1295,7 +1325,7 @@ mod tests {
 
                 let mut working_desires = VecDeque::new();
 
-                working_desires.push_front((desire.start_value, desire));
+                working_desires.push_front((desire.start_priority, desire));
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 assert!(result.is_none());
@@ -1323,8 +1353,9 @@ mod tests {
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
                 .in_class(4));
 
-                let desire = Desire::new(Item::Class(4), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_front((1.0, desire));
@@ -1373,8 +1404,9 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Want(4), 15.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_front((1.0, desire));
@@ -1437,7 +1469,7 @@ mod tests {
         mod satisfy_until_incomplete_should {
             use std::collections::VecDeque;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_stop_when_finished_incomplete() {
@@ -1448,14 +1480,18 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood6"), String::new()));
                 data.add_good(Good::new(7, String::from("testGood7"), String::new()));
 
-                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
-                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
-                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
-                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_back((1.0, desire1));
@@ -1493,18 +1529,24 @@ mod tests {
         mod ordered_desire_insert_should {
             use std::collections::VecDeque;
 
-            use crate::{desire::Desire, item::Item, pop::Pop};
+            use crate::{desire::{Desire, PriorityFn}, item::Item, pop::Pop};
 
             #[test]
             pub fn insert_correctly() {
                 let mut working_desires = VecDeque::new();
 
-                let desire0 = Desire::new(Item::Good(0), 1.0, 10.0);
-                let desire1 = Desire::new(Item::Good(1), 1.0, 9.0);
-                let desire2 = Desire::new(Item::Good(2), 1.0, 1.0);
-                let desire3 = Desire::new(Item::Good(3), 1.0, 15.0);
-                let desire4 = Desire::new(Item::Good(4), 1.0, 10.0);
-                let desire5 = Desire::new(Item::Good(5), 1.0, 10.0);
+                let desire0 = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
+                let desire1 = Desire::new(Item::Good(1), 1.0, 9.0,
+                    PriorityFn::linear(1.0));
+                let desire2 = Desire::new(Item::Good(2), 1.0, 1.0,
+                    PriorityFn::linear(1.0));
+                let desire3 = Desire::new(Item::Good(3), 1.0, 15.0,
+                    PriorityFn::linear(1.0));
+                let desire4 = Desire::new(Item::Good(4), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
+                let desire5 = Desire::new(Item::Good(5), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire0, 10.0);
                 Pop::ordered_desire_insert(&mut working_desires, desire1, 9.0);
@@ -1567,7 +1609,7 @@ mod tests {
         mod consume_desire_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -1575,8 +1617,9 @@ mod tests {
                 data.add_time();
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
-                let desire = Desire::new(Item::Good(4), 2.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire);
@@ -1612,8 +1655,9 @@ mod tests {
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
                 .in_class(4));
 
-                let desire = Desire::new(Item::Class(4), 10.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire);
@@ -1667,8 +1711,9 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Want(4), 15.0, 1.0)
-                    .with_step_factor(0.5, 0);
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_front(desire);
@@ -1775,7 +1820,7 @@ mod tests {
         mod consume_desires_should {
             use std::collections::HashMap;
 
-            use crate::{constants::TIME_ID, data::Data, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{constants::TIME_ID, data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn correctly_consume_desires() {
@@ -1797,16 +1842,21 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0)
-                    .with_step_factor(0.5, 0);
-                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0)
-                    .with_step_factor(0.5, 0);
-                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0)
-                    .with_step_factor(0.5, 0);
-                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0)
-                    .with_step_factor(0.5, 0);
-                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0)
-                    .with_step_factor(0.5, 0);
+                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire1);
