@@ -548,22 +548,46 @@ mod tests {
                 stepless.satisfaction = 1.0;
                 // partial satisfaction
                 let val = stepless.current_valuation();
-                assert_eq!(val, (0.5, unit_len / 2.0));
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 0.5);
+                assert!((unit_len / 2.0) + 0.000000001 > value && 
+                    value > (unit_len / 2.0) - 0.000000001);
                 
                 // full step satisfaction
                 stepless.satisfaction = 2.0;
                 let val = stepless.current_valuation();
-                assert_eq!(val, (1.0, unit_len));
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 1.0);
+                assert!((unit_len) + 0.000000001 > value && 
+                    value > (unit_len) - 0.000000001);
 
                 // extra step satisfaction
                 stepless.satisfaction = 3.0;
                 let val = stepless.current_valuation();
-                assert_eq!(val, (1.5, unit_len * 1.5));
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 1.5);
+                assert!((unit_len * 1.5) + 0.000000001 > value && 
+                    value > (unit_len * 1.5) - 0.000000001);
 
                 // extra step satisfaction
                 stepless.satisfaction = 4.5;
                 let val = stepless.current_valuation();
-                assert_eq!(val, (2.25, unit_len * 2.25));
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 2.25);
+                assert!((unit_len * 2.25) + 0.000000001 > value && 
+                    value > (unit_len * 2.25) - 0.000000001);
+                
+                                // extra step satisfaction
+                stepless.satisfaction = 6.0;
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 3.0);
+                assert_eq!(value, unit_len * 3.0);
             }
         }
 
@@ -581,7 +605,7 @@ mod tests {
                 let d = Desire::new(Item::Want(0), 1.0, 0.0,
                     PriorityFn::linear(1.0))
                     .with_steps(20);
-                assert_eq!(d.end(), Some(0.25));
+                assert_eq!(d.end(), Some(20.0));
 
                 // Unending
                 let d = Desire::new(Item::Want(0), 1.0, 0.0,
@@ -615,7 +639,7 @@ mod tests {
                 let unit_len = 1.0 - 5.0 / 3.0;
 
                 let result = test.expected_value(-3.0);
-                assert_eq!(result, unit_len * -3.0);
+                assert_eq!(result, -unit_len * 3.0);
             }
 
             #[test]
@@ -623,11 +647,11 @@ mod tests {
                 let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
                     PriorityFn::linear(4.0 / 3.0))
                     .with_steps(0);
-                test.satisfaction = 2.0;
+                test.satisfaction = 3.0;
                 let unit_len = 1.0 - 5.0 / 3.0;
 
-                let result = test.expected_value(-3.0);
-                assert_eq!(result, unit_len * -2.0);
+                let result = test.expected_value(-4.0);
+                assert_eq!(result, unit_len * -3.0);
             }
 
             #[test]

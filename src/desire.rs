@@ -155,7 +155,8 @@ impl Desire {
         } else {
             self.satisfaction / self.amount
         };
-        let valuation = steps - self.priority_fn.arc_length(self.start_priority, steps);
+        let valuation = steps - self.priority_fn.arc_length(self.start_priority, 
+            steps + self.start_priority);
 
         (steps, valuation)
     }
@@ -188,18 +189,19 @@ impl Desire {
     pub fn expected_value(&self, sat_change:  f64) -> f64 {
         // if reduces below current satisfaction, just get current valuation.
         if sat_change <= -self.satisfaction {
-            return -self.current_valuation().0;
+            return -self.current_valuation().1;
         }
         // cap at maximum steps
-        let steps_added = if let Some(max_steps) = self.steps {
-            ((self.satisfaction + sat_change) / self.amount).min(max_steps.get() as f64)
+        let starting_steps = self.satisfied_steps();
+        let steps_adding = if let Some(max_steps) = self.steps {
+            (sat_change / self.amount).min(max_steps.get() as f64 - starting_steps)
         } else {
-            (self.satisfaction + sat_change) / self.amount
+            sat_change / self.amount
         };
         let sign = sat_change.signum();
         // from here, get the arc length of between current and steps added.
-        (steps_added - self.priority_fn.arc_length(self.start_priority, steps_added)) * 
-            sign
+        (steps_adding.abs() - self.priority_fn.arc_length(self.satisfied_steps(), 
+        steps_adding + starting_steps)) * sign
     }
 
     /// # Equals
@@ -492,8 +494,9 @@ impl PriorityFn {
         }
         match self {
             PriorityFn::Linear { slope } => {
-                (1.0 + slope.powf(2.0)).sqrt() * end -
-                (1.0 + slope.powf(2.0)).sqrt() * start
+                let diffx = end - start;
+                let diffy = slope * diffx;
+                ((diffx).powf(2.0) + (diffy).powf(2.0)).sqrt()
             },
             PriorityFn::Quadratic { .. } => {
                 let diff = end - start; // get distance between start and endof the interval
