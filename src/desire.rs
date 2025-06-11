@@ -416,6 +416,9 @@ pub enum PriorityFn {
     Quadratic{accel: f64},
     /// Exponential Priority Function
     /// (1.0 + step) ^ (growth * n) -1 + start
+    /// 
+    /// Step 0 should be equal to start point, thus expect any result to be 
+    /// 1 lower than expected.
     Exponential{step: f64, growth: f64},
 }
 
@@ -431,9 +434,9 @@ impl PriorityFn {
     /// # Quadratic
     /// 
     /// Safely creates Quadratic PriorityFn.
-    pub fn quadratic(step: f64) -> Self {
-        assert!(step > 0.0, "Step must be a positive value!");
-        Self::Quadratic{accel: step}
+    pub fn quadratic(accel: f64) -> Self {
+        assert!(accel > 0.0, "Step must be a positive value!");
+        Self::Quadratic{accel}
     }
 
     /// # Exponential

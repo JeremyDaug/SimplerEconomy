@@ -543,6 +543,35 @@ mod tests {
                 let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
                     PriorityFn::linear(2.0))
                     .with_steps(0);
+                test_linear.satisfaction = 3.0;
+                let current = test_linear.current_priority();
+                assert_eq!(current, 8.0);
+                test_linear.satisfaction = 5.0;
+                let current = test_linear.current_priority();
+                assert_eq!(current, 12.0);
+
+                let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
+                    PriorityFn::quadratic(2.0))
+                    .with_steps(0);
+                test_quad.satisfaction = 1.0;
+                let current = test_quad.current_priority();
+                assert_eq!(current, -1.0);
+                test_quad.satisfaction = 3.0;
+                let current = test_quad.current_priority();
+                assert_eq!(current, 31.0);
+
+                let mut test_exp = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::exponential(1.0, 2.0))
+                    .with_steps(0);
+                test_exp.satisfaction = 0.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 10.0);
+                test_exp.satisfaction = 1.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 13.0);
+                test_exp.satisfaction = 2.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 25.0);
             }
         }
 
