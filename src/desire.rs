@@ -10,12 +10,9 @@ use crate::{household::HouseholdMember, item::Item};
 /// Starting Priority defines the priority of the good for buying. Lower values is
 /// higher priority.
 /// 
-/// The 'value' of a desire is inversly proportional to the 'length' of it's priority curve.
-/// The length when outside of it's range is 1 per level of priority (ie flat).
-/// The further it is away from being flat, the lower it's relative value.
-/// Lagrangian Path style (L - S) ~~Probably not actually Lagrangian done right. Sue me.~~
-/// 
-/// The curve between it's start and end steps is defined by PriorityFn.
+/// The Priority Function defines how each new step (satisfaction / amount) increases
+/// the current priority value. This is a smooth function, so partial satisfaction still
+/// creates a useful value.
 /// 
 /// A step is defined as the satisfaction / amount. each step increases priority
 /// as per the PriorityFn formula.
@@ -88,7 +85,8 @@ impl Desire {
         // ensure this desire has proper ending if we're addign a life need.
         match tag {
             DesireTag::LifeNeed(_) => {
-                assert!(self.steps.is_none(), 
+                println!("steps: {}", self.steps.is_none());
+                assert!(self.steps.is_some(), 
                 "A Desire with the tag LifeNeed must have a finite number of steps.");
             },
             _ => {}
@@ -136,6 +134,41 @@ impl Desire {
         self
     }
 
+    /// # Current Priority
+    /// 
+    /// Gets the current prioriyt of our desire based on satisfaction.
+    pub fn current_priority(&self) -> f64 {
+        let steps = self.satisfied_steps();
+        self.priority_fn.priority(self.start_priority, steps)
+    }
+
+    /// # Weight
+    /// 
+    /// Weight gives the value of these.
+    /// 
+    /// Weight is based on the range (current - start) / steps.
+    /// 
+    /// (Denser gives higher weight)
+    pub fn weight(&self) -> f64 {
+        self.satisfied_steps() / (self.current_priority() - self.start_priority)
+    }
+
+    /// # End
+    /// 
+    /// Gets the upper priority bound of our prioirity curve.
+    /// 
+    /// If it takes steps, but does not end, it returns None.
+    /// 
+    /// TODO: Test this to ensure correctness.
+    pub fn end(&self) -> Option<f64> {
+        if let Some(steps) = self.steps {
+            let steps = steps.get() as f64;
+            Some(self.priority_fn.priority(self.start_priority, steps))
+        } else {
+            None
+        }
+    }
+
     /// # Current Valuation
     /// 
     /// Gets the current value of the desire based on existing satisfaction.
@@ -159,22 +192,6 @@ impl Desire {
             steps + self.start_priority);
 
         (steps, valuation)
-    }
-
-    /// # End
-    /// 
-    /// Gets the upper priority bound of our prioirity curve.
-    /// 
-    /// If it takes steps, but does not end, it returns None.
-    /// 
-    /// TODO: Test this to ensure correctness.
-    pub fn end(&self) -> Option<f64> {
-        if let Some(steps) = self.steps {
-            let steps = steps.get() as f64;
-            Some(self.priority_fn.priority(self.start_priority, steps))
-        } else {
-            None
-        }
     }
 
     /// # Expected Value
@@ -430,11 +447,15 @@ impl PriorityFn {
 
     /// # Priority
     /// 
-    /// Calculates and returns the current priority value of the desire.
+    /// Calculates and returns the current priority value of the desire
+    /// 
+    /// F(n) + start.
+    /// 
+    /// n is the step the function is currently on..
     pub fn priority(&self, start: f64, n: f64) -> f64 {
         match self {
-            PriorityFn::Linear { slope: step } => {
-                start + step * n
+            PriorityFn::Linear { slope } => {
+                start + slope * n
             },
             PriorityFn::Quadratic { accel} => {
                 start + (accel * n).powf(2.0)

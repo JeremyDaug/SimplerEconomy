@@ -684,8 +684,10 @@ impl Pop {
     /// 
     /// This will destroy wants and goods.
     /// 
-    /// It returns the levels of satisfaction achieved total, and the sum
-    /// of all the valuations.
+    /// It returns the range of desires satisfied and the total valuation of all
+    /// desires summed together.
+    /// 
+    /// Bigger range is 
     pub fn consume_desires(&mut self, data: &Data) -> (f64, f64) {
         let mut working_desires = VecDeque::new();
         // get desires and reset satisfaction while we're at it.

@@ -535,6 +535,41 @@ mod tests {
     }
 
     mod desire_tests {
+        mod current_priority_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn calculate_priority_update() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
+                    PriorityFn::linear(2.0))
+                    .with_steps(0);
+            }
+        }
+
+        mod end_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn correctly_calculate_end_value() {
+                // Base (1) step
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0));
+                assert_eq!(d.end(), Some(1.0));
+
+                // Dictated ending step.
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(20);
+                assert_eq!(d.end(), Some(20.0));
+
+                // Unending
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+                assert_eq!(d.end(), None);
+            }
+        }
+
         mod current_valuation_should {
             use crate::{desire::{Desire, PriorityFn}, item::Item};
 
@@ -588,30 +623,6 @@ mod tests {
                 let value = val.1;
                 assert_eq!(steps, 3.0);
                 assert_eq!(value, unit_len * 3.0);
-            }
-        }
-
-        mod end_should {
-            use crate::{desire::{Desire, PriorityFn}, item::Item};
-
-            #[test]
-            pub fn correctly_calculate_end_value() {
-                // Base (1) step
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    PriorityFn::linear(1.0));
-                assert_eq!(d.end(), Some(1.0));
-
-                // Dictated ending step.
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    PriorityFn::linear(1.0))
-                    .with_steps(20);
-                assert_eq!(d.end(), Some(20.0));
-
-                // Unending
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    PriorityFn::linear(1.0))
-                    .with_steps(0);
-                assert_eq!(d.end(), None);
             }
         }
 
@@ -1866,20 +1877,22 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
+                let unit_slope = 4.0 / 3.0;
+
                 let desire1 = Desire::new(Item::Good(4), 10.0, 2.0,
-                    PriorityFn::linear(1.0))
+                    PriorityFn::linear(unit_slope))
                     .with_steps(0);
                 let desire2 = Desire::new(Item::Class(4), 10.0, 2.0,
-                    PriorityFn::linear(1.0))
+                    PriorityFn::linear(unit_slope))
                     .with_steps(0);
                 let desire3 = Desire::new(Item::Want(4), 10.0, 2.0,
-                        PriorityFn::linear(1.0))
+                        PriorityFn::linear(unit_slope))
                     .with_steps(0);
                 let desire4 = Desire::new(Item::Good(5), 10.0, 2.0,
-                        PriorityFn::linear(1.0))
+                        PriorityFn::linear(unit_slope))
                     .with_steps(0);
                 let desire5 = Desire::new(Item::Want(5), 10.0, 2.0,
-                        PriorityFn::linear(1.0))
+                        PriorityFn::linear(unit_slope))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
@@ -1896,6 +1909,8 @@ mod tests {
                 test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
 
                 let result = test.consume_desires(&data);
+                println!("Steps: {}", result.0);
+                println!("value: {}", result.1);
 
                 assert_eq!(result.0, 11.0);
                 assert_eq!(result.1, 140.0);
