@@ -109,7 +109,7 @@ impl Desire {
         self
     }
 
-    /// # With Step Factor
+    /// # With Steps
     /// 
     /// Consuming setter for Number of Steps.
     /// 
@@ -150,7 +150,13 @@ impl Desire {
     /// 
     /// (Denser gives higher weight)
     pub fn weight(&self) -> f64 {
-        self.satisfied_steps() / (self.current_priority() - self.start_priority)
+        let result =  self.satisfied_steps() / 
+            (self.current_priority() - self.start_priority);
+        if result.is_nan() {
+            0.0
+        } else {
+            result
+        }
     }
 
     /// # End
@@ -181,7 +187,7 @@ impl Desire {
     /// This does not include the pre-priority distance.
     /// 
     /// (self.satisfaction / self.amount) - arc_length
-    pub fn current_valuation(&self) -> (f64, f64) {
+    /*pub fn current_valuation(&self) -> (f64, f64) {
         let steps = if let Some(end) = self.steps {
             let cap = end.get() as f64;
             (self.satisfaction / self.amount).min(cap)
@@ -192,7 +198,7 @@ impl Desire {
             steps + self.start_priority);
 
         (steps, valuation)
-    }
+    } */
 
     /// # Expected Value
     /// 
@@ -203,7 +209,7 @@ impl Desire {
     /// current value.
     /// 
     /// TODO: Test this to ensure correctness.
-    pub fn expected_value(&self, sat_change:  f64) -> f64 {
+    /*pub fn expected_value(&self, sat_change:  f64) -> f64 {
         // if reduces below current satisfaction, just get current valuation.
         if sat_change <= -self.satisfaction {
             return -self.current_valuation().1;
@@ -219,7 +225,7 @@ impl Desire {
         // from here, get the arc length of between current and steps added.
         (steps_adding.abs() - self.priority_fn.arc_length(self.satisfied_steps(), 
         steps_adding + starting_steps)) * sign
-    }
+    }*/
 
     /// # Equals
     /// 

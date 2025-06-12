@@ -575,6 +575,43 @@ mod tests {
             }
         }
 
+        mod weight_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn correctly_calculate_weight() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
+                    PriorityFn::linear(2.0))
+                    .with_steps(0);
+                test_linear.satisfaction = 3.0;
+                let current = test_linear.weight();
+                assert_eq!(current, 0.5);
+                test_linear.satisfaction = 5.0;
+                let current = test_linear.weight();
+                assert_eq!(current, 0.5);
+
+                let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
+                    PriorityFn::quadratic(2.0))
+                    .with_steps(0);
+                test_quad.satisfaction = 1.0;
+                let current = test_quad.weight();
+                assert_eq!(current, 0.25);
+                test_quad.satisfaction = 2.0;
+                let current = test_quad.weight();
+                assert_eq!(current, 0.125);
+
+                let mut test_exp = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::exponential(1.0, 2.0))
+                    .with_steps(0);
+                test_exp.satisfaction = 0.0;
+                let current = test_exp.weight();
+                assert_eq!(current, 0.0);
+                test_exp.satisfaction = 1.0;
+                let current = test_exp.weight();
+                assert_eq!(current, 1.0 / 3.0);
+            }
+        }
+
         mod end_should {
             use crate::{desire::{Desire, PriorityFn}, item::Item};
 
@@ -598,7 +635,7 @@ mod tests {
                 assert_eq!(d.end(), None);
             }
         }
-
+        /*
         mod current_valuation_should {
             use crate::{desire::{Desire, PriorityFn}, item::Item};
 
@@ -706,7 +743,7 @@ mod tests {
                 assert_eq!(result, unit_len);
             }
         }
-
+        */
         mod assertion_checks {
             use std::mem::discriminant;
 
