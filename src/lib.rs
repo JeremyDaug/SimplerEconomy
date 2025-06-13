@@ -1426,19 +1426,17 @@ mod tests {
 
                 let mut working_desires = VecDeque::new();
 
-                working_desires.push_front((desire.start_priority, desire));
+                working_desires.push_front(desire);
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 assert!(result.is_none());
-                assert_eq!(working_desires.front().unwrap().0, 0.5);
-                assert_eq!(working_desires.front().unwrap().1.satisfaction, 2.0);
+                assert_eq!(working_desires.front().unwrap().satisfaction, 2.0);
                 assert_eq!(test.property.get(&4).unwrap().reserved, 2.0);
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 if let Some(result) = result {
-                    assert_eq!(result.0, 0.5);
-                    assert_eq!(result.1.satisfaction, 3.0);
+                    assert_eq!(result.satisfaction, 3.0);
                     assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
                 } else {
                     assert!(false, "Did not return unsatisfied desire as expected.");
@@ -1459,7 +1457,7 @@ mod tests {
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
-                working_desires.push_front((1.0, desire));
+                working_desires.push_front(desire);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1471,14 +1469,12 @@ mod tests {
                 assert!(result.is_none());
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                 assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(working_desires.get(0).unwrap().0, 0.5);
-                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 10.0);
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 10.0);
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 if let Some(result) = result {
-                    assert_eq!(result.0, 0.5);
-                    assert_eq!(result.1.satisfaction, 15.0);
+                    assert_eq!(result.satisfaction, 15.0);
                     assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
                     assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
                     assert_eq!(working_desires.len(), 0);
@@ -1510,7 +1506,7 @@ mod tests {
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
-                working_desires.push_front((1.0, desire));
+                working_desires.push_front(desire);
 
                 let mut test = Pop::new(0, 0, 0);
 
@@ -1529,8 +1525,7 @@ mod tests {
 
                 // first pass.
                 assert!(result.is_none());
-                assert_eq!(working_desires.get(0).unwrap().0, 0.5);
-                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 15.0);
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 15.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 15.0);
                 assert_eq!(test.wants.get(&4).unwrap().expected, 5.0);
                 assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
@@ -1541,8 +1536,7 @@ mod tests {
                 // Second pass
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
                 assert!(result.is_none());
-                assert_eq!(working_desires.get(0).unwrap().0, 0.25);
-                assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 30.0);
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 30.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 30.0);
                 assert_eq!(test.wants.get(&4).unwrap().expected, 20.0);
                 assert_eq!(test.property.get(&0).unwrap().reserved, 20.0);
@@ -1552,8 +1546,7 @@ mod tests {
 
                 // third pass
                 if let Some(result) =  test.satisfy_next_desire(&mut working_desires, &data) {
-                    assert_eq!(result.0, 0.25);
-                    assert_eq!(result.1.satisfaction, 40.0);
+                    assert_eq!(result.satisfaction, 40.0);
                     assert_eq!(working_desires.len(), 0);
                     assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
                     assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
@@ -1595,10 +1588,10 @@ mod tests {
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
-                working_desires.push_back((1.0, desire1));
-                working_desires.push_back((1.0, desire2));
-                working_desires.push_back((1.0, desire3));
-                working_desires.push_back((1.0, desire4));
+                working_desires.push_back(desire1);
+                working_desires.push_back(desire2);
+                working_desires.push_back(desire3);
+                working_desires.push_back(desire4);
 
                 let mut test = Pop::new(0, 0, 0);
                 test.property.insert(0, PropertyRecord::new(100.0));
@@ -1609,20 +1602,16 @@ mod tests {
 
                 let result = test.satisfy_until_incomplete(&mut working_desires, &data);
 
-                if let Some((value, desire)) = result {
-                    assert_eq!(value, 0.125); // 3 levels down
+                if let Some(desire) = result {
                     assert_eq!(desire.satisfaction, 30.0);
                     assert_eq!(desire.item, Item::Good(6));
                     assert_eq!(working_desires.len(), 3);
-                    assert_eq!(working_desires.get(0).unwrap().0, 0.125);
-                    assert_eq!(working_desires.get(0).unwrap().1.satisfaction, 30.0);
-                    assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(7));
-                    assert_eq!(working_desires.get(1).unwrap().0, 0.0625);
-                    assert_eq!(working_desires.get(1).unwrap().1.satisfaction, 40.0);
-                    assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(4));
-                    assert_eq!(working_desires.get(2).unwrap().0, 0.0625);
-                    assert_eq!(working_desires.get(2).unwrap().1.satisfaction, 40.0);
-                    assert_eq!(working_desires.get(2).unwrap().1.item, Item::Good(5));
+                    assert_eq!(working_desires.get(0).unwrap().satisfaction, 30.0);
+                    assert_eq!(working_desires.get(0).unwrap().item, Item::Good(7));
+                    assert_eq!(working_desires.get(1).unwrap().satisfaction, 40.0);
+                    assert_eq!(working_desires.get(1).unwrap().item, Item::Good(4));
+                    assert_eq!(working_desires.get(2).unwrap().satisfaction, 40.0);
+                    assert_eq!(working_desires.get(2).unwrap().item, Item::Good(5));
                 }
             }
         }
@@ -1643,67 +1632,51 @@ mod tests {
                 let desire2 = Desire::new(Item::Good(2), 1.0, 1.0,
                     PriorityFn::linear(1.0));
                 let desire3 = Desire::new(Item::Good(3), 1.0, 15.0,
-                    PriorityFn::linear(1.0));
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
                 let desire4 = Desire::new(Item::Good(4), 1.0, 10.0,
                     PriorityFn::linear(1.0));
                 let desire5 = Desire::new(Item::Good(5), 1.0, 10.0,
                     PriorityFn::linear(1.0));
 
-                Pop::ordered_desire_insert(&mut working_desires, desire0, 10.0);
-                Pop::ordered_desire_insert(&mut working_desires, desire1, 9.0);
+                Pop::ordered_desire_insert(&mut working_desires, desire0);
+                Pop::ordered_desire_insert(&mut working_desires, desire1);
 
-                assert_eq!(working_desires.get(0).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(0));
-                assert_eq!(working_desires.get(1).unwrap().0, 9.0);
-                assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(1));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
 
-                Pop::ordered_desire_insert(&mut working_desires, desire2, 1.0);
+                Pop::ordered_desire_insert(&mut working_desires, desire2);
 
-                assert_eq!(working_desires.get(0).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(0));
-                assert_eq!(working_desires.get(1).unwrap().0, 9.0);
-                assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(1));
-                assert_eq!(working_desires.get(2).unwrap().0, 1.0);
-                assert_eq!(working_desires.get(2).unwrap().1.item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(2));
 
-                Pop::ordered_desire_insert(&mut working_desires, desire3, 15.0);
+                Pop::ordered_desire_insert(&mut working_desires, desire3);
 
-                assert_eq!(working_desires.get(0).unwrap().0, 15.0);
-                assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().0, 9.0);
-                assert_eq!(working_desires.get(2).unwrap().1.item, Item::Good(1));
-                assert_eq!(working_desires.get(3).unwrap().0, 1.0);
-                assert_eq!(working_desires.get(3).unwrap().1.item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(2));
 
-                Pop::ordered_desire_insert(&mut working_desires, desire4, 10.0);
+                Pop::ordered_desire_insert(&mut working_desires, desire4);
 
-                assert_eq!(working_desires.get(0).unwrap().0, 15.0);
-                assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(2).unwrap().1.item, Item::Good(4));
-                assert_eq!(working_desires.get(3).unwrap().0, 9.0);
-                assert_eq!(working_desires.get(3).unwrap().1.item, Item::Good(1));
-                assert_eq!(working_desires.get(4).unwrap().0, 1.0);
-                assert_eq!(working_desires.get(4).unwrap().1.item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(2));
 
-                Pop::ordered_desire_insert(&mut working_desires, desire5, 10.0);
+                Pop::ordered_desire_insert(&mut working_desires, desire5);
 
-                assert_eq!(working_desires.get(0).unwrap().0, 15.0);
-                assert_eq!(working_desires.get(0).unwrap().1.item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(1).unwrap().1.item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(2).unwrap().1.item, Item::Good(4));
-                assert_eq!(working_desires.get(3).unwrap().0, 10.0);
-                assert_eq!(working_desires.get(3).unwrap().1.item, Item::Good(5));
-                assert_eq!(working_desires.get(4).unwrap().0, 9.0);
-                assert_eq!(working_desires.get(4).unwrap().1.item, Item::Good(1));
-                assert_eq!(working_desires.get(5).unwrap().0, 1.0);
-                assert_eq!(working_desires.get(5).unwrap().1.item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(5));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(2));
+
+                let mut test_des = working_desires.pop_front().unwrap();
+                test_des.satisfaction = 10000.0;
             }
         }
 
