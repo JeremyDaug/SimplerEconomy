@@ -968,7 +968,7 @@ mod tests {
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.property.insert(7, PropertyRecord::new(5.0));
-                test_pop.satisfy_desires(&data);
+                test_pop.try_satisfy_all_desires(&data);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -1020,7 +1020,7 @@ mod tests {
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.property.insert(8, PropertyRecord::new(10.0));
-                test_pop.satisfy_desires(&data);
+                test_pop.try_satisfy_all_desires(&data);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -1073,7 +1073,7 @@ mod tests {
                 test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.property.insert(8, PropertyRecord::new(10.0));
-                test_pop.satisfy_desires(&data);
+                test_pop.try_satisfy_all_desires(&data);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -1122,7 +1122,7 @@ mod tests {
                 //test_pop.property.insert(6, PropertyRecord::new(2.0));
                 //test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.property.insert(8, PropertyRecord::new(100.0));
-                test_pop.satisfy_desires(&data);
+                test_pop.try_satisfy_all_desires(&data);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -1159,7 +1159,7 @@ mod tests {
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(1.0));
-                test_pop.satisfy_desires(&data);
+                test_pop.try_satisfy_all_desires(&data);
 
                 let mut new_goods = HashMap::new();
                 new_goods.insert(5, 1.0);
@@ -1170,140 +1170,7 @@ mod tests {
             }
         }
 
-        mod integrate_desires_should {
-            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
-
-            #[test]
-            pub fn correctly_integrate_desires() {
-                let mut row = DRow::new(3.0, 0);
-                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
-
-                let source_desires = vec![
-                    Desire::new(Item::Good(0), 1.0, 0.3,
-                        PriorityFn::linear(1.0)),
-                    Desire::new(Item::Good(1), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
-                        .with_tag(DesireTag::HouseholdNeed),
-                    Desire::new(Item::Good(2), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
-                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
-                    Desire::new(Item::Good(3), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
-                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
-                    Desire::new(Item::Good(4), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
-                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
-                ];
-
-                let mut desires: Vec<Desire> = vec![];
-
-                Pop::integrate_desires(&source_desires, &row, &mut desires);
-                // check that initials were added in correctly.
-                assert_eq!(desires.len(), 5);
-                assert_eq!(desires.get(0).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(0).unwrap().amount, 3.0);
-                assert_eq!(desires.get(0).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(1).unwrap().amount, 9.0);
-                assert_eq!(desires.get(1).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(2).unwrap().amount, 6.0);
-                assert_eq!(desires.get(2).unwrap().item, Item::Good(3));
-                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(3).unwrap().amount, 3.0);
-                assert_eq!(desires.get(3).unwrap().item, Item::Good(4));
-                assert_eq!(desires.get(4).unwrap().start_priority, 0.3);
-                assert_eq!(desires.get(4).unwrap().amount, 18.0);
-                assert_eq!(desires.get(4).unwrap().item, Item::Good(0));
-
-                let source_desires = vec![
-                    Desire::new(Item::Good(0), 1.0, 0.3,
-                        PriorityFn::linear(1.0)), // duplicate, combines with 0
-                    Desire::new(Item::Good(1), 1.0, 0.6,
-                        PriorityFn::linear(1.0))
-                        .with_tag(DesireTag::HouseholdNeed), // inserted into 1
-                    Desire::new(Item::Good(2), 1.0, 1.5,
-                        PriorityFn::linear(1.0)) // inserted at end near duplicate
-                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
-                ];
-
-                Pop::integrate_desires(&source_desires, &row, &mut desires);
-
-                assert_eq!(desires.len(), 7);
-                assert_eq!(desires.get(0).unwrap().start_priority, 1.5); // last insertion.
-                assert_eq!(desires.get(0).unwrap().amount, 9.0);
-                assert_eq!(desires.get(0).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(1).unwrap().amount, 3.0);
-                assert_eq!(desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(2).unwrap().amount, 9.0);
-                assert_eq!(desires.get(2).unwrap().item, Item::Good(2));
-                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(3).unwrap().amount, 6.0);
-                assert_eq!(desires.get(3).unwrap().item, Item::Good(3));
-                assert_eq!(desires.get(4).unwrap().start_priority, 1.0);
-                assert_eq!(desires.get(4).unwrap().amount, 3.0);
-                assert_eq!(desires.get(4).unwrap().item, Item::Good(4));
-                assert_eq!(desires.get(5).unwrap().start_priority, 0.6); // inserted by 2nd
-                assert_eq!(desires.get(5).unwrap().amount, 3.0);
-                assert_eq!(desires.get(5).unwrap().item, Item::Good(1));
-                assert_eq!(desires.get(6).unwrap().start_priority, 0.3); // added to by 2nd
-                assert_eq!(desires.get(6).unwrap().amount, 36.0);
-                assert_eq!(desires.get(6).unwrap().item, Item::Good(0));
-            }
-        }
-
-        mod get_desire_multiplier_should {
-            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
-
-            #[test]
-            pub fn calculate_multiplier_correctly() {
-                let mut row = DRow::new(3.0, 0);
-                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
-
-                let mut desire = Desire {
-                    item: Item::Good(0),
-                    amount: 1.0,
-                    start_priority: 1.0,
-                    priority_fn: PriorityFn::linear(1.0),
-                    steps: None,
-                    tags: vec![],
-                    satisfaction: 0.0,
-                };
-
-                let mut new_des = desire.clone();
-                // default, no tags should multiply by 6.0 (household) * 3.0 count
-                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
-                assert_eq!(new_des.amount, 18.0);
-                
-                // householdNeed, 3.0 count.
-                desire.tags.push(DesireTag::HouseholdNeed);
-                new_des = desire.clone();
-                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
-                assert_eq!(new_des.amount, 3.0);
-
-                // Member Need, adult 9.0
-                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Adult);
-                new_des = desire.clone();
-                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
-                assert_eq!(new_des.amount, 9.0);
-
-                // Member Need, child 6.0
-                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Child);
-                new_des = desire.clone();
-                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
-                assert_eq!(new_des.amount, 6.0);
-
-                // Member Need, elder 3.0
-                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Elder);
-                new_des = desire.clone();
-                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
-                assert_eq!(new_des.amount, 3.0);
-            }
-        }
-        
-        mod satisfy_desires_should {
+        mod consume_desire_should {
             use std::collections::HashMap;
 
             use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
@@ -1314,19 +1181,33 @@ mod tests {
                 data.add_time();
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
-                let desire = Desire::new(Item::Good(4), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
+                    PriorityFn::linear(1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
-
                 test.desires.push_back(desire);
-                test.property.insert(4, PropertyRecord::new(100.0)); 
 
-                test.satisfy_desires(&data);
+                test.property.insert(4, PropertyRecord::new(3.0)); 
 
-                assert_eq!(test.desires.get(0).unwrap().satisfaction, 100.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 100.0);
+                test.try_satisfy_all_desires(&data);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0; // reset desire's satisfaction.
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 1.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
             }
 
             #[test]
@@ -1338,21 +1219,42 @@ mod tests {
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
                 .in_class(4));
 
-                let desire = Desire::new(Item::Class(4), 1.0, 1.0,
-                        PriorityFn::linear(1.0))
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
+                    PriorityFn::linear(1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
-
                 test.desires.push_back(desire);
-                test.property.insert(4, PropertyRecord::new(10.0)); 
-                test.property.insert(5, PropertyRecord::new(10.0)); 
 
-                test.satisfy_desires(&data);
+                test.property.insert(4, PropertyRecord::new(7.0)); 
+                test.property.insert(5, PropertyRecord::new(5.0)); 
 
-                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                test.try_satisfy_all_desires(&data);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 2.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 12.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 5.0);
             }
 
             #[test]
@@ -1373,13 +1275,13 @@ mod tests {
                 data.add_good(Good::new(6, String::from("testGood3"), String::new())
                     .with_consumption(1.0, wants.clone()));
 
-                let desire = Desire::new(Item::Want(4), 10.0, 1.0,
-                        PriorityFn::linear(1.0))
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
+                    PriorityFn::linear(1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
+                test.desires.push_front(desire);
 
-                test.desires.push_back(desire);
                 test.wants.insert(4, WantRecord {
                     owned: 10.0,
                     reserved: 0.0,
@@ -1391,17 +1293,182 @@ mod tests {
                 test.property.insert(5, PropertyRecord::new(10.0)); 
                 test.property.insert(6, PropertyRecord::new(10.0)); 
 
-                test.satisfy_desires(&data);
+                test.try_satisfy_all_desires(&data);
 
-                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
-                assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
-                assert_eq!(test.wants.get(&4).unwrap().owned, 10.0);
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                // first pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 15.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
-                assert_eq!(test.wants.get(&5).unwrap().expected, 60.0);
-                assert_eq!(test.wants.get(&6).unwrap().expected, 15.0);
-                assert_eq!(test.desires.get(0).unwrap().satisfaction, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 2.5);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 5.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+
+                // second pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+
+                // third pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 60.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 15.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 00.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+            }
+        }
+    
+        mod consume_desires_should {
+            use std::collections::HashMap;
+
+            use crate::{constants::TIME_ID, data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn correctly_consume_desires() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let unit_slope = 4.0 / 3.0;
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0,
+                    PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0,
+                    PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire1);
+                test.desires.push_back(desire2);
+                test.desires.push_back(desire3);
+                test.desires.push_back(desire4);
+                test.desires.push_back(desire5);
+
+                test.property.insert(TIME_ID, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(20.0));
+                test.property.insert(5, PropertyRecord::new(20.0));
+                test.property.insert(6, PropertyRecord::new(20.0)); 
+                test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
+
+                let result = test.consume_desires(&data);
+                println!("Steps: {}", result.0);
+                println!("value: {}", result.1);
+
+                assert_eq!(result.0, 11.0);
+                assert_eq!(result.1, 140.0);
+
+                assert_eq!(test.property.get(&0).unwrap().owned, 80.0);
+                assert_eq!(test.property.get(&0).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&0).unwrap().used, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 15.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().used, 0.0);
+
+                assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 35.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 50.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
             }
         }
 
@@ -1616,6 +1683,241 @@ mod tests {
             }
         }
 
+        mod try_satisfy_all_desires_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(100.0)); 
+
+                test.try_satisfy_all_desires(&data);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 100.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 100.0);
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
+
+                let desire = Desire::new(Item::Class(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+
+                test.try_satisfy_all_desires(&data);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                    expended: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                test.try_satisfy_all_desires(&data);
+
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 60.0);
+                assert_eq!(test.wants.get(&6).unwrap().expected, 15.0);
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 40.0);
+            }
+        }
+
+        mod integrate_desires_should {
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn correctly_integrate_desires() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)),
+                    Desire::new(Item::Good(1), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseholdNeed),
+                    Desire::new(Item::Good(2), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                    Desire::new(Item::Good(3), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
+                    Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
+                ];
+
+                let mut desires: Vec<Desire> = vec![];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+                // check that initials were added in correctly.
+                assert_eq!(desires.len(), 5);
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(0).unwrap().amount, 3.0);
+                assert_eq!(desires.get(0).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(1).unwrap().amount, 9.0);
+                assert_eq!(desires.get(1).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 6.0);
+                assert_eq!(desires.get(2).unwrap().item, Item::Good(3));
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 3.0);
+                assert_eq!(desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(desires.get(4).unwrap().start_priority, 0.3);
+                assert_eq!(desires.get(4).unwrap().amount, 18.0);
+                assert_eq!(desires.get(4).unwrap().item, Item::Good(0));
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)), // duplicate, combines with 0
+                    Desire::new(Item::Good(1), 1.0, 0.6,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseholdNeed), // inserted into 1
+                    Desire::new(Item::Good(2), 1.0, 1.5,
+                        PriorityFn::linear(1.0)) // inserted at end near duplicate
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                ];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+
+                assert_eq!(desires.len(), 7);
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.5); // last insertion.
+                assert_eq!(desires.get(0).unwrap().amount, 9.0);
+                assert_eq!(desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(1).unwrap().amount, 3.0);
+                assert_eq!(desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 9.0);
+                assert_eq!(desires.get(2).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 6.0);
+                assert_eq!(desires.get(3).unwrap().item, Item::Good(3));
+                assert_eq!(desires.get(4).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(4).unwrap().amount, 3.0);
+                assert_eq!(desires.get(4).unwrap().item, Item::Good(4));
+                assert_eq!(desires.get(5).unwrap().start_priority, 0.6); // inserted by 2nd
+                assert_eq!(desires.get(5).unwrap().amount, 3.0);
+                assert_eq!(desires.get(5).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(6).unwrap().start_priority, 0.3); // added to by 2nd
+                assert_eq!(desires.get(6).unwrap().amount, 36.0);
+                assert_eq!(desires.get(6).unwrap().item, Item::Good(0));
+            }
+        }
+
+        mod get_desire_multiplier_should {
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn calculate_multiplier_correctly() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let mut desire = Desire {
+                    item: Item::Good(0),
+                    amount: 1.0,
+                    start_priority: 1.0,
+                    priority_fn: PriorityFn::linear(1.0),
+                    steps: None,
+                    tags: vec![],
+                    satisfaction: 0.0,
+                };
+
+                let mut new_des = desire.clone();
+                // default, no tags should multiply by 6.0 (household) * 3.0 count
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 18.0);
+                
+                // householdNeed, 3.0 count.
+                desire.tags.push(DesireTag::HouseholdNeed);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
+
+                // Member Need, adult 9.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Adult);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 9.0);
+
+                // Member Need, child 6.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Child);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 6.0);
+
+                // Member Need, elder 3.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Elder);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
+            }
+        }
+
         mod ordered_desire_insert_should {
             use std::collections::VecDeque;
 
@@ -1642,343 +1944,41 @@ mod tests {
                 Pop::ordered_desire_insert(&mut working_desires, desire0);
                 Pop::ordered_desire_insert(&mut working_desires, desire1);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire2);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
                 assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire3);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(3));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire4);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(4));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(3));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire5);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(4));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(5));
-                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(5));
+                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(3));
 
                 let mut test_des = working_desires.pop_front().unwrap();
                 test_des.satisfaction = 10000.0;
-            }
-        }
-
-        mod consume_desire_should {
-            use std::collections::HashMap;
-
-            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
-
-            #[test]
-            pub fn satisfy_good_correctly() {
-                let mut data = Data::new();
-                data.add_time();
-                data.add_good(Good::new(4, String::from("testGood"), String::new()));
-
-                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
-                    PriorityFn::linear(1.0))
-                    .with_steps(0);
-
-                let mut test = Pop::new(0, 0, 0);
-                test.desires.push_back(desire);
-
-                test.property.insert(4, PropertyRecord::new(3.0)); 
-
-                test.satisfy_desires(&data);
-
-                let mut current_desire = test.desires.remove(0).unwrap();
-                current_desire.satisfaction = 0.0; // reset desire's satisfaction.
-                let result = test.consume_desire(&mut current_desire, &data);
-
-                assert!(result);
-                assert_eq!(current_desire.satisfaction, 2.0);
-                assert_eq!(test.property.get(&4).unwrap().owned, 1.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 2.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
-
-                let result = test.consume_desire(&mut current_desire, &data);
-                assert!(!result);
-                assert_eq!(current_desire.satisfaction, 3.0);
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 3.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
-            }
-
-            #[test]
-            pub fn satisfy_class_correctly() {
-                let mut data = Data::new();
-                data.add_time();
-                data.add_good(Good::new(4, String::from("testGood1"), String::new())
-                .in_class(4));
-                data.add_good(Good::new(5, String::from("testGood2"), String::new())
-                .in_class(4));
-
-                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
-                    PriorityFn::linear(1.0))
-                    .with_steps(0);
-
-                let mut test = Pop::new(0, 0, 0);
-                test.desires.push_back(desire);
-
-                test.property.insert(4, PropertyRecord::new(7.0)); 
-                test.property.insert(5, PropertyRecord::new(5.0)); 
-
-                test.satisfy_desires(&data);
-
-                let mut current_desire = test.desires.remove(0).unwrap();
-                current_desire.satisfaction = 0.0;
-
-                let result = test.consume_desire(&mut current_desire, &data);
-
-                assert!(result);
-                assert_eq!(current_desire.satisfaction, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 2.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 3.0);
-
-                let result = test.consume_desire(&mut current_desire, &data);
-
-                assert!(!result);
-                assert_eq!(current_desire.satisfaction, 12.0);
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 5.0);
-            }
-
-            #[test]
-            pub fn satisfy_want_correctly() {
-                let mut data = Data::new();
-                data.add_time();
-                data.wants.insert(4, Want::new(4, String::from("testWant1")));
-                data.wants.insert(5, Want::new(5, String::from("testWant2")));
-                data.wants.insert(6, Want::new(6, String::from("testWant3")));
-                let mut wants = HashMap::new();
-                wants.insert(4, 1.0);
-                wants.insert(5, 2.0);
-                wants.insert(6, 0.5);
-                data.add_good(Good::new(4, String::from("testGood1"), String::new())
-                    .with_ownership(wants.clone()));
-                data.add_good(Good::new(5, String::from("testGood2"), String::new())
-                    .with_uses(2.0, wants.clone()));
-                data.add_good(Good::new(6, String::from("testGood3"), String::new())
-                    .with_consumption(1.0, wants.clone()));
-
-                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
-                    PriorityFn::linear(1.0))
-                    .with_steps(0);
-
-                let mut test = Pop::new(0, 0, 0);
-                test.desires.push_front(desire);
-
-                test.wants.insert(4, WantRecord {
-                    owned: 10.0,
-                    reserved: 0.0,
-                    expected: 0.0,
-                    expended: 0.0,
-                });
-                test.property.insert(0, PropertyRecord::new(100.0)); 
-                test.property.insert(4, PropertyRecord::new(10.0)); 
-                test.property.insert(5, PropertyRecord::new(10.0)); 
-                test.property.insert(6, PropertyRecord::new(10.0)); 
-
-                test.satisfy_desires(&data);
-
-                let mut current_desire = test.desires.remove(0).unwrap();
-                current_desire.satisfaction = 0.0;
-
-                // first pass
-                let result = test.consume_desire(&mut current_desire, &data);
-                assert!(result);
-                assert_eq!(current_desire.satisfaction, 15.0);
-                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 15.0);
-                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
-                assert_eq!(test.wants.get(&5).unwrap().owned, 10.0);
-                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().owned, 2.5);
-                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
-
-                assert_eq!(test.property.get(&4).unwrap().owned, 5.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
-
-                // second pass
-                let result = test.consume_desire(&mut current_desire, &data);
-                assert!(result);
-                assert_eq!(current_desire.satisfaction, 30.0);
-                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 30.0);
-                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
-                assert_eq!(test.wants.get(&5).unwrap().owned, 40.0);
-                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().owned, 10.0);
-                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
-
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-
-                // third pass
-                let result = test.consume_desire(&mut current_desire, &data);
-                assert!(!result);
-                assert_eq!(current_desire.satisfaction, 40.0);
-                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 40.0);
-                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
-                assert_eq!(test.wants.get(&5).unwrap().owned, 60.0);
-                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().owned, 15.0);
-                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
-                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
-
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 00.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
-            }
-        }
-    
-        mod consume_desires_should {
-            use std::collections::HashMap;
-
-            use crate::{constants::TIME_ID, data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
-
-            #[test]
-            pub fn correctly_consume_desires() {
-                let mut data = Data::new();
-                data.add_time();
-                data.wants.insert(4, Want::new(4, String::from("testWant1")));
-                data.wants.insert(5, Want::new(5, String::from("testWant2")));
-                data.wants.insert(6, Want::new(6, String::from("testWant3")));
-                let mut wants = HashMap::new();
-                wants.insert(4, 1.0);
-                wants.insert(5, 2.0);
-                wants.insert(6, 0.5);
-                data.add_good(Good::new(4, String::from("testGood1"), String::new())
-                    .with_ownership(wants.clone())
-                    .in_class(4));
-                data.add_good(Good::new(5, String::from("testGood2"), String::new())
-                    .with_uses(2.0, wants.clone())
-                    .in_class(4));
-                data.add_good(Good::new(6, String::from("testGood3"), String::new())
-                    .with_consumption(1.0, wants.clone()));
-
-                let unit_slope = 4.0 / 3.0;
-
-                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0,
-                    PriorityFn::linear(unit_slope))
-                    .with_steps(0);
-                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0,
-                    PriorityFn::linear(unit_slope))
-                    .with_steps(0);
-                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0,
-                        PriorityFn::linear(unit_slope))
-                    .with_steps(0);
-                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0,
-                        PriorityFn::linear(unit_slope))
-                    .with_steps(0);
-                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0,
-                        PriorityFn::linear(unit_slope))
-                    .with_steps(0);
-
-                let mut test = Pop::new(0, 0, 0);
-                test.desires.push_back(desire1);
-                test.desires.push_back(desire2);
-                test.desires.push_back(desire3);
-                test.desires.push_back(desire4);
-                test.desires.push_back(desire5);
-
-                test.property.insert(TIME_ID, PropertyRecord::new(100.0));
-                test.property.insert(4, PropertyRecord::new(20.0));
-                test.property.insert(5, PropertyRecord::new(20.0));
-                test.property.insert(6, PropertyRecord::new(20.0)); 
-                test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
-
-                let result = test.consume_desires(&data);
-                println!("Steps: {}", result.0);
-                println!("value: {}", result.1);
-
-                assert_eq!(result.0, 11.0);
-                assert_eq!(result.1, 140.0);
-
-                assert_eq!(test.property.get(&0).unwrap().owned, 80.0);
-                assert_eq!(test.property.get(&0).unwrap().expended, 20.0);
-                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&0).unwrap().used, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().expended, 20.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&4).unwrap().used, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().expended, 15.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&5).unwrap().used, 5.0);
-                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 20.0);
-                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
-                assert_eq!(test.property.get(&6).unwrap().used, 0.0);
-
-                assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 35.0);
-                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().expected, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().expended, 50.0);
-                assert_eq!(test.wants.get(&5).unwrap().owned, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
             }
         }
     }
