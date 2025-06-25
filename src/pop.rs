@@ -697,14 +697,18 @@ impl Pop {
 
             if self.consume_desire(&mut current_desire, data) { // if successful at satisfying
                 let next_step = current_desire.satisfied_to_priority();
+                println!("Next Step: {}", next_step);
                 if let Some(end) = current_desire.end() { 
                     if next_step < end { // if not past the end
                         // put back
                         Pop::ordered_desire_insert(&mut working_desires, 
                             current_desire);
+                    } else { // if at or after the end, finish.
+                        finished.push(current_desire);
                     }
-                } else { // if at or after the end, finish.
-                    finished.push(current_desire);
+                } else { // if no end to walk off, just put back.
+                    Pop::ordered_desire_insert(&mut working_desires, 
+                        current_desire);
                 }
             } else {
                 // if did not satisfy the desire level completely, add to finished.
@@ -715,6 +719,10 @@ impl Pop {
             if working_desires.len() == 0 {
                 break;
             }
+        }
+        // with all finished, push back into our desires
+        for desire in finished {
+            // TODO: Pick up here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         }
 
         // push satisfaction back into original desires.
@@ -733,15 +741,15 @@ impl Pop {
         let mut shifted = 0.0;
         match current_desire.item {
             crate::item::Item::Want(id) => {
-                //println!("Getting Wants");
+                println!("Getting Wants");
                 // want is the most complicated, but follows a standard priority method.
                 // First, try to get wants from storage.
                 if let Some(want_rec) = self.wants.get_mut(&id) {
                     // get available want
                     let shift = want_rec.owned.min(current_desire.amount - shifted);
-                    //println!("Shifting: {}", shift);
+                    println!("Shifting: {}", shift);
                     if shift > 0.0 {
-                        //println!("Have want already, reserving.");
+                        println!("Have want already, reserving.");
                         want_rec.owned -= shift; // remove from owned
                         want_rec.expended += shift; // add to expended.
                         current_desire.satisfaction += shift;
@@ -762,7 +770,7 @@ impl Pop {
                             let target = (current_desire.amount - shifted) / eff;
                             let shift = target.min(good_rec.owned);
                             if shift > 0.0 {
-                                //println!("Getting Ownership Source.");
+                                println!("Getting Ownership Source.");
                                 // shift and reserve
                                 shifted += shift * eff;
                                 good_rec.owned -= shift; // remove from owned
@@ -980,26 +988,22 @@ impl Pop {
                 }
             },
             crate::item::Item::Good(id) => {
-                //println!("Satisfying Good: {}.", id);
+                println!("Satisfying Good: {}.", id);
                 // Good, so just find and insert
                 if let Some(rec) = self.property.get_mut(&id) {
-                    //println!("Has in property.");
+                    println!("Has in property.");
                     // How much we can shift over.
                     let shift = rec.owned.min(current_desire.amount);
-                    //println!("Shifting: {}", shift);
+                    println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
                     rec.owned -= shift;
                     rec.expended += shift; // and add to expended for checking.
                     current_desire.satisfaction += shift; // and to satisfaction.
-                    //println!("Current Satisfaction: {}", current_desire.satisfaction);
+                    println!("Current Satisfaction: {}", current_desire.satisfaction);
                 }
             },
         }
-        if shifted == current_desire.amount {
-            true
-        } else {
-            false
-        }
+        shifted == current_desire.amount
     }
 
     /// # Satisfy Desire
