@@ -1434,15 +1434,15 @@ mod tests {
                 test.property.insert(TIME_ID, PropertyRecord::new(100.0));
                 test.property.insert(4, PropertyRecord::new(20.0));
                 test.property.insert(5, PropertyRecord::new(20.0));
-                test.property.insert(6, PropertyRecord::new(20.0)); 
+                test.property.insert(6, PropertyRecord::new(40.0)); 
                 test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
 
                 let result = test.consume_desires(&data);
                 println!("Steps: {}", result.0);
                 println!("value: {}", result.1);
 
-                assert_eq!(result.0, 11.0);
-                assert_eq!(result.1, 140.0);
+                assert_eq!(result.0, 12.0);
+                assert_eq!(result.1, 18.0);
 
                 assert_eq!(test.property.get(&0).unwrap().owned, 80.0);
                 assert_eq!(test.property.get(&0).unwrap().expended, 20.0);

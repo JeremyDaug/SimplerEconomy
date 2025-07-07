@@ -662,11 +662,15 @@ impl Pop {
         for desire in self.desires.iter() {
             low = low.min(desire.start_priority);
             high = high.max(desire.satisfied_to_priority());
+            // println!("Current Low: {}", low);
+            // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
         }
         for desire in self.working_desires.iter() {
             low = low.min(desire.start_priority);
             high = high.max(desire.satisfied_to_priority());
+            // println!("Current Low: {}", low);
+            // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
         }
 
@@ -682,7 +686,8 @@ impl Pop {
     /// It returns the range of desires satisfied and the total valuation of all
     /// desires summed together.
     /// 
-    /// Bigger range is 
+    /// Higher valuation is always preferred, regardless of change in range.
+    /// An increase in range is only acceptable
     pub fn consume_desires(&mut self, data: &Data) -> (f64, f64) {
         let mut working_desires = VecDeque::new();
         // get desires and reset satisfaction while we're at it.
@@ -721,8 +726,11 @@ impl Pop {
             }
         }
         // with all finished, push back into our desires
+        // clear out old desires
+        self.desires.clear();
         for desire in finished {
             // TODO: Pick up here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            Pop::ordered_desire_insert(&mut self.desires, desire);
         }
 
         // push satisfaction back into original desires.
