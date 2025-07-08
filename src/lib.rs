@@ -1444,8 +1444,8 @@ mod tests {
                 assert_eq!(result.0, 12.0);
                 assert_eq!(result.1, 18.0);
 
-                assert_eq!(test.property.get(&0).unwrap().owned, 80.0);
-                assert_eq!(test.property.get(&0).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&0).unwrap().owned, 60.0);
+                assert_eq!(test.property.get(&0).unwrap().expended, 40.0);
                 assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
                 assert_eq!(test.property.get(&0).unwrap().used, 0.0);
                 assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
@@ -1457,16 +1457,16 @@ mod tests {
                 assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
                 assert_eq!(test.property.get(&5).unwrap().used, 5.0);
                 assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
-                assert_eq!(test.property.get(&6).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 40.0);
                 assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
                 assert_eq!(test.property.get(&6).unwrap().used, 0.0);
 
                 assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
-                assert_eq!(test.wants.get(&4).unwrap().expended, 35.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 55.0);
                 assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
                 assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
                 assert_eq!(test.wants.get(&5).unwrap().expected, 0.0);
-                assert_eq!(test.wants.get(&5).unwrap().expended, 50.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 90.0);
                 assert_eq!(test.wants.get(&5).unwrap().owned, 0.0);
                 assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
             }
