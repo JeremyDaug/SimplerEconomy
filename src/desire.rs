@@ -113,11 +113,11 @@ impl Desire {
     /// 
     /// Consuming setter for Number of Steps.
     /// 
-    /// 
     /// Putting in 0 steps means that it has no end.
     /// 
-    /// Factor must be between 0.0 and 1.0 exclusive.
-    /// Factor is the multiplier reduction to the value for each step.
+    /// Steps must be a positive integer value.
+    /// 
+    /// 1 step is the same as not setting at all.
     /// 
     /// # Panics
     /// 
@@ -283,6 +283,10 @@ impl Desire {
     /// # Satisfied to Priority
     /// 
     /// What Priority level the desire has been satisfied to.
+    /// 
+    /// ## Note
+    /// If desire has limited steps it will go to steps+1 as it's highest
+    /// end point.
     pub fn satisfied_to_priority(&self) -> f64 {
         let step = self.satisfied_steps();
         self.priority_fn.priority(self.start_priority, step)

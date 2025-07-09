@@ -557,8 +557,6 @@ impl Pop {
             } else { // not satisfied, add back to working
                 Pop::ordered_desire_insert(&mut self.working_desires, desire);
             }
-
-            idx += 1;
         }
     }
 
@@ -660,6 +658,10 @@ impl Pop {
         let mut high = f64::NEG_INFINITY;
         let mut steps = 0.0;
         for desire in self.desires.iter() {
+            if desire.satisfaction == 0.0 {
+                // If no satisfaciton, skip it.
+                continue;
+            }
             low = low.min(desire.start_priority);
             high = high.max(desire.satisfied_to_priority());
             // println!("Current Low: {}", low);
@@ -667,11 +669,20 @@ impl Pop {
             steps += desire.satisfied_steps();
         }
         for desire in self.working_desires.iter() {
+            if desire.satisfaction == 0.0 {
+                // If no satisfaciton, skip it.
+                continue;
+            }
             low = low.min(desire.start_priority);
             high = high.max(desire.satisfied_to_priority());
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
+        }
+        // sanity check that he reached something.
+        if high == f64::NEG_INFINITY || low == f64::INFINITY {
+            high = 0.0;
+            low = 0.0;
         }
 
         (high - low, steps)
@@ -729,7 +740,6 @@ impl Pop {
         // clear out old desires
         self.desires.clear();
         for desire in finished {
-            // TODO: Pick up here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             Pop::ordered_desire_insert(&mut self.desires, desire);
         }
 
