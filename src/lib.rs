@@ -887,13 +887,13 @@ mod tests {
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
-                    PriorityFn::linear(1.0))
+                    PriorityFn::linear(2.0))
                     .with_steps(0));
                 // then check the gain when given X amv
                 let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &market);
 
-                assert_eq!(levels, 4.0);
-                assert_eq!(sat, 1.875);
+                assert_eq!(levels, 8.0);
+                assert_eq!(sat, 4.0);
             }
 
             #[test]
@@ -1154,7 +1154,7 @@ mod tests {
 
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
-                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 0.0,
                     PriorityFn::linear(1.0))
                     .with_steps(0));
                 // Add in 
@@ -1166,7 +1166,7 @@ mod tests {
                 let result = test_pop.satisfaction_gain(&new_goods, &data);
 
                 assert_eq!(result.0, 1.0);
-                assert_eq!(result.1, 0.5);
+                assert_eq!(result.1, 1.0);
             }
         }
 
