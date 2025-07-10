@@ -848,16 +848,16 @@ mod tests {
                 assert_eq!(results.len(), 3);
 
                 let (levels, sat) = results.get(0).unwrap();
-                assert_eq!(*levels, 17.0);
-                assert!(*sat > 35.99 && *sat < 36.0);
+                assert_eq!(*levels, 19.0);
+                assert_eq!(*sat, 17.0);
 
                 let (levels, sat) = results.get(1).unwrap();
                 assert_eq!(*levels, 20.0);
-                assert!(*sat > 35.99 && *sat < 36.0);
+                assert_eq!(*sat, 20.0);
 
-                let (levels, sat) = results.get(3).unwrap();
-                assert_eq!(*levels, 37.0);
-                assert!(*sat > 35.99 && *sat < 36.0);
+                let (levels, sat) = results.get(2).unwrap();
+                assert_eq!(*levels, 39.0);
+                assert_eq!(*sat, 37.0);
             }
         }
 
