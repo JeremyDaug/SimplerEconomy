@@ -847,17 +847,17 @@ mod tests {
 
                 assert_eq!(results.len(), 3);
 
-                let (levels, sat) = results.get(0).unwrap();
-                assert_eq!(*levels, 19.0);
-                assert_eq!(*sat, 17.0);
+                let sat = results.get(0).unwrap();
+                assert_eq!(sat.range, 19.0);
+                assert_eq!(sat.steps, 17.0);
 
-                let (levels, sat) = results.get(1).unwrap();
-                assert_eq!(*levels, 20.0);
-                assert_eq!(*sat, 20.0);
+                let sat = results.get(1).unwrap();
+                assert_eq!(sat.range, 20.0);
+                assert_eq!(sat.steps, 20.0);
 
-                let (levels, sat) = results.get(2).unwrap();
-                assert_eq!(*levels, 39.0);
-                assert_eq!(*sat, 37.0);
+                let sat = results.get(2).unwrap();
+                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.steps, 37.0);
             }
         }
 
@@ -890,10 +890,10 @@ mod tests {
                     PriorityFn::linear(2.0))
                     .with_steps(0));
                 // then check the gain when given X amv
-                let (levels, sat) = test_pop.satisfaction_from_amv(4.0, &market);
+                let sat = test_pop.satisfaction_from_amv(4.0, &market);
 
-                assert_eq!(levels, 8.0);
-                assert_eq!(sat, 4.0);
+                assert_eq!(sat.range, 8.0);
+                assert_eq!(sat.steps, 4.0);
             }
 
             #[test]
@@ -927,10 +927,10 @@ mod tests {
                     PriorityFn::linear(1.0))
                     .with_steps(0));
                 // then check the gain when given X amv
-                let (levels, sat) = test_pop.satisfaction_from_amv(20.0, &market);
+                let sat = test_pop.satisfaction_from_amv(20.0, &market);
 
-                assert_eq!(levels, 39.0);
-                assert_eq!(sat, 37.0);
+                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.steps, 37.0);
             }
         }
 
@@ -1165,8 +1165,8 @@ mod tests {
                 new_goods.insert(5, 1.0);
                 let result = test_pop.satisfaction_gain(&new_goods, &data);
 
-                assert_eq!(result.0, 1.0);
-                assert_eq!(result.1, 1.0);
+                assert_eq!(result.range, 1.0);
+                assert_eq!(result.steps, 1.0);
             }
         }
 
@@ -1438,11 +1438,11 @@ mod tests {
                 test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
 
                 let result = test.consume_desires(&data);
-                println!("Steps: {}", result.0);
-                println!("value: {}", result.1);
+                println!("Range: {}", result.range);
+                println!("Steps: {}", result.steps);
 
-                assert_eq!(result.0, 12.0);
-                assert_eq!(result.1, 18.0);
+                assert_eq!(result.range, 12.0);
+                assert_eq!(result.steps, 18.0);
 
                 assert_eq!(test.property.get(&0).unwrap().owned, 60.0);
                 assert_eq!(test.property.get(&0).unwrap().expended, 40.0);

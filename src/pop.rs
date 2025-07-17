@@ -60,11 +60,8 @@ pub struct Pop {
     /// Storage for satisfying desires between functions. This should be empty by the 
     /// end of the day.
     pub working_desires: VecDeque<Desire>,
-    /// The number of level whih has been satisfied (or expected to be satisfied).
-    pub satisfied_levels: f64, 
-    /// The total value of satisfaction that has been satisfied (or is expected 
-    /// to be satisfied).
-    pub satisfaction: f64,
+    /// The current satisfaction of the pop. Should be updated periodically.
+    pub satisfaction: SatisfactionValues,
 }
 
 impl Pop {
@@ -81,8 +78,7 @@ impl Pop {
             property: HashMap::new(),
             wants: HashMap::new(),
             working_desires: VecDeque::new(),
-            satisfied_levels: 0.0,
-            satisfaction: 0.0,
+            satisfaction: SatisfactionValues::zero()
         }
     }
 
@@ -143,8 +139,7 @@ impl Pop {
             desire.satisfaction = 0.0;
         }
 
-        self.satisfied_levels = 0.0;
-        self.satisfaction = 0.0;
+        self.satisfaction = SatisfactionValues::zero();
     }
 
     /// # Make Offer
@@ -179,8 +174,8 @@ impl Pop {
         }
         println!("Requested AMV: {}", req_amv);
         // get the satisfaction gain from the request.
-        let (_levels_gained, sat_gained) = self.satisfaction_gain(request, data);
-        println!("Sat Gained: {}", sat_gained);
+        let sat_gain = self.satisfaction_gain(request, data);
+        println!("Sat Gained: {}", sat_gain.steps);
 
         // with our amv, and satisfaction gains, try to find things to give up that are worth more than
         // the AMV but less then our sat and levels gained.
@@ -209,9 +204,9 @@ impl Pop {
                     println!("Shifting: {}", shift);
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
-                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    let sat_lost = self.satisfaction_lost(&offer_goods, data);
                     // TODO: Update this to target properly instead of estimating half reductions.
-                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                    if sat_lost.steps > sat_gain.steps { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
@@ -259,10 +254,10 @@ impl Pop {
                     println!("Shifting: {}", shift);
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
-                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    let sat_lost = self.satisfaction_lost(&offer_goods, data);
                     // TODO: Update this to target properly instead of estimating half reductions.
-                    println!("Satisfaciton Lost: {}", sat_lost);
-                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                    println!("Satisfaciton Lost: {}", sat_lost.steps);
+                    if sat_lost.steps > sat_gain.steps { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
@@ -306,9 +301,9 @@ impl Pop {
                 loop { // find if we can add without hurting satisfaction too much.
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
-                    let (_levels_lost, sat_lost) = self.satisfaction_lost(&offer_goods, data);
+                    let sat_lost = self.satisfaction_lost(&offer_goods, data);
                     // TODO: Update this to target properly instead of estimating half reductions.
-                    if sat_lost > sat_gained { // if too much, reduce by half (round down) and go back
+                    if sat_lost.steps > sat_gain.steps { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
@@ -335,15 +330,52 @@ impl Pop {
     /// 
     /// Includes the requested goods, the offer made for it, and the price hint it originally given.
     /// 
-    /// It's a simple check of satisfaction gained vs lost. 
+    /// It's a simple check of satisfaction gained vs lost.
+    /// 
+    /// Pops currently do not return change, that's for businesses as pops have no reputation to
+    /// protect.
     pub fn check_offer(&self, request: &HashMap<usize, f64>, offer: &HashMap<usize, f64>,
-    price_hint: &HashMap<usize, f64>, data: &Data, market: &MarketHistory) -> OfferResult {
+    price_hint: &HashMap<usize, f64>, data: &Data, _market: &MarketHistory) -> OfferResult {
         // start by checking against the price hint, 
         // if it's valid (greater than or equal to on all parts) accept
         // we assume that the price hint was correctly calculated in the first place.
+        let mut acceptable = true;
+        for (good, amt) in offer.iter() {
+            if let Some(req_amt) = price_hint.get(good) {
+                if req_amt > amt {
+                    acceptable = false;
+                }
+            }
+            if !acceptable {
+                break;
+            }
+        }
+        if acceptable {
+            return OfferResult::Accept;
+        }
 
         // if it doesn't meet the price hint, check sat change and include possible
         // gain from AMV.
+        // Combine request and offer for satisfaction change checking.
+        let mut change = offer.clone();
+        for (&good, &amt) in request.iter() {
+            change.entry(good)
+                .and_modify(|x| *x -= amt)
+                .or_insert(-amt);
+        }
+        let dup =  self.clone();
+        let change = dup.satisfaction_change(&change, data);
+        if change.steps > 0.0 {
+            // if steps increase, don't care about range and accept.
+            return OfferResult::Accept;
+        } 
+        let self_density = self.satisfaction.density();
+        let change_density = change.density();
+        if self_density < change_density {
+            // If steps haven't changed, but we increase in density 
+            // (reducing range with same steps), accept.
+            return OfferResult::Accept;
+        }
         OfferResult::Reject
     }
 
@@ -408,15 +440,15 @@ impl Pop {
     /// Returns the number of levels satisfied and the value of those levels, plus
     /// the summ of all gain.
     pub fn satisfaction_from_multiple_amvs(&self, amv_gains: Vec<f64>, 
-    market: &MarketHistory) -> Vec<(f64, f64)> {
+    market: &MarketHistory) -> Vec<SatisfactionValues> {
         // preemptively get the satisfaction we currently have.
-        let (self_level, self_sat) = self.get_satisfaction();
+        let self_sat = self.get_satisfaction();
         // create Duplicate for working on.
         let mut dup = self.clone();
         dup.recalculate_working_desires(); // recalculate the working desires
         let mut results = vec![];
-        let mut level_acc = 0.0;
-        let mut sat_acc = 0.0;
+        let mut range_acc = 0.0;
+        let mut step_acc = 0.0;
 
         for amv in amv_gains.iter() {
             let mut amv_remaining = *amv;
@@ -461,17 +493,17 @@ impl Pop {
             }
             // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
             let dup_sat = dup.get_satisfaction();
-            let curr_level = dup_sat.0 - self_level - level_acc;
-            let curr_sat = dup_sat.1 - self_sat - sat_acc;
-            println!("Current Satisfaction Level: {}", curr_level);
-            println!("Current Satisfaction Value: {}", curr_sat);
-            results.push((curr_level, curr_sat));
+            let curr_range = dup_sat.range - self_sat.range - range_acc;
+            let curr_steps = dup_sat.steps - self_sat.steps - step_acc;
+            println!("Current Satisfaction Level: {}", curr_range);
+            println!("Current Satisfaction Value: {}", curr_steps);
+            results.push(SatisfactionValues::new(curr_range, curr_steps));
             // add to the accumulators
-            level_acc += curr_level;
-            sat_acc += curr_sat;
+            range_acc += curr_range;
+            step_acc += curr_steps;
         }
         // append the total sum of the end.
-        results.push((level_acc, sat_acc));
+        results.push(SatisfactionValues::new(range_acc, step_acc));
 
         results
     }
@@ -484,7 +516,7 @@ impl Pop {
     /// shop time cost in the calculation.
     /// 
     /// Returns the number of levels satisfied and the value of those levels.
-    pub fn satisfaction_from_amv(&self, amv_gain: f64, market: &MarketHistory) -> (f64, f64) {
+    pub fn satisfaction_from_amv(&self, amv_gain: f64, market: &MarketHistory) -> SatisfactionValues {
         // create Duplicate for working on.
         let mut dup = self.clone();
         dup.recalculate_working_desires(); // recalculate the working desires
@@ -532,7 +564,7 @@ impl Pop {
         // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
         let dup_sat = dup.get_satisfaction();
         let self_sat = self.get_satisfaction();
-        (dup_sat.0 - self_sat.0, dup_sat.1 - self_sat.1)
+        SatisfactionValues::new(dup_sat.range - self_sat.range, dup_sat.steps - self_sat.steps)
     }
 
     /// # Add Back to Working Desires
@@ -574,7 +606,7 @@ impl Pop {
     /// Returns levels satisfied and levels
     /// 
     /// # Note Not tested
-    pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+    pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data) -> SatisfactionValues {
         let mut temp_pop = self.clone();
         temp_pop.reset();
         for (good, val) in change.iter() {
@@ -583,9 +615,9 @@ impl Pop {
                 .or_insert(PropertyRecord::new(*val));
         }
         temp_pop.try_satisfy_all_desires(data);
-        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
-        let satisfied = self.satisfaction - temp_pop.satisfaction;
-        (levels, satisfied)
+        let range = self.satisfaction.range - temp_pop.satisfaction.range;
+        let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
+        SatisfactionValues::new(range, steps)
     }
 
     /// # Satisfaction Lost
@@ -597,7 +629,7 @@ impl Pop {
     /// Returns levels satisfied and levels
     /// 
     /// # Note Not tested
-    pub fn satisfaction_lost(&self, removing: &HashMap<usize, f64>, data: &Data) -> (f64, f64) {
+    pub fn satisfaction_lost(&self, removing: &HashMap<usize, f64>, data: &Data) -> SatisfactionValues {
         // Clone existing pop.
         let mut temp_pop = self.clone();
         // Reset the 
@@ -608,9 +640,9 @@ impl Pop {
         // satisfy the desires of the temporary pop.
         temp_pop.try_satisfy_all_desires(data);
         // with satisfaciton done, return the difference between the current and possible new
-        let levels = self.satisfied_levels - temp_pop.satisfied_levels;
-        let satisfied = self.satisfaction - temp_pop.satisfaction;
-        (levels, satisfied)
+        let range = self.satisfaction.range - temp_pop.satisfaction.range;
+        let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
+        SatisfactionValues::new(range, steps)
     }
 
     /// # Satisfaction Gain
@@ -623,7 +655,7 @@ impl Pop {
     /// 
     /// # Note Not tested
     pub fn satisfaction_gain(&self, new_goods: &HashMap<usize, f64>, 
-    data: &Data) -> (f64, f64) {
+    data: &Data) -> SatisfactionValues {
         // Clone existing pop.
         let mut temp_pop = self.clone();
         // Reset the 
@@ -636,10 +668,10 @@ impl Pop {
         // satisfy the desires of the temporary pop.
         temp_pop.try_satisfy_all_desires(data);
         // with satisfaciton done, return the difference between the current and possible new
-        let levels = temp_pop.satisfied_levels - self.satisfied_levels;
-        let satisfied = temp_pop.satisfaction - self.satisfaction;
-        debug_assert!(satisfied >= 0.0, "Satisfaction Gained must be non-negative.");
-        (levels, satisfied)
+        let range = temp_pop.satisfaction.range - self.satisfaction.range;
+        let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
+        debug_assert!(steps >= 0.0, "Satisfaction Gained must be non-negative.");
+        SatisfactionValues::new(range, steps)
     }
 
     /// # Get Satisfaction
@@ -653,7 +685,7 @@ impl Pop {
     /// 
     /// NOTE: Does not save to the pop.
     /// NOTE: This has not been tested. It is assumed to be correct.
-    pub fn get_satisfaction(&self) -> (f64, f64) {
+    pub fn get_satisfaction(&self) -> SatisfactionValues {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         let mut steps = 0.0;
@@ -685,7 +717,7 @@ impl Pop {
             low = 0.0;
         }
 
-        (high - low, steps)
+        SatisfactionValues::new(high - low, steps)
     }
 
     /// # Consume Desires
@@ -699,7 +731,7 @@ impl Pop {
     /// 
     /// Higher valuation is always preferred, regardless of change in range.
     /// An increase in range is only acceptable
-    pub fn consume_desires(&mut self, data: &Data) -> (f64, f64) {
+    pub fn consume_desires(&mut self, data: &Data) -> SatisfactionValues {
         let mut working_desires = VecDeque::new();
         // get desires and reset satisfaction while we're at it.
         for desire in self.desires.iter() {
@@ -1368,9 +1400,7 @@ impl Pop {
             Pop::ordered_desire_insert(&mut self.desires, desire);
         }
         // wrap up by getting satisfaciton and saving it.
-        let (levels, value) = self.get_satisfaction();
-        self.satisfied_levels = levels;
-        self.satisfaction = value;
+        self.satisfaction = self.get_satisfaction();
     }
 
     /// # Update Desires Full
@@ -1597,5 +1627,33 @@ impl WantRecord {
     /// As wants cannot be traded, this should be safe in all cases.
     fn available(&self) -> f64 {
         self.owned - self.reserved + self.expected
+    }
+}
+
+/// # Satsifaction Values
+/// 
+/// A helper storage unit which contains both the range of satisfaction and the 
+/// number of steps satisfied.
+#[derive(Debug, Copy, Clone)]
+pub struct SatisfactionValues {
+    pub range: f64,
+    pub steps: f64
+}
+
+impl SatisfactionValues {
+    pub fn new(range: f64, steps: f64) -> Self {
+        Self {
+            range,
+            steps
+        }
+    }
+
+    /// Helper that gets the density of the current satisfaction.
+    pub fn density(&self) -> f64 {
+        self.steps / self.range
+    }
+    
+    fn zero() -> SatisfactionValues {
+        Self::new(0.0, 0.0)
     }
 }
