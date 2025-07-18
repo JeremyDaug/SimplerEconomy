@@ -2,6 +2,7 @@
 /// # Offer Result
 /// 
 /// Offer result is a shared output for offers and 
+#[derive(Debug, PartialEq)]
 pub enum OfferResult {
     /// Accept, no further work needs done.
     Accept,

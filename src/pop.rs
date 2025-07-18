@@ -376,6 +376,10 @@ impl Pop {
             // (reducing range with same steps), accept.
             return OfferResult::Accept;
         }
+        // lastly, if no change in range or density, check for AMV gain.
+        if change.amv > 0.0 {
+            return OfferResult::Accept;
+        }
         OfferResult::Reject
     }
 
