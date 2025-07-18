@@ -809,6 +809,29 @@ mod tests {
     }
 
     mod pop_tests {
+        mod check_offer_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, markethistory::MarketHistory, pop::Pop};
+
+            #[test]
+            pub fn accept_offer_when_meeting_price_hint() {
+                let mut data = Data::new();
+
+                let mut market = MarketHistory::new();
+
+                let mut test_pop = Pop::new(0, 0, 0);
+
+                let mut request = HashMap::new();
+
+                let mut offer = HashMap::new();
+
+                let mut price_hint = HashMap::new();
+
+                let result = test_pop.check_offer(&request, &offer, &price_hint, &data, &market);
+            }
+        }
+
         mod satisfaction_from_multiple_amvs_should {
             use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
@@ -1122,7 +1145,7 @@ mod tests {
                 //test_pop.property.insert(6, PropertyRecord::new(2.0));
                 //test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.property.insert(8, PropertyRecord::new(100.0));
-                test_pop.try_satisfy_all_desires(&data);
+                test_pop.try_satisfy_all_desires(&data, &market);
 
                 // setup what we want to buy.
                 let mut request = HashMap::new();
@@ -1142,7 +1165,7 @@ mod tests {
         mod satisfaction_gain_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_return_satisfaction_gained() {
@@ -1152,6 +1175,16 @@ mod tests {
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
 
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 0.0,
@@ -1159,11 +1192,11 @@ mod tests {
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(1.0));
-                test_pop.try_satisfy_all_desires(&data);
+                test_pop.try_satisfy_all_desires(&data, &market);
 
                 let mut new_goods = HashMap::new();
                 new_goods.insert(5, 1.0);
-                let result = test_pop.satisfaction_gain(&new_goods, &data);
+                let result = test_pop.satisfaction_gain(&new_goods, &data, &market);
 
                 assert_eq!(result.range, 1.0);
                 assert_eq!(result.steps, 1.0);
@@ -1173,7 +1206,7 @@ mod tests {
         mod consume_desire_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -1185,12 +1218,22 @@ mod tests {
                     PriorityFn::linear(1.0))
                     .with_steps(0);
 
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
                 let mut test = Pop::new(0, 0, 0);
                 test.desires.push_back(desire);
 
                 test.property.insert(4, PropertyRecord::new(3.0)); 
 
-                test.try_satisfy_all_desires(&data);
+                test.try_satisfy_all_desires(&data, &market);
 
                 let mut current_desire = test.desires.remove(0).unwrap();
                 current_desire.satisfaction = 0.0; // reset desire's satisfaction.
@@ -1215,9 +1258,19 @@ mod tests {
                 let mut data = Data::new();
                 data.add_time();
                 data.add_good(Good::new(4, String::from("testGood1"), String::new())
-                .in_class(4));
+                    .in_class(4));
                 data.add_good(Good::new(5, String::from("testGood2"), String::new())
-                .in_class(4));
+                    .in_class(4));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
 
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0,
                     PriorityFn::linear(1.0))
@@ -1229,7 +1282,7 @@ mod tests {
                 test.property.insert(4, PropertyRecord::new(7.0)); 
                 test.property.insert(5, PropertyRecord::new(5.0)); 
 
-                test.try_satisfy_all_desires(&data);
+                test.try_satisfy_all_desires(&data, &market);
 
                 let mut current_desire = test.desires.remove(0).unwrap();
                 current_desire.satisfaction = 0.0;
