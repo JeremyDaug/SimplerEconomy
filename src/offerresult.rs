@@ -8,7 +8,8 @@ pub enum OfferResult {
     Accept,
     /// Accepts, but wants to return change of the AMV given.
     /// 
-    /// Call a followup to make change for this, if possible.
+    /// Call a followup to make change for this, if possible. 
+    /// Value included is the AMV to return.
     AcceptWithChange(f64),
     /// Blanket Rejection, don't even try again. Usually called
     /// 

@@ -350,7 +350,9 @@ impl Pop {
                 break;
             }
         }
-        if acceptable {
+        // if beat price hint, and we have a price hit, return success.
+        if acceptable && price_hint.len() > 0 {
+            println!("Price Hint exists and offer meets it.");
             return OfferResult::Accept;
         }
 
@@ -365,6 +367,9 @@ impl Pop {
         }
         let dup =  self.clone();
         let change = dup.satisfaction_change(&change, data, market);
+        println!("Changed Steps: {}", change.steps);
+        println!("Changed Range: {}", change.range);
+        println!("Changed AMV: {}", change.amv);
         if change.steps > 0.0 {
             // if steps increase, don't care about range and accept.
             return OfferResult::Accept;
@@ -720,6 +725,8 @@ impl Pop {
         }
         // sanity check that he reached something.
         if high == f64::NEG_INFINITY || low == f64::INFINITY {
+            // if nothing reached (both will ilkely be infinity)
+            // set high and low to zero.
             high = 0.0;
             low = 0.0;
         }
@@ -1362,14 +1369,21 @@ impl Pop {
 
     /// # Try Satisfy All Desires
     /// 
-    /// Tries to satisfy all desires to the best of the pop's abilities.
+    /// This takes the pop as it is and tries to satisfy it's desires to the best 
+    /// of it's abilities, not stopping at any desires it cannot satisfy.
+    /// 
+    /// Once it does everything it can, it sets our satisfaction.
+    /// 
+    /// ## Notes
     /// 
     /// This tries to satisfy everything it can. This means that it will end with no 
     /// desires left in self.working_desires.
     /// 
-    /// This will also re-open any previously 'finished' desires to 
+    /// This will also re-open any previously 'finished' desires to try and fill them 
+    /// out also.
     /// 
-    /// This does not reset current satisfaction or pre-existing reservations.
+    /// This does not reset current satisfaction or pre-existing reservations, it just 
+    /// adds all desires back to work, and goes from there.
     /// 
     /// This should be called near day start.
     /// 
@@ -1392,14 +1406,10 @@ impl Pop {
         }
         // A holding space for desires that have been totally satisfied to simplify
         let mut finished: Vec<Desire> = vec![];
-        loop {
-            // satisfy the next desire.
-            if let Some(result) = self.satisfy_until_incomplete(&mut working_desires, data) {
-                finished.push(result);
-            }
-            // if no more desires to work on, gtfo.
-            if self.working_desires.len() == 0 {
-                break;
+        while working_desires.len() > 0 {
+            // satisfy until something can't be satisfied
+            if let Some(incomplete_desire) = self.satisfy_until_incomplete(&mut working_desires, data) {
+                finished.push(incomplete_desire);
             }
         }
         // after doing all satisfactions, put them back in.
