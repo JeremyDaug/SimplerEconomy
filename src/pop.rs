@@ -697,6 +697,7 @@ impl Pop {
     /// 
     /// NOTE: Does not save to the pop.
     /// NOTE: This has not been tested. It is assumed to be correct.
+    /// TODO: Change steps to units of satisfaction so desires with small unit amounts can't overpower desires with big units out unreasonably.
     pub fn get_satisfaction(&self, market: &MarketHistory) -> SatisfactionValues {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
@@ -1653,8 +1654,13 @@ impl WantRecord {
 /// number of steps satisfied.
 #[derive(Debug, Copy, Clone)]
 pub struct SatisfactionValues {
+    /// The distance from lowest priority satisfied to highest.
     pub range: f64,
+    /// The number of steps (desire.satisfaction / desire.amount), completed.
     pub steps: f64,
+    /// The total amount of satisfaction in raw units.
+    pub satisfaction: f64,
+    /// The AMV of goods which didn't go into desires.
     pub amv: f64,
 }
 
