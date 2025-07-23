@@ -374,8 +374,8 @@ impl Pop {
             // if steps increase, don't care about range and accept.
             return OfferResult::Accept;
         } 
-        let self_density = self.satisfaction.density();
-        let change_density = change.density();
+        let self_density = self.satisfaction.step_density();
+        let change_density = change.step_density();
         if self_density < change_density {
             // If steps haven't changed, but we increase in density 
             // (reducing range with same steps), accept.
@@ -448,6 +448,9 @@ impl Pop {
     /// 
     /// Returns the number of levels satisfied and the value of those levels, plus
     /// the summ of all gain.
+    /// 
+    /// NOTE: Not actually used yet.
+    /// NOTE: Not tested and definitely broken.
     pub fn satisfaction_from_multiple_amvs(&self, amv_gains: Vec<f64>, 
     market: &MarketHistory) -> Vec<SatisfactionValues> {
         // preemptively get the satisfaction we currently have.
@@ -506,13 +509,13 @@ impl Pop {
             let curr_steps = dup_sat.steps - self_sat.steps - step_acc;
             println!("Current Satisfaction Level: {}", curr_range);
             println!("Current Satisfaction Value: {}", curr_steps);
-            results.push(SatisfactionValues::new(curr_range, curr_steps, 0.0));
+            results.push(SatisfactionValues::new(curr_range, curr_steps, 0.0, 0.0));
             // add to the accumulators
             range_acc += curr_range;
             step_acc += curr_steps;
         }
         // append the total sum of the end.
-        results.push(SatisfactionValues::new(range_acc, step_acc, 0.0));
+        results.push(SatisfactionValues::new(range_acc, step_acc, 0.0, 0.0));
 
         results
     }
@@ -573,7 +576,10 @@ impl Pop {
         // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
         let dup_sat = dup.get_satisfaction(market);
         let self_sat = self.get_satisfaction(market);
-        SatisfactionValues::new(dup_sat.range - self_sat.range, dup_sat.steps - self_sat.steps, dup_sat.amv - self_sat.amv)
+        SatisfactionValues::new(dup_sat.range - self_sat.range, 
+            dup_sat.steps - self_sat.steps, 
+            dup_sat.satisfaction - self_sat.satisfaction, 
+            dup_sat.amv - self_sat.amv)
     }
 
     /// # Add Back to Working Desires
@@ -626,8 +632,9 @@ impl Pop {
         temp_pop.try_satisfy_all_desires(data, market);
         let range = self.satisfaction.range - temp_pop.satisfaction.range;
         let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
+        let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
         let amv = self.satisfaction.amv - temp_pop.satisfaction.amv;
-        SatisfactionValues::new(range, steps, amv)
+        SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
     /// # Satisfaction Lost
@@ -652,8 +659,9 @@ impl Pop {
         // with satisfaciton done, return the difference between the current and possible new
         let range = self.satisfaction.range - temp_pop.satisfaction.range;
         let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
+        let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
         let amv = self.satisfaction.amv - temp_pop.satisfaction.amv;
-        SatisfactionValues::new(range, steps, amv)
+        SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
     /// # Satisfaction Gain
@@ -681,9 +689,10 @@ impl Pop {
         // with satisfaciton done, return the difference between the current and possible new
         let range = temp_pop.satisfaction.range - self.satisfaction.range;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
+        let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
         let amv = temp_pop.satisfaction.amv - self.satisfaction.amv;
         debug_assert!(steps >= 0.0, "Satisfaction Gained must be non-negative.");
-        SatisfactionValues::new(range, steps, amv)
+        SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
     /// # Get Satisfaction
@@ -702,6 +711,7 @@ impl Pop {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
         let mut steps = 0.0;
+        let mut sat = 0.0;
         for desire in self.desires.iter() {
             if desire.satisfaction == 0.0 {
                 // If no satisfaciton, skip it.
@@ -712,6 +722,7 @@ impl Pop {
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
+            sat += desire.satisfaction;
         }
         for desire in self.working_desires.iter() {
             if desire.satisfaction == 0.0 {
@@ -723,6 +734,7 @@ impl Pop {
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
+            sat += desire.satisfaction;
         }
         // sanity check that he reached something.
         if high == f64::NEG_INFINITY || low == f64::INFINITY {
@@ -732,7 +744,7 @@ impl Pop {
             low = 0.0;
         }
 
-        SatisfactionValues::new(high - low, steps, self.excess_amv(market))
+        SatisfactionValues::new(high - low, steps, sat, self.excess_amv(market))
     }
 
     /// # Consume Desires
@@ -1665,20 +1677,25 @@ pub struct SatisfactionValues {
 }
 
 impl SatisfactionValues {
-    pub fn new(range: f64, steps: f64, amv: f64) -> Self {
+    pub fn new(range: f64, steps: f64, satisfaction: f64, amv: f64) -> Self {
         Self {
             range,
             steps,
+            satisfaction,
             amv
         }
     }
 
     /// Helper that gets the density of the current satisfaction.
-    pub fn density(&self) -> f64 {
+    pub fn step_density(&self) -> f64 {
         self.steps / self.range
+    }
+
+    pub fn sat_density(&self) -> f64 {
+        self.satisfaction / self.range
     }
     
     fn zero() -> SatisfactionValues {
-        Self::new(0.0, 0.0, 0.0)
+        Self::new(0.0, 0.0, 0.0, 0.0)
     }
 }
