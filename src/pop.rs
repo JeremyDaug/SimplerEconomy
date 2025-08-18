@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory, offerresult::OfferResult};
+use crate::{constants::{POP_AMV_HARD_LOSS_THRESHOLD}, data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
 
 
 use crate::constants::TIME_ID;
@@ -328,36 +328,41 @@ impl Pop {
     /// Takes in the results of an offer made by someone else and checks that the offer is
     /// worth it to the pop.
     /// 
-    /// Includes the requested goods, the offer made for it, and the price hint it originally given.
-    /// 
-    /// It's a simple check of satisfaction gained vs lost.
+    /// Includes the requested goods, and the offer made for it.
     /// 
     /// Pops currently do not return change, that's for businesses as pops have no reputation to
     /// protect.
+    /// 
+    /// ## Acceptance Logic
+    /// 
+    /// First, if the AMV Lost is 4x the amount which would be gained, we never 
+    /// accept, there are probably better options.
+    /// 
+    /// We accept if we gain in satisfaction, satisfaction density, or AMV, 
+    /// in that order.
+    /// 
+    /// This is a first pass method of checking the offer. It is not much, 
+    /// but it is somethinsg.
     pub fn check_offer(&self, request: &HashMap<usize, f64>, offer: &HashMap<usize, f64>,
-    price_hint: &HashMap<usize, f64>, data: &Data, market: &MarketHistory) -> OfferResult {
-        // start by checking against the price hint, 
-        // if it's valid (greater than or equal to on all parts) accept
-        // we assume that the price hint was correctly calculated in the first place.
-        let mut acceptable = true;
-        for (good, amt) in offer.iter() {
-            if let Some(req_amt) = price_hint.get(good) {
-                if req_amt > amt {
-                    acceptable = false;
-                }
-            }
-            if !acceptable {
-                break;
-            }
+    data: &Data, market: &MarketHistory) -> OfferResult {
+        // Get the direct AMv results of our request and offer for that comparison as well.
+        let mut amv_gain = 0.0;
+        for (&good, &amt) in offer.iter() {
+            amv_gain += market.get_record(good).price * amt;
         }
-        // if beat price hint, and we have a price hit, return success.
-        if acceptable && price_hint.len() > 0 {
-            println!("Price Hint exists and offer meets it.");
-            return OfferResult::Accept;
+        let mut amv_loss = 0.0;
+        for (&good, &amt) in request.iter() {
+            amv_loss += market.get_record(good).price * amt;
+        }
+        println!("AMV Gain: {}", amv_gain);
+        println!("AMV Loss: {}", amv_loss);
+
+        // Before any checking, the pop should never lose more than 4x what it gains in AMV.
+        if amv_gain < (amv_loss * POP_AMV_HARD_LOSS_THRESHOLD) {
+            return OfferResult::Reject(RejectReason::HardThresholdFailure);
         }
 
-        // if it doesn't meet the price hint, check sat change and include possible
-        // gain from AMV.
+        // Get how the request would change our satisfaction.
         // Combine request and offer for satisfaction change checking.
         let mut change = offer.clone();
         for (&good, &amt) in request.iter() {
@@ -370,22 +375,22 @@ impl Pop {
         println!("Changed Steps: {}", change.steps);
         println!("Changed Range: {}", change.range);
         println!("Changed AMV: {}", change.amv);
-        if change.steps > 0.0 {
-            // if steps increase, don't care about range and accept.
-            return OfferResult::Accept;
-        } 
-        let self_density = self.satisfaction.step_density();
-        let change_density = change.step_density();
-        if self_density < change_density {
-            // If steps haven't changed, but we increase in density 
-            // (reducing range with same steps), accept.
-            return OfferResult::Accept;
+
+        if change.satisfaction > 0.0 {
+            // Accept if satisfaction increases.
+            return OfferResult::Accept(AcceptReason::Satisfaction);
         }
-        // lastly, if no change in range or density, check for AMV gain.
+        let density_change = self.satisfaction.sat_density_change(&change);
+        println!("Density Change: {}", density_change);
+        if density_change > 0.0 {
+            // Accept if Satisfaction density increases
+            return OfferResult::Accept(AcceptReason::Density);
+        }
         if change.amv > 0.0 {
-            return OfferResult::Accept;
+            // lastly, if no change in range or density, check for AMV gain.
+            return OfferResult::Accept(AcceptReason::AMV);
         }
-        OfferResult::Reject
+        OfferResult::Reject(RejectReason::NotAccepted)
     }
 
     // purchase logic, figure out what to buy and if we have anything to offer for it.
@@ -621,7 +626,8 @@ impl Pop {
     /// Returns levels satisfied and levels
     /// 
     /// # Note Not tested
-    pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data, market: &MarketHistory) -> SatisfactionValues {
+    pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data, 
+    market: &MarketHistory)  -> SatisfactionValues {
         let mut temp_pop = self.clone();
         temp_pop.reset();
         for (good, val) in change.iter() {
@@ -630,10 +636,10 @@ impl Pop {
                 .or_insert(PropertyRecord::new(*val));
         }
         temp_pop.try_satisfy_all_desires(data, market);
-        let range = self.satisfaction.range - temp_pop.satisfaction.range;
-        let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
-        let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
-        let amv = self.satisfaction.amv - temp_pop.satisfaction.amv;
+        let range = temp_pop.satisfaction.range - self.satisfaction.range;
+        let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
+        let satisfaction = temp_pop.satisfaction.satisfaction - self.satisfaction.satisfaction;
+        let amv = temp_pop.satisfaction.amv - self.satisfaction.amv;
         SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
@@ -1688,11 +1694,36 @@ impl SatisfactionValues {
 
     /// Helper that gets the density of the current satisfaction.
     pub fn step_density(&self) -> f64 {
-        self.steps / self.range
+        if self.range == 0.0 {
+            0.0
+        } else {
+            self.steps / self.range
+        }
     }
 
     pub fn sat_density(&self) -> f64 {
-        self.satisfaction / self.range
+        if self.range == 0.0 {
+            0.0
+        } else {
+            self.satisfaction / self.range
+        }
+    }
+
+    /// # Density Change
+    /// 
+    /// Calculates the change in density from ourself to the difference.
+    pub fn sat_density_change(&self, difference: &Self) -> f64 {
+        let our_density = self.sat_density();
+        let other_sat = self.satisfaction + difference.satisfaction;
+        let other_range = self.range + difference.range;
+        let other_density = if other_range > 0.0 {
+            other_sat / other_range
+        } else { 0.0 };
+        println!("Existing Density: {}", our_density);
+        println!("Other Satisfaction: {}", other_sat);
+        println!("Other Range: {}", other_range);
+        println!("Other Density: {}", other_density);
+        other_density - our_density
     }
     
     fn zero() -> SatisfactionValues {

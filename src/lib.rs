@@ -812,10 +812,11 @@ mod tests {
         mod check_offer_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, offerresult::OfferResult, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, offerresult::{AcceptReason, OfferResult, RejectReason}, pop::{Pop, PropertyRecord}};
 
             #[test]
-            pub fn reject_offer_when_not_meeting_price_hint_or_trade() {
+            pub fn reject_offer_due_to_hard_threshold() {
+                // Set up Data
                 let mut data = Data::new();
                 data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
                 data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
@@ -823,47 +824,48 @@ mod tests {
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
-
+                // Set up good prices.
                 let mut market = MarketHistory::new();
                 market.good_records.insert(2, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(3, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(5, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
-                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
-                    PriorityFn::Linear { slope: 10.0 })
-                    .with_steps(0));
                 test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
                     PriorityFn::Linear { slope: 2.0 })
                     .with_steps(2));
                 test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
                     PriorityFn::Linear { slope: 4.0 })
                     .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
                 test_pop.property.insert(2, PropertyRecord::new(2.0));
-                test_pop.property.insert(3, PropertyRecord::new(2.0));
-                test_pop.property.insert(7, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.try_satisfy_all_desires(&data, &market);
 
                 let mut request = HashMap::new();
-                request.insert(2, 1.0);
+                request.insert(2, 5.0);
 
                 let mut offer = HashMap::new();
                 offer.insert(3, 1.0);
-                offer.insert(4, 1.0);
 
-                let mut price_hint = HashMap::new();
-                price_hint.insert(3, 2.0);
-                price_hint.insert(4, 2.0);
-
-                let result = test_pop.check_offer(&request, &offer, &price_hint, &data, &market);
-                assert_eq!(result, OfferResult::Reject);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Reject(RejectReason::HardThresholdFailure));
             }
 
             #[test]
-            pub fn accept_offer_when_meeting_price_hint() {
+            pub fn reject_offer_for_no_positive_benefit_amv_neutral() {
+                // Set up Data
                 let mut data = Data::new();
                 data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
                 data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
@@ -871,45 +873,48 @@ mod tests {
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
-
+                // Set up good prices.
                 let mut market = MarketHistory::new();
                 market.good_records.insert(2, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(3, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(5, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
-                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
-                    PriorityFn::Linear { slope: 10.0 })
-                    .with_steps(0));
                 test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
                     PriorityFn::Linear { slope: 2.0 })
                     .with_steps(2));
                 test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
                     PriorityFn::Linear { slope: 4.0 })
                     .with_steps(2));
-                test_pop.property.insert(7, PropertyRecord::new(2.0));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(2, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.try_satisfy_all_desires(&data, &market);
 
                 let mut request = HashMap::new();
                 request.insert(2, 1.0);
 
                 let mut offer = HashMap::new();
-                offer.insert(3, 2.0);
-                offer.insert(4, 2.0);
+                offer.insert(5, 1.0);
 
-                let mut price_hint = HashMap::new();
-                price_hint.insert(3, 2.0);
-                price_hint.insert(4, 2.0);
-
-                let result = test_pop.check_offer(&request, &offer, &price_hint, &data, &market);
-                assert_eq!(result, OfferResult::Accept);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Reject(RejectReason::NotAccepted));
             }
 
-                        #[test]
-            pub fn accept_offer_when_not_meeting_price_hint() {
+            #[test]
+            pub fn accept_offer_because_of_satisfaction_gain() {
+                // Set up Data
                 let mut data = Data::new();
                 data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
                 data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
@@ -917,41 +922,141 @@ mod tests {
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
-
+                // Set up good prices.
                 let mut market = MarketHistory::new();
                 market.good_records.insert(2, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(3, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(5, GoodRecord::new().with_price(1.0));
-                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
-                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
-                    PriorityFn::Linear { slope: 10.0 })
-                    .with_steps(0));
                 test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
                     PriorityFn::Linear { slope: 2.0 })
                     .with_steps(2));
                 test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
                     PriorityFn::Linear { slope: 4.0 })
                     .with_steps(2));
-                test_pop.property.insert(7, PropertyRecord::new(2.0));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(2, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
                 test_pop.try_satisfy_all_desires(&data, &market);
 
                 let mut request = HashMap::new();
-                request.insert(2, 1.0);
+                request.insert(2, 2.0);
 
                 let mut offer = HashMap::new();
-                offer.insert(3, 2.0);
                 offer.insert(4, 2.0);
 
-                let mut price_hint = HashMap::new();
-                price_hint.insert(100, 2.0);
-                price_hint.insert(100, 2.0);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::Satisfaction));
+            }
 
-                let result = test_pop.check_offer(&request, &offer, &price_hint, &data, &market);
-                assert_eq!(result, OfferResult::Accept);
+            #[test]
+            pub fn accept_offer_because_of_density_gain() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
+
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(3, PropertyRecord::new(1.0));
+                test_pop.property.insert(4, PropertyRecord::new(1.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                let mut request = HashMap::new();
+                request.insert(7, 3.0);
+
+                let mut offer = HashMap::new();
+                offer.insert(3, 1.0);
+
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::Density));
+            }
+
+            #[test]
+            pub fn accept_offer_because_of_amv_gain() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
+
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(5, PropertyRecord::new(1.0));
+                test_pop.property.insert(6, PropertyRecord::new(1.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                let mut request = HashMap::new();
+                request.insert(5, 1.0);
+
+                let mut offer = HashMap::new();
+                offer.insert(6, 2.0);
+
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::Density));
             }
         }
 
@@ -1323,6 +1428,8 @@ mod tests {
 
                 assert_eq!(result.range, 1.0);
                 assert_eq!(result.steps, 1.0);
+                assert_eq!(result.amv, 0.0);
+                assert_eq!(result.satisfaction, -1.0);
             }
         }
 
@@ -1641,11 +1748,11 @@ mod tests {
                 test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
 
                 let result = test.consume_desires(&data, &market);
-                println!("Range: {}", result.range);
-                println!("Steps: {}", result.steps);
 
                 assert_eq!(result.range, 12.0);
                 assert_eq!(result.steps, 18.0);
+                assert_eq!(result.amv, 60.0);
+                assert_eq!(result.satisfaction, 180.0);
 
                 assert_eq!(test.property.get(&0).unwrap().owned, 60.0);
                 assert_eq!(test.property.get(&0).unwrap().expended, 40.0);
