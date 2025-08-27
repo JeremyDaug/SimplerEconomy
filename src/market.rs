@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, fmt::format};
+use std::collections::{HashMap, HashSet};
 
 use itertools::Itertools;
 
@@ -18,8 +18,8 @@ pub struct Market {
     pub connections: HashMap<usize, MarketConnectionType>,
     /// The local info on goods.
     pub goods_info: HashMap<usize, GoodData>,
-    /// A quick finder for those goods which have reached a Salability of 90% 
-    /// or higher 
+    /// A quick finder for those goods which have reached a Salability greater 
+    /// or equal to MONEY_SALABILITY_THRESHOLD.
     pub monies: HashSet<usize>,
     /// When looking at goods to offer, this is the order buyers should use in
     /// this market.

@@ -1,3 +1,5 @@
+use crate::constants::{DAYS_PER_TURN, TIME_UNITS_PER_DAY};
+
 /// # Household
 /// 
 /// This stores the number and makeup of household(s).
@@ -107,7 +109,7 @@ impl Household {
 
     /// # Labor 
     /// 
-    /// The amount of labor this household produces each day.
+    /// The amount of labor this household produces each Turn / Market Day.
     /// 
     /// # Defaults
     /// 
@@ -115,7 +117,8 @@ impl Household {
     /// Children give 0.3.
     /// Elders give 0.5.
     pub fn labor(&self) -> f64 {
-        self.count * (self.adults + self.children * 0.3 + self.elders * 0.5)
+        self.count * (self.adults + self.children * 0.3 + self.elders * 0.5) 
+            * TIME_UNITS_PER_DAY * DAYS_PER_TURN
     }
 
     /// # Combine Households

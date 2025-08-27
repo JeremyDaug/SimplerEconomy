@@ -809,6 +809,86 @@ mod tests {
     }
 
     mod pop_tests {
+        mod try_satisfy_until_incomplete_should {
+            use std::collections::VecDeque;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::{Good, GoodTags}, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+
+            #[test]
+            pub fn correctly_stop_when_incomplete_found() {
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(10.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                // Desires to satisfy.
+                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+            }
+        }
+
+        mod create_sell_orders_should {
+            use crate::{data::Data, good::{Good, GoodTags}, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+
+            #[test]
+            pub fn correctly_return_available_goods_for_sale() {
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(10.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.get_mut(&5).unwrap().target = 5.0;
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                test_pop.property.get_mut(&6).unwrap().target = 10.0;
+
+                let result = test_pop.create_sell_orders(&data, &market);
+                assert!(!result.contains_key(&2));
+                assert!(!result.contains_key(&3));
+                assert_eq!(*result.get(&4).unwrap(), 10.0);
+                assert_eq!(*result.get(&5).unwrap(), 5.0);
+                assert!(!result.contains_key(&6));
+            }
+        }
+
         mod check_offer_should {
             use std::collections::HashMap;
 
@@ -1048,6 +1128,11 @@ mod tests {
                 test_pop.property.insert(6, PropertyRecord::new(1.0));
                 test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.try_satisfy_all_desires(&data, &market);
+                println!("Base Satisfaction.");
+                println!("Range: {}", test_pop.satisfaction.range);
+                println!("Steps: {}", test_pop.satisfaction.steps);
+                println!("Satisfaction: {}", test_pop.satisfaction.satisfaction);
+                println!("AMV: {}", test_pop.satisfaction.amv);
 
                 let mut request = HashMap::new();
                 request.insert(5, 1.0);
@@ -1056,7 +1141,7 @@ mod tests {
                 offer.insert(6, 2.0);
 
                 let result = test_pop.check_offer(&request, &offer, &data, &market);
-                assert_eq!(result, OfferResult::Accept(AcceptReason::Density));
+                assert_eq!(result, OfferResult::Accept(AcceptReason::AMV));
             }
         }
 
@@ -1990,6 +2075,43 @@ mod tests {
                     assert_eq!(working_desires.get(2).unwrap().satisfaction, 40.0);
                     assert_eq!(working_desires.get(2).unwrap().item, Item::Good(5));
                 }
+            }
+
+            #[test]
+            pub fn correctly_stop_when_fully_complete() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood4"), String::new()));
+                data.add_good(Good::new(5, String::from("testGood5"), String::new()));
+                data.add_good(Good::new(6, String::from("testGood6"), String::new()));
+                data.add_good(Good::new(7, String::from("testGood7"), String::new()));
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_back(desire1);
+                working_desires.push_back(desire2);
+                working_desires.push_back(desire3);
+                working_desires.push_back(desire4);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.property.insert(0, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(100.0));
+                test.property.insert(5, PropertyRecord::new(100.0));
+                test.property.insert(6, PropertyRecord::new(30.0));
+                test.property.insert(7, PropertyRecord::new(100.0));
+
+                let result = test.satisfy_until_incomplete(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(working_desires.len(), 0);
             }
         }
 

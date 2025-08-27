@@ -1,9 +1,9 @@
 use core::f64;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{constants::{POP_AMV_HARD_LOSS_THRESHOLD}, data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
+use crate::{constants::POP_AMV_HARD_LOSS_THRESHOLD, data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, market::Market, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
 
 
 use crate::constants::TIME_ID;
@@ -62,6 +62,10 @@ pub struct Pop {
     pub working_desires: VecDeque<Desire>,
     /// The current satisfaction of the pop. Should be updated periodically.
     pub satisfaction: SatisfactionValues,
+    /// The tags for the pop, defining any special properties of the pop and it's actions.
+    /// 
+    /// Currently a placeholder for later purposes like denoting pops as slaves, or so on.
+    pub tags: HashSet<PopTag>
 }
 
 impl Pop {
@@ -78,7 +82,8 @@ impl Pop {
             property: HashMap::new(),
             wants: HashMap::new(),
             working_desires: VecDeque::new(),
-            satisfaction: SatisfactionValues::zero()
+            satisfaction: SatisfactionValues::zero(),
+            tags: HashSet::new()
         }
     }
 
@@ -119,9 +124,9 @@ impl Pop {
 
     /// # Reset
     /// 
-    /// Resets property and want's to just owned, zeroing out remainder.
+    /// Resets property and want's to just owned and target, zeroing out remainder.
     /// 
-    /// Resets desire satisaction as well.
+    /// Resets desire satisaction, and the pop's satisfaction as well.
     pub fn reset(&mut self) {
         for (_, prop) in self.property.iter_mut() {
             prop.expended = 0.0;
@@ -372,9 +377,6 @@ impl Pop {
         }
         let dup =  self.clone();
         let change = dup.satisfaction_change(&change, data, market);
-        println!("Changed Steps: {}", change.steps);
-        println!("Changed Range: {}", change.range);
-        println!("Changed AMV: {}", change.amv);
 
         if change.satisfaction > 0.0 {
             // Accept if satisfaction increases.
@@ -386,6 +388,7 @@ impl Pop {
             // Accept if Satisfaction density increases
             return OfferResult::Accept(AcceptReason::Density);
         }
+        println!("AMV Gain: {}", change.amv);
         if change.amv > 0.0 {
             // lastly, if no change in range or density, check for AMV gain.
             return OfferResult::Accept(AcceptReason::AMV);
@@ -393,12 +396,59 @@ impl Pop {
         OfferResult::Reject(RejectReason::NotAccepted)
     }
 
-    // purchase logic, figure out what to buy and if we have anything to offer for it.
-    // selling logic, create a list of things the pop is willing to offer in exchange for other things.
+    /// # Create Sell Orders
+    /// 
+    /// Looks at our property and checks what we can offer up for sale.
+    /// 
+    /// Currently, we offer everything that is in excess, exchangeable, and
+    /// not a currency.
+    /// 
+    /// TODO: This will likely be modified to 
+    pub fn create_sell_orders(&self, data: &Data, market: &MarketHistory) 
+    -> HashMap<usize, f64> {
+        let mut result = HashMap::new();
+        for (&good, info) in self.property.iter() {
+            let available = info.excess();
+            if available > 0.0 && data.get_good(good).is_exchangeable() &&
+            !market.currencies.contains(&good) {
+                result.insert(good, available);
+            }
+        }
+        result
+    }
 
-    // day startup, does the initial work needed for the pop before the day begins, for pops, this typically includes exchanging their time and skills for payment in work.
+    /// # Day Start Up
+    /// 
+    /// Called to start up the day of a pop. 
+    /// 
+    /// This means filling their time up for the day, and doing a preemptive sorting of their
+    /// desires. So they can get to work for the day.
+    pub fn day_start_up(&mut self, data: &Data, market: &MarketHistory) {
+        // fill up Time.
+        let time = self.households.labor();
+        self.property.entry(TIME_ID)
+            .and_modify(|x| x.owned = time)
+            .or_insert(PropertyRecord::new(time));
+
+        // reset our property and satisfaction for this new day.
+        self.reset();
+        // Debug sanity check. Working desires should be empty when called here.
+        debug_assert!(self.working_desires.is_empty());
+        // do a first pass at satisfaction for the day
+        // NOTE: This needs to be either try_satsify_all_desires followed by recalcilute_working_desires
+        // NOTE: or create a new working_desires to pass in, moved from self.desires, then call satisfy_until_incomplete.
+        self.try_satisfy_until_incomplete(data, market);
+    }
+
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
     // day end, the final action of the day, covers wrapping up, consumpution, and some additional work, possibly including taxes and the like.
+
+    /// # End Day
+    /// 
+    /// The final wrap up of our day. It should 
+    pub fn day_end(&mut self, _data: &Data, _market: &MarketHistory) {
+
+    }
 
     /// # Excess AMV
     /// 
@@ -417,7 +467,7 @@ impl Pop {
     /// When called, this looks at the current desires of the pop which have not been satisfied
     /// and selects the most highly desired one (first in working desires).
     /// 
-    /// It returns how much it needs to satisfy the current tier as well.
+    /// It returns how much it needs to satisfy the current step as well.
     /// 
     /// If a specific good, it returns a planned target which should be gotten immediately.
     /// 
@@ -587,7 +637,7 @@ impl Pop {
             dup_sat.amv - self_sat.amv)
     }
 
-    /// # Add Back to Working Desires
+    /// # Recalculate
     /// 
     /// Resets our desires to be working desires unless they are 
     /// totally satisfied.
@@ -636,10 +686,21 @@ impl Pop {
                 .or_insert(PropertyRecord::new(*val));
         }
         temp_pop.try_satisfy_all_desires(data, market);
+        println!("Resulting Satisfaction:");
+        println!("Range: {}", temp_pop.satisfaction.range);
+        println!("Steps: {}", temp_pop.satisfaction.steps);
+        println!("Satisfaction: {}", temp_pop.satisfaction.satisfaction);
+        println!("AMV: {}", temp_pop.satisfaction.amv);
         let range = temp_pop.satisfaction.range - self.satisfaction.range;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
         let satisfaction = temp_pop.satisfaction.satisfaction - self.satisfaction.satisfaction;
         let amv = temp_pop.satisfaction.amv - self.satisfaction.amv;
+        println!("Difference:");
+        println!("Range: {}", range);
+        println!("Steps: {}", steps);
+        println!("Satisfaction: {}", satisfaction);
+        println!("AMV: {}", amv);
+
         SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
@@ -1098,6 +1159,7 @@ impl Pop {
     /// added to the desire.
     /// 
     /// TODO: Expand to include a step/satisfaction target parameter so it can do more than 1 level at a time.
+    /// TODO: Consider breaking out the sections to flatten out and make testing easier.
     pub fn satisfy_desire(&mut self, mut current_desire: Desire, data: &Data) -> (Desire, f64) {
         // prep our shifted record for checking if we succeeded at satisfying the desire.
         let mut shifted = 0.0;
@@ -1341,8 +1403,10 @@ impl Pop {
     /// 
     /// This will reserve wants and goods for the desires.
     /// 
-    /// If a desire is not satisfied, it returns that desire and the step 
-    /// at which it failed to satisfy.
+    /// If a desire is not satisfied, or is fully satisfied, it returns that desire 
+    /// and the step at which it failed to satisfy.
+    /// 
+    /// Otherwise it puts it back into working desires.
     pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<Desire>, 
     data: &Data) -> Option<Desire> {
         assert!(working_desires.len() > 0, "Working Desires cannot be empty.");
@@ -1353,7 +1417,8 @@ impl Pop {
             current_desire
         } else {
             return None;
-        };// If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
+        };
+        // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
         let (current_desire, shifted) = self.satisfy_desire(current_desire, data);
         if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
             //println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
@@ -1374,16 +1439,57 @@ impl Pop {
     /// to give a starting vaule or desire.
     /// 
     /// Returns the desire that was incomplete and the tier at which it was incomplete.
-    pub fn satisfy_until_incomplete(&mut self, working_desires: &mut VecDeque<Desire>, 
+    /// 
+    /// Desires that were fully satisfied get added back to self.desires.
+    /// 
+    /// If we somehow run out of working desires to satisfy, we return None.
+    pub(crate) fn satisfy_until_incomplete(&mut self, working_desires: &mut VecDeque<Desire>, 
     data: &Data) -> Option<Desire> {
         loop {
             // satisfy the next desire
             if let Some(result) = self.satisfy_next_desire(working_desires, data) {
-                // if we get a desire here, escape out. We're done.
-                return Some(result);
+                // if we get a desire here, the desire is either incomplete or finished
+                if result.is_fully_satisfied() { // if fully satisfied, just add back to desires.
+                    Self::ordered_desire_insert(&mut self.desires, result);
+                } else { // if incomplete, break out.
+                    return Some(result);
+                }
+            }
+            // sanity check that we have any working desires to keep going with.
+            if working_desires.is_empty() {
+                return None; // if not, break out.
             }
             // if didn't find anything to stop us, go to the next.
         }
+    }
+
+    /// # Try Satisfy Until Incomplete
+    /// 
+    /// Similar to self.try_satisfy_all_desires(), however, instead of going until
+    /// all have been tried, it stops at the first which is incomplete.
+    /// 
+    /// This takse all desires from self.desires and self.working_desires, puts them back
+    /// into self.desires. Once any is incomplete does it stop, putting that incomplete 
+    /// one back in working_desires for later.
+    pub fn try_satisfy_until_incomplete(&mut self, data: &Data, market: &MarketHistory) {
+        // Move current desires into a working btreemap for easier organization and management.
+        //println!("Satisfying Desires.");
+        // create a working desires to pass around our 
+        let mut working_desires = VecDeque::new();
+        // Working desires, includes the current tier it's on, and the desire.
+        while let Some(desire) = self.desires.pop_front() { // Initial list is always sorted, so just move over.
+            Pop::ordered_desire_insert(&mut working_desires, desire);
+        }
+        // also move over from self.working_desires
+        while let Some(desire) = self.working_desires.pop_front() {
+            Pop::ordered_desire_insert(&mut working_desires, desire);
+        }
+        if let Some(incomplete_desire) = self.satisfy_until_incomplete(&mut working_desires, data) {
+            // if we got something incomplete, then add back to working_desires front
+            working_desires.push_front(incomplete_desire);
+        } // else, just continue we satisfied everything.
+        // lastly, update satisfaction for going forward.
+        self.satisfaction = self.get_satisfaction(market);
     }
 
     /// # Try Satisfy All Desires
@@ -1620,6 +1726,17 @@ impl PropertyRecord {
     pub fn current_target(&self) -> f64 {
         self.target - self.owned
     }
+    
+    /// # Excess
+    /// 
+    /// Gets the excess available of a good.
+    /// 
+    /// IE, owned - target.
+    /// 
+    /// This can be negative.
+    fn excess(&self) -> f64 {
+        self.owned - self.target
+    }
 }
 
 /// # Want Record
@@ -1729,4 +1846,15 @@ impl SatisfactionValues {
     fn zero() -> SatisfactionValues {
         Self::new(0.0, 0.0, 0.0, 0.0)
     }
+}
+
+/// # Pop Tags
+/// 
+/// Tags a population can have. These tags apply to the entire population, regardless of the household.
+/// These tags can be inherited from the households within if they are cohiesive.
+#[derive(Debug, PartialEq, Clone)]
+pub enum PopTag {
+    /// Population is a slave. It cannot sell anything it has and anything it owns but
+    /// doesn't need is immediately either scrapped to the tile, or handed over to the owner.
+    Slave
 }

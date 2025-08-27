@@ -4,8 +4,6 @@ use crate::good::Good;
 
 /// # Market History
 /// 
-
-
 /// Stores the data of yesterday for a market. Used by actors and 
 /// processes around the system to make decisions in the local markets.
 /// 
@@ -18,7 +16,10 @@ pub struct MarketHistory {
     pub good_records: HashMap<usize, GoodRecord>,
     pub class_prices: HashMap<usize, f64>,
     pub want_prices: HashMap<usize, f64>,
-                       
+    /// Currencies are goods which have become 'mediums of exchange'.
+    /// 
+    /// This is not calculated here, but rather defined universally as a good
+    /// that has surpassed the 'Salability Threshold'.
     pub currencies: HashSet<usize>,
     // Taxes
 }
@@ -46,8 +47,6 @@ impl MarketHistory {
               .expect(
             format!("Good '{}' was not found in market history records.", good).as_str()
         )
-
-
     }
 }
 

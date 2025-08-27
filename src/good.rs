@@ -206,6 +206,13 @@ impl Good {
         self.tags.extend(tags);
         self
     }
+    
+    /// # Is Exchangeable
+    /// 
+    /// A wrapper equal to checking that a good is not tagged as nonexchangeable.
+    pub(crate) fn is_exchangeable(&self) -> bool {
+        !self.tags.contains(&GoodTags::Nonexchangeable)
+    }
 }
 
 impl PartialEq for Good {
@@ -214,7 +221,7 @@ impl PartialEq for Good {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GoodTags {
     /// Good cannot be moved between markets. They also typically have no mass or 
     /// bulk either.
