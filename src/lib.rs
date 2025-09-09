@@ -14,6 +14,7 @@ pub mod species;
 pub mod household;
 pub mod constants;
 pub mod offerresult;
+pub mod freetimeaction;
 
 #[cfg(test)]
 mod tests {
@@ -810,12 +811,11 @@ mod tests {
 
     mod pop_tests {
         mod try_satisfy_until_incomplete_should {
-            use std::collections::VecDeque;
-
             use crate::{data::Data, desire::{Desire, PriorityFn}, good::{Good, GoodTags}, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_stop_when_incomplete_found() {
+                // set up data for goods.
                 let mut data = Data::new();
                 data.goods.insert(2, Good::new(2, "2".to_string(), 
                     String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
@@ -824,6 +824,7 @@ mod tests {
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
                 data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 
+                // set up market info, including a currency.
                 let mut market = MarketHistory::new();
                 market.good_records.insert(2, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(3, GoodRecord::new().with_price(1.0));
@@ -832,21 +833,98 @@ mod tests {
                 market.good_records.insert(5, GoodRecord::new().with_price(1.0));
                 market.good_records.insert(6, GoodRecord::new().with_price(1.0));
                 
+                // create a pop and property.
                 let mut test_pop = Pop::new(0, 0, 0);
-                test_pop.property.insert(2, PropertyRecord::new(10.0));
+                test_pop.property.insert(2, PropertyRecord::new(5.0));
                 test_pop.property.insert(3, PropertyRecord::new(10.0));
                 test_pop.property.insert(4, PropertyRecord::new(10.0));
                 test_pop.property.insert(5, PropertyRecord::new(10.0));
                 test_pop.property.insert(6, PropertyRecord::new(10.0));
-                // Desires to satisfy.
+                // initial AMV = 45.0
+                // add Desires to satisfy.
                 test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
                     .with_steps(0));
-                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
                     .with_steps(0));
-                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
                     .with_steps(0));
-                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
                     .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                // should consume 25.0 AMV, 5 steps of each, range from 1.0 to 6.0.
+
+                // run function 
+                test_pop.try_satisfy_until_incomplete(&data, &market);
+
+                // test results
+                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
+                assert_eq!(test_pop.satisfaction.steps, 25.0);
+
+                assert_eq!(test_pop.property.get(&2).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&3).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&6).unwrap().reserved, 5.0);
+            }
+
+            #[test]
+            pub fn correctly_stop_when_incomplete_found_using_self_working_desires() {
+                // set up data for goods.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                // set up market info, including a currency.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                // create a pop and property.
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(5.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                // initial AMV = 45.0
+                // add Desires to satisfy.
+                test_pop.working_desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(4), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(6), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                // should consume 25.0 AMV, 5 steps of each, range from 1.0 to 6.0.
+
+                // run function 
+                test_pop.try_satisfy_until_incomplete(&data, &market);
+
+                // test results
+                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
+                assert_eq!(test_pop.satisfaction.steps, 25.0);
+
+                assert_eq!(test_pop.property.get(&2).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&3).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&6).unwrap().reserved, 5.0);
             }
         }
 

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use itertools::Itertools;
 
-use crate::{constants::POP_AMV_HARD_LOSS_THRESHOLD, data::Data, desire::{Desire, DesireTag}, drow::DRow, household::Household, item::Item, market::Market, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
+use crate::{constants::POP_AMV_HARD_LOSS_THRESHOLD, data::Data, desire::{Desire, DesireTag}, drow::DRow, freetimeaction::FreeTimeAction, household::Household, item::Item, market::Market, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
 
 
 use crate::constants::TIME_ID;
@@ -438,6 +438,39 @@ impl Pop {
         // NOTE: This needs to be either try_satsify_all_desires followed by recalcilute_working_desires
         // NOTE: or create a new working_desires to pass in, moved from self.desires, then call satisfy_until_incomplete.
         self.try_satisfy_until_incomplete(data, market);
+        // With desires partially satisfied, everything should be done.
+    }
+
+    /// # Workday Actions
+    /// 
+    /// Covers the workday actions of the pop. This focuses on dividing up time for 
+    /// work, and other needs. This should primarily trade out time for labor (skilled 
+    /// or otherwise) and give it over to it's firm.
+    /// 
+    /// Along with this exchange of time, it should recieve it's paypment or some
+    /// equivalent based on added complexities (wage debt, contract incrementing, etc)
+    /// 
+    /// TODO: This function is waiting on how Firms act during it's work day.
+    pub fn workday_actions(&mut self) {
+        todo!("Not made yet, depends on how Firms handle the labor exchange part of it's day.")
+    }
+
+    /// # Free Time Action
+    /// 
+    /// Free Time Action is called after the pop has worked.
+    /// 
+    /// It takes the pop as it stands and sees what it wants to do next. It returns
+    /// a FreeTimeAction, that the market then acts upon. 
+    /// 
+    /// What it prioritizes is as follows.
+    /// 
+    /// 1. Purchasing it's desires.
+    /// 2. Active consumption of it's goods for it's own satisfaction.
+    /// 3. Planning.
+    ///     a. This comes in the form of altering it's buy targets going forward, 
+    /// 4. Activism (Being extra active in politics and the community, for better and worse)
+    pub fn free_time_action(&mut self) -> FreeTimeAction {
+
     }
 
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
@@ -810,7 +843,8 @@ impl Pop {
             high = 0.0;
             low = 0.0;
         }
-
+        // println!("High Range: {}", high);
+        // println!("Low Range: {}", low);
         SatisfactionValues::new(high - low, steps, sat, self.excess_amv(market))
     }
 
@@ -1480,14 +1514,19 @@ impl Pop {
         while let Some(desire) = self.desires.pop_front() { // Initial list is always sorted, so just move over.
             Pop::ordered_desire_insert(&mut working_desires, desire);
         }
+        println!("Working Desires: {}", working_desires.len());
         // also move over from self.working_desires
         while let Some(desire) = self.working_desires.pop_front() {
             Pop::ordered_desire_insert(&mut working_desires, desire);
         }
         if let Some(incomplete_desire) = self.satisfy_until_incomplete(&mut working_desires, data) {
+            println!("Incomplete Item: {}", incomplete_desire.item);
+            println!("Desire satisfied steps: {}", incomplete_desire.satisfied_steps());
             // if we got something incomplete, then add back to working_desires front
             working_desires.push_front(incomplete_desire);
         } // else, just continue we satisfied everything.
+        // move everything back into self.working_desires
+        self.working_desires = working_desires;
         // lastly, update satisfaction for going forward.
         self.satisfaction = self.get_satisfaction(market);
     }

@@ -1,3 +1,5 @@
+use core::fmt;
+
 /// # Item
 /// 
 /// Item is an enum for pointing to a want, class, or specific good.
@@ -6,6 +8,19 @@ pub enum Item {
     Want(usize),
     Class(usize),
     Good(usize)
+}
+
+impl fmt::Display for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut result = String::new();
+        match self {
+            Item::Want(_) => result += "Want: ",
+            Item::Class(_) => result += "Class: ",
+            Item::Good(_) => result += "Good: ",
+        }
+        result += self.unwrap().to_string().as_str();
+        write!(f, "{}", result)
+    }
 }
 
 impl Item {
