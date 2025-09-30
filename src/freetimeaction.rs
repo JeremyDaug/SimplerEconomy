@@ -19,4 +19,19 @@ pub enum FreeTimeAction {
     /// The market records the buy order and searches for the good. The amount
     /// is not actually used to find sell orders.
     BuyOrder { good: Item, amount: f64 },
+    /// The actor is seeking employment elsewhere in the local market. The value 
+    /// given is the desire of finding a new job. The higher the value the
+    /// more likely (and larger the size) of the attempt to move elsewhere.
+    SeekEmployment(f64),
+    /// The actor is seeking to migrate to another market. The value given is 
+    /// the desire of migrating out. If this is sent, then the pop REALLY wants to
+    /// get out of dodge.
+    SeekMigration(f64),
+    /// The actor is wanting to change jobs, and has a desire to create a new firm.
+    /// 
+    /// The larger the value the more desire it has at it.
+    CreateFirm(f64),
+    /// The actor is getting more active in the community. Exactly what depends on
+    /// the the breakdown of the population.
+    GetActive,
 }

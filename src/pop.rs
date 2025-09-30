@@ -1,9 +1,10 @@
 use core::f64;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{collections::{HashMap, HashSet, VecDeque}, thread::current};
 
 use itertools::Itertools;
+use ordered_float::Float;
 
-use crate::{constants::POP_AMV_HARD_LOSS_THRESHOLD, data::Data, desire::{Desire, DesireTag}, drow::DRow, freetimeaction::FreeTimeAction, household::Household, item::Item, market::Market, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}};
+use crate::{constants::POP_AMV_HARD_LOSS_THRESHOLD, data::Data, desire::{Desire, DesireTag}, drow::DRow, firm::Firm, freetimeaction::FreeTimeAction, household::Household, item::Item, market::Market, markethistory::MarketHistory, offerresult::{AcceptReason, OfferResult, RejectReason}, popfinancials::PopFinancials};
 
 
 use crate::constants::TIME_ID;
@@ -51,6 +52,7 @@ pub struct Pop {
     pub demo_breakdown: Vec<DRow>,
     /// How many days worth of work a single household in the group does.
     pub efficiency: f64,
+
     /// The consolidated desires of the pop, formed out of the consolidated desires of the pop.
     pub desires: VecDeque<Desire>,
     /// What property the pop owns and how they are using it.
@@ -62,6 +64,10 @@ pub struct Pop {
     pub working_desires: VecDeque<Desire>,
     /// The current satisfaction of the pop. Should be updated periodically.
     pub satisfaction: SatisfactionValues,
+
+    /// The Financials of a Pop. used to store and oragnize it's financial data.
+    pub financials: PopFinancials,
+
     /// The tags for the pop, defining any special properties of the pop and it's actions.
     /// 
     /// Currently a placeholder for later purposes like denoting pops as slaves, or so on.
@@ -83,7 +89,8 @@ impl Pop {
             wants: HashMap::new(),
             working_desires: VecDeque::new(),
             satisfaction: SatisfactionValues::zero(),
-            tags: HashSet::new()
+            tags: HashSet::new(),
+            financials: PopFinancials::new(),
         }
     }
 
@@ -127,7 +134,9 @@ impl Pop {
     /// Resets property and want's to just owned and target, zeroing out remainder.
     /// 
     /// Resets desire satisaction, and the pop's satisfaction as well.
-    pub fn reset(&mut self) {
+    /// 
+    /// Also resets the pop's financials for the day. Updating starting wealth,
+    pub fn reset_property(&mut self) {
         for (_, prop) in self.property.iter_mut() {
             prop.expended = 0.0;
             prop.offered = 0.0;
@@ -145,6 +154,38 @@ impl Pop {
         }
 
         self.satisfaction = SatisfactionValues::zero();
+    }
+
+    /// # New Financial Day
+    /// 
+    /// Called to start a new financial day. Updates starting, current, historical, and
+    /// average wealth.
+    /// 
+    /// Does not update income, dividend, or decay.
+    pub fn new_financial_day(&mut self, market: &MarketHistory) {
+        // Reset start of day wealth and current wealth.
+        let wealth = self.excess_amv(market);
+        self.financials.wealth = wealth;
+        self.financials.current_wealth = wealth;
+        // update average wealth, average with previous days, but weigh to current day more.
+        self.financials.wealth_history.push_back(wealth);
+        self.financials.update_average_wealth();
+    }
+
+    ///  # Record Income
+    /// 
+    /// Updates the pop's income to record data. This does not include Dividends.
+    pub fn record_income(&mut self, _given: HashMap<usize, f64>, 
+    _recieved: HashMap<usize, f64>, _market: &MarketHistory) {
+        todo!()
+    }
+
+    /// # Record Dividends
+    /// 
+    /// Updates the pop's dividend income for the day. Should only include dividends.
+    pub fn record_dividends(&mut self, _recieved: HashMap<usize, f64>, 
+    _locked: HashMap<usize, f64>, _market: &MarketHistory) {
+        todo!()
     }
 
     /// # Make Offer
@@ -421,9 +462,12 @@ impl Pop {
     /// 
     /// Called to start up the day of a pop. 
     /// 
+    /// This includes adding their time for the day
+    /// 
     /// This means filling their time up for the day, and doing a preemptive sorting of their
     /// desires. So they can get to work for the day.
-    pub fn day_start_up(&mut self, data: &Data, market: &MarketHistory) {
+    pub fn day_start_up(&mut self, data: &Data, job: &mut Firm,
+    market: &MarketHistory) {
         // fill up Time.
         let time = self.households.labor();
         self.property.entry(TIME_ID)
@@ -431,7 +475,12 @@ impl Pop {
             .or_insert(PropertyRecord::new(time));
 
         // reset our property and satisfaction for this new day.
-        self.reset();
+        self.reset_property();
+        self.new_financial_day(market);
+
+        // do labor / wage swap
+        let (loss, gain) = job.work_day_exchange(data, self);
+
         // Debug sanity check. Working desires should be empty when called here.
         debug_assert!(self.working_desires.is_empty());
         // do a first pass at satisfaction for the day
@@ -470,7 +519,8 @@ impl Pop {
     ///     a. This comes in the form of altering it's buy targets going forward, 
     /// 4. Activism (Being extra active in politics and the community, for better and worse)
     pub fn free_time_action(&mut self) -> FreeTimeAction {
-
+        // first, try to 
+        todo!()
     }
 
     // standard day action, the work done by the pop during the day. This is primarily the buying of goods from the market.
@@ -481,6 +531,18 @@ impl Pop {
     /// The final wrap up of our day. It should 
     pub fn day_end(&mut self, _data: &Data, _market: &MarketHistory) {
 
+    }
+
+    /// # Build Savings
+    /// 
+    /// This function takes the property of the pop and tries to save property to meet 
+    /// it's savings ratio.
+    /// 
+    /// Goods prefered for savings are highly salable and durable goods.
+    /// 
+    /// TODO: Rethink how to do savings. Current method is most likely going to be slow and scale poorly.
+    pub fn build_savings(&mut self, market: &MarketHistory) {
+        todo!()
     }
 
     /// # Excess AMV
@@ -712,7 +774,7 @@ impl Pop {
     pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data, 
     market: &MarketHistory)  -> SatisfactionValues {
         let mut temp_pop = self.clone();
-        temp_pop.reset();
+        temp_pop.reset_property();
         for (good, val) in change.iter() {
             temp_pop.property.entry(*good)
                 .and_modify(|x| x.owned += val)
@@ -750,7 +812,7 @@ impl Pop {
         // Clone existing pop.
         let mut temp_pop = self.clone();
         // Reset the 
-        temp_pop.reset(); 
+        temp_pop.reset_property(); 
         for (good, val) in removing.iter() {
             temp_pop.property.get_mut(good).unwrap().owned -= *val;
         }
@@ -778,7 +840,7 @@ impl Pop {
         // Clone existing pop.
         let mut temp_pop = self.clone();
         // Reset the 
-        temp_pop.reset(); 
+        temp_pop.reset_property(); 
         for (good, val) in new_goods.iter() {
             temp_pop.property.entry(*good)
                 .and_modify(|x| x.owned += val)
@@ -1719,6 +1781,8 @@ pub struct PropertyRecord {
     /// How many they want to keep at all times. This also covers
     /// reservations to satisfy desires.
     pub reserved: f64,
+    /// How many of the good we want to save for a rainy day.
+    pub saved: f64,
     /// How many they have used today to satisfy desires.
     /// This records how many were consumed today.
     /// 
@@ -1746,15 +1810,16 @@ impl PropertyRecord {
             traded: 0.0,
             offered: 0.0,
             target: 0.0,
+            saved: 0.0,
         }
     }
 
     /// Available
     /// 
     /// How many goods are available to be used/expended.
-    /// This is effectively the difference between owned and reserved.
+    /// This is effectively the difference between owned and reserved + saved
     pub fn available(&self) -> f64 {
-        self.owned - self.reserved
+        self.owned - self.reserved - self.saved
     }
 
     /// # Current Target

@@ -15,6 +15,8 @@ pub mod household;
 pub mod constants;
 pub mod offerresult;
 pub mod freetimeaction;
+pub mod popfinancials;
+pub mod firm;
 
 #[cfg(test)]
 mod tests {

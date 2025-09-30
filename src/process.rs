@@ -369,7 +369,7 @@ impl Process {
         while unused_free_slots > 0.0 {
             // Get the most expensive good and remove as many units as possible.
             let costliest = input_goods.iter()
-                .sorted_by(|(&a, _), (&b, _)| {
+                .sorted_by(|&(&a, _), &(&b, _)| {
                     {
                         let a_price = market_history.get_record(*a).price;
                         let b_price = market_history.get_record(*b).price;

@@ -21,6 +21,9 @@ pub struct MarketHistory {
     /// This is not calculated here, but rather defined universally as a good
     /// that has surpassed the 'Salability Threshold'.
     pub currencies: HashSet<usize>,
+    /// Savings Efficiency is a list of goods in the market ordered by
+    /// their savings efficiency, which is Salability * Durability.
+    pub savings_efficiency: Vec<usize>,
     // Taxes
 }
 
@@ -31,6 +34,7 @@ impl MarketHistory {
             class_prices: HashMap::new(), 
             want_prices: HashMap::new(), 
             currencies: HashSet::new(),
+            savings_efficiency: vec![]
         }
     }
 
@@ -63,7 +67,7 @@ pub struct GoodRecord {
     /// Quantity Exported into market.
     pub export: f64,
     /// Quantity put up for sale.
-     pub for_sale: f64,
+    pub for_sale: f64,
     /// Quantity 
     pub sold: f64,
 }
