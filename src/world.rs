@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{job::Job, market::Market, pop::Pop};
+use crate::{market::Market, pop::Pop};
 
 
 
@@ -12,6 +12,4 @@ pub struct World {
     pub markets: HashMap<usize, Market>,
     /// All pops in the world currently.
     pub pops: HashMap<usize, Pop>,
-    /// All Jobs in the world.
-    pub jobs: HashMap<usize, Job>,
 }

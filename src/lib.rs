@@ -3,2989 +3,2530 @@ pub mod desire;
 pub mod good;
 pub mod process;
 pub mod market;
-pub mod job;
 pub mod data;
 pub mod world;
 pub mod culture;
+pub mod want;
+pub mod item;
+pub mod markethistory;
+pub mod drow;
+pub mod species;
+pub mod household;
+pub mod constants;
+pub mod offerresult;
+pub mod freetimeaction;
+pub mod popfinancials;
+pub mod firm;
 
 #[cfg(test)]
 mod tests {
-    mod job_tests {
-        mod pay_workers_should {
-            use std::collections::{HashMap, HashSet, VecDeque};
-
-            use crate::{data::Data, good::Good, job::Job, market::{GoodData, Market}, pop::Pop, process::{InputType, Process}};
+    mod process_tests {
+        mod uses_input_should {
+            use crate::process::{InputTag, Process, ProcessInput};
 
             #[test]
-            pub fn pay_workers_w_owner_between_min_and_max_target() {
-                // Set up Data
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                // set up good data
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                // set up process info
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
-                // Set up Job Property
-                // 25.0 to workers, 10 iterations available for work
-                let mut property = HashMap::new();
-                property.insert(0, 100.0);
-                property.insert(1, 75.0);
-                property.insert(2, 20.0);
-                // Job Target
-                let mut target = HashMap::new();
-                target.insert(0, 25.0);
-                // Job Process Priority
-                let process = vec![0];
-                // job wage.
-                let mut wage = HashMap::new();
-                wage.insert(0, 1.0);
-                // the job
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage,
-                    time_purchase: 25.0,
-                    owner: Some(1),
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 4.0,
-                    property,
-                    time: 0.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                // setup worker pop.
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 100.0,
-                };
-                // setup owner pop.
-                let owner = Pop {
-                    id: 1,
-                    size: 1.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 1.0,
-                };
-                // insert pops into storage.
-                let pops = &mut HashMap::new();
-                pops.insert(0, pop); // worker
-                pops.insert(1, owner);
+            pub fn sort_inputs_correctly() {
+                // These should all be inserted and should end up in reversed order.
+                let test = Process::new(0, "Test".to_string(), String::new())
+                    .uses_input(ProcessInput::new(2, 10.0)
+                        .with_tag(InputTag::Consumed))
+                    .uses_input(ProcessInput::new(1, 10.0)
+                        .with_tag(InputTag::Consumed))
+                    .uses_input(ProcessInput::new(0, 10.0)
+                        .with_tag(InputTag::Consumed))
+                    .uses_input(ProcessInput::new(2, 10.0)
+                        .with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 10.0)
+                        .with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(0, 10.0)
+                        .with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 10.0))
+                    .uses_input(ProcessInput::new(1, 10.0))
+                    .uses_input(ProcessInput::new(0, 10.0));
 
-                // Setup Market info.
-                let mut goods_info = HashMap::new();
-                goods_info.insert(0, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(1, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(2, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                let good_trade_priority = vec![0, 1, 2];
-                let market = Market {
-                    id: 0,
-                    name: "market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info,
-                    monies: HashSet::new(),
-                    good_trade_priority,
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
+                // test inputs here
+                let input = test.inputs.get(0).unwrap();
+                assert_eq!(input.good, 0);
+                assert_eq!(input.tag, InputTag::None);
+                let input = test.inputs.get(1).unwrap();
+                assert_eq!(input.good, 1);
+                assert_eq!(input.tag, InputTag::None);
+                let input = test.inputs.get(2).unwrap();
+                assert_eq!(input.good, 2);
+                assert_eq!(input.tag, InputTag::None);
 
-                // Do test
-                job.pay_workers(pops, &data, &market);
-                // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 75.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 75.0);
-                assert_eq!(*job.property.get(&2).unwrap(), 10.0);
-                assert_eq!(job.time, 25.0);
-                // check that the worker has been paid.
-                let pop = pops.get(&0).unwrap();
-                assert_eq!(pop.unused_time, 75.0);
-                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
-                assert!(!pop.property.contains_key(&1));
-                assert!(!pop.property.contains_key(&2));
-                // check that the owner was paid half of the excess.
-                let owner = pops.get(&1).unwrap();
-                assert_eq!(owner.unused_time, 1.0);
-                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
-                assert_eq!(*owner.property.get(&1).unwrap(), 0.0);
-                assert_eq!(*owner.property.get(&2).unwrap(), 10.0);
-            }
+                let input = test.inputs.get(3).unwrap();
+                assert_eq!(input.good, 0);
+                assert_eq!(input.tag, InputTag::Used);
+                let input = test.inputs.get(4).unwrap();
+                assert_eq!(input.good, 1);
+                assert_eq!(input.tag, InputTag::Used);
+                let input = test.inputs.get(5).unwrap();
+                assert_eq!(input.good, 2);
+                assert_eq!(input.tag, InputTag::Used);
 
-            #[test]
-            pub fn pay_workers_w_owner_below_min_target() {
-                // Set up Data
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                // set up good data
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                // set up process info
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
-                // Set up Job Property
-                // 25.0 to workers, 10 iterations available for work
-                let mut property = HashMap::new();
-                property.insert(0, 35.0);
-                property.insert(1, 10.0);
-                // Job Target
-                let mut target = HashMap::new();
-                target.insert(0, 25.0);
-                // Job Process Priority
-                let process = vec![0];
-                // job wage.
-                let mut wage = HashMap::new();
-                wage.insert(0, 1.0);
-                // the job
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage,
-                    time_purchase: 25.0,
-                    owner: Some(1),
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 2.0,
-                    property,
-                    time: 0.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                // setup worker pop.
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 100.0,
-                };
-                // setup owner pop.
-                let owner = Pop {
-                    id: 1,
-                    size: 1.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 1.0,
-                };
-                // insert pops into storage.
-                let pops = &mut HashMap::new();
-                pops.insert(0, pop); // worker
-                pops.insert(1, owner);
+                let input = test.inputs.get(6).unwrap();
+                assert_eq!(input.good, 0);
+                assert_eq!(input.tag, InputTag::Consumed);
+                let input = test.inputs.get(7).unwrap();
+                assert_eq!(input.good, 1);
+                assert_eq!(input.tag, InputTag::Consumed);
+                let input = test.inputs.get(8).unwrap();
+                assert_eq!(input.good, 2);
+                assert_eq!(input.tag, InputTag::Consumed);
 
-                // Setup Market info.
-                let mut goods_info = HashMap::new();
-                goods_info.insert(0, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(1, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(2, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                let good_trade_priority = vec![0, 1, 2];
-                let market = Market {
-                    id: 0,
-                    name: "market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info,
-                    monies: HashSet::new(),
-                    good_trade_priority,
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
+                let test = test.uses_input(ProcessInput::new(5, 10.0));
+                let input = test.inputs.get(9).unwrap();
+                assert_eq!(input.good, 2);
+                assert_eq!(input.tag, InputTag::Consumed);
 
-                // Do test
-                job.pay_workers(pops, &data, &market);
-                // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 10.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 10.0);
-                assert!(!job.property.contains_key(&2));
-                assert_eq!(job.time, 25.0);
-                // check that the worker has been paid.
-                let pop = pops.get(&0).unwrap();
-                assert_eq!(pop.unused_time, 75.0);
-                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
-                assert!(!pop.property.contains_key(&1));
-                assert!(!pop.property.contains_key(&2));
-                // check that the owner was paid half of the excess.
-                let owner = pops.get(&1).unwrap();
-                assert_eq!(owner.unused_time, 1.0);
-                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
-                assert_eq!(*owner.property.get(&0).unwrap(), 0.0);
-            }
-
-            #[test]
-            pub fn pay_workers_w_owner_overflowing_inputs() {
-                // Set up Data
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                // set up good data
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                // set up process info
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
-                // Set up Job Property
-                let mut property = HashMap::new();
-                property.insert(0, 125.0);
-                property.insert(1, 100.0);
-                // Job Target
-                let mut target = HashMap::new();
-                target.insert(0, 25.0);
-                // Job Process Priority
-                let process = vec![0];
-                // job wage.
-                let mut wage = HashMap::new();
-                wage.insert(0, 1.0);
-                // the job
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage,
-                    time_purchase: 25.0,
-                    owner: Some(1),
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 2.0,
-                    property,
-                    time: 0.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                // setup worker pop.
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 100.0,
-                };
-                // setup owner pop.
-                let owner = Pop {
-                    id: 1,
-                    size: 1.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 1.0,
-                };
-                // insert pops into storage.
-                let pops = &mut HashMap::new();
-                pops.insert(0, pop); // worker
-                pops.insert(1, owner);
-
-                // Setup Market info.
-                let mut goods_info = HashMap::new();
-                goods_info.insert(0, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(1, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                goods_info.insert(2, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                let good_trade_priority = vec![0, 1, 2];
-                let market = Market {
-                    id: 0,
-                    name: "market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info,
-                    monies: HashSet::new(),
-                    good_trade_priority,
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-
-                // Do test
-                job.pay_workers(pops, &data, &market);
-                // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 50.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 50.0);
-                assert!(!job.property.contains_key(&2));
-                assert_eq!(job.time, 25.0);
-                // check that the worker has been paid.
-                let pop = pops.get(&0).unwrap();
-                assert_eq!(pop.unused_time, 75.0);
-                assert_eq!(*pop.property.get(&0).unwrap(), 25.0);
-                assert!(!pop.property.contains_key(&1));
-                assert!(!pop.property.contains_key(&2));
-                // check that the owner was paid half of the excess.
-                let owner = pops.get(&1).unwrap();
-                assert_eq!(owner.unused_time, 1.0);
-                assert_eq!(*owner.property.get(&0).unwrap(), 50.0);
-                assert_eq!(*owner.property.get(&1).unwrap(), 50.0);
-            }
-
-            #[test]
-            pub fn take_property_from_worker_owners() {
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
-                let mut property = HashMap::new();
-                property.insert(0, 100.0);
-                property.insert(1, 100.0);
-                let mut target = HashMap::new();
-                target.insert(0, 100.0);
-                let process = vec![0];
-
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage: HashMap::new(),
-                    time_purchase: 100.0,
-                    owner: None,
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 2.0,
-                    property,
-                    time: 100.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                job.property.insert(0, 100.0);
-                job.property.insert(1, 100.0);
-                job.target.insert(0, 100.0);
-
-                let mut pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property: HashMap::new(),
-                    unused_time: 100.0,
-                };
-                pop.property.insert(0, 100.0);
-                pop.property.insert(1, 100.0);
-                pop.property.insert(2, 100.0);
-
-                let pops = &mut HashMap::new();
-                pops.insert(0, pop);
-
-                let mut good_info = HashMap::new();
-                good_info.insert(0, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                good_info.insert(1, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                good_info.insert(2, GoodData{
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                let market = Market {
-                    id: 0,
-                    name: "market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: good_info,
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-
-                job.pay_workers(pops, &data, &market);
-                // check everything was moved over correctly.
-                assert_eq!(*job.property.get(&0).unwrap(), 200.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 200.0);
-                assert_eq!(*job.property.get(&2).unwrap(), 100.0);
-                assert_eq!(job.time, 100.0);
-                // check that the pop had it's stuff removed.
-                let pop = pops.get(&0).unwrap();
-                assert_eq!(pop.unused_time, 0.0);
-                assert!(!pop.property.contains_key(&0));
-                assert!(!pop.property.contains_key(&1));
-                assert!(!pop.property.contains_key(&2));
+                let input = test.inputs.get(3).unwrap();
+                assert_eq!(input.good, 5);
+                assert_eq!(input.tag, InputTag::None);
             }
         }
 
-        mod process_inputs_should {
-            use std::collections::{HashMap, VecDeque};
+        mod do_process_should {
+            use std::collections::HashMap;
 
-            use crate::{data::Data, good::Good, job::Job, process::{InputType, Process}};
+            use crate::{data::Data, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, process::{InputTag, Process, ProcessInput, ProcessOutput}, want::Want};
 
             #[test]
-            pub fn correctly_collect_process_inputs() {
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
+            pub fn run_simple_full_process_correctly() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0));
 
-                let mut process2 = Process {
-                    id: 1,
-                    name: "testproc1".to_string(),
-                    parent: None,
-                    time: 5.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process2.inputs.insert(3, 20.0);
-                process2.input_type.insert(3, InputType::Input);
-                process2.outputs.insert(4, 40.0);
-                data.processes.insert(1, process2);
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
 
-                let mut property = HashMap::new();
-                property.insert(0, 100.0);
-                property.insert(1, 100.0);
-                let mut target = HashMap::new();
-                target.insert(0, 100.0); // 100 times
-                target.insert(1, 100.0); // 20 times
-                let process = vec![0];
+                let mut availables = HashMap::new();
+                availables.insert(0, 10.0);
+                availables.insert(1, 10.0);
+                availables.insert(2, 10.0);
+                availables.insert(3, 10.0);
+                availables.insert(10, 10.0);
+                availables.insert(11, 10.0);
+                availables.insert(12, 10.0);
+                availables.insert(13, 10.0);
 
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage: HashMap::new(),
-                    time_purchase: 100.0,
-                    owner: None,
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 2.0,
-                    property,
-                    time: 100.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                job.property.insert(0, 100.0);
-                job.property.insert(1, 100.0);
-                job.target.insert(0, 100.0);
-                job.target.insert(1, 50.0);
-                let results = job.process_inputs(&data);
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(1.0))
+                    .with_good_record(2, GoodRecord::new().with_price(1.0))
+                    .with_good_record(3, GoodRecord::new().with_price(1.0))
+                    .with_good_record(10, GoodRecord::new().with_price(1.0))
+                    .with_good_record(11, GoodRecord::new().with_price(1.0))
+                    .with_good_record(12, GoodRecord::new().with_price(1.0))
+                    .with_good_record(13, GoodRecord::new().with_price(1.0));
+                
+                let result = test.do_process(&availables, &data, 1.0, &market_history);
 
-                assert_eq!(*results.get(&0).unwrap(), 100.0);
-                assert_eq!(*results.get(&1).unwrap(), 100.0);
-                assert_eq!(*results.get(&3).unwrap(), 200.0);
-                // ensure no outputs included
-                assert_eq!(results.get(&2), None);
-                assert_eq!(results.get(&4), None);
+                assert_eq!(result.iterations, 1.0);
+                assert_eq!(result.consumed.len(), 2);
+                assert_eq!(*result.consumed.get(&0).unwrap(), 1.0);
+                assert_eq!(*result.consumed.get(&1).unwrap(), 1.0);
+                println!("Used");
+                for (good, amt) in result.used.iter() {
+                    println!("Good {}: {}", good, amt);
+                }
+                assert_eq!(result.used.len(), 2);
+                assert_eq!(*result.used.get(&0).unwrap(), 1.0);
+                assert_eq!(*result.used.get(&2).unwrap(), 1.0);
+                assert_eq!(result.created.len(), 3);
+                assert_eq!(*result.created.get(&Item::Good(11)).unwrap(), 2.0);
+                assert_eq!(*result.created.get(&Item::Good(3)).unwrap(), 2.0);
+                assert_eq!(*result.created.get(&Item::Want(5)).unwrap(), 3.0);
+            }
+
+            #[test]
+            pub fn run_full_process_with_optionals_correctly() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(1.5);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 10.0);
+                availables.insert(1, 10.0);
+                availables.insert(2, 10.0);
+                availables.insert(3, 10.0);
+                availables.insert(10, 10.0);
+                availables.insert(11, 10.0);
+                availables.insert(12, 10.0);
+                availables.insert(13, 10.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 1.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 1.0);
+                assert_eq!(result.consumed.len(), 2);
+                assert_eq!(*result.consumed.get(&0).unwrap(), 1.0);
+                assert_eq!(*result.consumed.get(&1).unwrap(), 0.5);
+                assert_eq!(result.used.len(), 2);
+                assert_eq!(*result.used.get(&0).unwrap(), 1.0);
+                assert_eq!(*result.used.get(&2).unwrap(), 0.0);
+                assert_eq!(result.created.len(), 3);
+                assert_eq!(*result.created.get(&Item::Good(11)).unwrap(), 1.0);
+                assert_eq!(*result.created.get(&Item::Good(3)).unwrap(), 2.0);
+                assert_eq!(*result.created.get(&Item::Want(5)).unwrap(), 3.0);
+            }
+
+            #[test]
+            pub fn run_partial_process_with_optionals_correctly() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(1.5);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 10.0);
+                availables.insert(1, 10.0);
+                availables.insert(2, 10.0);
+                availables.insert(3, 10.0);
+                availables.insert(10, 10.0);
+                availables.insert(11, 10.0);
+                availables.insert(12, 10.0);
+                availables.insert(13, 10.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 20.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 12.0);
+                assert_eq!(result.consumed.len(), 2);
+                assert_eq!(*result.consumed.get(&0).unwrap(), 10.0);
+                assert_eq!(*result.consumed.get(&1).unwrap(), 10.0);
+                assert_eq!(result.used.len(), 2);
+                assert_eq!(*result.used.get(&0).unwrap(), 0.0);
+                assert_eq!(*result.used.get(&2).unwrap(), 10.0);
+                assert_eq!(result.created.len(), 3);
+                assert_eq!(*result.created.get(&Item::Good(11)).unwrap(), 20.0);
+                assert_eq!(*result.created.get(&Item::Good(3)).unwrap(), 24.0);
+                assert_eq!(*result.created.get(&Item::Want(5)).unwrap(), 36.0);
+            }
+
+            #[test]
+            pub fn run_partial_process_with_optionals_and_large_excess() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(1.5);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 100.0);
+                availables.insert(1, 4.0);
+                availables.insert(2, 4.0);
+                availables.insert(3, 100.0);
+                availables.insert(10, 100.0);
+                availables.insert(11, 100.0);
+                availables.insert(12, 100.0);
+                availables.insert(13, 100.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 20.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 16.0);
+                assert_eq!(result.consumed.len(), 2);
+                assert_eq!(*result.consumed.get(&0).unwrap(), 16.0);
+                assert_eq!(*result.consumed.get(&1).unwrap(), 4.0);
+                assert_eq!(result.used.len(), 2);
+                assert_eq!(*result.used.get(&0).unwrap(), 16.0);
+                assert_eq!(*result.used.get(&2).unwrap(), 4.0);
+                assert_eq!(result.created.len(), 3);
+                assert_eq!(*result.created.get(&Item::Good(11)).unwrap(), 8.0);
+                assert_eq!(*result.created.get(&Item::Good(3)).unwrap(), 32.0);
+                assert_eq!(*result.created.get(&Item::Want(5)).unwrap(), 48.0);
+            }
+
+            #[test]
+            pub fn run_partial_process_with_optionals_and_unable_to_run_with_one_leg() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(1.5);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 100.0);
+                availables.insert(1, 0.0);
+                availables.insert(2, 0.0);
+                availables.insert(3, 100.0);
+                availables.insert(10, 100.0);
+                availables.insert(11, 100.0);
+                availables.insert(12, 100.0);
+                availables.insert(13, 100.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 5.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 0.0);
+                assert_eq!(result.consumed.len(), 0);
+                assert_eq!(result.used.len(), 0);
+                assert_eq!(result.created.len(), 0);
+            }
+
+            #[test]
+            pub fn run_partial_process_with_optionals_and_unable_to_run_with_multiple_leg() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(0.5);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 100.0);
+                availables.insert(1, 3.0);
+                availables.insert(2, 0.0);
+                availables.insert(3, 100.0);
+                availables.insert(10, 100.0);
+                availables.insert(11, 100.0);
+                availables.insert(12, 100.0);
+                availables.insert(13, 100.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 5.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 0.0);
+                assert_eq!(result.consumed.len(), 0);
+                assert_eq!(result.used.len(), 0);
+                assert_eq!(result.created.len(), 0);
+            }
+        
+            
+            #[test]
+            pub fn run_partial_process_with_optionals_first_leg_solution() {
+                let test = Process::new(0, String::from("test"), String::new())
+                    .uses_input(ProcessInput::new(0, 1.0))
+                    .uses_input(ProcessInput::new(0, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(2, 1.0).with_tag(InputTag::Used))
+                    .uses_input(ProcessInput::new(1, 1.0).with_tag(InputTag::Consumed))
+                    .has_output(ProcessOutput::new(Item::Want(5), 3.0))
+                    .has_output(ProcessOutput::new(Item::Good(3), 2.0))
+                    .with_optionals(1.0);
+
+                let mut data = Data::new();
+                // Initial goods
+                data.goods.insert(0, Good::new(0, "0".to_string(), String::new())
+                    .decays_to(10, 2.0));
+                data.goods.insert(1, Good::new(1, "1".to_string(), String::new())
+                    .decays_to(11, 2.0));
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::new())
+                    .decays_to(12, 2.0));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::new())
+                    .decays_to(13, 2.0));
+                // Resulting goods, just in case.
+                data.goods.insert(10, Good::new(10, "10".to_string(), String::new()));
+                data.goods.insert(11, Good::new(11, "11".to_string(), String::new()));
+                data.goods.insert(12, Good::new(12, "12".to_string(), String::new()));
+                data.goods.insert(13, Good::new(13, "13".to_string(), String::new()));
+                // And our output want.
+                data.wants.insert(5, Want::new(5, "5".to_string()));
+
+                let mut availables = HashMap::new();
+                availables.insert(0, 100.0);
+                availables.insert(1, 4.0);
+                availables.insert(2, 0.0);
+                availables.insert(3, 100.0);
+                availables.insert(10, 100.0);
+                availables.insert(11, 100.0);
+                availables.insert(12, 100.0);
+                availables.insert(13, 100.0);
+
+                let market_history = MarketHistory::new()
+                    .with_good_record(0, GoodRecord::new().with_price(1.0))
+                    .with_good_record(1, GoodRecord::new().with_price(2.0))
+                    .with_good_record(2, GoodRecord::new().with_price(3.0))
+                    .with_good_record(3, GoodRecord::new().with_price(4.0))
+                    .with_good_record(10, GoodRecord::new().with_price(5.0))
+                    .with_good_record(11, GoodRecord::new().with_price(6.0))
+                    .with_good_record(12, GoodRecord::new().with_price(7.0))
+                    .with_good_record(13, GoodRecord::new().with_price(8.0));
+                
+                let result = test.do_process(&availables, &data, 20.0, &market_history);
+
+                // The most expensive items should be removed first.
+                assert_eq!(result.iterations, 4.0);
+                assert_eq!(result.consumed.len(), 2);
+                assert_eq!(*result.consumed.get(&0).unwrap(), 4.0);
+                assert_eq!(*result.consumed.get(&1).unwrap(), 4.0);
+                assert_eq!(result.used.len(), 2);
+                assert_eq!(*result.used.get(&0).unwrap(), 4.0);
+                assert_eq!(*result.used.get(&2).unwrap(), 0.0);
+                assert_eq!(result.created.len(), 3);
+                assert_eq!(*result.created.get(&Item::Good(11)).unwrap(), 8.0);
+                assert_eq!(*result.created.get(&Item::Good(3)).unwrap(), 8.0);
+                assert_eq!(*result.created.get(&Item::Want(5)).unwrap(), 12.0);
+            }
+        }
+    }
+
+    mod desire_tests {
+        mod current_priority_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn calculate_priority_update() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
+                    PriorityFn::linear(2.0))
+                    .with_steps(0);
+                test_linear.satisfaction = 3.0;
+                let current = test_linear.current_priority();
+                assert_eq!(current, 8.0);
+                test_linear.satisfaction = 5.0;
+                let current = test_linear.current_priority();
+                assert_eq!(current, 12.0);
+
+                let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
+                    PriorityFn::quadratic(2.0))
+                    .with_steps(0);
+                test_quad.satisfaction = 1.0;
+                let current = test_quad.current_priority();
+                assert_eq!(current, -1.0);
+                test_quad.satisfaction = 3.0;
+                let current = test_quad.current_priority();
+                assert_eq!(current, 31.0);
+
+                let mut test_exp = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::exponential(1.0, 2.0))
+                    .with_steps(0);
+                test_exp.satisfaction = 0.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 10.0);
+                test_exp.satisfaction = 1.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 13.0);
+                test_exp.satisfaction = 2.0;
+                let current = test_exp.current_priority();
+                assert_eq!(current, 25.0);
             }
         }
 
-        mod do_work_should {
-            use std::collections::{HashMap, VecDeque};
-
-            use crate::{data::Data, good::Good, job::{Job, WorkResults}, process::{InputType, Process}};
+        mod weight_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
 
             #[test]
-            pub fn correctly_do_and_record_work_results() {
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.goods.insert(0, Good {
-                    id: 0,
-                    name: "prod0".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(1, Good {
-                    id: 1,
-                    name: "prod1".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                data.goods.insert(2, Good {
-                    id: 2,
-                    name: "prod2".to_string(),
-                    durability: 1.0,
-                    bulk: 1.0,
-                    mass: 1.0,
-                    tags: vec![],
-                });
-                let mut process = Process {
-                    id: 0,
-                    name: "testproc".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs: HashMap::new(),
-                    optional: 0.0,
-                    input_type: HashMap::new(),
-                    outputs: HashMap::new(),
-                };
-                process.inputs.insert(0, 1.0);
-                process.inputs.insert(1, 1.0);
-                process.input_type.insert(0, InputType::Input);
-                process.input_type.insert(1, InputType::Capital);
-                process.outputs.insert(2, 2.0);
-                data.processes.insert(0, process);
-                let mut property = HashMap::new();
-                property.insert(0, 100.0);
-                property.insert(1, 100.0);
-                let mut target = HashMap::new();
-                target.insert(0, 100.0);
-                let process = vec![0];
+            pub fn correctly_calculate_weight() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
+                    PriorityFn::linear(2.0))
+                    .with_steps(0);
+                test_linear.satisfaction = 3.0;
+                let current = test_linear.weight();
+                assert_eq!(current, 0.5);
+                test_linear.satisfaction = 5.0;
+                let current = test_linear.weight();
+                assert_eq!(current, 0.5);
 
-                let mut job = Job {
-                    id: 0,
-                    name: "test".to_string(),
-                    workers: 0,
-                    wage: HashMap::new(),
-                    time_purchase: 100.0,
-                    owner: None,
-                    lenders: vec![],
-                    process,
-                    target,
-                    excess_input_max: 2.0,
-                    property,
-                    time: 100.0,
-                    property_history: VecDeque::new(),
-                    amv_history: VecDeque::new(),
-                    dividend: 0.5,
-                };
-                job.property.insert(0, 100.0);
-                job.property.insert(1, 100.0);
-                job.target.insert(0, 100.0);
+                let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
+                    PriorityFn::quadratic(2.0))
+                    .with_steps(0);
+                test_quad.satisfaction = 1.0;
+                let current = test_quad.weight();
+                assert_eq!(current, 0.25);
+                test_quad.satisfaction = 2.0;
+                let current = test_quad.weight();
+                assert_eq!(current, 0.125);
 
-                let prior_results = WorkResults {
-                    input_costs: HashMap::new(),
-                    goods_consumed: HashMap::new(),
-                    goods_used: HashMap::new(),
-                    wages_paid: HashMap::new(),
-                    interest_paid: HashMap::new(),
-                    process_time_success: HashMap::new(),
-                    produced_goods: HashMap::new(),
-                };
-                let result = job.do_work(&data, prior_results);
-                // check Work Results is correct.
-                assert_eq!(*result.goods_consumed.get(&0).unwrap(), 100.0);
-                assert_eq!(*result.goods_used.get(&1).unwrap(), 100.0);
-                assert_eq!(*result.produced_goods.get(&2).unwrap(), 221.0);
-                assert_eq!(*result.process_time_success.get(&0).unwrap(), 100.0);
-                // Check that the job's property matches these changes.
-                assert_eq!(*job.property.get(&0).unwrap(), 0.0);
-                assert_eq!(*job.property.get(&1).unwrap(), 0.0);
-                assert_eq!(*job.property.get(&2).unwrap(), 221.0);
+                let mut test_exp = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::exponential(1.0, 2.0))
+                    .with_steps(0);
+                test_exp.satisfaction = 0.0;
+                let current = test_exp.weight();
+                assert_eq!(current, 0.0);
+                test_exp.satisfaction = 1.0;
+                let current = test_exp.weight();
+                assert_eq!(current, 1.0 / 3.0);
+            }
+        }
+
+        mod end_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn correctly_calculate_end_value() {
+                // Base (1) step
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0));
+                assert_eq!(d.end(), Some(1.0));
+
+                // Dictated ending step.
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(20);
+                assert_eq!(d.end(), Some(20.0));
+
+                // Unending
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+                assert_eq!(d.end(), None);
+            }
+        }
+        /*
+        mod current_valuation_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn calculate_single_step_value_correctly() {
+                let mut stepless = Desire::new(Item::Good(0), 2.0, 2.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                stepless.satisfaction = 1.0;
+                // partial satisfaction
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 0.5);
+                assert!((unit_len / 2.0) + 0.000000001 > value && 
+                    value > (unit_len / 2.0) - 0.000000001);
+                
+                // full step satisfaction
+                stepless.satisfaction = 2.0;
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 1.0);
+                assert!((unit_len) + 0.000000001 > value && 
+                    value > (unit_len) - 0.000000001);
+
+                // extra step satisfaction
+                stepless.satisfaction = 3.0;
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 1.5);
+                assert!((unit_len * 1.5) + 0.000000001 > value && 
+                    value > (unit_len * 1.5) - 0.000000001);
+
+                // extra step satisfaction
+                stepless.satisfaction = 4.5;
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 2.25);
+                assert!((unit_len * 2.25) + 0.000000001 > value && 
+                    value > (unit_len * 2.25) - 0.000000001);
+                
+                                // extra step satisfaction
+                stepless.satisfaction = 6.0;
+                let val = stepless.current_valuation();
+                let steps = val.0;
+                let value = val.1;
+                assert_eq!(steps, 3.0);
+                assert_eq!(value, unit_len * 3.0);
+            }
+        }
+
+        mod expected_value_should {
+            use crate::{desire::{Desire, PriorityFn}, item::Item};
+
+            #[test]
+            pub fn return_positive_and_correct_value_when_positive_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 2.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(3.0);
+                assert_eq!(result, unit_len * 3.0);
+            }
+
+            #[test]
+            pub fn return_negative_and_correct_value_when_negative_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 6.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(-3.0);
+                assert_eq!(result, -unit_len * 3.0);
+            }
+
+            #[test]
+            pub fn return_negative_and_correctly_capped_value_when_big_negative_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(0);
+                test.satisfaction = 3.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(-4.0);
+                assert_eq!(result, unit_len * -3.0);
+            }
+
+            #[test]
+            pub fn return_positive_and_correctly_capped_value_when_big_positive_satisfaction() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
+                    PriorityFn::linear(4.0 / 3.0))
+                    .with_steps(3);
+                test.satisfaction = 2.0;
+                let unit_len = 1.0 - 5.0 / 3.0;
+
+                let result = test.expected_value(1.0);
+                assert_eq!(result, unit_len);
+            }
+        }
+        */
+        mod assertion_checks {
+            use std::mem::discriminant;
+
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, household::HouseholdMember, item::Item};
+
+            #[test]
+            #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
+            pub fn fail_when_lifeneed_tag_and_no_end() {
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_steps(0)
+                .with_tag(DesireTag::life_need(0.5));
+            }
+
+            #[test]
+            #[should_panic(expected = "Desire has the LifeNeed tag. It must have a finite number of steps.")]
+            pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_tag(DesireTag::life_need(0.5))
+                .with_steps(0);
+            }
+
+            #[test]
+            #[should_panic(expected = "Same Tags, never safe.")]
+            pub fn panic_with_duplicate_tags_put_in() {
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_tag(DesireTag::HouseholdNeed)
+                .with_tag(DesireTag::HouseholdNeed);
+            }
+
+            #[test]
+            #[should_panic(expected = "Household Need cannot be next to a HouseMemberNeed.")]
+            pub fn panic_when_inserting_housememberneed_and_householdneed_exists() {
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_tag(DesireTag::HouseholdNeed)
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult));
+            }
+            
+            #[test]
+            #[should_panic(expected = "HouseMemberNeed cannot be next to a HouseholdNeed.")]
+            pub fn panic_when_inserting_householdrneed_and_housememberneed_exists() {
+                Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
+                .with_tag(DesireTag::HouseholdNeed);
+            }
+
+            #[test]
+            pub fn insert_tags_into_desire_sorted() {
+                let test = Desire::new(Item::Good(0), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
+                .with_tag(DesireTag::life_need(0.5));
+
+                // check ordering
+                assert!(discriminant(test.tags.get(0).unwrap()) == discriminant(&DesireTag::LifeNeed(0.0)));
+                assert!(discriminant(test.tags.get(1).unwrap()) == discriminant(&DesireTag::HouseMemberNeed(HouseholdMember::Adult)))
             }
         }
     }
 
     mod pop_tests {
-        mod check_barter_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+        mod try_satisfy_until_incomplete_should {
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::{Good, GoodTags}, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
-            pub fn correctly_calculate_success_and_failure_on_offer_with_more_than_10_desires() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2), // 10
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
+            pub fn correctly_stop_when_incomplete_found() {
+                // set up data for goods.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                // set up market info, including a currency.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                // create a pop and property.
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(5.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                // initial AMV = 45.0
+                // add Desires to satisfy.
+                test_pop.desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                // should consume 25.0 AMV, 5 steps of each, range from 1.0 to 6.0.
 
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
+                // run function 
+                test_pop.try_satisfy_until_incomplete(&data, &market);
 
-                let mut property = HashMap::new();
-                property.insert(0, 400.0);
-                property.insert(1, 600.0);
-                property.insert(2, 400.0);
-                //property.insert(3, 100.0);
+                // test results
+                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
+                assert_eq!(test_pop.satisfaction.steps, 25.0);
 
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                // give level 0.5 item for level 13
-                take.insert(2, 100.0);
-                give.insert(0, 100.0);
-
-                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                take.insert(2, 200.0);
-                give.insert(1, 100.0);
-
-                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
+                assert_eq!(test_pop.property.get(&2).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&3).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&6).unwrap().reserved, 5.0);
             }
 
             #[test]
-            pub fn correctly_calculate_failure_on_sat_only_exchange() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
+            pub fn correctly_stop_when_incomplete_found_using_self_working_desires() {
+                // set up data for goods.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                // set up market info, including a currency.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                // create a pop and property.
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(5.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                // initial AMV = 45.0
+                // add Desires to satisfy.
+                test_pop.working_desires.push_back(Desire::new(Item::Good(2), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(4), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                test_pop.working_desires.push_back(Desire::new(Item::Good(6), 1.0, 1.0, PriorityFn::Linear { slope: 1.0 })
+                    .with_steps(0));
+                // should consume 25.0 AMV, 5 steps of each, range from 1.0 to 6.0.
 
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
+                // run function 
+                test_pop.try_satisfy_until_incomplete(&data, &market);
 
-                let mut property = HashMap::new();
-                property.insert(0, 200.0);
-                property.insert(1, 300.0);
-                property.insert(2, 200.0);
-                //property.insert(3, 100.0);
+                // test results
+                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
+                assert_eq!(test_pop.satisfaction.steps, 25.0);
 
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                // give level 0.5 item for level 2
-                take.insert(2, 100.0);
-                give.insert(0, 100.0);
-
-                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_success_on_sat_only_exchange() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 100.0);
-                property.insert(1, 300.0);
-                property.insert(2, 200.0);
-                //property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                // give level 1 item for level 2
-                take.insert(2, 100.0);
-                give.insert(0, 100.0);
-
-                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_failure_on_sat_only_take() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let give = HashMap::new();
-                //take.insert(3, 49.0);
-                take.insert(1, 50.0);
-
-                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_success_on_sat_only_gift() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let take = HashMap::new();
-                let mut give = HashMap::new();
-                //take.insert(3, 49.0);
-                give.insert(1, 50.0);
-
-                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_success_on_amv_only_trade() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                take.insert(3, 49.0);
-                give.insert(4, 50.0);
-
-                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_failure_on_amv_only_trade() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(4, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let mut give = HashMap::new();
-                take.insert(3, 50.0);
-                give.insert(4, 49.0);
-
-                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_failure_on_amv_loss() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let mut take = HashMap::new();
-                let give = HashMap::new();
-                take.insert(3, 50.0);
-
-                assert!(!pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-            #[test]
-            pub fn correctly_calculate_success_on_amv_gift() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let take = HashMap::new();
-                let mut give = HashMap::new();
-                give.insert(3, 200.0);
-
-                assert!(pop.check_barter(give, take, &market, &data), "Did not work properly.");
-            }
-
-        }
-
-        mod possible_satisfaciton_gain_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
-
-            #[test]
-            pub fn correctly_calculate_full_satisfaction_more_than_10_entries() {
-                let desires = vec![ // 21 entries
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 1500.0); // 6 desires
-                property.insert(1, 2000.0); // 9 desires
-                property.insert(2, 1800.0); // 6 desires
-                property.insert(3, 50.0);  // 0 desires
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(1) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(2) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(3) .unwrap(), 400.0); // 2
-                assert_eq!(*results.get(4) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(5) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(6) .unwrap(), 400.0); // 2
-                assert_eq!(*results.get(7) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(8) .unwrap(), 200.0); // 0
-                assert_eq!(*results.get(9) .unwrap(), 200.0); // 1
-                assert_eq!(*results.get(10).unwrap(), 300.0);// 2
-                assert_eq!(*results.get(11).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(12).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(13).unwrap(), 300.0);// 2
-                assert_eq!(*results.get(14).unwrap(), 200.0);// 0
-                assert_eq!(*results.get(15).unwrap(), 200.0);// 0
-                assert_eq!(*results.get(16).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(17).unwrap(), 200.0);// 2
-                assert_eq!(*results.get(18).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(19).unwrap(), 100.0);// 1
-                assert_eq!(*results.get(20).unwrap(), 200.0);// 2
-                assert_eq!(l, 2.0);
-                assert_eq!(amv, 50.0);
-                let result = pop.possible_satisfaciton_gain(None, &market, &data);
-                assert_eq!(*result.get(0) .unwrap(), 300.0); // 0
-                assert_eq!(*result.get(1) .unwrap(), 300.0); // 0
-                assert_eq!(*result.get(2) .unwrap(), 300.0); // 1
-                assert_eq!(*result.get(3) .unwrap(), 400.0); // 2
-                assert_eq!(*result.get(4) .unwrap(), 300.0); // 1
-                assert_eq!(*result.get(5) .unwrap(), 300.0); // 1
-                assert_eq!(*result.get(6) .unwrap(), 400.0); // 2
-                assert_eq!(*result.get(7) .unwrap(), 300.0); // 0
-                assert_eq!(*result.get(8) .unwrap(), 200.0); // 0
-                assert_eq!(*result.get(9) .unwrap(), 200.0); // 1
-                assert_eq!(*result.get(10).unwrap(), 300.0);// 2
-                assert_eq!(*result.get(11).unwrap(), 200.0);// 1
-                assert_eq!(*result.get(12).unwrap(), 200.0);// 1
-                assert_eq!(*result.get(13).unwrap(), 300.0);// 2
-                assert_eq!(*result.get(14).unwrap(), 200.0);// 0
-                assert_eq!(*result.get(15).unwrap(), 200.0);// 0
-                assert_eq!(*result.get(16).unwrap(), 200.0);// 1
-                assert_eq!(*result.get(17).unwrap(), 200.0);// 2
-                assert_eq!(*result.get(18).unwrap(), 200.0);// 1
-                assert_eq!(*result.get(19).unwrap(), 150.0);// 1
-                assert_eq!(*result.get(20).unwrap(), 200.0);// 2
-            }
-
-            #[test]
-            pub fn correctly_expend_excess_amv_with_less_than_10_entries() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0).unwrap(), 200.0);
-                assert_eq!(*results.get(1).unwrap(), 100.0);
-                assert_eq!(*results.get(2).unwrap(), 200.0);
-                assert_eq!(*results.get(3).unwrap(), 200.0);
-                assert_eq!(*results.get(4).unwrap(), 100.0);
-                assert_eq!(*results.get(5).unwrap(), 100.0);
-                assert_eq!(*results.get(6).unwrap(), 200.0);
-                assert_eq!(l, 2.0);
-                assert_eq!(amv, 100.0);
-                let result = pop.possible_satisfaciton_gain(None, &market, &data);
-                assert_eq!(*result.get(0).unwrap(), 200.0);
-                assert_eq!(*result.get(1).unwrap(), 200.0);
-                assert_eq!(*result.get(2).unwrap(), 200.0);
-                assert_eq!(*result.get(3).unwrap(), 200.0);
-                assert_eq!(*result.get(4).unwrap(), 100.0);
-                assert_eq!(*result.get(5).unwrap(), 100.0);
-                assert_eq!(*result.get(6).unwrap(), 200.0);
+                assert_eq!(test_pop.property.get(&2).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&3).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test_pop.property.get(&6).unwrap().reserved, 5.0);
             }
         }
 
-        mod consume_goods_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
+        mod create_sell_orders_should {
+            use crate::{data::Data, good::{Good, GoodTags}, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
-            pub fn consume_and_reserve_goods_correctly() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
+            pub fn correctly_return_available_goods_for_sale() {
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), 
+                    String::from("")).with_tags(vec![GoodTags::Nonexchangeable]));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.currencies.insert(3);
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.property.insert(2, PropertyRecord::new(10.0));
+                test_pop.property.insert(3, PropertyRecord::new(10.0));
+                test_pop.property.insert(4, PropertyRecord::new(10.0));
+                test_pop.property.insert(5, PropertyRecord::new(10.0));
+                test_pop.property.get_mut(&5).unwrap().target = 5.0;
+                test_pop.property.insert(6, PropertyRecord::new(10.0));
+                test_pop.property.get_mut(&6).unwrap().target = 10.0;
 
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let mut pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                pop.consume_goods(&market, &data, None);
-                // check property
-                assert_eq!(*pop.property.get(&0).unwrap(), 100.0);
-                assert_eq!(*pop.property.get(&1).unwrap(), 200.0);
-                assert_eq!(*pop.property.get(&2).unwrap(), 300.0);
-                assert_eq!(*pop.property.get(&3).unwrap(), 100.0);
+                let result = test_pop.create_sell_orders(&data, &market);
+                assert!(!result.contains_key(&2));
+                assert!(!result.contains_key(&3));
+                assert_eq!(*result.get(&4).unwrap(), 10.0);
+                assert_eq!(*result.get(&5).unwrap(), 5.0);
+                assert!(!result.contains_key(&6));
             }
         }
 
-        mod starving_pops_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
-
-            #[test]
-            pub fn find_staving_pops_when_all_are_fed() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 150.0);
-                property.insert(1, 100.0);
-                property.insert(2, 75.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 10.0,
-                };
-
-                let result = pop.starving_pops(&market, &data, None);
-                assert_eq!(result, 0.0);
-            }
-
-            #[test]
-            pub fn find_staving_pops_when_some_are_starving() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 50.0);
-                property.insert(1, 100.0);
-                property.insert(2, 75.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 10.0,
-                };
-
-                let result = pop.starving_pops(&market, &data, None);
-                assert_eq!(result, 50.0);
-            }
-        }
-
-        mod satisfaction_spread_should{
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
- 
-            #[test]
-            pub fn correctly_calculate_simple_spread() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 800.0);
-                property.insert(1, 550.0);
-                property.insert(2, 456.0);
-                property.insert(3, 200.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (lower, upper, average) = pop.satisfaction_spread(&market, &data, None);
-                assert_eq!(lower, 9.0);
-                assert_eq!(upper, 9.0);
-                assert_eq!(average, 2.0);
-            }
-
-            #[test]
-            pub fn correctly_calculate_varied_spread() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 150.0);
-                property.insert(1, 100.0);
-                property.insert(2, 75.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 10.0,
-                };
-
-                let (lower, upper, average) = pop.satisfaction_spread(&market, &data, None);
-                assert_eq!(lower, 2.0);
-                assert_eq!(upper, 5.0);
-                assert_eq!(average, 0.0);
-            }
-        }
-        
-        mod excess_goods_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
-
-            #[test]
-            pub fn correctly_calculate_excess_goods() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 800.0);
-                property.insert(1, 550.0);
-                property.insert(2, 456.0);
-                property.insert(3, 200.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let result = pop.excess_goods(&data);
-                assert_eq!(*result.get(&0).unwrap(), 600.0);
-                assert_eq!(*result.get(&1).unwrap(), 250.0);
-                assert_eq!(*result.get(&2).unwrap(), 256.0);
-                assert_eq!(*result.get(&3).unwrap(), 200.0);
-            }
-        }
-
-        mod current_overall_satisfaction_should {
-            use std::collections::{HashMap, HashSet};
-
-            use crate::{culture::Culture, data::Data, desire::Desire, market::{GoodData, Market}, pop::Pop};
-
-            #[test]
-            pub fn correctly_calculate_full_satisfaction_more_than_10_entries() {
-                let desires = vec![ // 21 entries
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 1500.0); // 6 desires
-                property.insert(1, 2000.0); // 9 desires
-                property.insert(2, 1800.0); // 6 desires
-                property.insert(3, 200.0);  // 0 desires
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(1) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(2) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(3) .unwrap(), 400.0); // 2
-                assert_eq!(*results.get(4) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(5) .unwrap(), 300.0); // 1
-                assert_eq!(*results.get(6) .unwrap(), 400.0); // 2
-                assert_eq!(*results.get(7) .unwrap(), 300.0); // 0
-                assert_eq!(*results.get(8) .unwrap(), 200.0); // 0
-                assert_eq!(*results.get(9) .unwrap(), 200.0); // 1
-                assert_eq!(*results.get(10).unwrap(), 300.0);// 2
-                assert_eq!(*results.get(11).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(12).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(13).unwrap(), 300.0);// 2
-                assert_eq!(*results.get(14).unwrap(), 200.0);// 0
-                assert_eq!(*results.get(15).unwrap(), 200.0);// 0
-                assert_eq!(*results.get(16).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(17).unwrap(), 200.0);// 2
-                assert_eq!(*results.get(18).unwrap(), 200.0);// 1
-                assert_eq!(*results.get(19).unwrap(), 100.0);// 1
-                assert_eq!(*results.get(20).unwrap(), 200.0);// 2
-                assert_eq!(l, 2.0);
-                assert_eq!(amv, 200.0);
-            }
-
-            #[test]
-            pub fn correctly_calculate_simple_satisfaction_more_than_10_entries() {
-                let desires = vec![ // 30 entries
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 6050.0); // 6 desires
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (results, l, _) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0) .unwrap(), 300.0);
-                assert_eq!(*results.get(1) .unwrap(), 300.0);
-                assert_eq!(*results.get(2) .unwrap(), 300.0);
-                assert_eq!(*results.get(3) .unwrap(), 300.0);
-                assert_eq!(*results.get(4) .unwrap(), 300.0);
-                assert_eq!(*results.get(5) .unwrap(), 300.0);
-                assert_eq!(*results.get(6) .unwrap(), 300.0);
-                assert_eq!(*results.get(7) .unwrap(), 300.0);
-                assert_eq!(*results.get(8) .unwrap(), 300.0);
-                assert_eq!(*results.get(9) .unwrap(), 300.0);
-                assert_eq!(*results.get(10).unwrap(), 200.0);
-                assert_eq!(*results.get(11).unwrap(), 200.0);
-                assert_eq!(*results.get(12).unwrap(), 200.0);
-                assert_eq!(*results.get(13).unwrap(), 200.0);
-                assert_eq!(*results.get(14).unwrap(), 200.0);
-                assert_eq!(*results.get(15).unwrap(), 200.0);
-                assert_eq!(*results.get(16).unwrap(), 200.0);
-                assert_eq!(*results.get(17).unwrap(), 200.0);
-                assert_eq!(*results.get(18).unwrap(), 200.0);
-                assert_eq!(*results.get(19).unwrap(), 200.0);
-                assert_eq!(*results.get(20).unwrap(), 150.0);
-                assert_eq!(*results.get(21).unwrap(), 100.0);
-                assert_eq!(*results.get(22).unwrap(), 100.0);
-                assert_eq!(*results.get(23).unwrap(), 100.0);
-                assert_eq!(*results.get(24).unwrap(), 100.0);
-                assert_eq!(*results.get(25).unwrap(), 100.0);
-                assert_eq!(*results.get(26).unwrap(), 100.0);
-                assert_eq!(*results.get(27).unwrap(), 100.0);
-                assert_eq!(*results.get(28).unwrap(), 100.0);
-                assert_eq!(*results.get(29).unwrap(), 100.0);
-                assert_eq!(l, 2.0);
-            }
-
-
-            #[test]
-            pub fn correctly_calculate_full_satisfaction_less_than_10_entries() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 400.0);
-                property.insert(2, 400.0);
-                property.insert(3, 100.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 200.0,
-                };
-
-                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0).unwrap(), 200.0);
-                assert_eq!(*results.get(1).unwrap(), 100.0);
-                assert_eq!(*results.get(2).unwrap(), 200.0);
-                assert_eq!(*results.get(3).unwrap(), 200.0);
-                assert_eq!(*results.get(4).unwrap(), 100.0);
-                assert_eq!(*results.get(5).unwrap(), 100.0);
-                assert_eq!(*results.get(6).unwrap(), 200.0);
-                assert_eq!(l, 2.0);
-                assert_eq!(amv, 100.0);
-            }
-
-            #[test]
-            pub fn correctly_calculate_partial_satisfaction() {
-                let desires = vec![
-                    Desire::Consume(0),
-                    Desire::Consume(0),
-                    Desire::Consume(1),
-                    Desire::Consume(2),
-                    Desire::Consume(1),
-                    Desire::Own(1),
-                    Desire::Own(2),
-                ];
-                let culture = Culture {
-                    id: 0,
-                    name: "test".to_string(),
-                    desires,
-                };
-                let mut data = Data {
-                    goods: HashMap::new(),
-                    processes: HashMap::new(),
-                    cultures: HashMap::new(),
-                };
-                data.cultures.insert(culture.id, culture);
-
-                let mut market = Market {
-                    id: 0,
-                    name: "test_market".to_string(),
-                    connections: HashMap::new(),
-                    goods_info: HashMap::new(),
-                    monies: HashSet::new(),
-                    good_trade_priority: vec![],
-                    pops: HashSet::new(),
-                    jobs: HashSet::new(),
-                    merchants: HashSet::new(),
-                };
-                market.goods_info.insert(0, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(1, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(2, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-                market.goods_info.insert(3, GoodData {
-                    amv: 1.0,
-                    salability: 1.0,
-                });
-
-                let mut property = HashMap::new();
-                property.insert(0, 300.0);
-                property.insert(1, 250.0);
-                property.insert(2, 125.0);
-
-                let pop = Pop {
-                    id: 0,
-                    size: 100.0,
-                    culture: 0,
-                    efficiency: 1.0,
-                    property,
-                    unused_time: 0.0,
-                };
-
-                let (results, l, amv) = pop.current_overall_satisfaction(&market, &data);
-                assert_eq!(*results.get(0).unwrap(), 200.0); // C0
-                assert_eq!(*results.get(1).unwrap(), 100.0); // C0
-                assert_eq!(*results.get(2).unwrap(), 100.0); // C1
-                assert_eq!(*results.get(3).unwrap(), 100.0); // C2
-                assert_eq!(*results.get(4).unwrap(), 100.0); // C1
-                assert_eq!(*results.get(5).unwrap(), 50.0);  // O1
-                assert_eq!(*results.get(6).unwrap(), 25.0);  // O2
-                assert_eq!(l, 0.0);
-                assert_eq!(amv, 0.0);
-            }
-        }
-    }
-
-    mod process_tests {
-        mod do_process_should {
+        mod check_offer_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, good::Good, process::{InputType, Process}};
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, offerresult::{AcceptReason, OfferResult, RejectReason}, pop::{Pop, PropertyRecord}};
 
             #[test]
-            pub fn correctly_calculate_process_easy_time() {
-                let mut good_data = HashMap::new();
-                good_data.insert(0, Good {
-                    id: 0,
-                    name: "P0".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(1, Good {
-                    id: 1,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(2, Good {
-                    id: 2,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                let data = Data {
-                    goods: good_data,
-                    processes: HashMap::new(),
-                    cultures: HashMap::new()
-                };
+            pub fn reject_offer_due_to_hard_threshold() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
-                let mut inputs = HashMap::new();
-                inputs.insert(0, 1.0);
-                inputs.insert(1, 1.0);
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(2, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
 
-                let mut input_type = HashMap::new();
-                input_type.insert(0, InputType::Input);
-                input_type.insert(1, InputType::Capital);
+                let mut request = HashMap::new();
+                request.insert(2, 5.0);
 
-                let mut outputs = HashMap::new();
-                outputs.insert(2, 100.0);
+                let mut offer = HashMap::new();
+                offer.insert(3, 1.0);
 
-                let test = Process {
-                    id: 0,
-                    name: "Test".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs,
-                    optional: 0.0,
-                    input_type,
-                    outputs,
-                };
-
-                let mut goods = HashMap::new();
-                goods.insert(0, 10.0);
-                goods.insert(1, 20.0);
-
-                let test_result = test.do_process(1.0, &goods, &data);
-                println!("Consumed");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Used");
-                for (key, val) in test_result.used.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("created");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Time used: {}", test_result.time_used);
-                println!("Iterations: {}", test_result.iterations);
-
-                assert_eq!(test_result.time_used, 1.0);
-                assert_eq!(test_result.iterations, 1.0);
-                assert_eq!(test_result.consumed.len(), 1);
-                assert_eq!(*test_result.consumed.get(&0).unwrap(), 1.0);
-                assert!(test_result.consumed.get(&1).is_none());
-                assert_eq!(test_result.used.len(), 1);
-                assert_eq!(*test_result.used.get(&1).unwrap(), 1.0);
-                assert_eq!(test_result.created.len(), 1);
-                assert_eq!(*test_result.created.get(&2).unwrap(), 111.0);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Reject(RejectReason::HardThresholdFailure));
             }
 
             #[test]
-            pub fn correctly_calculate_process_with_optional_goods() {
-                let mut good_data = HashMap::new();
-                good_data.insert(0, Good {
-                    id: 0,
-                    name: "P0".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(1, Good {
-                    id: 1,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(2, Good {
-                    id: 2,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                let data = Data {
-                    goods: good_data,
-                    processes: HashMap::new(),
-                    cultures: HashMap::new()
-                };
+            pub fn reject_offer_for_no_positive_benefit_amv_neutral() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
-                let mut inputs = HashMap::new();
-                inputs.insert(0, 1.0);
-                inputs.insert(1, 1.0);
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(2, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
 
-                let mut input_type = HashMap::new();
-                input_type.insert(0, InputType::Input);
-                input_type.insert(1, InputType::Capital);
+                let mut request = HashMap::new();
+                request.insert(2, 1.0);
 
-                let mut outputs = HashMap::new();
-                outputs.insert(2, 100.0);
+                let mut offer = HashMap::new();
+                offer.insert(5, 1.0);
 
-                let test = Process {
-                    id: 0,
-                    name: "Test".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs,
-                    optional: 1.0,
-                    input_type,
-                    outputs,
-                };
-
-                let mut goods = HashMap::new();
-                goods.insert(0, 10.0);
-                goods.insert(1, 20.0);
-
-                let test_result = test.do_process(1.0, &goods, &data);
-                println!("Consumed");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Used");
-                for (key, val) in test_result.used.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("created");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Time used: {}", test_result.time_used);
-                println!("Iterations: {}", test_result.iterations);
-
-                assert_eq!(test_result.time_used, 1.0);
-                assert_eq!(test_result.iterations, 1.0);
-                assert_eq!(test_result.consumed.len(), 1);
-                assert_eq!(*test_result.consumed.get(&0).unwrap(), 1.0);
-                assert!(test_result.consumed.get(&1).is_none());
-                assert_eq!(*test_result.used.get(&1).unwrap_or(&0.0), 0.0);
-                assert_eq!(test_result.created.len(), 1);
-                assert_eq!(*test_result.created.get(&2).unwrap(), 100.0);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Reject(RejectReason::NotAccepted));
             }
 
             #[test]
-            pub fn correctly_calculate_process_with_optional_goods_but_no_excess() {
-                let mut good_data = HashMap::new();
-                good_data.insert(0, Good {
-                    id: 0,
-                    name: "P0".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(1, Good {
-                    id: 1,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(2, Good {
-                    id: 2,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                let data = Data {
-                    goods: good_data,
-                    processes: HashMap::new(),
-                    cultures: HashMap::new()
-                };
+            pub fn accept_offer_because_of_satisfaction_gain() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
-                let mut inputs = HashMap::new();
-                inputs.insert(0, 1.0);
-                inputs.insert(1, 1.0);
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(2, PropertyRecord::new(2.0));
+                test_pop.property.insert(5, PropertyRecord::new(2.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
 
-                let mut input_type = HashMap::new();
-                input_type.insert(0, InputType::Input);
-                input_type.insert(1, InputType::Capital);
+                let mut request = HashMap::new();
+                request.insert(2, 2.0);
 
-                let mut outputs = HashMap::new();
-                outputs.insert(2, 100.0);
+                let mut offer = HashMap::new();
+                offer.insert(4, 2.0);
 
-                let test = Process {
-                    id: 0,
-                    name: "Test".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs,
-                    optional: 1.0,
-                    input_type,
-                    outputs,
-                };
-
-                let mut goods = HashMap::new();
-                goods.insert(0, 20.0);
-                //goods.insert(1, 20.0);
-
-                let test_result = test.do_process(20.0, &goods, &data);
-                println!("Consumed");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Used");
-                for (key, val) in test_result.used.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("created");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Time used: {}", test_result.time_used);
-                println!("Iterations: {}", test_result.iterations);
-
-                assert_eq!(test_result.time_used, 20.0);
-                assert_eq!(test_result.iterations, 20.0);
-                assert_eq!(test_result.consumed.len(), 1);
-                assert_eq!(*test_result.consumed.get(&0).unwrap(), 20.0);
-                assert!(test_result.consumed.get(&1).is_none());
-                assert_eq!(test_result.used.len(), 1);
-                assert_eq!(*test_result.used.get(&1).unwrap(), 0.0);
-                assert_eq!(test_result.created.len(), 1);
-                assert_eq!(*test_result.created.get(&2).unwrap(), 2000.0);
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::Satisfaction));
             }
 
             #[test]
-            pub fn correctly_calculate_process_optional_goods_and_shortfall() {
-                let mut good_data = HashMap::new();
-                good_data.insert(0, Good {
-                    id: 0,
-                    name: "P0".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(1, Good {
-                    id: 1,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                good_data.insert(2, Good {
-                    id: 2,
-                    name: "P2".to_string(),
-                    durability: 1.0,
-                    bulk: 0.0,
-                    mass: 0.0,
-                    tags: vec![],
-                });
-                let data = Data {
-                    goods: good_data,
-                    processes: HashMap::new(),
-                    cultures: HashMap::new()
-                };
+            pub fn accept_offer_because_of_density_gain() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
-                let mut inputs = HashMap::new();
-                inputs.insert(0, 1.0);
-                inputs.insert(1, 1.0);
-                inputs.insert(2, 1.0);
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(3, PropertyRecord::new(1.0));
+                test_pop.property.insert(4, PropertyRecord::new(1.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
 
-                let mut input_type = HashMap::new();
-                input_type.insert(0, InputType::Input);
-                input_type.insert(1, InputType::Capital);
-                input_type.insert(2, InputType::Input);
+                let mut request = HashMap::new();
+                request.insert(7, 3.0);
 
-                let mut outputs = HashMap::new();
-                outputs.insert(2, 100.0);
+                let mut offer = HashMap::new();
+                offer.insert(3, 1.0);
 
-                let test = Process {
-                    id: 0,
-                    name: "Test".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs,
-                    optional: 1.0,
-                    input_type,
-                    outputs,
-                };
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::Density));
+            }
 
-                let mut goods = HashMap::new();
-                goods.insert(0, 20.0);
-                goods.insert(1, 10.0);
+            #[test]
+            pub fn accept_offer_because_of_amv_gain() {
+                // Set up Data
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                // Set up good prices.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(7, GoodRecord::new().with_price(1.0));
 
-                let test_result = test.do_process(20.0, &goods, &data);
-                println!("Consumed");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Used");
-                for (key, val) in test_result.used.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("created");
-                for (key, val) in test_result.consumed.iter() {
-                    println!("{}: {}", key, val);
-                }
-                println!("Time used: {}", test_result.time_used);
-                println!("Iterations: {}", test_result.iterations);
+                // Set up desires.
+                // Good 3,  2x, 1-3(5)
+                // Good 4,  2x, 2-6(10)
+                // Good 7, inf, 0 -> 20n
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(3), 1.0, 1.0, 
+                    PriorityFn::Linear { slope: 2.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 2.0, 
+                    PriorityFn::Linear { slope: 4.0 })
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(7), 1.0, 0.0, 
+                    PriorityFn::Linear { slope: 20.0 })
+                    .with_steps(0));
+                // Add in enough property for our needs.
+                test_pop.property.insert(5, PropertyRecord::new(1.0));
+                test_pop.property.insert(6, PropertyRecord::new(1.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+                println!("Base Satisfaction.");
+                println!("Range: {}", test_pop.satisfaction.range);
+                println!("Steps: {}", test_pop.satisfaction.steps);
+                println!("Satisfaction: {}", test_pop.satisfaction.satisfaction);
+                println!("AMV: {}", test_pop.satisfaction.amv);
 
-                assert_eq!(test_result.time_used, 10.0);
-                assert_eq!(test_result.iterations, 10.0);
-                assert_eq!(*test_result.consumed.get(&0).unwrap(), 10.0);
-                assert_eq!(*test_result.consumed.get(&1).unwrap_or(&0.0), 0.0);
-                assert_eq!(*test_result.consumed.get(&2).unwrap_or(&0.0), 0.0);
-                assert_eq!(test_result.used.len(), 1);
-                assert_eq!(*test_result.used.get(&1).unwrap(), 10.0);
-                assert_eq!(test_result.created.len(), 1);
-                // TODO maybe come back to look at this as it should technically be 1110.0, but whatever, I have better things to do with my life, like not work on this project :P
-                assert_eq!(*test_result.created.get(&2).unwrap(), 1100.0);
+                let mut request = HashMap::new();
+                request.insert(5, 1.0);
+
+                let mut offer = HashMap::new();
+                offer.insert(6, 2.0);
+
+                let result = test_pop.check_offer(&request, &offer, &data, &market);
+                assert_eq!(result, OfferResult::Accept(AcceptReason::AMV));
             }
         }
 
-        #[cfg(test)]
-        mod efficiency_should {
-            use std::collections::HashMap;
-
-            use crate::process::{InputType, Process};
+        mod satisfaction_from_multiple_amvs_should {
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
-            pub fn calculation_check() {
-                 let inputs = HashMap::new();
+            pub fn correctly_predict_gain_from_amv_complex() {
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
 
-                let mut input_type = HashMap::new();
-                for (&good, _) in inputs.iter() {
-                    input_type.insert(good, InputType::Input);
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up pop with empty desires
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
+                    PriorityFn::linear(1.0)));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // then check the gain when given X amv
+                let results = test_pop.satisfaction_from_multiple_amvs(vec![10.0, 10.0], &market);
+
+                assert_eq!(results.len(), 3);
+
+                let sat = results.get(0).unwrap();
+                assert_eq!(sat.range, 19.0);
+                assert_eq!(sat.steps, 17.0);
+
+                let sat = results.get(1).unwrap();
+                assert_eq!(sat.range, 20.0);
+                assert_eq!(sat.steps, 20.0);
+
+                let sat = results.get(2).unwrap();
+                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.steps, 37.0);
+            }
+        }
+
+        mod satisfaction_from_amv_should {
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+
+            #[test]
+            pub fn correctly_predict_gain_from_amv_simple() {
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up pop with empty desires
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(2.0))
+                    .with_steps(0));
+                // then check the gain when given X amv
+                let sat = test_pop.satisfaction_from_amv(4.0, &market);
+
+                assert_eq!(sat.range, 8.0);
+                assert_eq!(sat.steps, 4.0);
+            }
+
+            #[test]
+            pub fn correctly_predict_gain_from_amv_complex() {
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(2, Good::new(2, "2".to_string(), String::from("")));
+                data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
+                data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(2, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(3, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(2.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up pop with empty desires
+                let mut test_pop = Pop::new(0, 0, 0);
+                test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
+                    PriorityFn::linear(1.0)));
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
+                    PriorityFn::linear(10.0))
+                    .with_steps(2));
+                test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // then check the gain when given X amv
+                let sat = test_pop.satisfaction_from_amv(20.0, &market);
+
+                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.steps, 37.0);
+            }
+        }
+
+        mod make_offer_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+
+            /// Tests when sat_lost == 0.0. This includes testing out money.
+            #[test]
+            pub fn correctly_make_offer_no_satisfaction_loss_and_money() {
+                //println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                // set up the pop
+                //println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(5.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let mut price_hint: HashMap<usize, f64> = HashMap::new();
+                price_hint.insert(6, 2.0);
+                price_hint.insert(7, 4.0);
+
+                // now, do the test
+                //println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 4.0);
+            }
+
+            /// Tests when sat_lost > 0.0 but always < sat_gained
+            #[test]
+            pub fn correctly_make_offer_enough_money_not_satisfying_hint() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                market.currencies.insert(8);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(10.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let mut price_hint: HashMap<usize, f64> = HashMap::new();
+                price_hint.insert(6, 2.0);
+                price_hint.insert(7, 4.0);
+
+                // now, do the test
+                println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 3.0);
+                assert_eq!(*result.get(&8).unwrap(), 3.0);
+            }
+
+            /// Tests when sat_loss > 0.0, and some steps result in loss > sat_gained
+            #[test]
+            pub fn correctly_make_offer_no_hint_just_money() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                market.currencies.insert(8);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                test_pop.property.insert(6, PropertyRecord::new(2.0));
+                test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(10.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let price_hint: HashMap<usize, f64> = HashMap::new();
+
+                // now, do the test
+                println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&6).unwrap(), 2.0);
+                assert_eq!(*result.get(&7).unwrap(), 3.0);
+                assert_eq!(*result.get(&8).unwrap(), 3.0);
+            }
+
+            #[test]
+            pub fn correctly_make_offer_no_hint_no_money_just_barter() {
+                println!("Starting Function");
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+                data.goods.insert(8, Good::new(8, "8".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+                // set up the pop
+                println!("Making pop.");
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(3.0));
+                //test_pop.property.insert(6, PropertyRecord::new(2.0));
+                //test_pop.property.insert(7, PropertyRecord::new(3.0));
+                test_pop.property.insert(8, PropertyRecord::new(100.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                // setup what we want to buy.
+                let mut request = HashMap::new();
+                request.insert(5, 2.0);
+
+                // setup the price hint (not used in this test)
+                let price_hint: HashMap<usize, f64> = HashMap::new();
+
+                // now, do the test
+                println!("Starting Function");
+                let result = test_pop.make_offer(&request, &data, &market, &price_hint);
+
+                assert_eq!(*result.get(&8).unwrap(), 20.0);
+            }
+        }
+
+        mod satisfaction_gain_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+
+            #[test]
+            pub fn correctly_return_satisfaction_gained() {
+                // set up product data.
+                let mut data = Data::new();
+                data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
+                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                data.goods.insert(7, Good::new(7, "7".to_string(), String::from("")));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test_pop = Pop::new(0, 0, 0);
+                // set up desires, only one, good 5, no cap.
+                test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 0.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0));
+                // Add in 
+                test_pop.property.insert(5, PropertyRecord::new(1.0));
+                test_pop.try_satisfy_all_desires(&data, &market);
+
+                let mut new_goods = HashMap::new();
+                new_goods.insert(5, 1.0);
+                let result = test_pop.satisfaction_gain(&new_goods, &data, &market);
+
+                assert_eq!(result.range, 1.0);
+                assert_eq!(result.steps, 1.0);
+                assert_eq!(result.amv, 0.0);
+                assert_eq!(result.satisfaction, -1.0);
+            }
+        }
+
+        mod consume_desire_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire);
+
+                test.property.insert(4, PropertyRecord::new(3.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0; // reset desire's satisfaction.
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 1.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .in_class(4));
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire);
+
+                test.property.insert(4, PropertyRecord::new(7.0)); 
+                test.property.insert(5, PropertyRecord::new(5.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 2.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 3.0);
+
+                let result = test.consume_desire(&mut current_desire, &data);
+
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 12.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 7.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 7.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 5.0);
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_front(desire);
+
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                    expended: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                let mut current_desire = test.desires.remove(0).unwrap();
+                current_desire.satisfaction = 0.0;
+
+                // first pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 2.5);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 5.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 5.0);
+
+                // second pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(result);
+                assert_eq!(current_desire.satisfaction, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+
+                // third pass
+                let result = test.consume_desire(&mut current_desire, &data);
+                assert!(!result);
+                assert_eq!(current_desire.satisfaction, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 40.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 60.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().owned, 15.0);
+                assert_eq!(test.wants.get(&6).unwrap().expended, 0.0);
+                assert_eq!(test.wants.get(&6).unwrap().reserved, 0.0);
+
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 00.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 10.0);
+            }
+        }
+    
+        mod consume_desires_should {
+            use std::collections::HashMap;
+
+            use crate::{constants::TIME_ID, data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn correctly_consume_desires() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone())
+                    .in_class(4));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let unit_slope = 4.0 / 3.0;
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 2.0,
+                    PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire2 = Desire::new(Item::Class(4), 10.0, 2.0,
+                    PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire3 = Desire::new(Item::Want(4), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(5), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+                let desire5 = Desire::new(Item::Want(5), 10.0, 2.0,
+                        PriorityFn::linear(unit_slope))
+                    .with_steps(0);
+
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.desires.push_back(desire1);
+                test.desires.push_back(desire2);
+                test.desires.push_back(desire3);
+                test.desires.push_back(desire4);
+                test.desires.push_back(desire5);
+
+                test.property.insert(TIME_ID, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(20.0));
+                test.property.insert(5, PropertyRecord::new(20.0));
+                test.property.insert(6, PropertyRecord::new(40.0)); 
+                test.wants.insert(4, WantRecord { owned: 10.0, reserved: 0.0, expected: 0.0, expended: 0.0 });
+
+                let result = test.consume_desires(&data, &market);
+
+                assert_eq!(result.range, 12.0);
+                assert_eq!(result.steps, 18.0);
+                assert_eq!(result.amv, 60.0);
+                assert_eq!(result.satisfaction, 180.0);
+
+                assert_eq!(test.property.get(&0).unwrap().owned, 60.0);
+                assert_eq!(test.property.get(&0).unwrap().expended, 40.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&0).unwrap().used, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().expended, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().used, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().expended, 15.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&5).unwrap().used, 5.0);
+                assert_eq!(test.property.get(&6).unwrap().owned, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().expended, 40.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().used, 0.0);
+
+                assert_eq!(test.wants.get(&4).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().expended, 55.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().expended, 90.0);
+                assert_eq!(test.wants.get(&5).unwrap().owned, 0.0);
+                assert_eq!(test.wants.get(&5).unwrap().reserved, 0.0);
+            }
+        }
+
+        mod satisfy_next_desire_should {
+            use std::collections::{HashMap, VecDeque};
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 2.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(3.0)); 
+
+                let mut working_desires = VecDeque::new();
+
+                working_desires.push_front(desire);
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(working_desires.front().unwrap().satisfaction, 2.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 2.0);
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                if let Some(result) = result {
+                    assert_eq!(result.satisfaction, 3.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
+                } else {
+                    assert!(false, "Did not return unsatisfied desire as expected.");
                 }
+            }
 
-                let outputs = HashMap::new();
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
 
-                let mut test = Process {
-                    id: 0,
-                    name: "test".to_string(),
-                    parent: None,
-                    time: 1.0,
-                    inputs,
-                    optional: 0.0,
-                    input_type,
-                    outputs,
+                let desire = Desire::new(Item::Class(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front(desire);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(5.0)); 
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 10.0);
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                if let Some(result) = result {
+                    assert_eq!(result.satisfaction, 15.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                    assert_eq!(working_desires.len(), 0);
+                } else {
+                    assert!(false, "Did not return as expected.");
+                }
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 15.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_front(desire);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                    expended: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+
+                // first pass.
+                assert!(result.is_none());
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 15.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 5.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 5.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+
+                // Second pass
+                let result = test.satisfy_next_desire(&mut working_desires, &data);
+                assert!(result.is_none());
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 20.0);
+                assert_eq!(test.property.get(&0).unwrap().reserved, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 0.0);
+
+                // third pass
+                if let Some(result) =  test.satisfy_next_desire(&mut working_desires, &data) {
+                    assert_eq!(result.satisfaction, 40.0);
+                    assert_eq!(working_desires.len(), 0);
+                    assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                    assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
+                    assert_eq!(test.property.get(&0).unwrap().reserved, 30.0);
+                    assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                    assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                } else {
+                    assert!(false, "Did not end as expected.");
+                }
+            }
+        }
+    
+        mod satisfy_until_incomplete_should {
+            use std::collections::VecDeque;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+
+            #[test]
+            pub fn correctly_stop_when_finished_incomplete() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood4"), String::new()));
+                data.add_good(Good::new(5, String::from("testGood5"), String::new()));
+                data.add_good(Good::new(6, String::from("testGood6"), String::new()));
+                data.add_good(Good::new(7, String::from("testGood7"), String::new()));
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_back(desire1);
+                working_desires.push_back(desire2);
+                working_desires.push_back(desire3);
+                working_desires.push_back(desire4);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.property.insert(0, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(100.0));
+                test.property.insert(5, PropertyRecord::new(100.0));
+                test.property.insert(6, PropertyRecord::new(30.0));
+                test.property.insert(7, PropertyRecord::new(100.0));
+
+                let result = test.satisfy_until_incomplete(&mut working_desires, &data);
+
+                if let Some(desire) = result {
+                    assert_eq!(desire.satisfaction, 30.0);
+                    assert_eq!(desire.item, Item::Good(6));
+                    assert_eq!(working_desires.len(), 3);
+                    assert_eq!(working_desires.get(0).unwrap().satisfaction, 30.0);
+                    assert_eq!(working_desires.get(0).unwrap().item, Item::Good(7));
+                    assert_eq!(working_desires.get(1).unwrap().satisfaction, 40.0);
+                    assert_eq!(working_desires.get(1).unwrap().item, Item::Good(4));
+                    assert_eq!(working_desires.get(2).unwrap().satisfaction, 40.0);
+                    assert_eq!(working_desires.get(2).unwrap().item, Item::Good(5));
+                }
+            }
+
+            #[test]
+            pub fn correctly_stop_when_fully_complete() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood4"), String::new()));
+                data.add_good(Good::new(5, String::from("testGood5"), String::new()));
+                data.add_good(Good::new(6, String::from("testGood6"), String::new()));
+                data.add_good(Good::new(7, String::from("testGood7"), String::new()));
+
+                let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+                let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
+                        PriorityFn::linear(1.0));
+
+                let mut working_desires = VecDeque::new();
+                working_desires.push_back(desire1);
+                working_desires.push_back(desire2);
+                working_desires.push_back(desire3);
+                working_desires.push_back(desire4);
+
+                let mut test = Pop::new(0, 0, 0);
+                test.property.insert(0, PropertyRecord::new(100.0));
+                test.property.insert(4, PropertyRecord::new(100.0));
+                test.property.insert(5, PropertyRecord::new(100.0));
+                test.property.insert(6, PropertyRecord::new(30.0));
+                test.property.insert(7, PropertyRecord::new(100.0));
+
+                let result = test.satisfy_until_incomplete(&mut working_desires, &data);
+
+                assert!(result.is_none());
+                assert_eq!(working_desires.len(), 0);
+            }
+        }
+
+        mod try_satisfy_all_desires_should {
+            use std::collections::HashMap;
+
+            use crate::{data::Data, desire::{Desire, PriorityFn}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+
+            #[test]
+            pub fn satisfy_good_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood"), String::new()));
+
+                let desire = Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(100.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 100.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 100.0);
+            }
+
+            #[test]
+            pub fn satisfy_class_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                .in_class(4));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                .in_class(4));
+            
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let desire = Desire::new(Item::Class(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 20.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+            }
+
+            #[test]
+            pub fn satisfy_want_correctly() {
+                let mut data = Data::new();
+                data.add_time();
+                data.wants.insert(4, Want::new(4, String::from("testWant1")));
+                data.wants.insert(5, Want::new(5, String::from("testWant2")));
+                data.wants.insert(6, Want::new(6, String::from("testWant3")));
+                let mut wants = HashMap::new();
+                wants.insert(4, 1.0);
+                wants.insert(5, 2.0);
+                wants.insert(6, 0.5);
+                data.add_good(Good::new(4, String::from("testGood1"), String::new())
+                    .with_ownership(wants.clone()));
+                data.add_good(Good::new(5, String::from("testGood2"), String::new())
+                    .with_uses(2.0, wants.clone()));
+                data.add_good(Good::new(6, String::from("testGood3"), String::new())
+                    .with_consumption(1.0, wants.clone()));
+
+                let desire = Desire::new(Item::Want(4), 10.0, 1.0,
+                        PriorityFn::linear(1.0))
+                    .with_steps(0);
+                
+                // set up market data for goods.
+                let mut market = MarketHistory::new();
+                market.good_records.insert(0, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(4, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(5, GoodRecord::new().with_price(1.0));
+                market.good_records.insert(6, GoodRecord::new().with_price(0.5));
+                market.good_records.insert(7, GoodRecord::new().with_price(0.25));
+                market.good_records.insert(8, GoodRecord::new().with_price(0.1));
+                // set up currencies
+                market.currencies.insert(6);
+                market.currencies.insert(7);
+
+                let mut test = Pop::new(0, 0, 0);
+
+                test.desires.push_back(desire);
+                test.wants.insert(4, WantRecord {
+                    owned: 10.0,
+                    reserved: 0.0,
+                    expected: 0.0,
+                    expended: 0.0,
+                });
+                test.property.insert(0, PropertyRecord::new(100.0)); 
+                test.property.insert(4, PropertyRecord::new(10.0)); 
+                test.property.insert(5, PropertyRecord::new(10.0)); 
+                test.property.insert(6, PropertyRecord::new(10.0)); 
+
+                test.try_satisfy_all_desires(&data, &market);
+
+                assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 10.0);
+                assert_eq!(test.property.get(&6).unwrap().reserved, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().expected, 30.0);
+                assert_eq!(test.wants.get(&4).unwrap().owned, 10.0);
+                assert_eq!(test.wants.get(&4).unwrap().reserved, 40.0);
+                assert_eq!(test.wants.get(&5).unwrap().expected, 60.0);
+                assert_eq!(test.wants.get(&6).unwrap().expected, 15.0);
+                assert_eq!(test.desires.get(0).unwrap().satisfaction, 40.0);
+            }
+        }
+
+        mod integrate_desires_should {
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn correctly_integrate_desires() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)),
+                    Desire::new(Item::Good(1), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseholdNeed),
+                    Desire::new(Item::Good(2), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                    Desire::new(Item::Good(3), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
+                    Desire::new(Item::Good(4), 1.0, 1.0,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
+                ];
+
+                let mut desires: Vec<Desire> = vec![];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+                // check that initials were added in correctly.
+                assert_eq!(desires.len(), 5);
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(0).unwrap().amount, 3.0);
+                assert_eq!(desires.get(0).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(1).unwrap().amount, 9.0);
+                assert_eq!(desires.get(1).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 6.0);
+                assert_eq!(desires.get(2).unwrap().item, Item::Good(3));
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 3.0);
+                assert_eq!(desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(desires.get(4).unwrap().start_priority, 0.3);
+                assert_eq!(desires.get(4).unwrap().amount, 18.0);
+                assert_eq!(desires.get(4).unwrap().item, Item::Good(0));
+
+                let source_desires = vec![
+                    Desire::new(Item::Good(0), 1.0, 0.3,
+                        PriorityFn::linear(1.0)), // duplicate, combines with 0
+                    Desire::new(Item::Good(1), 1.0, 0.6,
+                        PriorityFn::linear(1.0))
+                        .with_tag(DesireTag::HouseholdNeed), // inserted into 1
+                    Desire::new(Item::Good(2), 1.0, 1.5,
+                        PriorityFn::linear(1.0)) // inserted at end near duplicate
+                        .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
+                ];
+
+                Pop::integrate_desires(&source_desires, &row, &mut desires);
+
+                assert_eq!(desires.len(), 7);
+                assert_eq!(desires.get(0).unwrap().start_priority, 1.5); // last insertion.
+                assert_eq!(desires.get(0).unwrap().amount, 9.0);
+                assert_eq!(desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(1).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(1).unwrap().amount, 3.0);
+                assert_eq!(desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(2).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(2).unwrap().amount, 9.0);
+                assert_eq!(desires.get(2).unwrap().item, Item::Good(2));
+                assert_eq!(desires.get(3).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(3).unwrap().amount, 6.0);
+                assert_eq!(desires.get(3).unwrap().item, Item::Good(3));
+                assert_eq!(desires.get(4).unwrap().start_priority, 1.0);
+                assert_eq!(desires.get(4).unwrap().amount, 3.0);
+                assert_eq!(desires.get(4).unwrap().item, Item::Good(4));
+                assert_eq!(desires.get(5).unwrap().start_priority, 0.6); // inserted by 2nd
+                assert_eq!(desires.get(5).unwrap().amount, 3.0);
+                assert_eq!(desires.get(5).unwrap().item, Item::Good(1));
+                assert_eq!(desires.get(6).unwrap().start_priority, 0.3); // added to by 2nd
+                assert_eq!(desires.get(6).unwrap().amount, 36.0);
+                assert_eq!(desires.get(6).unwrap().item, Item::Good(0));
+            }
+        }
+
+        mod get_desire_multiplier_should {
+            use crate::{desire::{Desire, DesireTag, PriorityFn}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn calculate_multiplier_correctly() {
+                let mut row = DRow::new(3.0, 0);
+                row.household = Household::new(3.0, 3.0, 2.0, 1.0);
+
+                let mut desire = Desire {
+                    item: Item::Good(0),
+                    amount: 1.0,
+                    start_priority: 1.0,
+                    priority_fn: PriorityFn::linear(1.0),
+                    steps: None,
+                    tags: vec![],
+                    satisfaction: 0.0,
                 };
-                let result = test.efficiency();
-                assert_eq!(result, 1.0);
 
-                // 1 input
-                test.inputs.insert(0, 1.0);
-                let result = test.efficiency();
-                assert_eq!(result, 1.0);
+                let mut new_des = desire.clone();
+                // default, no tags should multiply by 6.0 (household) * 3.0 count
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 18.0);
+                
+                // householdNeed, 3.0 count.
+                desire.tags.push(DesireTag::HouseholdNeed);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
 
-                // 2 inputs
-                test.inputs.insert(1, 1.0);
-                let result = test.efficiency();
-                assert_eq!(result, 1.1);
+                // Member Need, adult 9.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Adult);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 9.0);
 
-                // 3 inputs, 2 in one part
-                test.inputs.insert(1, 2.0);
-                let result = test.efficiency();
-                assert_eq!(result, 1.3);
+                // Member Need, child 6.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Child);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 6.0);
 
-                // 4 inputs, 2 in one part
-                test.inputs.insert(2, 1.0);
-                let result = test.efficiency();
-                assert_eq!(result, 1.6);
+                // Member Need, elder 3.0
+                *desire.tags.get_mut(0).unwrap() = DesireTag::HouseMemberNeed(HouseholdMember::Elder);
+                new_des = desire.clone();
+                Pop::get_desire_multiplier(&desire, &row, &mut new_des);
+                assert_eq!(new_des.amount, 3.0);
+            }
+        }
 
-                // 4 inputs, 2 in one part, 1 optional
-                test.optional += 1.0;
-                let result = test.efficiency();
-                assert_eq!(result, 1.3);
+        mod ordered_desire_insert_should {
+            use std::collections::VecDeque;
+
+            use crate::{desire::{Desire, PriorityFn}, item::Item, pop::Pop};
+
+            #[test]
+            pub fn insert_correctly() {
+                let mut working_desires = VecDeque::new();
+
+                let desire0 = Desire::new(Item::Good(0), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
+                let desire1 = Desire::new(Item::Good(1), 1.0, 9.0,
+                    PriorityFn::linear(1.0));
+                let desire2 = Desire::new(Item::Good(2), 1.0, 1.0,
+                    PriorityFn::linear(1.0));
+                let desire3 = Desire::new(Item::Good(3), 1.0, 15.0,
+                    PriorityFn::linear(1.0))
+                    .with_steps(0);
+                let desire4 = Desire::new(Item::Good(4), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
+                let desire5 = Desire::new(Item::Good(5), 1.0, 10.0,
+                    PriorityFn::linear(1.0));
+
+                Pop::ordered_desire_insert(&mut working_desires, desire0);
+                Pop::ordered_desire_insert(&mut working_desires, desire1);
+
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+
+                Pop::ordered_desire_insert(&mut working_desires, desire2);
+
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+
+                Pop::ordered_desire_insert(&mut working_desires, desire3);
+
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(3));
+
+                Pop::ordered_desire_insert(&mut working_desires, desire4);
+
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(3));
+
+                Pop::ordered_desire_insert(&mut working_desires, desire5);
+
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(5));
+                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(3));
+
+                let mut test_des = working_desires.pop_front().unwrap();
+                test_des.satisfaction = 10000.0;
             }
         }
     }

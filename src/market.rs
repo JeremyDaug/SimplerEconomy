@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, fmt::format};
+use std::collections::{HashMap, HashSet};
 
 use itertools::Itertools;
 
@@ -18,8 +18,8 @@ pub struct Market {
     pub connections: HashMap<usize, MarketConnectionType>,
     /// The local info on goods.
     pub goods_info: HashMap<usize, GoodData>,
-    /// A quick finder for those goods which have reached a Salability of 90% 
-    /// or higher 
+    /// A quick finder for those goods which have reached a Salability greater 
+    /// or equal to MONEY_SALABILITY_THRESHOLD.
     pub monies: HashSet<usize>,
     /// When looking at goods to offer, this is the order buyers should use in
     /// this market.
@@ -66,13 +66,9 @@ impl Market {
     pub fn market_day(&mut self, world: &mut World, data: &Data) {
         // setup time in all of our pops.
         for pop in self.pops.iter() {
-            world.pops.get_mut(pop).expect("Pop not found.")
-            .reset_time();
         }
         // Jobs purchase labor for the day.
         for job in self.jobs.iter() {
-            world.jobs.get_mut(job).expect("Job not found.")
-            .pay_workers(&mut world.pops, data, &self);
         }
         // jobs do their work
         // set up selling across the 
