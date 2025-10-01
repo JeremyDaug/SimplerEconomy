@@ -47,7 +47,7 @@ pub struct Firm {
     pub shift_length: f64,
     /// How many shifts the firm has in a given day. This value times shift_length 
     /// should not be greater than the number of hours in a market day.
-    pub shifts_length: f64,
+    pub shifts: f64,
 }
 impl Firm {
     pub fn work_day_exchange(&self, data: &Data, pop: &mut Pop) -> 
