@@ -16,16 +16,20 @@ pub struct Want {
     pub id: usize,
     /// Name of the want, should be unique.
     pub name: String,
+    
     /// The rate of decay, current_val * (1.0 - decay_rate) = next_val.
     /// 
     /// To keep trace amounts of wants from sticking around forever, 
     /// any want that is below 0.001 units is destroyed regardless.
     pub decay_rate: f64,
+    
     /// The additional effects of a want that are applied to the owner at day's end.
     /// 
     /// This is before any decay, and so comes from having the want, not from
     /// the want decaying itself.
     pub effects: Vec<WantEffect>,
+
+
     /// All sources which produce the want via ownership.
     pub ownership_sources: Vec<usize>,
     /// Sources which produce via use.
@@ -114,6 +118,9 @@ impl Want {
     }
 }
 
+/// # Want Effects
+/// 
+/// Currently a placeholder.
 pub enum WantEffect {
 
 }

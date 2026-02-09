@@ -4,13 +4,10 @@ use crate::constants::{DAYS_PER_TURN, TIME_UNITS_PER_DAY};
 /// 
 /// This stores the number and makeup of household(s).
 /// 
-/// The count is how many households of this mold we are grouping together.
+/// The count is how many households we are grouping together.
 /// 
-/// The components: household_size, adults, children, and elders; are define what a
-/// singular unit of this household looks like.
-/// 
-/// The Total Size of a household is the maximum number of people in a household, and
-/// represents a hypothetical 'maximum' time a household has for 'productive' workers.
+/// The components (household_size, adults, children, and elders) define what a
+/// household looks like.
 /// 
 /// Each individual in a household multiplies the base desires of the species, so if a 
 /// species needs 1 unit of food to survive each day it needs 1 per member of the household.
@@ -18,8 +15,8 @@ use crate::constants::{DAYS_PER_TURN, TIME_UNITS_PER_DAY};
 /// Lastly, some desires are measured on a per-household basis, and so regardless of size, they
 /// only need one.
 /// 
-/// A portion of this household is working, representing the amount of labor available to
-/// the household. This labor is then broken up by the wider pop into labor and leisure, 
+/// A portion of this household is 'working', representing the amount of labor available to
+/// the household. This labor is then broken up by the pop into labor and leisure, 
 /// or more accurately, resource gathering and resource using.
 /// 
 /// A household is also broken up into 3 categories.
@@ -37,8 +34,7 @@ use crate::constants::{DAYS_PER_TURN, TIME_UNITS_PER_DAY};
 /// 
 /// The base household that is used as the 'default' for V1.0 is made of 
 /// 
-/// 2 adults, 0.5 Elders and 2.5 Children, this gives 3.0 labor (2.0 Adults, 
-/// 0.25 from Elders, 0.75 From Children).
+/// 2 adults, 0.5 Elders and 2.5 Children.
 /// 
 /// This should give about 3.0 Labor at maximum capacity.
 /// - Adults give 1.0 each.
@@ -52,14 +48,15 @@ use crate::constants::{DAYS_PER_TURN, TIME_UNITS_PER_DAY};
 /// 
 /// ## Household Modifiers
 /// 
-/// Higher levels of pop categories can alter the makeup of the household, changing 
+/// Pop Species and Culture can alter the makeup of the household, changing 
 /// size and ratio.
 /// 
 /// Modifiers are created by summing the values of households across a pop's demographics.
 /// As such, values are not required to be positive.
 #[derive(Clone, Copy, Debug)]
 pub struct Household {
-    /// The number of households grouped together like this.
+    /// The number of households grouped together, multiply this by household_size for
+    /// the total headcount.
     pub count: f64,
 
     /// The size of an individual household summed together.
@@ -69,6 +66,8 @@ pub struct Household {
     /// To get total size of a group of households, multiply this by count.
     pub household_size: f64,
     /// How many adults are in a household.
+    /// 
+    /// 
     pub adults: f64,
     /// How many members of the household are elders.
     pub elders: f64,
@@ -193,6 +192,16 @@ impl Household {
             adults,
             elders,
             children
+        }
+    }
+
+    pub fn new_from_household_mod(count: f64, modifier: HouseholdMod) -> Self {
+        Self {
+            count,
+            household_size: modifier.net_change(),
+            adults: modifier.adults,
+            children: modifier.children,
+            elders: modifier.elders,
         }
     }
 

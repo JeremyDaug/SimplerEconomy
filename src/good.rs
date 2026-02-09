@@ -28,11 +28,13 @@ pub struct Good {
     pub consumption_wants: HashMap<usize, f64>,
     /// How long it takes to consume.
     pub consumption_time: f64,
+
     /// Wants produced by use.
     pub use_wants: HashMap<usize, f64>,
     /// How long it takes to use.
     pub use_time: f64,
-    /// Wants produced by use.
+
+    /// Wants produced by just owning it.
     pub own_wants: HashMap<usize, f64>,
 
     /// What class of goods this belongs to. 
@@ -52,7 +54,7 @@ pub struct Good {
     /// 
     /// This is also what it is consumed into.
     pub decays_to: Option<(usize, f64)>,
-    /// How big it is in "Human carriable" units. 1 Bulk = 1 person can carry it 
+    /// How big it is in "Human carriable" units. 1 Bulk = 1 person can carry it unaided
     /// and nothing else. Think of this as 1th of a cubic meter or something like that.
     pub bulk: f64,
     /// How heavy the good is in kg, used for transportation. Humans can carry 25 kg 
@@ -212,6 +214,34 @@ impl Good {
     /// A wrapper equal to checking that a good is not tagged as nonexchangeable.
     pub(crate) fn is_exchangeable(&self) -> bool {
         !self.tags.contains(&GoodTags::Nonexchangeable)
+    }
+
+    /// # Is Mobile
+    /// 
+    /// A wrapper to check that a good is not tagged as Immobile.
+    pub(crate) fn is_mobile(&self) -> bool {
+        !self.tags.contains(&GoodTags::Immobile)
+    }
+
+    /// # Is Service
+    /// 
+    /// Wrapper to check that a good is marked as a service or not.
+    pub(crate) fn is_service(&self) -> bool {
+        self.tags.contains(&GoodTags::Service)
+    }
+
+    /// # Is Storage
+    /// 
+    /// Wrapper to find and get the storage value of this good, if it has one.
+    /// 
+    /// Returns None if it is not storage.
+    pub(crate) fn is_storage(&self) -> Option<(f64, f64)> {
+        for tag in self.tags.iter() {
+            if let GoodTags::Storage{bulk, mass} = tag {
+                return Some((*bulk, *mass));
+            }
+        }
+        None
     }
 }
 

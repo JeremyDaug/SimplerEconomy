@@ -20,13 +20,22 @@ use crate::{data::Data, item::Item, markethistory::MarketHistory};
 ///
 /// ## Mass Conservation Rules
 ///
-/// A soft rule that will/should be added is that the mass being destroyed by the process should always be
-/// equal to the mass coming out of it.
+/// A soft rule that will/should be added is that the mass being destroyed by the process
+/// should always be equal to the mass coming out of it.
 ///
 /// Ways to enforce this are
 ///
 /// 1. Tagless inputs (goods destroyed by the process) cannot be reduced via optional effects.
 /// 2. The number of Optional inputs cannot cut into Tagless inputs.
+/// 3. **If a process outputs something lighter than it's consumed inputs, then it decays 
+///    some of those consumed inputs to make up the mass difference.**
+/// 4. **When outputting something that may weigh more than the inputs, we require destroyed
+///    goods to ensure the mass destroyed equals the mass created by the outputs.**
+/// 
+/// ## Possible ideas, expansions, and inclusions.
+/// 
+/// - Innate Complexity Bonus, For a ruleset that is ignoring mas conservation, it's an 
+/// easy addition. However, I would rather, 
 #[derive(Debug, Clone)]
 pub struct Process {
     /// The unique id of the process.
@@ -35,13 +44,17 @@ pub struct Process {
     pub name: String,
     /// The variant name of the process. Should be unique when combined with primary name.
     pub variant_name: String,
+
     /// The 'industry' or grouping this process is considered a part of. 
     /// Think of it as a reference as to what kind of job does this work.
     pub industry: Option<usize>,
+    
     /// The complexity value of the process. This is a calculated value.
     pub complexity: f64,
+    
     /// What process this one is derived from.
     pub parent: Option<usize>,
+    
     /// How much time the process takes if done sequentially.
     ///
     /// This is not used internally, instead it is used externally with scheduling.
@@ -56,12 +69,28 @@ pub struct Process {
     /// for them (likely Good -> Class -> Want).
     pub inputs: Vec<ProcessInput>,
     /// The number of inputs which can be omitted per iteration of the process.
+    /// 
+    /// If mass equivalency is being enforced (which it currently isn't), then we can 
+    /// either restrict optional goods to not include those which are destroyed by the
+    /// process, so that mass equivalency between them are saved.
+    /// 
+    /// Alternativey, add in limitations and restrictions that reserve enough destroyed 
+    /// inputs to cover outgoing mass, and any extra mass destroyed is made up by 
+    /// converting destroyed goods into decayed/consumed goods.
     pub optional: f64,
     /// The goods which are produced by the process.
     /// Should be whole numbers, may produce fractions, but fractions do not decay and
     /// cannot be bought or sold. If the pop disappears, so to does any fractional goods.
     /// Goods that are Consumed or Used are not included here.
     pub outputs: Vec<ProcessOutput>,
+    /// Tags which define additional rules and options unique to this Process.
+    /// 
+    /// This can include stuff like overriding mass conservation rules, marking 
+    /// the process as restricted to certain types of cultures, species, or states,
+    /// and possibly many other things.
+    /// 
+    /// Currently a place holder.
+    pub tags: Vec<ProcessTag>
 }
 
 impl Process {
@@ -81,9 +110,13 @@ impl Process {
             inputs: vec![],
             optional: 0.0,
             outputs: vec![],
+            tags: vec![]
         }
     }
 
+    /// # In Industry
+    /// 
+    /// Consuming Setter, adds what industry the process belongs to.
     pub fn in_industry(mut self, industry: usize) -> Self {
         self.industry = Some(industry);
         self
@@ -131,6 +164,11 @@ impl Process {
     /// Fluent Input adder.
     ///
     /// Inserts such that the input is properly sorted.
+    /// 
+    /// The order is 
+    /// - None (Destroyed)
+    /// - Used
+    /// - Consumed (Decayed)
     pub fn uses_input(mut self, input: ProcessInput) -> Self {
         self.inputs.push(input);
         let mut current = self.inputs.len()-1;
@@ -159,6 +197,7 @@ impl Process {
                 current -= 1;
                 continue;
             }
+            assert_ne!(next_id, curr_id, "Duplicate goods with the same tag are not allowed.");
             // Tag is properly placed, and id is proprely placed, must be the end.
             break;
         }
@@ -204,12 +243,63 @@ impl Process {
     /// the effective change of the process.
     ///
     /// A target number of processes is always needed.
+    /// 
+    /// Parameters:
+    /// - goods, the goods being used to satisfy the process's needs.
+    /// - data, the data of the goods.
+    /// - target, the number of iterations we want to reach.
+    /// - market_history, the history of the market, used to remove unneeded goods based on price.
     ///
+    /// ## Algorithm Explanation
+    /// 
+    /// The way this processes the process is as follows.
+    /// 
+    /// ### Target Refinement
+    /// 
+    /// First it gets how many total goods it needs to meet our target 
+    /// (all inputs - optional goods) * target iterations.
+    /// Then we get the number of available goods we need (sum of each input capped at 
+    /// target quantity).
+    /// 
+    /// If the available goods is greater than our target, then we may skip to the 
+    /// refinement process below.
+    /// 
+    /// If we are below the needed amount, we break up the space between 0 and our 
+    /// target iteration into legs, based on breakpoints where we stop having available
+    /// goods.
+    /// 
+    /// If we have only 1 leg, then we will never have a point we can reach it and we
+    /// return nothing. If we have more than 1 leg, but the lowest leg is still below
+    /// the target line, then we also cannot reach a valid point and return nothing.
+    /// 
+    /// If the lowest leg matches our needs, we use that as our new target and go to
+    /// refinement.
+    /// 
+    /// With the legs known, we remove legs until a valid target is contained within the
+    /// leg. Then we take the intersaction of that leg with the target line to get a
+    /// valid solution.
+    /// 
+    /// ### Refinement
+    /// 
+    /// If we have a valid target and have remaining optional slots we can use, we 
+    /// reduce the goods used in the process, removing the most expensive inputs first. 
+    /// Once we have used up our free slots, we continue.
+    /// 
+    /// ### Final calculation
+    /// 
+    /// With our target set, and all possible optional good slots used, we move goods
+    /// from our consumed inputs that has been calculated up to this point, sorting
+    /// into consumed or used as needed, and if it's marked as 'Consumed' (as in
+    /// it decays), we add the decay out put as well in scale with what we expected.
+    /// 
+    /// TODO: Maybe, add in a parameter to define how it should optimize when free slots are available, options: Cost first, Capital First, Stock First
     /// TODO: Add in code to allow for normal inputs to be excluded (Unless they are massless) to help enforce conservation of mass.
     /// TODO: Add in the ability to accept class or want inputs.
-    pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, market_history: &MarketHistory) -> ProcessResults {
+    pub fn do_process(&self, goods: &HashMap<usize, f64>, data: &Data, target: f64, 
+    market_history: &MarketHistory) -> ProcessResults {
         let mut target = target;
-        // get base iteration goods and base iteration cost.
+        // get base iteration goods and base iteration cost by counting up the number of
+        // inputs needed.
         let mut iter_good_cost = 0.0;
         let mut base_goods = HashMap::new();
         for input in self.inputs.iter() {
@@ -218,7 +308,7 @@ impl Process {
                 .and_modify(|x| *x += input.amount)
                 .or_insert(input.amount);
         }
-        // finalize base good cost.
+        // finalize base good cost by removing the optional goods count.
         let iter_good_cost = iter_good_cost - self.optional;
 
         // get our real target to the best of our ability.
@@ -233,9 +323,10 @@ impl Process {
         }
         // get how many free slots we have available.
         unused_free_slots = total_available - iter_good_cost * target;
-        // If we don't have a negative number of free slots, 
+        // If we have a negative number of free slots, 
         if unused_free_slots < 0.0 {
-            // get the 'legs' of our journey.
+            // get the 'legs' of our journey 
+            // (how for we can travel with each 'step' without running out of a good)
             let mut legs = vec![];
             for (good, amt) in base_goods.iter() {
                 // get iterations possible for the current good, capping at our target.
@@ -252,10 +343,10 @@ impl Process {
             }
             // sort lowest to highest.
             legs.sort_by(|a, b| a.total_cmp(b));
-            println!("Legs:");
-            for leg in legs.iter() {
-                println!("{}", leg);
-            }
+            // println!("Legs:");
+            // for leg in legs.iter() {
+            //     println!("{}", leg);
+            // }
             // get lower bound
             let mut lower_bound = *legs.first().expect("No iterations possible?");
             // Calculate the value of our current lower bound.
@@ -303,12 +394,11 @@ impl Process {
                             higher = iter;
                         }
                     }
-                    let lower_match = lower == lower_bound;
-                    let higher_match = higher == target;
+                    // Our estimated target value.
                     let mut updated_target = 0.0;
-                    if lower_match && higher_match { // if we are in the only leg left, use estimate.
+                    if lower == lower_bound && higher == target { // if we are in the only leg left, use estimate.
                         updated_target = est_target;
-                    } else if higher_match { // If higher matches, choose lower.
+                    } else if higher == target { // If higher matches, choose lower.
                         updated_target = lower; 
                     } else { // if lower or neither matches, take the higher.
                         updated_target = higher;
@@ -361,33 +451,32 @@ impl Process {
                     // repeat until we find find something that has 0 frees.
                 }
             }
-        }
+        } 
+        // At this point we've either found new lower target, or we can overshot our
+        // original target enoguh that we can just reduce down until we use all optional
+        // slots available.
 
+        // println!("Available: {}", total_available);
+        // println!("target_compare: {}", unused_free_slots);
         // subtract any extra free slots, starting from the most expensive good and going down.
-        println!("Available: {}", total_available);
-        println!("target_compare: {}", unused_free_slots);
         while unused_free_slots > 0.0 {
             // Get the most expensive good and remove as many units as possible.
-            let costliest = input_goods.iter()
-                .sorted_by(|&(&a, _), &(&b, _)| {
-                    {
-                        let a_price = market_history.get_record(*a).price;
-                        let b_price = market_history.get_record(*b).price;
-                        a_price.partial_cmp(&b_price).expect("Prices not set right.")
-                    }
-                }).last();
-            if let Some((&good, &amt)) = costliest {
-                println!("Costliest Good: {}", good);
-                // How many we can remove.
-                let remove = amt.min(unused_free_slots);
-                unused_free_slots -= remove; // remove from free.
-                // remove from expending goods.
-                let update = input_goods.remove(&good).unwrap() - remove;
-                if update > 0.0 { // if not reduced to zero, add back in.
-                    input_goods.insert(good, update);
+            // (price, good_id, amount)
+            let mut costliest = (0.0, &0, 0.0);
+            for (&good, &amt) in input_goods.iter() {
+                let cost = market_history.get_record(*good).price;
+                if cost > costliest.0 {
+                    costliest = (cost, &good, amt);
                 }
-            } else { // if no costliest, then we probably have a problem.
-                unreachable!("Somehow no goods in Expending goods.");
+            };
+            // println!("Costliest Good: {}", good);
+            // How many we can remove.
+            let remove = costliest.2.min(unused_free_slots);
+            unused_free_slots -= remove; // remove from free.
+            // remove from expending goods.
+            let update = input_goods.remove(&costliest.1).unwrap() - remove;
+            if update > 0.0 { // if not reduced to zero, add back in.
+                input_goods.insert(costliest.1, update);
             }
         }
 
@@ -450,6 +539,8 @@ impl Process {
     /// Where N = the number of goods needed - the optional good value.
     ///
     /// returns N^2 / 2.0 * 0.05
+    /// 
+    /// NOTE: This is a feature that quickly complicates mass conservation, as such it may be removed, or reworked.
     pub fn efficiency(&self) -> f64 {
         let n: f64 = self.inputs.iter().map(|x| x.amount).sum::<f64>()
             - self.optional;
@@ -500,64 +591,6 @@ impl ProcessInput {
     }
 }
 
-/// # Process Output
-///
-/// The information about process outputs.
-#[derive(Debug, Clone)]
-pub struct ProcessOutput {
-    /// The item being output.
-    pub item: Item,
-    /// The amount of that output made.
-    pub amount: f64,
-    /// The additional effects when a hte output is made.
-    pub tags: Vec<OutputTag>,
-}
-
-impl ProcessOutput {
-    pub fn new(item: Item, amount: f64) -> Self {
-        assert!(amount > 0.0, "Amount must be positive.");
-        Self {
-            item,
-            amount,
-            tags: vec![],
-        }
-    }
-
-    pub fn with_tag(mut self, tag: OutputTag) -> Self {
-        self.tags.push(tag);
-        self
-    }
-
-    pub fn with_tags(mut self, tags: Vec<OutputTag>) -> Self {
-        self.tags.extend(tags);
-        self
-    }
-}
-
-/// # Process Results
-///
-/// The results of completing a process.
-pub struct ProcessResults {
-    pub iterations: f64,
-    /// Goods Destroyed by the process.
-    pub consumed: HashMap<usize, f64>,
-    /// Goods used but not destoyed by the process.
-    pub used: HashMap<usize, f64>,
-    /// The Items created by the process.
-    pub created: HashMap<Item, f64>,
-}
-
-impl ProcessResults {
-    fn new() -> Self {
-        Self {
-            iterations: 0.0,
-            consumed: HashMap::new(),
-            used: HashMap::new(),
-            created: HashMap::new()
-        }
-    }
-}
-
 /// # Input Tag
 ///
 /// Input tags are attached to ProcessInputs and define additional features that
@@ -593,6 +626,67 @@ impl Display for InputTag {
     }
 }
 
+/// # Process Output
+///
+/// The information about process outputs.
+#[derive(Debug, Clone)]
+pub struct ProcessOutput {
+    /// The item being output.
+    /// 
+    /// Should not be a Class, but may be a Good or Want.
+    pub item: Item,
+    /// The amount of that output made.
+    pub amount: f64,
+    /// The additional effects when the output is made.
+    pub tags: Vec<OutputTag>,
+}
+
+impl ProcessOutput {
+    pub fn new(item: Item, amount: f64) -> Self {
+        assert!(amount > 0.0, "Amount must be positive.");
+        Self {
+            item,
+            amount,
+            tags: vec![],
+        }
+    }
+
+    pub fn with_tag(mut self, tag: OutputTag) -> Self {
+        self.tags.push(tag);
+        self
+    }
+
+    pub fn with_tags(mut self, tags: Vec<OutputTag>) -> Self {
+        self.tags.extend(tags);
+        self
+    }
+}
+
+/// # Process Results
+///
+/// The results of completing a process.
+pub struct ProcessResults {
+    /// The number of iterations completed.
+    pub iterations: f64,
+    /// Goods Destroyed by the process.
+    pub consumed: HashMap<usize, f64>,
+    /// Goods used but not destoyed by the process.
+    pub used: HashMap<usize, f64>,
+    /// The Items created by the process.
+    pub created: HashMap<Item, f64>,
+}
+
+impl ProcessResults {
+    fn new() -> Self {
+        Self {
+            iterations: 0.0,
+            consumed: HashMap::new(),
+            used: HashMap::new(),
+            created: HashMap::new()
+        }
+    }
+}
+
 /// # Output Tags
 ///
 /// Adds special information to the outputs of a process part.
@@ -602,4 +696,14 @@ impl Display for InputTag {
 pub enum OutputTag {
     ConsumedOutput,
     UsedOutput
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProcessTag {
+    /// Marks a process as it should always use the mass conservation logic, even if 
+    /// game configuration says otherwise.
+    AlwaysConserveMass,
+    /// Marks a process as always ignoring mass conservation logic, even if game config
+    /// says otherwise.
+    IgnoreMassConservation,
 }

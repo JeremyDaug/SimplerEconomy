@@ -161,7 +161,7 @@ impl Data {
     
     /// # Add Time
     /// 
-    /// Adds time, the default product, to the data. Overrides whatever
+    /// Adds Time, the default product, to the data. Overrides whatever
     /// is in Good ID 0.
     pub fn add_time(&mut self) {
         self.goods.insert(TIME_ID, 

@@ -17,9 +17,12 @@ pub struct Culture {
     /// The effects on a household a culture has. This should be a cound 0.0 
     /// household.
     /// 
-    /// # V 1.0 Note
+    /// ## V 1.0 Note
     /// 
     /// This should never push any group below 0.0, or the household down below 1.0 size.
+    /// 
+    /// This can push pops below a growth rate of 0.0% (demographic decline), when 
+    /// elders are more numerous than children.
     pub household_mod: HouseholdMod,
     /// The desire track of the culture.
     pub desires: Vec<Desire>,

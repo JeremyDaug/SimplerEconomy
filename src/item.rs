@@ -3,6 +3,8 @@ use core::fmt;
 /// # Item
 /// 
 /// Item is an enum for pointing to a want, class, or specific good.
+/// 
+/// Class should not be used for outputs of a process, as it's not specific enough.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Item {
     Want(usize),

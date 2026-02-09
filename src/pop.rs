@@ -28,19 +28,18 @@ pub struct Pop {
     /// This is the collated households of the pop group, a the results of adding all
     /// demograpchic data together.
     pub households: Household,
-    /// The actual population of the pop. This defines how many actual people are in this
-    /// pop. How many mouths there are to feed and satisfy.
-    /// 
-    /// Eventually, this will likely be broken up into various sub-components, 
-    /// Children, Adults, and Elders being the baseline. Species may alter the structure.
-    /// 
-    /// This uses fractional units to track population growth between turns.
-    pub population: f64,
     /// Demographic Breakdown of the pop.
     /// This allows us to consolidate multiple categories of pop into a singular
     /// pop group. Pops have these enforced down into particular limitations,
     /// though this comes at the cost of increased processing and complexity.
-    /// If different groups are in the same pop, then we assume they are being paid the same.
+    /// 
+    /// If different groups are in the same pop, then we assume they are being paid 
+    /// the same, though this will cause desires that may be specific to
+    /// some cultures to be flooded out by the larger demographics.
+    /// For example, a pop that doesn't care for coffee, may see the effective desires
+    /// it would've had suppressed by the flood of coffee drinkers. This is an
+    /// acceptable loss. Worse comes to worst, we can just may each pop exactly 1 DRow.
+    /// 
     /// If you want a pop to be paid differently, keep them separate.
     /// 
     /// The sum of each DRow should be equal to the size of the pop.
@@ -51,13 +50,17 @@ pub struct Pop {
     /// This is sorted by household count, largest to smallest.
     pub demo_breakdown: Vec<DRow>,
     /// How many days worth of work a single household in the group does.
+    /// 
+    /// IE. If a household has only 1 working adult is has an efficiency of 1.0, if it
+    /// has 2 working adults it has an efficiency of 2.0. and so on.
     pub efficiency: f64,
 
-    /// The consolidated desires of the pop, formed out of the consolidated desires of the pop.
+    /// The consolidated desires of the pop, a summation of the desires from 
+    /// demo_breakdown.
     pub desires: VecDeque<Desire>,
     /// What property the pop owns and how they are using it.
     pub property: HashMap<usize, PropertyRecord>,
-    /// What wants the pop currently has in their 
+    /// What wants the pop currently has stored up.
     pub wants: HashMap<usize, WantRecord>,
     /// Storage for satisfying desires between functions. This should be empty by the 
     /// end of the day.
@@ -81,7 +84,6 @@ impl Pop {
             market,
             firm,
             households: Household::zeroed_household(),
-            population: 0.0,
             demo_breakdown: vec![],
             efficiency: 1.0,
             desires: VecDeque::new(),

@@ -10,7 +10,7 @@ use crate::{data::Data, household::Household};
 /// Currently, we only use one.
 #[derive(Debug, Clone, Copy)]
 pub struct DRow {
-    /// How many households have this data.
+    /// The Household(s) of this Demographic row.
     pub household: Household,
     /// All pops need a base species at all times.
     pub species: usize,

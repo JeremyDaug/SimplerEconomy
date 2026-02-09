@@ -10,17 +10,17 @@ use crate::{household::HouseholdMember, item::Item};
 /// Starting Priority defines the priority of the good for buying. Lower values is
 /// higher priority.
 /// 
+/// A step is defined as the satisfaction / amount. each step increases priority
+/// as per the PriorityFn formula.
+/// 
 /// The Priority Function defines how each new step (satisfaction / amount) increases
 /// the current priority value. This is a smooth function, so partial satisfaction still
 /// creates a useful value.
-/// 
-/// A step is defined as the satisfaction / amount. each step increases priority
-/// as per the PriorityFn formula.
 #[derive(Clone, Debug)]
 pub struct Desire {
     /// The desired Item.
     pub item: Item,
-    /// The amount desired per tier.
+    /// The amount desired per step per person.
     pub amount: f64,
     /// The starting priority of the desire. May be any value.
     pub start_priority: f64,
@@ -33,16 +33,24 @@ pub struct Desire {
     /// 
     /// If None, then it has no cap and continues indefinitely.
     /// 
-    /// If Some value, then it has an intervale of [0-steps].
+    /// If any value given, then it gives the number-1 steps of space.
+    /// 
+    /// Note: This means that if you give it Some(1), then it has 1 step, it's priority 
+    /// value at the end will be priority_fn(1).
+    /// 
+    /// Note: Due to fence posting, the last priority that can be satisfied will be 
+    /// step-1, not step.
     pub steps: Option<NonZeroUsize>,
     /// Tags and effects attached to this desire.
     /// 
     /// Tags also force additional rules on the desire in question.
     /// 
-    /// To ensure make similarity checking easier, tags are sorted.
+    /// Tags are sorted for easier use and duplicate checking.
     pub tags: Vec<DesireTag>,
     /// The amount of satisfaciton the desire has currently.
     /// Only used for Pops.
+    /// 
+    /// Measured in units of Item supplied, not steps.
     pub satisfaction: f64,
 }
 
@@ -119,9 +127,9 @@ impl Desire {
     /// 
     /// 1 step is the same as not setting at all.
     /// 
-    /// # Panics
+    /// ## Notes
     /// 
-    /// Factor must be a finite number between 0.0 and 1.0 exclusive.
+    /// Steps cannot be infinite if the desire is also a LifeNeed, will panic if given incorrectly.
     pub fn with_steps(mut self, steps: usize) -> Self {
         if let Some(_) = self.tags.iter().find(|x| discriminant(&DesireTag::LifeNeed(0.0)) == discriminant(x)) {
             assert!(steps > 0, "Desire has the LifeNeed tag. It must have a finite number of steps.");
@@ -136,7 +144,7 @@ impl Desire {
 
     /// # Current Priority
     /// 
-    /// Gets the current prioriyt of our desire based on satisfaction.
+    /// Gets the current priority of our desire based on satisfaction.
     pub fn current_priority(&self) -> f64 {
         let steps = self.satisfied_steps();
         self.priority_fn.priority(self.start_priority, steps)
@@ -149,6 +157,8 @@ impl Desire {
     /// Weight is based on the range (current - start) / steps.
     /// 
     /// (Denser gives higher weight)
+    /// 
+    /// NOTE: Does not seem to be in use, not sure why I would use it right now. Will likely delete. Current prioritization does not need weight.
     pub fn weight(&self) -> f64 {
         let result =  self.satisfied_steps() / 
             (self.current_priority() - self.start_priority);
@@ -175,62 +185,12 @@ impl Desire {
         }
     }
 
-    /// # Current Valuation
-    /// 
-    /// Gets the current value of the desire based on existing satisfaction.
-    /// 
-    /// Returns the numebr of steps satisfied and the valuation in that order.
-    /// 
-    /// Valuation is based on the arc length of the priority function across the 
-    /// satisfied section subtracted from the number of steps.
-    /// 
-    /// This does not include the pre-priority distance.
-    /// 
-    /// (self.satisfaction / self.amount) - arc_length
-    /*pub fn current_valuation(&self) -> (f64, f64) {
-        let steps = if let Some(end) = self.steps {
-            let cap = end.get() as f64;
-            (self.satisfaction / self.amount).min(cap)
-        } else {
-            self.satisfaction / self.amount
-        };
-        let valuation = steps - self.priority_fn.arc_length(self.start_priority, 
-            steps + self.start_priority);
-
-        (steps, valuation)
-    } */
-
-    /// # Expected Value
-    /// 
-    /// Given the current satisfaction and given amount of additional satisfaction,
-    /// get the value of the next interval.
-    /// 
-    /// If sat_change reduces satisfaction below 0, it caps the lost value at the 
-    /// current value.
-    /// 
-    /// TODO: Test this to ensure correctness.
-    /*pub fn expected_value(&self, sat_change:  f64) -> f64 {
-        // if reduces below current satisfaction, just get current valuation.
-        if sat_change <= -self.satisfaction {
-            return -self.current_valuation().1;
-        }
-        // cap at maximum steps
-        let starting_steps = self.satisfied_steps();
-        let steps_adding = if let Some(max_steps) = self.steps {
-            (sat_change / self.amount).min(max_steps.get() as f64 - starting_steps)
-        } else {
-            sat_change / self.amount
-        };
-        let sign = sat_change.signum();
-        // from here, get the arc length of between current and steps added.
-        (steps_adding.abs() - self.priority_fn.arc_length(self.satisfied_steps(), 
-        steps_adding + starting_steps)) * sign
-    }*/
-
     /// # Equals
     /// 
     /// A specific check for desires that ensures they are effectively the same.
     /// It checks that everything BUT amount and satisfaction is the same.
+    /// 
+    /// Amount and satisfaction can be different due to population size differences.
     pub fn equals(&self, other: &Desire) -> bool {
         if self.item == other.item &&
         self.start_priority == other.start_priority &&
@@ -329,7 +289,7 @@ impl Desire {
     
     /// # Satisfied At
     /// 
-    /// Checks if the desire is satisdief to a particular step or not.
+    /// Checks if the desire is satisdied to a particular step or not.
     /// 
     /// If step is not valid, it returns false.
     pub(crate) fn satisfied_to_step(&self, current_value: f64) -> bool {
@@ -347,17 +307,29 @@ impl Desire {
     }
 }
 
+/// # Desire Tag
+/// 
+/// Tags that define additional rules and modifiers to our desires. Adding additional
+/// effects to a pop based on the desire being satisfied or not, or
+/// modifying how it calculates it's need, such as limiting to a per-hosuehold
+/// or per member of a household.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum DesireTag {
     /// Desire is necissary for life. Not getting it massively 
-    /// increases mortality per tier not met. Value attached is 
-    /// the increase to mortality. (1.0 is 100% mortality)
+    /// increases mortality per step not met. Value attached is 
+    /// the increase to mortality (Current Mortality + value * missing_steps). 
+    /// (1.0 is 100% mortality)
     /// 
-    /// # Additional Limitations
+    /// ### Additional Limitations
     /// 
     /// LifeNeed makes is so the desire cannot be infinite.
     /// 
-    /// If it has an interval, it MUST have an end, otherwise the mortality gain is always infinite.
+    /// If it has an interval, it MUST have an end, otherwise the mortality gain is 
+    /// always infinite.
+    /// 
+    /// It is advised to make sure that the number of steps * our mortality value don't 
+    /// go above 1.0, though this could just be a way to create a number of mandatory
+    /// steps before the remainder just reduce mortality to normal rates.
     LifeNeed(f64),
     /// Desire is needed on a 'per household' level, meaning that it uses the number of households rather
     /// than the number of people.
@@ -371,6 +343,9 @@ pub enum DesireTag {
 }
 
 impl DesireTag {
+    /// # Life Need
+    /// 
+    /// creates a LifeNeed desire tag safely, ensuring it's both functional and not instantly lethal after 1 step.
     pub fn life_need(mortality: f64) -> DesireTag {
         assert!(mortality > 0.0 && mortality <= 1.0, "Mortality must be greater than 0.0, and no greater than 1.0.");
         DesireTag::LifeNeed(mortality)
@@ -410,12 +385,15 @@ impl DesireTag {
 /// Defines how priority of a desire changes over time.
 /// Priority always walks up in ascending order. Don't worry about odd phrasing.
 /// 
-/// Start is defined be Desire.
-/// Step is included in the function as a key parameter
-/// Growth in as additional growth factor, multiplying the
-/// standard growth to be faster or more extreme.
+/// Start is given by the Desire.
 /// 
-/// step and growth ***must*** be positive values.
+/// For Linear: Slope is the rate of growth, a fixed quantity between steps.
+/// 
+/// For Quadratic: Accel is the rate of growth between steps, multipyling the
+/// base of our squared n value (accel * n) ^ 2.
+/// 
+/// For Exponential: Step is the base multiplier, while growth is the increasing
+/// factor of our exponential.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PriorityFn {
     /// Linear Priority Function. 
@@ -464,7 +442,7 @@ impl PriorityFn {
     /// 
     /// F(n) + start.
     /// 
-    /// n is the step the function is currently on..
+    /// n is the step the function is currently on.
     pub fn priority(&self, start: f64, n: f64) -> f64 {
         match self {
             PriorityFn::Linear { slope } => {
@@ -499,16 +477,16 @@ impl PriorityFn {
     /// # Derivative
     /// 
     /// Calculates the derivative/slope of the function at a particular point.
-    pub fn derivative(&self, value: f64) -> f64 {
+    pub fn derivative(&self, step: f64) -> f64 {
         match self {
             PriorityFn::Linear { slope } => {
                 *slope
             },
             PriorityFn::Quadratic { accel } => {
-                2.0 * accel * value
+                2.0 * accel * step
             },
             PriorityFn::Exponential { step, growth } => {
-                growth * (1.0 + step).ln() * (1.0 * step).powf(growth * value)
+                growth * (1.0 + step).ln() * (1.0 * step).powf(growth * step)
             },
         }
     }
@@ -522,6 +500,8 @@ impl PriorityFn {
     /// This uses a simple 8 step approximation (2 end points plus 6 evenly 
     /// spaced steps between), for quadratic and exponential formulas due to
     /// their bonkers arc length integrals.
+    /// 
+    /// NOTE: Currently not used, arc length priority calculation is as cool as it is stupid.
     pub fn arc_length(&self, start: f64, end: f64) -> f64 {
         if start == end { // if start and end are the same, then there's no length, jsut leave.
             return 0.0;
