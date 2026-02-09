@@ -56,7 +56,7 @@ pub struct Pop {
     pub efficiency: f64,
 
     /// The consolidated desires of the pop, a summation of the desires from 
-    /// demo_breakdown.
+    /// demo_breakdown. Used for seeking out desires in a unified fashion.
     pub desires: VecDeque<Desire>,
     /// What property the pop owns and how they are using it.
     pub property: HashMap<usize, PropertyRecord>,
@@ -1781,14 +1781,16 @@ pub struct PropertyRecord {
     /// How many units are owned by the pop right now.
     pub owned: f64,
     /// How many they want to keep at all times. This also covers
-    /// reservations to satisfy desires.
+    /// reservations to satisfy desires. This is the lower bound of what we want
+    /// to have before consumption.
     pub reserved: f64,
     /// How many of the good we want to save for a rainy day.
-    pub saved: f64,
-    /// How many they have used today to satisfy desires.
-    /// This records how many were consumed today.
     /// 
-    /// At the end of the day, this should be equivalent to reserved goods.
+    /// This is our post consumption
+    pub saved: f64,
+    /// How many they have consumed today to satisfy desires.
+    /// 
+    /// This should be the number of the good destroyed/decayed, not merely held onto or used.
     pub expended: f64,
     /// How many has been 'used' and cannot be used or expended again.
     /// 
@@ -1798,7 +1800,7 @@ pub struct PropertyRecord {
     pub traded: f64,
     /// How many were offered, but not accepted.
     pub offered: f64,
-    /// A Target number of the good we want to have by day end.
+    /// A Target number of the good we want to have by day end after consumption.
     pub target: f64,
 }
 
