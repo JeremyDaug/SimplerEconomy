@@ -861,7 +861,7 @@ mod tests {
                 test_pop.try_satisfy_until_incomplete(&data, &market);
 
                 // test results
-                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.excess_amv, 20.0);
                 assert_eq!(test_pop.satisfaction.range, 5.0);
                 assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
                 assert_eq!(test_pop.satisfaction.steps, 25.0);
@@ -918,7 +918,7 @@ mod tests {
                 test_pop.try_satisfy_until_incomplete(&data, &market);
 
                 // test results
-                assert_eq!(test_pop.satisfaction.amv, 20.0);
+                assert_eq!(test_pop.satisfaction.excess_amv, 20.0);
                 assert_eq!(test_pop.satisfaction.range, 5.0);
                 assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
                 assert_eq!(test_pop.satisfaction.steps, 25.0);
@@ -1213,7 +1213,7 @@ mod tests {
                 println!("Range: {}", test_pop.satisfaction.range);
                 println!("Steps: {}", test_pop.satisfaction.steps);
                 println!("Satisfaction: {}", test_pop.satisfaction.satisfaction);
-                println!("AMV: {}", test_pop.satisfaction.amv);
+                println!("AMV: {}", test_pop.satisfaction.excess_amv);
 
                 let mut request = HashMap::new();
                 request.insert(5, 1.0);
@@ -1594,7 +1594,7 @@ mod tests {
 
                 assert_eq!(result.range, 1.0);
                 assert_eq!(result.steps, 1.0);
-                assert_eq!(result.amv, 0.0);
+                assert_eq!(result.excess_amv, 0.0);
                 assert_eq!(result.satisfaction, -1.0);
             }
         }
@@ -1917,7 +1917,7 @@ mod tests {
 
                 assert_eq!(result.range, 12.0);
                 assert_eq!(result.steps, 18.0);
-                assert_eq!(result.amv, 60.0);
+                assert_eq!(result.excess_amv, 60.0);
                 assert_eq!(result.satisfaction, 180.0);
 
                 assert_eq!(test.property.get(&0).unwrap().owned, 60.0);

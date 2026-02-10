@@ -137,7 +137,7 @@ impl Pop {
     /// 
     /// Resets desire satisaction, and the pop's satisfaction as well.
     /// 
-    /// Also resets the pop's financials for the day. Updating starting wealth,
+    /// Also resets the pop's financials for the day.
     pub fn reset_property(&mut self) {
         for (_, prop) in self.property.iter_mut() {
             prop.expended = 0.0;
@@ -166,11 +166,13 @@ impl Pop {
     /// Does not update income, dividend, or decay.
     pub fn new_financial_day(&mut self, market: &MarketHistory) {
         // Reset start of day wealth and current wealth.
-        let wealth = self.excess_amv(market);
-        self.financials.wealth = wealth;
-        self.financials.current_wealth = wealth;
+        // AS this is called right after reset property at day start, this is 
+        // the AMV of all goods the pop owns, including stuff it may later consume.
+        let excess_wealth = self.excess_amv(market);
+        self.financials.wealth = excess_wealth;
+        self.financials.current_wealth = excess_wealth;
         // update average wealth, average with previous days, but weigh to current day more.
-        self.financials.wealth_history.push_back(wealth);
+        self.financials.wealth_history.push_back(excess_wealth);
         self.financials.update_average_wealth();
     }
 
@@ -431,8 +433,8 @@ impl Pop {
             // Accept if Satisfaction density increases
             return OfferResult::Accept(AcceptReason::Density);
         }
-        println!("AMV Gain: {}", change.amv);
-        if change.amv > 0.0 {
+        println!("AMV Gain: {}", change.excess_amv);
+        if change.excess_amv > 0.0 {
             // lastly, if no change in range or density, check for AMV gain.
             return OfferResult::Accept(AcceptReason::AMV);
         }
@@ -731,7 +733,7 @@ impl Pop {
         SatisfactionValues::new(dup_sat.range - self_sat.range, 
             dup_sat.steps - self_sat.steps, 
             dup_sat.satisfaction - self_sat.satisfaction, 
-            dup_sat.amv - self_sat.amv)
+            dup_sat.excess_amv - self_sat.excess_amv)
     }
 
     /// # Recalculate
@@ -787,11 +789,11 @@ impl Pop {
         println!("Range: {}", temp_pop.satisfaction.range);
         println!("Steps: {}", temp_pop.satisfaction.steps);
         println!("Satisfaction: {}", temp_pop.satisfaction.satisfaction);
-        println!("AMV: {}", temp_pop.satisfaction.amv);
+        println!("AMV: {}", temp_pop.satisfaction.excess_amv);
         let range = temp_pop.satisfaction.range - self.satisfaction.range;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
         let satisfaction = temp_pop.satisfaction.satisfaction - self.satisfaction.satisfaction;
-        let amv = temp_pop.satisfaction.amv - self.satisfaction.amv;
+        let amv = temp_pop.satisfaction.excess_amv - self.satisfaction.excess_amv;
         println!("Difference:");
         println!("Range: {}", range);
         println!("Steps: {}", steps);
@@ -824,7 +826,7 @@ impl Pop {
         let range = self.satisfaction.range - temp_pop.satisfaction.range;
         let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
         let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
-        let amv = self.satisfaction.amv - temp_pop.satisfaction.amv;
+        let amv = self.satisfaction.excess_amv - temp_pop.satisfaction.excess_amv;
         SatisfactionValues::new(range, steps, satisfaction, amv)
     }
 
@@ -854,7 +856,7 @@ impl Pop {
         let range = temp_pop.satisfaction.range - self.satisfaction.range;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
         let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
-        let amv = temp_pop.satisfaction.amv - self.satisfaction.amv;
+        let amv = temp_pop.satisfaction.excess_amv - self.satisfaction.excess_amv;
         debug_assert!(steps >= 0.0, "Satisfaction Gained must be non-negative.");
         SatisfactionValues::new(range, steps, satisfaction, amv)
     }
@@ -1775,18 +1777,23 @@ impl Pop {
     }
 }
 
-/// Helper for pop property.
+/// # Property Record
+/// 
+///  Helper for pop property data. Allows us to have fine tuned control over our property
+/// for planning purposes.
 #[derive(Debug, Copy, Clone)]
 pub struct PropertyRecord {
     /// How many units are owned by the pop right now.
     pub owned: f64,
-    /// How many they want to keep at all times. This also covers
-    /// reservations to satisfy desires. This is the lower bound of what we want
-    /// to have before consumption.
+    /// How many they want to keep at all times. This amount will never be sold
+    /// and is expected to be used for some purpose after the market day is over.
+    /// 
+    /// This should cover desires, and once put into the reserve, should never be sold.
     pub reserved: f64,
     /// How many of the good we want to save for a rainy day.
     /// 
-    /// This is our post consumption
+    /// This is on top of reserved and should be what remains at the end of the day 
+    /// after consumption. This can be sold for a steep cost (>1.5 AMV gain in the trade).
     pub saved: f64,
     /// How many they have consumed today to satisfy desires.
     /// 
@@ -1798,9 +1805,12 @@ pub struct PropertyRecord {
     pub used: f64,
     /// How many were given up in trade.
     pub traded: f64,
-    /// How many were offered, but not accepted.
+    /// How many were offered for trade, but not accepted.
     pub offered: f64,
-    /// A Target number of the good we want to have by day end after consumption.
+    /// A Target number of the good we want to have by the end of the market day.
+    /// 
+    /// This should be equal to reserved + saved. Any goods above this target are free 
+    /// game to offer.
     pub target: f64,
 }
 
@@ -1857,7 +1867,7 @@ impl PropertyRecord {
 pub struct WantRecord {
     /// How much is currnetly owned.
     pub owned: f64,
-    /// How much has been reserved for desires
+    /// How much has been reserved for desires.
     pub reserved: f64,
     /// How many we are expecting to get during consumption.
     pub expected: f64,
@@ -1895,6 +1905,23 @@ impl WantRecord {
 /// 
 /// A helper storage unit which contains both the range of satisfaction and the 
 /// number of steps satisfied.
+/// 
+/// Allows us to compare possible satisfaction positions.
+/// 
+/// It's important to remember the priority of importance.
+/// 
+/// Pops will always prefer more satisfaciton, even if it gives up range.
+/// 
+/// Satisfaction changes work as follows.
+/// 
+/// Range \ Satisfaction | Decrease | Same   | Increase
+/// --------------+----------+--------+----------
+/// Decrease      | Reject   | Accept | Accept
+/// Same          | Reject   | Reject | Accept
+/// Increase      | Reject   | Reject | Accept
+/// 
+/// Another way to think of it is that if it can increase satisfaciton it does, if it can
+/// reduce range without reducing satisfaction, it will accept that as well.
 #[derive(Debug, Copy, Clone)]
 pub struct SatisfactionValues {
     /// The distance from lowest priority satisfied to highest.
@@ -1904,16 +1931,16 @@ pub struct SatisfactionValues {
     /// The total amount of satisfaction in raw units.
     pub satisfaction: f64,
     /// The AMV of goods which didn't go into desires.
-    pub amv: f64,
+    pub excess_amv: f64,
 }
 
 impl SatisfactionValues {
-    pub fn new(range: f64, steps: f64, satisfaction: f64, amv: f64) -> Self {
+    pub fn new(range: f64, steps: f64, satisfaction: f64, excess_amv: f64) -> Self {
         Self {
             range,
             steps,
             satisfaction,
-            amv
+            excess_amv
         }
     }
 

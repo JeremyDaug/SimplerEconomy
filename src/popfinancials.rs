@@ -7,20 +7,40 @@ use circular_buffer::CircularBuffer;
 /// Includes a record of their current AMV financial situation, a history of their
 /// situation, and plans.
 /// 
-/// It also includes their financial mood, IE, uncertainty, fear, greed, etc.
+/// It also includes their financial mood, IE, uncertainty, fear/greed, etc.
 /// 
 /// # Loading Note
 /// 
 /// This will likely not be saved or loaded. If it is, it will only be the minimal data necissary for
-/// basic functionality.
-#[derive(Debug, Clone)]
+/// basic functionality. It may be saved eventually, but for now I'm not going to bother. Shouldn't be that difficult.
+/// 
+/// ## Uncertainty, Risk Tolerance, and Time Preference
+/// 
+/// These three make up primary economic mood of a Pop. 
+/// 
+/// Uncertainty is how unsure they are of the market. Risk Tolerance is how willing they are to take
+/// losses, and Time Preference is how now vs later oriented a pop is IE, how much they discount the future
+/// relative to now.
+/// 
+/// Uncertainty drives savings up, and the required return on exchanging goods they 
+/// currently desire is also driven up.
+/// 
+/// Risk Tolerance drives savings down, investment up, but also increases the pop's 
+/// tolerance to losses. A "Normal" Risk Tolerance is not 0 or 1, but somewhere in 
+/// the middle.
+/// 
+/// Time Preference helps define what return on investment the pop needs to be willing 
+/// to invest more. The lower their time preference, the lower Interest Rate they will
+/// need to see to invest more or continue investing. Low Time preference also 
+/// counters Risk aversion, but much more weakly.
+#[derive(Debug, Default, Clone)]
 pub struct PopFinancials {
     // TODO: Possibly include a 'metric' section to stabilize values to a predifined good in the market, particularly a currency.
 
     // Current Section
 
     /// The pop's starting wealth (in AMV) for the day. Everything that survived from
-    /// yesterday to today.
+    /// yesterday to today. This value should not change during the day.
     pub wealth: f64,
     /// The pop's income for the day, gained by the pop from work. Equal to the goods
     /// given to the pop minus what they gave up.
@@ -28,7 +48,8 @@ pub struct PopFinancials {
     /// The pop's income for the day in the form of interest, dividends, and the like.
     pub dividends: f64,
 
-    /// The amount of AMV the pop currently hase in it's possession.
+    /// The amount of AMV the pop currently has in it's possession and has not reserved 
+    /// for specific purposes yet.
     pub current_wealth: f64,
     /// How much we have consumed or have marked for consumption.
     pub consumed: f64,
@@ -37,7 +58,10 @@ pub struct PopFinancials {
     /// How much we earmarked for investment.
     pub invested: f64,
     // todo: Maybe include borrowed here?
+
     /// How much AMV the pop has at the end of day, post consumption.
+    /// 
+    /// Used to calculate weath change over the day (This is post decay and consumption).
     pub amv_end: f64,
     /// How much AMV was lost to decay at the end of the day.
     pub decay: f64,
@@ -66,12 +90,13 @@ pub struct PopFinancials {
     pub dividend_inertia: f64,
 
     // Financial mood
+
     /// A measure of how certain the pop is about the future. The higher this is
-    /// the more they will seek to save. The lower the more willing they are to not
-    /// save.
+    /// the more they will seek to save. The lower the more willing they are willing to
+    /// spend or invest.
     pub uncertainty: f64,
     /// A measure of how willing to take a risk the pop is. The higher this value the
-    /// more they are willing to invest.
+    /// more they are willing to invest. This can offset Uncertainty.
     pub risk_tolerance: f64,
     /// A measure of how much they seek in the form of returns on their investments.
     /// The higher this vaule, the higher the interest rate they seek.
@@ -141,6 +166,14 @@ impl PopFinancials {
             interest_rate_cap: 0.0,
             current_interest_rate: 0.0,
         }
+    }
+
+    /// # Current Total Wealth
+    /// 
+    /// The sum of Current (unreserved) wealth, consumed wealth, saved wealth, and 
+    /// invested wealth.
+    pub fn current_total_wealth(&self) -> f64 {
+        self.current_wealth + self.consumed + self.saved + self.invested
     }
 
     /// # Update Average Wealth
