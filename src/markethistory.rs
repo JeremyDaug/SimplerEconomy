@@ -1,5 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fmt::format};
 
+use circular_buffer::CircularBuffer;
+
 use crate::good::Good;
 
 /// # Market History
@@ -70,6 +72,18 @@ pub struct GoodRecord {
     pub for_sale: f64,
     /// Quantity 
     pub sold: f64,
+
+    /// The history of the good's price in the market. Covers about 2 months.
+    pub price_history: CircularBuffer<64, f64>,
+    /// The price volatilaty of the good.
+    /// 
+    /// This is a factor from 0.0 to 1.0. 
+    /// 
+    /// 0.0 is perfectly stable, so stable that we probably fix it in place.
+    /// 1.0 is perfectly unstable, prices swinging rapidly from worthless to priceless.
+    /// 
+    /// NOTE: For now, this is AMV volatility, not necissarily wider volatility.
+    pub volatility: f64,
 }
 
 impl GoodRecord {
@@ -82,6 +96,8 @@ impl GoodRecord {
             export: 0.0,
             for_sale: 0.0,
             sold: 0.0,
+            price_history: CircularBuffer::new(),
+            volatility: 0.0,
         }
     }
 

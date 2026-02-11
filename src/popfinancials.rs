@@ -49,7 +49,7 @@ pub struct PopFinancials {
     pub dividends: f64,
 
     /// The amount of AMV the pop currently has in it's possession and has not reserved 
-    /// for specific purposes yet.
+    /// for specific purposes yet. Also known as the Working Wealth of the pop.
     pub current_wealth: f64,
     /// How much we have consumed or have marked for consumption.
     pub consumed: f64,
@@ -79,14 +79,17 @@ pub struct PopFinancials {
     /// Calculated via a rolling average of 30 days.
     pub average_wealth: f64,
     /// The rough direction and magnitude of changes in wealth over time.
+    /// This is likely to be a linear regression over the history, or perhaps something simpler.
     pub wealth_inertia: f64,
     /// The average income recieved by the pop for the last 30 days.
     pub average_income: f64,
     /// The rough estimate of income's change over time.
+    /// This is likely to be a linear regression over the history, or perhaps something simpler.
     pub income_inertia: f64,
     /// The average dividend recieved by the pop over the past 30 days.
     pub average_dividend: f64,
     /// The rough estimate of the change over time.
+    /// This is likely to be a linear regression over the history, or perhaps something simpler.
     pub dividend_inertia: f64,
 
     // Financial mood
@@ -94,9 +97,17 @@ pub struct PopFinancials {
     /// A measure of how certain the pop is about the future. The higher this is
     /// the more they will seek to save. The lower the more willing they are willing to
     /// spend or invest.
+    /// 
+    /// Cannot be Negative.
     pub uncertainty: f64,
     /// A measure of how willing to take a risk the pop is. The higher this value the
-    /// more they are willing to invest. This can offset Uncertainty.
+    /// more they are willing to invest in risky ventures, the higher the losses they 
+    /// will tolerate, and the more volatilaty they will be willing to withstand on 
+    /// their savings. 
+    /// 
+    /// This can offset Uncertainty.
+    /// 
+    /// Cannot be Negative.
     pub risk_tolerance: f64,
     /// A measure of how much they seek in the form of returns on their investments.
     /// The higher this vaule, the higher the interest rate they seek.
@@ -105,7 +116,7 @@ pub struct PopFinancials {
     /// 
     /// Investments are measured on a 100 day basis.
     /// 
-    /// Can't go below 0.0.
+    /// Cannot be negative.
     pub time_preference: f64,
 
     // Plans Section
