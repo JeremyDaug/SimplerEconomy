@@ -137,9 +137,11 @@ pub struct PopFinancials {
 
     /// The baseline interest rate for the pop. Primarily defined by demographics.
     pub base_interest_rate: f64,
-    /// The current cap on interest rate, this cap is a lower bound rather than an upper bound.
+    /// The current cap on interest rate, this cap is a lower bound rather than an 
+    /// upper bound.
     pub interest_rate_cap: f64,
-    /// This is the current effective interest rate of the pop.
+    /// This is the current effective interest rate of the pop, reached by the 
+    /// combination of Base Rate, various Mood weights.
     pub current_interest_rate: f64,
 }
 

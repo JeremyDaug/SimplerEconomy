@@ -77,10 +77,7 @@ pub struct GoodRecord {
     pub price_history: CircularBuffer<64, f64>,
     /// The price volatilaty of the good.
     /// 
-    /// This is a factor from 0.0 to 1.0. 
-    /// 
-    /// 0.0 is perfectly stable, so stable that we probably fix it in place.
-    /// 1.0 is perfectly unstable, prices swinging rapidly from worthless to priceless.
+    /// The exact mechanism of how this is calculated is not known yet.
     /// 
     /// NOTE: For now, this is AMV volatility, not necissarily wider volatility.
     pub volatility: f64,
@@ -111,9 +108,7 @@ impl GoodRecord {
     pub fn with_price(mut self, price: f64) -> Self {
         self.price = price;
         self
-    }                                  
-
-
+    }
 }
 
 

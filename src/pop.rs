@@ -197,10 +197,11 @@ impl Pop {
     /// Takes in the good(s) which is attempting to be purchased, market and good data
     /// and returns the goods being offered in return for those goods.
     /// 
-    /// The goods being requested should satisfy more than is being sacrifised and
+    /// The goods being requested should satisfy more than is being sacrificed and
     /// the AMV cost gained should be higher than what is lost.
     /// 
-    /// It also has an optional input for a pre-defined AMV value, typically given by.
+    /// It also has an optional input for a pre-defined offer, that the seller would
+    /// accept if met.
     /// 
     /// ## Notes
     /// 
@@ -215,6 +216,7 @@ impl Pop {
         // check if we have been given a price hint.
         if price_hint.len() > 0 {
             for (&good, &amt) in price_hint.iter() {
+                // get the AMV price of the price hint goods.
                 req_amv += market.get_record(good).price * amt;
             }
         } else { // if no price hint, get market AMV for hint value.
@@ -222,10 +224,10 @@ impl Pop {
                 req_amv += market.get_record(*good).price * amt;
             }
         }
-        println!("Requested AMV: {}", req_amv);
+        //println!("Requested AMV: {}", req_amv);
         // get the satisfaction gain from the request.
         let sat_gain = self.satisfaction_gain(request, data, market);
-        println!("Sat Gained: {}", sat_gain.steps);
+        //println!("Sat Gained: {}", sat_gain.steps);
 
         // with our amv, and satisfaction gains, try to find things to give up that are worth more than
         // the AMV but less then our sat and levels gained.
@@ -233,7 +235,7 @@ impl Pop {
         // start by trying to use just the price hint
         let mut offer_goods = HashMap::new();
         let mut offer_amv = 0.0;
-        println!("Hint Section ---");
+        //println!("Hint Section ---");
         for (good, prop_info) in self.property.iter()
         .filter(|x| price_hint.contains_key(x.0))
         .sorted_by(|a, b| {
@@ -242,11 +244,11 @@ impl Pop {
             let val_b = market.get_record(*b.0).price;
             val_b.total_cmp(&val_a)
         }) {
-            println!("Good: {}", good);
+            //println!("Good: {}", good);
             // start with most valuable and either get just enough, or all available for it.
             let unit_amv = market.get_record(*good).price;
-            println!("Good AMV: {}", unit_amv);
-             // get target, capped at available, and rounded down.
+            //println!("Good AMV: {}", unit_amv);
+            // get target, capped at available, and rounded down.
             let mut shift = price_hint.get(good).unwrap().min(prop_info.available()).floor();
             let mut debug_counter = 0;
             if shift > 0.0 { // check we can shift anything, if so, shift.
@@ -280,6 +282,7 @@ impl Pop {
         if offer_amv >= req_amv { // if so, return our offer.
             return offer_goods;
         }
+
         // Start by using any currencies of the market.
         println!("Money Section ---");
         for (good, prop_info) in self.property.iter()
@@ -448,7 +451,7 @@ impl Pop {
     /// Currently, we offer everything that is in excess, exchangeable, and
     /// not a currency.
     /// 
-    /// TODO: This will likely be modified to 
+    /// TODO: This will likely be modified to be toggleable to reduce overusing this.
     pub fn create_sell_orders(&self, data: &Data, market: &MarketHistory) 
     -> HashMap<usize, f64> {
         let mut result = HashMap::new();
@@ -611,7 +614,7 @@ impl Pop {
         let self_sat = self.get_satisfaction(market);
         // create Duplicate for working on.
         let mut dup = self.clone();
-        dup.recalculate_working_desires(); // recalculate the working desires
+        dup.reset_working_desires(); // recalculate the working desires
         let mut results = vec![];
         let mut range_acc = 0.0;
         let mut step_acc = 0.0;
@@ -685,7 +688,7 @@ impl Pop {
     pub fn satisfaction_from_amv(&self, amv_gain: f64, market: &MarketHistory) -> SatisfactionValues {
         // create Duplicate for working on.
         let mut dup = self.clone();
-        dup.recalculate_working_desires(); // recalculate the working desires
+        dup.reset_working_desires(); // recalculate the working desires
         let mut amv_remaining = amv_gain;
 
         // iterate over desires
@@ -736,15 +739,15 @@ impl Pop {
             dup_sat.excess_amv - self_sat.excess_amv)
     }
 
-    /// # Recalculate
+    /// # Reset Working Desires
     /// 
-    /// Resets our desires to be working desires unless they are 
-    /// totally satisfied.
+    /// Resets all desires to be working desires unless they are totally satisfied. This
+    /// does not reset existing satisfaction.
     /// 
     /// Useful for satisfaction from AMV as well as possible recalculations
     /// when we have resources to expend and run out of working desires. 
     /// ~~(Maybe IDK, probably not that smart to do.)~~
-    fn recalculate_working_desires(&mut self) {
+    fn reset_working_desires(&mut self) {
         let mut idx = 0;
         loop {
             if self.desires.len() <= idx {
@@ -772,9 +775,12 @@ impl Pop {
     /// 
     /// Given a number of goods added/removed returns the result of that change in goods.
     /// 
-    /// Returns levels satisfied and levels
+    /// Returns levels satisfied and levels. 
     /// 
-    /// # Note Not tested
+    /// This is a full sort, so it may be quite expensive to run.
+    /// 
+    /// NOTE: Not tested as this is fairly simple, so long as try_satisfy_all_desires works, this should also work.
+    /// TODO: If possible, upgrade this to be more efficient rather than totally recalculating satisfaction each time.
     pub fn satisfaction_change(&self, change: &HashMap<usize, f64>, data: &Data, 
     market: &MarketHistory)  -> SatisfactionValues {
         let mut temp_pop = self.clone();
@@ -902,7 +908,7 @@ impl Pop {
             steps += desire.satisfied_steps();
             sat += desire.satisfaction;
         }
-        // sanity check that he reached something.
+        // sanity check that we reached something.
         if high == f64::NEG_INFINITY || low == f64::INFINITY {
             // if nothing reached (both will ilkely be infinity)
             // set high and low to zero.
@@ -1260,9 +1266,11 @@ impl Pop {
     /// 
     /// TODO: Expand to include a step/satisfaction target parameter so it can do more than 1 level at a time.
     /// TODO: Consider breaking out the sections to flatten out and make testing easier.
-    pub fn satisfy_desire(&mut self, mut current_desire: Desire, data: &Data) -> (Desire, f64) {
+    pub fn satisfy_desire(&mut self, mut current_desire: Desire, data: &Data, step_target: f64) -> (Desire, f64) {
+        assert!(step_target > 0.0, "Step target must be a positive value.");
         // prep our shifted record for checking if we succeeded at satisfying the desire.
         let mut shifted = 0.0;
+        let target_amount = current_desire.amount * step_target;
         match current_desire.item {
             Item::Want(id) => {
                 //println!("Getting Wants");
@@ -1270,7 +1278,7 @@ impl Pop {
                 // First, try to get wants from storage.
                 if let Some(want_rec) = self.wants.get_mut(&id) {
                     // get available want
-                    let shift = want_rec.available().min(current_desire.amount - shifted);
+                    let shift = want_rec.available().min(target_amount - shifted);
                     if shift > 0.0 {
                         //println!("Have want already, reserving.");
                         want_rec.reserved += shift; // shift
@@ -1279,7 +1287,7 @@ impl Pop {
                     }
                 }
                 // First try to get via ownership
-                if shifted < current_desire.amount { // check if we need more.
+                if shifted < target_amount { // check if we need more.
                     let want = data.get_want(id);
                     // get the goods we can use for this.
                     for good in want.ownership_sources.iter() {
@@ -1289,7 +1297,7 @@ impl Pop {
                             let good_data = data.get_good(*good);
                             let eff = *good_data.own_wants.get(&id)
                                 .expect("Want not found in good ownership effects.");
-                            let target = (current_desire.amount - shifted) / eff;
+                            let target = (target_amount - shifted) / eff;
                             let shift = target.min(good_rec.available());
                             if shift > 0.0 {
                                 //println!("Getting Ownership Source.");
@@ -1320,13 +1328,13 @@ impl Pop {
                                 }
                             }
                         }
-                        if shifted > current_desire.amount {
+                        if shifted > target_amount {
                             break;
                         }
                     }
                 }
                 // Then try for use if we still need more.
-                if shifted < current_desire.amount { // then try for use
+                if shifted < target_amount { // then try for use
                     let want = data.get_want(id);
                     // get the goods we can use for this.
                     for good in want.use_sources.iter() {
@@ -1339,7 +1347,7 @@ impl Pop {
                             // get efficiency of producing that want.
                             let eff = *good_data.use_wants.get(&id)
                                 .expect("Want not found in good ownership effects.");
-                            let mut target = (current_desire.amount - shifted) / eff;
+                            let mut target = (target_amount - shifted) / eff;
                             // get time target
                             let time_target = good_data.use_time * target;
                             // get our available time, capped at our target.
@@ -1386,12 +1394,12 @@ impl Pop {
                             // put good_rec back in regardless of result
                             self.property.insert(*good, good_rec);
                         }
-                        if shifted > current_desire.amount {
+                        if shifted > target_amount {
                             break;
                         }
                     }
                 }
-                if shifted < current_desire.amount { // lastly consumption
+                if shifted < target_amount { // lastly consumption
                     let want = data.get_want(id);
                     // get the goods we can consume for this.
                     for good in want.consumption_sources.iter() {
@@ -1404,7 +1412,7 @@ impl Pop {
                             // get efficiency of producing that want.
                             let eff = *good_data.consumption_wants.get(&id)
                                 .expect("Want not found in good ownership effects.");
-                            let mut target = (current_desire.amount - shifted) / eff;
+                            let mut target = (target_amount - shifted) / eff;
                             // get time target
                             let time_target = good_data.consumption_time * target;
                             // get our available time, capped at our target.
@@ -1451,7 +1459,7 @@ impl Pop {
                             // put good_rec back in regardless of result
                             self.property.insert(*good, good_rec);
                         }
-                        if shifted > current_desire.amount {
+                        if shifted > target_amount {
                             break;
                         }
                     }
@@ -1467,13 +1475,13 @@ impl Pop {
                         let shift = if rec.available() == 0.0 {
                             continue;
                         } else {
-                            rec.available().min(current_desire.amount - shifted)
+                            rec.available().min(target_amount - shifted)
                         };
                         rec.reserved += shift;
                         current_desire.satisfaction += shift;
                         shifted += shift;
                     }
-                    if shifted == current_desire.amount {
+                    if shifted == target_amount {
                         // if shifted enough to cover desire, stop trying.
                         break;
                     }
@@ -1485,7 +1493,7 @@ impl Pop {
                 if let Some(rec) = self.property.get_mut(&id) {
                     //println!("Has in property.");
                     // How much we can shift over.
-                    let shift = rec.available().min(current_desire.amount);
+                    let shift = rec.available().min(target_amount);
                     //println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
                     rec.reserved += shift; // add to reserved.
@@ -1503,8 +1511,8 @@ impl Pop {
     /// 
     /// This will reserve wants and goods for the desires.
     /// 
-    /// If a desire is not satisfied, or is fully satisfied, it returns that desire 
-    /// and the step at which it failed to satisfy.
+    /// If a desire failed so satisfy a step or is fully satisfied, it returns it to the
+    /// caller for them to place properly.
     /// 
     /// Otherwise it puts it back into working desires.
     pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<Desire>, 
@@ -1533,7 +1541,7 @@ impl Pop {
 
     /// # Satisfy until Incomplete
     /// 
-    /// Satisfies desires until an desire is unable to satisfy itself.
+    /// Satisfies desires until a desire is unable to satisfy itself.
     /// 
     /// The working desires starts with the next desire this will start with. So no need
     /// to give a starting vaule or desire.
@@ -1622,9 +1630,8 @@ impl Pop {
     /// 
     /// After all is done, it saves the work, and records the satisfaction achieved.
     pub fn try_satisfy_all_desires(&mut self, data: &Data, market: &MarketHistory) {
-        // Move current desires into a working btreemap for easier organization and management.
         //println!("Satisfying Desires.");
-        // create a working desires to pass around our 
+        // create a working desires to pass around this function nicely.
         let mut working_desires = VecDeque::new();
         // Working desires, includes the current tier it's on, and the desire.
         while let Some(desire) = self.desires.pop_front() { // Initial list is always sorted, so just move over.
@@ -1691,11 +1698,11 @@ impl Pop {
             //println!("Amount: {}", desire.amount);
             // copy base over
             let mut new_des = desire.clone();
-            // get multiplier
+            // update desire amount based on multiples.
             Self::get_desire_multiplier(desire, row, &mut new_des);
             // with desire scaled properly, find if it already exists in our desires
             // desires are always sorted.
-            let mut current = if let Some((est, _)) = desires.iter()
+            let mut current_idx = if let Some((est, _)) = desires.iter()
             .find_position(|x| x.start_priority <= new_des.start_priority) {
                 // find the first one which is equal to or greater than our new destination.
                 est
@@ -1703,33 +1710,33 @@ impl Pop {
             //println!("First Pos: {}", current);
             // with first match found, try to find duplicates while walking up. 
             loop {
-                if current >= desires.len() {
+                if current_idx >= desires.len() {
                     // if at or past the end, insert at the end and continue.
                     //println!("Insert Position: {}", current);
                     desires.push(new_des);
                     break;
-                } else if desires.get(current).unwrap().equals(&new_des) {
+                } else if desires.get(current_idx).unwrap().equals(&new_des) {
                     // if new_desire matches existing desire, add to it.
                     //println!("Insert Position: {}", current);
-                    desires.get_mut(current).unwrap().amount += new_des.amount;
+                    desires.get_mut(current_idx).unwrap().amount += new_des.amount;
                     break;
-                } else if desires.get(current).unwrap().start_priority < new_des.start_priority {
+                } else if desires.get(current_idx).unwrap().start_priority < new_des.start_priority {
                     // If the desire we're looking at is greater than our current, insert
                     //println!("Insert Position: {}", current);
-                    desires.insert(current, new_des);
+                    desires.insert(current_idx, new_des);
                     break;
                 }
-                // If we haven't walked off the end just yet,
+                // If we haven't walked off the end,
                 // and we haven't found a match
                 // AND we the current is still less than or equal to our new desires start
                 // step up 1 and try again.
                 //println!("Current Start: {}", desires.get(current).unwrap().start);
-                current += 1;
+                current_idx += 1;
             }
         }
     }
 
-    /// Helper for getting multiplier on desires based on tags. This is is used in
+    /// Helper for multiplying a desire based on it's tags. This is is used in
     /// multiple places and is likely to change in the future.
     pub(crate) fn get_desire_multiplier(desire: &Desire, row: &DRow, new_des: &mut Desire) {
         // get multiplier
@@ -1753,7 +1760,7 @@ impl Pop {
         if multiplier == 0.0 {
             multiplier = row.household.population();
         }
-        // multiply the desrie amount by the multiplier.
+        // multiply the desire amount by the multiplier.
         new_des.amount = new_des.amount * multiplier;
     }
     
