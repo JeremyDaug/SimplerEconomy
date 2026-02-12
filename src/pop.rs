@@ -1518,7 +1518,7 @@ impl Pop {
     pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<Desire>, 
     data: &Data) -> Option<Desire> {
         assert!(working_desires.len() > 0, "Working Desires cannot be empty.");
-        // Get current step and desire from the front of the working desires. If no next one, leave loop.
+        // Get current step and desire from the front of the working desires. If no next one, leave.
         let current_desire = 
         if let Some(current_desire) = working_desires.pop_front() {
             //println!("Current Step: {}", current_step);
@@ -1526,11 +1526,23 @@ impl Pop {
         } else {
             return None;
         };
-        // If did not succeed at satisfying this time, or desire is fully satisfied, add to finished.
-        let (current_desire, shifted) = self.satisfy_desire(current_desire, data);
+        
+        // peek at the next desire to get how many steps we can take, minimum 1 unless if matching.
+        let mut steps = if let Some(peek) = working_desires.get(0) {
+            // NOTE: Correct this to find the number of steps we would take to get to that next priority.
+            peek.current_priority() - current_desire.current_priority()
+        } else {
+            1.0
+        };
+        // Cap our steps so we don't overshoot also.
+        if let Some(end) = current_desire.steps {
+            steps = steps.min(end.get() as f64);
+        }
+        let (current_desire, shifted) = self.satisfy_desire(current_desire, data, steps);
         if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
             //println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
             //println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
+            // If did not succeed at satisfying this time, or desire is fully satisfied, return it.
             return Some(current_desire);
         } else { // otherwise, put back into working desires to try and satisfy again. Putting to the next spot it woud do
             //println!("Repeat Desire.");

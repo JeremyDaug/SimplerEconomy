@@ -39,7 +39,7 @@ pub struct Desire {
     /// value at the end will be priority_fn(1).
     /// 
     /// Note: Due to fence posting, the last priority that can be satisfied will be 
-    /// step-1, not step.
+    /// step-1, not step. Step is the priority it doesn't go beyond.
     pub steps: Option<NonZeroUsize>,
     /// Tags and effects attached to this desire.
     /// 
