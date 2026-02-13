@@ -1529,8 +1529,11 @@ impl Pop {
         
         // peek at the next desire to get how many steps we can take, minimum 1 unless if matching.
         let mut steps = if let Some(peek) = working_desires.get(0) {
-            // NOTE: Correct this to find the number of steps we would take to get to that next priority.
-            peek.current_priority() - current_desire.current_priority()
+            if let Some(next_step) = current_desire.on_step(peek.current_priority()) {
+                next_step.max(1.0)
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
