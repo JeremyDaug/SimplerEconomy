@@ -2102,7 +2102,7 @@ mod tests {
                 }
             }
 
-            
+
         }
     
         mod satisfy_until_incomplete_should {

@@ -194,7 +194,7 @@ impl Pop {
 
     /// # Make Offer
     /// 
-    /// Takes in the good(s) which is attempting to be purchased, market and good data
+    /// Takes in the good(s) which we are attempting to purchased, market and good data
     /// and returns the goods being offered in return for those goods.
     /// 
     /// The goods being requested should satisfy more than is being sacrificed and
@@ -284,7 +284,7 @@ impl Pop {
         }
 
         // Start by using any currencies of the market.
-        println!("Money Section ---");
+        // println!("Money Section ---");
         for (good, prop_info) in self.property.iter()
         .filter(|x| market.currencies.contains(x.0) && // In currencies
             !price_hint.contains_key(x.0)) // and not the hint.
@@ -294,28 +294,28 @@ impl Pop {
             let val_b = market.get_record(*b.0).price;
             val_b.total_cmp(&val_a)
         }) {
-            println!("Good: {}", good);
+            // println!("Good: {}", good);
             // start with most valuable and either get just enough, or all available for it.
             let unit_amv = market.get_record(*good).price;
-            println!("Good AMV: {}", unit_amv);
+            // println!("Good AMV: {}", unit_amv);
             let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
              // get target, capped at available, and rounded down.
             let mut shift = target_amt.min(prop_info.available()).floor();
             let mut debug_counter = 0;
             if shift > 0.0 { // check we can shift anything, if so, shift.
                 loop { // find if we can add without hurting satisfaction too much.
-                    println!("Shifting: {}", shift);
+                    // println!("Shifting: {}", shift);
                     offer_goods.insert(*good, shift);
                     // check that the sacrifice is worth it
                     let sat_lost = self.satisfaction_lost(&offer_goods, data, market);
                     // TODO: Update this to target properly instead of estimating half reductions.
-                    println!("Satisfaciton Lost: {}", sat_lost.steps);
+                    // println!("Satisfaciton Lost: {}", sat_lost.steps);
                     if sat_lost.steps > sat_gain.steps { // if too much, reduce by half (round down) and go back
                         shift = (shift / 2.0).floor();
                         offer_goods.remove(good);
                     } else { // if not overdrawing, break out and stay there.
                         // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
-                        println!("Updated shift to: {}", shift);
+                        // println!("Updated shift to: {}", shift);
                         break; 
                     }
                     if debug_counter > 9 {
@@ -346,7 +346,7 @@ impl Pop {
         }) {
             // start with most valuable and either get just enough, or all available for it.
             let unit_amv = market.get_record(*good).price;
-            println!("Good AMV: {}", unit_amv);
+            // println!("Good AMV: {}", unit_amv);
             let target_amt = ((req_amv - offer_amv) / unit_amv).ceil();
              // get target, capped at available, and rounded down.
             let mut shift = target_amt.min(prop_info.available()).floor();
@@ -1238,18 +1238,18 @@ impl Pop {
                 }
             },
             crate::item::Item::Good(id) => {
-                println!("Satisfying Good: {}.", id);
+                // println!("Satisfying Good: {}.", id);
                 // Good, so just find and insert
                 if let Some(rec) = self.property.get_mut(&id) {
-                    println!("Has in property.");
+                    // println!("Has in property.");
                     // How much we can shift over.
                     let shift = rec.owned.min(current_desire.amount);
-                    println!("Shifting: {}", shift);
+                    // println!("Shifting: {}", shift);
                     shifted += shift; // add to shifted for later checking
                     rec.owned -= shift;
                     rec.expended += shift; // and add to expended for checking.
                     current_desire.satisfaction += shift; // and to satisfaction.
-                    println!("Current Satisfaction: {}", current_desire.satisfaction);
+                    // println!("Current Satisfaction: {}", current_desire.satisfaction);
                 }
             },
         }
@@ -1268,6 +1268,7 @@ impl Pop {
     /// TODO: Consider breaking out the sections to flatten out and make testing easier.
     pub fn satisfy_desire(&mut self, mut current_desire: Desire, data: &Data, step_target: f64) -> (Desire, f64) {
         assert!(step_target > 0.0, "Step target must be a positive value.");
+        // println!("Step Target: {}", step_target);
         // prep our shifted record for checking if we succeeded at satisfying the desire.
         let mut shifted = 0.0;
         let target_amount = current_desire.amount * step_target;
@@ -1521,7 +1522,8 @@ impl Pop {
         // Get current step and desire from the front of the working desires. If no next one, leave.
         let current_desire = 
         if let Some(current_desire) = working_desires.pop_front() {
-            //println!("Current Step: {}", current_step);
+            // println!("Current Desire Item: {}", current_desire.item);
+            // println!("Satisfied Steps: {}", current_desire.satisfied_steps());
             current_desire
         } else {
             return None;
@@ -1530,7 +1532,7 @@ impl Pop {
         // peek at the next desire to get how many steps we can take, minimum 1 unless if matching.
         let mut steps = if let Some(peek) = working_desires.get(0) {
             if let Some(next_step) = current_desire.on_step(peek.current_priority()) {
-                next_step.max(1.0)
+                (next_step - current_desire.satisfied_steps()).max(1.0)
             } else {
                 1.0
             }
@@ -1541,14 +1543,15 @@ impl Pop {
         if let Some(end) = current_desire.steps {
             steps = steps.min(end.get() as f64);
         }
+        // println!("Taking Step(s): {}", steps);
         let (current_desire, shifted) = self.satisfy_desire(current_desire, data, steps);
         if shifted < current_desire.amount || current_desire.is_fully_satisfied() {
-            //println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
-            //println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
+            // println!("Finished with desire. SHifted: {}, desire_target: {}", shifted, current_desire.amount);
+            // println!("Fully Satisfied: {}", current_desire.is_fully_satisfied());
             // If did not succeed at satisfying this time, or desire is fully satisfied, return it.
             return Some(current_desire);
         } else { // otherwise, put back into working desires to try and satisfy again. Putting to the next spot it woud do
-            //println!("Repeat Desire.");
+            // println!("Repeat Desire.");
             Self::ordered_desire_insert(working_desires, current_desire);
             None
         }
@@ -1570,7 +1573,9 @@ impl Pop {
     data: &Data) -> Option<Desire> {
         loop {
             // satisfy the next desire
+            // println!("--------------");
             if let Some(result) = self.satisfy_next_desire(working_desires, data) {
+                // println!("Incomplete Desire: {}", result.item);
                 // if we get a desire here, the desire is either incomplete or finished
                 if result.is_fully_satisfied() { // if fully satisfied, just add back to desires.
                     Self::ordered_desire_insert(&mut self.desires, result);
@@ -1591,7 +1596,7 @@ impl Pop {
     /// Similar to self.try_satisfy_all_desires(), however, instead of going until
     /// all have been tried, it stops at the first which is incomplete.
     /// 
-    /// This takse all desires from self.desires and self.working_desires, puts them back
+    /// This takes all desires from self.desires and self.working_desires, puts them back
     /// into self.desires. Once any is incomplete does it stop, putting that incomplete 
     /// one back in working_desires for later.
     pub fn try_satisfy_until_incomplete(&mut self, data: &Data, market: &MarketHistory) {
@@ -1603,14 +1608,14 @@ impl Pop {
         while let Some(desire) = self.desires.pop_front() { // Initial list is always sorted, so just move over.
             Pop::ordered_desire_insert(&mut working_desires, desire);
         }
-        println!("Working Desires: {}", working_desires.len());
+        // println!("Working Desires: {}", working_desires.len());
         // also move over from self.working_desires
         while let Some(desire) = self.working_desires.pop_front() {
             Pop::ordered_desire_insert(&mut working_desires, desire);
         }
         if let Some(incomplete_desire) = self.satisfy_until_incomplete(&mut working_desires, data) {
-            println!("Incomplete Item: {}", incomplete_desire.item);
-            println!("Desire satisfied steps: {}", incomplete_desire.satisfied_steps());
+            // println!("Incomplete Item: {}", incomplete_desire.item);
+            // println!("Desire satisfied steps: {}", incomplete_desire.satisfied_steps());
             // if we got something incomplete, then add back to working_desires front
             working_desires.push_front(incomplete_desire);
         } // else, just continue we satisfied everything.
