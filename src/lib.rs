@@ -882,7 +882,7 @@ mod tests {
                 data.goods.insert(3, Good::new(3, "3".to_string(), String::from("")));
                 data.goods.insert(4, Good::new(4, "4".to_string(), String::from("")));
                 data.goods.insert(5, Good::new(5, "5".to_string(), String::from("")));
-                data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
+                // data.goods.insert(6, Good::new(6, "6".to_string(), String::from("")));
                 
                 // set up market info, including a currency.
                 let mut market = MarketHistory::new();

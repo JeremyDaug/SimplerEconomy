@@ -250,26 +250,19 @@ impl Pop {
             //println!("Good AMV: {}", unit_amv);
             // get target, capped at available, and rounded down.
             let mut shift = price_hint.get(good).unwrap().min(prop_info.available()).floor();
-            let mut debug_counter = 0;
             if shift > 0.0 { // check we can shift anything, if so, shift.
-                loop { // find if we can add without hurting satisfaction too much.
-                    println!("Shifting: {}", shift);
-                    offer_goods.insert(*good, shift);
-                    // check that the sacrifice is worth it
-                    let sat_lost = self.satisfaction_lost(&offer_goods, data, market);
-                    // TODO: Update this to target properly instead of estimating half reductions.
-                    if sat_lost.steps > sat_gain.steps { // if too much, reduce by half (round down) and go back
-                        shift = (shift / 2.0).floor();
-                        offer_goods.remove(good);
-                    } else { // if not overdrawing, break out and stay there.
-                        // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
-                        println!("Shifted: {}", shift);
-                        break; 
-                    }
-                    if debug_counter > 9 {
-                        assert!(false);
-                    }
-                    debug_counter += 1;
+                //println!("Shifting: {}", shift);
+                offer_goods.insert(*good, shift);
+                // check that the sacrifice is worth it
+                let sat_lost = self.satisfaction_lost(&offer_goods, data, market);
+                // TODO: Update this checker to take into account priority differences rather than just satisfaction.
+                if sat_lost.satisfaction > sat_gain.satisfaction { // if too much, reduce by half (round down) and go back
+                    shift = (shift / 2.0).floor();
+                    offer_goods.remove(good);
+                } else { // if not overdrawing, break out and stay there.
+                    // This should NEVER get us stuck as we never want to lose more satisfaction than we gain.
+                    println!("Shifted: {}", shift);
+                    break; 
                 }
             }
             offer_amv += shift * unit_amv;
@@ -1959,6 +1952,9 @@ pub struct SatisfactionValues {
     pub satisfaction: f64,
     /// The AMV of goods which didn't go into desires.
     pub excess_amv: f64,
+    // TODO: Add in the ranges satisfied below for more precise and useful internal valuation calculations.
+    // The ranges the satisfaction covers.
+    //pub ranges: Vec<(f64, f64)>,
 }
 
 impl SatisfactionValues {
