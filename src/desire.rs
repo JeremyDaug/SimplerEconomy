@@ -142,14 +142,14 @@ impl Desire {
         self
     }
 
-    /// # Current Value
+    /// # Next Value
     /// 
-    /// Gets the current value of our desire based on satisfaction.
+    /// Gets the Next value of our desire based on satisfaction.
     /// 
     /// TODO! This should be the next value, and a new function 'current value' should be the total value.
-    pub fn current_value(&self) -> f64 {
+    pub fn next_value(&self) -> f64 {
         let steps = self.satisfied_steps();
-        self.demand_fn.value(self.starting_value, steps)
+        self.demand_fn.value(self.starting_value, steps + 1.0)
     }
 
     /// # Weight
@@ -163,7 +163,7 @@ impl Desire {
     /// NOTE: Does not seem to be in use, not sure why I would use it right now. Will likely delete. Current prioritization does not need weight.
     pub fn weight(&self) -> f64 {
         let result =  self.satisfied_steps() / 
-            (self.current_value() - self.starting_value);
+            (self.next_value() - self.starting_value);
         if result.is_nan() {
             0.0
         } else {
@@ -515,8 +515,8 @@ impl DemandCurve {
         let mut current_step = 0.0;
         let mut acc = 0.0;
         loop {
-            // get the current step (1 or whatever is left)
-            current_step += 1.0_f64.min(remainder);
+            // get the next step (always go a whole step)
+            current_step += 1.0;
             // get the value produced at that step.
             if remainder < 1.0 { // if below 1, reduce by that factor.
                 acc += self.value(start, current_step) * remainder;

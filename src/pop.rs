@@ -1524,7 +1524,7 @@ impl Pop {
         
         // peek at the next desire to get how many steps we can take, minimum 1 unless if matching.
         let mut steps = if let Some(peek) = working_desires.get(0) {
-            if let Some(next_step) = current_desire.on_step(peek.current_value()) {
+            if let Some(next_step) = current_desire.on_step(peek.next_value()) {
                 (next_step - current_desire.satisfied_steps()).max(1.0)
             } else {
                 1.0
@@ -1786,9 +1786,9 @@ impl Pop {
     /// 
     /// ## NOTE: This may need to be reworked to store the current priority also to reduce compulational load.
     pub(crate) fn ordered_desire_insert(working_desires: &mut VecDeque<Desire>, desire: Desire) {
-        let value = desire.current_value();
+        let value = desire.next_value();
         for idx in 0..working_desires.len() {
-            if value < working_desires.get(idx).unwrap().current_value() {
+            if value < working_desires.get(idx).unwrap().next_value() {
                 working_desires.insert(idx, desire);
                 return;
             }

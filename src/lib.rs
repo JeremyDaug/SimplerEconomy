@@ -538,7 +538,7 @@ mod tests {
     }
 
     mod desire_tests {
-        mod current_priority_should {
+        mod next_value_should {
             use crate::{desire::{Desire, DemandCurve}, item::Item};
 
             #[test]
@@ -547,46 +547,46 @@ mod tests {
                     DemandCurve::linear(-2.0))
                     .with_steps(0);
                 test_linear.satisfaction = 3.0;
-                let current = test_linear.current_value();
+                let current = test_linear.next_value();
                 assert_eq!(current, -2.0);
                 test_linear.satisfaction = 5.0;
-                let current = test_linear.current_value();
+                let current = test_linear.next_value();
                 assert_eq!(current, -6.0);
 
                 let mut test_root = Desire::new(Item::Good(0), 1.0, -5.0,
                     DemandCurve::down_root(2.0))
                     .with_steps(0);
                 test_root.satisfaction = 1.0;
-                let current = test_root.current_value();
+                let current = test_root.next_value();
                 assert_eq!(current, -5.0);
                 test_root.satisfaction = 3.0;
-                let current = test_root.current_value();
+                let current = test_root.next_value();
                 assert_eq!(current, -7.0);
 
                 let mut test_geo = Desire::new(Item::Good(0), 1.0, 10.0,
                     DemandCurve::geometric(0.5))
                     .with_steps(0);
                 test_geo.satisfaction = 0.0;
-                let current = test_geo.current_value();
+                let current = test_geo.next_value();
                 assert_eq!(current, 0.0);
                 test_geo.satisfaction = 1.0;
-                let current = test_geo.current_value();
+                let current = test_geo.next_value();
                 assert_eq!(current, 10.0);
                 test_geo.satisfaction = 2.0;
-                let current = test_geo.current_value();
+                let current = test_geo.next_value();
                 assert_eq!(current, 5.0);
 
                 let mut test_asym = Desire::new(Item::Good(0), 1.0, 10.0,
                     DemandCurve::asymptotic(2.0))
                     .with_steps(0);
                 test_asym.satisfaction = 0.0;
-                let current = test_asym.current_value();
+                let current = test_asym.next_value();
                 assert_eq!(current, 10.0);
                 test_asym.satisfaction = 1.0;
-                let current = test_asym.current_value();
+                let current = test_asym.next_value();
                 assert_eq!(current, 13.0);
                 test_asym.satisfaction = 2.0;
-                let current = test_asym.current_value();
+                let current = test_asym.next_value();
                 assert_eq!(current, 25.0);
             }
         }
@@ -888,6 +888,27 @@ mod tests {
                 let asymptotic_test = DemandCurve::asymptotic(1.0);
                 assert_eq!(asymptotic_test.total_value(10.0, 1.0), 10.0, "Incorrect value!");
                 assert_eq!(asymptotic_test.total_value(10.0, 2.0), 15.0, "Incorrect value!");
+            }
+
+            #[test]
+            pub fn correctly_calculate_partial_values() {
+                let linear_test = DemandCurve::linear(-1.0);
+                assert_eq!(linear_test.total_value(1.0, 1.0), 1.0, "Incorrect value!");
+                // 1.0 + 0.0 - (1.0 * 0.5)
+                assert_eq!(linear_test.total_value(1.0, 2.5), 0.5, "Incorrect value!");
+
+                let root_test = DemandCurve::down_root(1.0);
+                assert_eq!(root_test.total_value(1.0, 1.0), 1.0, "Incorrect value!");
+                // 1.0 + 0.0 + (0.5 * 1 - 0.2^(1/2))
+                //assert_eq!(root_test.total_value(1.0, 2.5), -2.0, "Incorrect value!");
+
+                let geometric_test = DemandCurve::geometric(0.5);
+                assert_eq!(geometric_test.total_value(8.0, 1.0), 8.0, "Incorrect value!");
+                assert_eq!(geometric_test.total_value(8.0, 3.5), 14.5, "Incorrect value!");
+
+                let asymptotic_test = DemandCurve::asymptotic(1.0);
+                assert_eq!(asymptotic_test.total_value(10.0, 1.0), 10.0, "Incorrect value!");
+                //assert_eq!(asymptotic_test.total_value(10.0, 2.5), 15.0, "Incorrect value!");
             }
         }
 
