@@ -61,7 +61,7 @@ impl Species {
         // find where to insert it.
         let mut index = 0; 
         for (idx, des) in self.desires.iter().enumerate() {
-            if des.start_priority < desire.start_priority {
+            if des.starting_value < desire.starting_value {
                 index = idx;
             }
         }

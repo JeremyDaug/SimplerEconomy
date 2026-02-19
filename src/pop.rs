@@ -882,7 +882,7 @@ impl Pop {
                 // If no satisfaciton, skip it.
                 continue;
             }
-            low = low.min(desire.start_priority);
+            low = low.min(desire.starting_value);
             high = high.max(desire.satisfied_to_priority());
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
@@ -894,7 +894,7 @@ impl Pop {
                 // If no satisfaciton, skip it.
                 continue;
             }
-            low = low.min(desire.start_priority);
+            low = low.min(desire.starting_value);
             high = high.max(desire.satisfied_to_priority());
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
@@ -1524,7 +1524,7 @@ impl Pop {
         
         // peek at the next desire to get how many steps we can take, minimum 1 unless if matching.
         let mut steps = if let Some(peek) = working_desires.get(0) {
-            if let Some(next_step) = current_desire.on_step(peek.current_priority()) {
+            if let Some(next_step) = current_desire.on_step(peek.current_value()) {
                 (next_step - current_desire.satisfied_steps()).max(1.0)
             } else {
                 1.0
@@ -1716,7 +1716,7 @@ impl Pop {
             // with desire scaled properly, find if it already exists in our desires
             // desires are always sorted.
             let mut current_idx = if let Some((est, _)) = desires.iter()
-            .find_position(|x| x.start_priority <= new_des.start_priority) {
+            .find_position(|x| x.starting_value <= new_des.starting_value) {
                 // find the first one which is equal to or greater than our new destination.
                 est
             } else { desires.len() }; // if none was found then it is either the last or only one.
@@ -1733,7 +1733,7 @@ impl Pop {
                     //println!("Insert Position: {}", current);
                     desires.get_mut(current_idx).unwrap().amount += new_des.amount;
                     break;
-                } else if desires.get(current_idx).unwrap().start_priority < new_des.start_priority {
+                } else if desires.get(current_idx).unwrap().starting_value < new_des.starting_value {
                     // If the desire we're looking at is greater than our current, insert
                     //println!("Insert Position: {}", current);
                     desires.insert(current_idx, new_des);
@@ -1786,9 +1786,9 @@ impl Pop {
     /// 
     /// ## NOTE: This may need to be reworked to store the current priority also to reduce compulational load.
     pub(crate) fn ordered_desire_insert(working_desires: &mut VecDeque<Desire>, desire: Desire) {
-        let value = desire.current_priority();
+        let value = desire.current_value();
         for idx in 0..working_desires.len() {
-            if value < working_desires.get(idx).unwrap().current_priority() {
+            if value < working_desires.get(idx).unwrap().current_value() {
                 working_desires.insert(idx, desire);
                 return;
             }
