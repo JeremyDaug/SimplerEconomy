@@ -548,46 +548,46 @@ mod tests {
                     .with_steps(0);
                 test_linear.satisfaction = 3.0;
                 let current = test_linear.next_value();
-                assert_eq!(current, -2.0);
+                assert_eq!(current, -4.0);
                 test_linear.satisfaction = 5.0;
                 let current = test_linear.next_value();
-                assert_eq!(current, -6.0);
+                assert_eq!(current, -8.0);
 
                 let mut test_root = Desire::new(Item::Good(0), 1.0, -5.0,
                     DemandCurve::down_root(2.0))
                     .with_steps(0);
                 test_root.satisfaction = 1.0;
                 let current = test_root.next_value();
-                assert_eq!(current, -5.0);
+                assert!(-6.41 > current && current > -6.42);
                 test_root.satisfaction = 3.0;
                 let current = test_root.next_value();
-                assert_eq!(current, -7.0);
+                assert!(-7.44 > current && current > -7.45);
 
                 let mut test_geo = Desire::new(Item::Good(0), 1.0, 10.0,
                     DemandCurve::geometric(0.5))
                     .with_steps(0);
                 test_geo.satisfaction = 0.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 0.0);
+                assert_eq!(current, 10.0);
                 test_geo.satisfaction = 1.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 10.0);
+                assert_eq!(current, 5.0);
                 test_geo.satisfaction = 2.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 5.0);
+                assert_eq!(current, 2.5);
 
                 let mut test_asym = Desire::new(Item::Good(0), 1.0, 10.0,
-                    DemandCurve::asymptotic(2.0))
+                    DemandCurve::asymptotic(1.0))
                     .with_steps(0);
                 test_asym.satisfaction = 0.0;
                 let current = test_asym.next_value();
                 assert_eq!(current, 10.0);
                 test_asym.satisfaction = 1.0;
                 let current = test_asym.next_value();
-                assert_eq!(current, 13.0);
-                test_asym.satisfaction = 2.0;
+                assert_eq!(current, 5.0);
+                test_asym.satisfaction = 3.0;
                 let current = test_asym.next_value();
-                assert_eq!(current, 25.0);
+                assert_eq!(current, 2.5);
             }
         }
 

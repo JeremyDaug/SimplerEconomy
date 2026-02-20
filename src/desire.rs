@@ -146,10 +146,16 @@ impl Desire {
     /// 
     /// Gets the Next value of our desire based on satisfaction.
     /// 
+    /// Assumes only 1 unit, tus
+    /// 
     /// TODO! This should be the next value, and a new function 'current value' should be the total value.
     pub fn next_value(&self) -> f64 {
         let steps = self.satisfied_steps();
         self.demand_fn.value(self.starting_value, steps + 1.0)
+    }
+
+    pub fn current_value(&self) -> f64 {
+        todo!()
     }
 
     /// # Weight
