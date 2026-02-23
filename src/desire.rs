@@ -1,6 +1,6 @@
 use std::{mem::discriminant, num::{NonZero, NonZeroUsize}};
 
-use crate::{household::HouseholdMember, item::Item};
+use crate::{demandcurve::DemandCurve, household::HouseholdMember, item::Item};
 
 /// # Desire
 /// 
@@ -47,7 +47,7 @@ pub struct Desire {
     /// 
     /// Tags are sorted for easier use and duplicate checking.
     pub tags: Vec<DesireTag>,
-    /// The amount of satisfaciton the desire has currently.
+    /// The amount of satisfaction the desire has currently.
     /// Only used for Pops.
     /// 
     /// Measured in units of Item supplied, not steps.
@@ -65,15 +65,15 @@ impl Desire {
     /// # Panics
     /// 
     /// If Start Priority is not a number or if amount is non-positive or not a number.
-    pub fn new(item: Item, amount: f64, start_priority: f64, priority_fn: DemandCurve) -> Self {
+    pub fn new(item: Item, amount: f64, starting_value: f64, demand_fn: DemandCurve) -> Self {
         assert!(amount > 0.0, "Amount must be a positive value.");
         assert!(!amount.is_nan(), "Amount must be a number.");
-        assert!(!start_priority.is_nan(), "Start must be a number.");
+        assert!(!starting_value.is_nan(), "Start must be a number.");
         Self {
             item,
             amount,
-            starting_value: start_priority,
-            demand_fn: priority_fn,
+            starting_value,
+            demand_fn,
             steps: NonZero::new(1),
             tags: vec![],
             satisfaction: 0.0,
@@ -142,18 +142,74 @@ impl Desire {
         self
     }
 
+    /// # Satsfied Up To
+    /// 
+    /// Given the current satisfaction of a desire, it returns the current prioirity it 
+    /// reaches. 
+    /// 
+    /// Caps at the maximum number of steps (if any).
+    /// 
+    /// NOTE: Not tested as it's so simple.
+    pub fn satisfied_steps(&self) -> f64 {
+        self.satisfaction / self.amount
+    }
+
+    /// # End
+    /// 
+    /// Gets the upper priority bound of our prioirity curve.
+    /// Note, this effectively gets the value of the exact last step it reached.
+    /// IE, if a desire has 3 steps, starts at 3.0 and has a slope of -1.0, then
+    /// then it has steps 3.0, 2.0, and 1.0, with an end of 0.0.
+    /// 
+    /// This helps us deal with partial or fractional steps.
+    /// 
+    /// If it takes steps, but does not end, it returns None.
+    pub fn end(&self) -> Option<f64> {
+        if let Some(steps) = self.steps {
+            let steps = steps.get() as f64;
+            Some(self.demand_fn.value(self.starting_value, steps))
+        } else {
+            None
+        }
+    }
+
+    /// # On Step
+    /// 
+    /// Calculates which step the given value is on.
+    /// 
+    /// If outside of the interval, it returns None.
+    pub fn on_step(&self, value: f64) -> Option<f64> {
+        if value > self.starting_value {
+            // if above starting value, can't be valid.
+            return None;
+        } else if let Some(end) = self.end() {
+            if end < value {
+                // if after end
+                return None;
+            }
+        }
+        Some(self.demand_fn.inverse(self.starting_value, value))
+    }
+
     /// # Next Value
     /// 
-    /// Gets the Next value of our desire based on satisfaction.
+    /// Gets the Next value of our desire based on satisfaction. If satisfied to 10, it 
+    /// get's the value of 11. This does not take into account the ammount or partials satisfaction.
+    /// insetad just assuming the next whole value is correct. IE, 5.5 returns the value of 6.
     /// 
-    /// Assumes only 1 unit, tus
-    /// 
-    /// TODO! This should be the next value, and a new function 'current value' should be the total value.
+    /// Assumes only 1 unit, is being satisfied.
     pub fn next_value(&self) -> f64 {
         let steps = self.satisfied_steps();
         self.demand_fn.value(self.starting_value, steps + 1.0)
     }
 
+    /// # Current Value
+    /// 
+    /// Gets the total sum value of the desire, summing the value
+    /// over each step.
+    /// 
+    /// This multiplies the value produced by the amount, meaning it scales with it's 
+    /// 
     pub fn current_value(&self) -> f64 {
         todo!()
     }
@@ -174,22 +230,6 @@ impl Desire {
             0.0
         } else {
             result
-        }
-    }
-
-    /// # End
-    /// 
-    /// Gets the upper priority bound of our prioirity curve.
-    /// 
-    /// If it takes steps, but does not end, it returns None.
-    /// 
-    /// TODO: Test this to ensure correctness.
-    pub fn end(&self) -> Option<f64> {
-        if let Some(steps) = self.steps {
-            let steps = steps.get() as f64;
-            Some(self.demand_fn.value(self.starting_value, steps))
-        } else {
-            None
         }
     }
 
@@ -218,34 +258,6 @@ impl Desire {
         } else {
             false
         }
-    }
-
-    /// # On Step
-    /// 
-    /// Calculates which step the given priority is on.
-    /// 
-    /// If outside of the interval, it returns None.
-    pub fn on_step(&self, priority: f64) -> Option<f64> {
-        if priority < self.starting_value {
-            // if before start
-            return None;
-        } else if let Some(end) = self.end() {
-            if end < priority {
-                // if after end
-                return None;
-            }
-        }
-        Some(self.demand_fn.inverse(self.starting_value, priority))
-    }
-
-    /// # Satsfied Up To
-    /// 
-    /// Given the current satisfaction of a desire, it returns the current prioirity it 
-    /// reaches. 
-    /// 
-    /// Caps at the maximum number of steps (if any).
-    pub fn satisfied_steps(&self) -> f64 {
-        self.satisfaction / self.amount
     }
 
     /// # Satisfied to Priority
@@ -300,11 +312,11 @@ impl Desire {
     /// Checks if the desire is satisdied to a particular step or not.
     /// 
     /// If step is not valid, it returns false.
-    pub(crate) fn satisfied_to_step(&self, current_value: f64) -> bool {
-        if let Some(step) = self.on_step(current_value) {
+    pub(crate) fn satisfied_to_step(&self, step: f64) -> bool {
+        if let Some(on_step) = self.on_step(step) {
             // if we have an equal or greater amount of satisfaction than 
             // the amount * steps, then it's satisfied at that level.
-            if self.amount * step <= self.satisfaction {
+            if self.amount * on_step <= self.satisfaction {
                 true
             } else {
                 false
@@ -385,252 +397,5 @@ impl DesireTag {
             },
         }
         Ok(())
-    }
-}
-
-/// # Demand Curves
-/// 
-/// Defines how valuation of a unit of desire changes over time.
-/// Value *SHOULD* always  declines in value.
-/// The value of a unit is done stepwise. In 1 unit (step) increments,
-/// partial steps give partial value (multiply step by amonut below full step).
-/// 
-/// Start is given by the Desire.
-/// 
-/// For Linear: Slope is the rate of decline, a fixed quantity between steps.
-/// 
-/// For Quadratic: factor is the rate of growth between steps, 
-/// start + (factor * (n-1.0)).powf(2.0)
-/// 
-/// For Exponential: Step is the exponent, while factor is the multiplier being 
-/// repeatedly applied to stort.
-/// 
-/// Asymptotic: factor is the mulitplier of the base
-/// 
-/// ## NOTE 1
-/// 
-/// Due to fenceposting and math, some functions use (n-1) while others don't. 
-/// This guranatees the the function returns start when at N = 1.
-/// 
-/// ## NOTE 2
-/// 
-/// Currently, the value is capped at 0.0, meaning it cannot produce negative values, 
-/// but should it reach negative values, it just uses 0.0. 
-/// 
-/// Consider changing this to allow for negative values and for a pop to decide to
-/// not consume for that negative valuation when it actually comes to it. This would
-/// give us another way to value goods for value. It could also be used for waste
-/// products (bads), that need to be removed, like trash and waste.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DemandCurve {
-    /// Linear Priority Function. 
-    /// start + slope * n
-    /// Slope should be Negative Value.
-    Linear{slope: f64},
-    /// Downward Square Root Priority Function.
-    /// start - (accel * n) ^ 1/2
-    DownRoot{factor: f64},
-    /// Geometric Priority Function
-    /// (Factor) ^ (n) - 1 + start
-    /// 
-    /// Step 0 should be equal to start point, thus expect any result to be 
-    /// 1 lower than expected.
-    /// 
-    /// ## Note: Due to the realities of math, this cannot go below 0, and will
-    /// result in an increasing value, if the start is negative.
-    Geometric{ factor: f64},
-    /// Asymptotic Value Function
-    /// 
-    /// start / (factor * (n))
-    /// 
-    /// ## Note: Due to the realities of math, this cannot go below 0, and will
-    /// result in an increasing value, if the start is negative.
-    Asymptotic{ factor: f64 }
-}
-
-impl DemandCurve {
-    /// # Linear
-    /// 
-    /// Safely creates linear PriorityFn.
-    pub fn linear(slope: f64) -> Self {
-        assert!(slope < 0.0, "Step must be a Negative value!");
-        Self::Linear{slope}
-    }
-
-    /// # Quadratic
-    /// 
-    /// Safely creates Quadratic PriorityFn.
-    pub fn down_root(factor: f64) -> Self {
-        assert!(factor > 0.0, "Step must be a positive value!");
-        Self::DownRoot{factor}
-    }
-
-    /// # Geometric
-    /// 
-    /// Safely creates Geometric PriorityFn.
-    pub fn geometric(factor: f64) -> Self {
-        assert!(1.0 > factor && factor > 0.0, "Factor must be between 0.0 and 1.0 exclusive! value!");
-        Self::Geometric{factor}
-    }
-
-    /// # Asymptotic
-    /// 
-    /// Safely creates an Asymptotic demand curve.
-    pub fn asymptotic(factor: f64) -> Self {
-        assert!(factor > 0.0, "Factor must be a positive value.");
-        Self::Asymptotic { factor }
-    }
-
-    /// # Value
-    /// 
-    /// Calculates and returns the current priority value of the desire
-    /// 
-    /// F(n-1) + start. (Step 1 should be at the 'start' value.)
-    /// 
-    /// n is the step the function is currently on.
-    pub fn value(&self, start: f64, n: f64) -> f64 {
-        match self {
-            DemandCurve::Linear { slope } => {
-                start + slope * (n-1.0)
-            },
-            DemandCurve::DownRoot { factor} => {
-                start - (factor * (n-1.0)).powf(0.5)
-            },
-            DemandCurve::Geometric { factor } => {
-                start * (factor).powf(n-1.0)
-            },
-            DemandCurve::Asymptotic { factor } => {
-                if n > 0.0 { start / (factor * n) }
-                else { 0.0 }
-            }
-        }
-    }
-
-    /// # Total Value
-    /// 
-    /// Total Valuation function.
-    /// 
-    /// Gets the total value by summing over the steps, with a last fractional step 
-    /// being of fractional value.
-    /// 
-    /// ## Note
-    /// 
-    /// Root and Asymptotic are not tested, because that's complicated.
-    pub fn total_value(&self, start: f64, steps: f64) -> f64 {
-        let mut remainder = steps;
-        let mut current_step = 0.0;
-        let mut acc = 0.0;
-        loop {
-            // get the next step (always go a whole step)
-            current_step += 1.0;
-            // get the value produced at that step.
-            if remainder < 1.0 { // if below 1, reduce by that factor.
-                acc += self.value(start, current_step) * remainder;
-            } else { // otherwise, only do 1.0.
-                acc += self.value(start, current_step);
-            }
-            // with value gotten, reduce and check we got below 0.0
-            remainder -= 1.0;
-            if remainder < 0.0 {
-                break;
-            }
-        }
-        // return the accumulation
-        acc
-    }
-
-    /// # Inverse
-    /// 
-    /// Given a priority, it returns the step it's on.
-    pub fn inverse(&self, start: f64, value: f64) -> f64 {
-        match self {
-            DemandCurve::Linear { slope } => {
-                (value - start) / slope
-            },
-            DemandCurve::DownRoot { factor } => {
-                (start - value).powf(2.0) / factor + 1.0
-            },
-            DemandCurve::Geometric { factor } => {
-                (value / start).log(*factor)
-            },
-            DemandCurve::Asymptotic { factor } => {
-                start / (value * factor)
-            },
-        }
-    }
-
-    /// # Derivative
-    /// 
-    /// Calculates the derivative/slope of the function at a particular point.
-    pub fn derivative(&self, step: f64) -> f64 {
-        match self {
-            DemandCurve::Linear { slope } => {
-                *slope
-            },
-            DemandCurve::DownRoot { factor: accel } => {
-                2.0 * accel * step
-            },
-            DemandCurve::Geometric { factor } => {
-                factor * (1.0 + step).ln() * (1.0 * step).powf(factor * step)
-            },
-            DemandCurve::Asymptotic { factor } => todo!(),
-        }
-    }
-
-    /// # Arc Length
-    /// 
-    /// Arc Length Calculator.
-    /// 
-    /// Takes in the endpoint we are calculating to.
-    /// 
-    /// This uses a simple 8 step approximation (2 end points plus 6 evenly 
-    /// spaced steps between), for quadratic and exponential formulas due to
-    /// their bonkers arc length integrals.
-    /// 
-    /// NOTE: Currently not used, arc length priority calculation is as cool as it is stupid.
-    pub fn arc_length(&self, start: f64, end: f64) -> f64 {
-        if start == end { // if start and end are the same, then there's no length, jsut leave.
-            return 0.0;
-        }
-        match self {
-            DemandCurve::Linear { slope } => {
-                let diffx = end - start;
-                let diffy = slope * diffx;
-                ((diffx).powf(2.0) + (diffy).powf(2.0)).sqrt()
-            },
-            DemandCurve::DownRoot { .. } => {
-                let diff = end - start; // get distance between start and endof the interval
-                let step_size = diff / 8.0; // divide it up
-                let mut acc = 0.0; // distance accumulator
-                for cl in 0..8 { // step 7 times (8 points)
-                    // get our end point steps
-                    let lower_step = cl as f64 * step_size;
-                    let upper_step = (cl + 1) as f64 * step_size;
-                    // get our end point ys.
-                    let lowery = self.value(start, lower_step);
-                    let uppery = self.value(start, upper_step);
-                    // add distance to our accumulator
-                    acc += (step_size.powf(2.0) + (uppery - lowery).powf(2.0)).sqrt();
-                }
-                acc
-            },
-            DemandCurve::Geometric { .. } => {
-                let diff = end - start; // get distance between start and endof the interval
-                let step_size = diff / 8.0; // divide it up
-                let mut acc = 0.0; // distance accumulator
-                for cl in 0..8 { // step 7 times (8 points)
-                    // get our end point steps
-                    let lower_step = cl as f64 * step_size;
-                    let upper_step = (cl + 1) as f64 * step_size;
-                    // get our end point ys.
-                    let lowery = self.value(start, lower_step);
-                    let uppery = self.value(start, upper_step);
-                    // add distance to our accumulator
-                    acc += (step_size.powf(2.0) + (uppery - lowery).powf(2.0)).sqrt();
-                }
-                acc
-            },
-            DemandCurve::Asymptotic { factor } => todo!(),
-        }
     }
 }

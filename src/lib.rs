@@ -17,6 +17,7 @@ pub mod offerresult;
 pub mod freetimeaction;
 pub mod popfinancials;
 pub mod firm;
+pub mod demandcurve;
 
 #[cfg(test)]
 mod tests {
@@ -538,64 +539,121 @@ mod tests {
     }
 
     mod desire_tests {
-        mod next_value_should {
-            use crate::{desire::{Desire, DemandCurve}, item::Item};
+        mod end_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
 
             #[test]
-            pub fn calculate_priority_update() {
-                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
-                    DemandCurve::linear(-2.0))
+            pub fn correctly_calculate_end_value() {
+                // Unending
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(0);
+                assert_eq!(d.end(), None);
+
+                // Base (1) step
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    DemandCurve::linear(-1.0));
+                assert_eq!(d.end(), Some(-1.0));
+
+                // Dictated ending step.
+                let d = Desire::new(Item::Want(0), 1.0, 0.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(20);
+                assert_eq!(d.end(), Some(-20.0));
+            }
+        }
+
+        mod on_step_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn return_none_when_value_overhigh() {
+                let test = Desire::new(Item::Good(0), 1.0, 20.0, 
+                    crate::demandcurve::DemandCurve::linear(-1.0));
+                let res = test.on_step(30.0);
+                assert!(res.is_none());
+            }
+
+            #[test]
+            pub fn return_none_when_value_after_end() {
+                let test = Desire::new(Item::Good(0), 1.0, 20.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(20);
+                let res = test.on_step(30.0);
+                assert!(res.is_none());
+            }
+
+            #[test]
+            pub fn return_correct_step_from_given_value() {
+                let test = Desire::new(Item::Good(0), 1.0, 20.0, 
+                    DemandCurve::linear(-1.0));
+                let res = test.on_step(-10.0);
+                if let Some(step) = res {
+                    assert_eq!(step, 30.0);
+                } else {
+                    assert!(false, "Recieved None.");
+                }
+            }
+        }
+
+        mod next_value_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn calculate_next_vaue_next() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 0.0, 
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
                 test_linear.satisfaction = 3.0;
                 let current = test_linear.next_value();
                 assert_eq!(current, -4.0);
                 test_linear.satisfaction = 5.0;
                 let current = test_linear.next_value();
-                assert_eq!(current, -8.0);
+                assert_eq!(current, -6.0);
 
-                let mut test_root = Desire::new(Item::Good(0), 1.0, -5.0,
-                    DemandCurve::down_root(2.0))
+                let mut test_root = Desire::new(Item::Good(0), 1.0, 0.0,
+                    DemandCurve::root(1.0))
                     .with_steps(0);
-                test_root.satisfaction = 1.0;
+                test_root.satisfaction = 0.0;
                 let current = test_root.next_value();
-                assert!(-6.41 > current && current > -6.42);
+                assert_eq!(current, -1.0);
                 test_root.satisfaction = 3.0;
                 let current = test_root.next_value();
-                assert!(-7.44 > current && current > -7.45);
+                assert_eq!(current, -2.0);
 
                 let mut test_geo = Desire::new(Item::Good(0), 1.0, 10.0,
                     DemandCurve::geometric(0.5))
                     .with_steps(0);
                 test_geo.satisfaction = 0.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 10.0);
+                assert_eq!(current, 5.0);
                 test_geo.satisfaction = 1.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 5.0);
+                assert_eq!(current, 2.5);
                 test_geo.satisfaction = 2.0;
                 let current = test_geo.next_value();
-                assert_eq!(current, 2.5);
+                assert_eq!(current, 1.25);
 
                 let mut test_asym = Desire::new(Item::Good(0), 1.0, 10.0,
-                    DemandCurve::asymptotic(1.0))
+                    DemandCurve::logarithmic(2.0))
                     .with_steps(0);
                 test_asym.satisfaction = 0.0;
                 let current = test_asym.next_value();
-                assert_eq!(current, 10.0);
-                test_asym.satisfaction = 1.0;
+                assert_eq!(current, 9.0);
+                test_asym.satisfaction = 2.0;
                 let current = test_asym.next_value();
-                assert_eq!(current, 5.0);
-                test_asym.satisfaction = 3.0;
+                assert_eq!(current, 8.0);
+                test_asym.satisfaction = 6.0;
                 let current = test_asym.next_value();
-                assert_eq!(current, 2.5);
+                assert_eq!(current, 7.0);
             }
         }
 
-        mod weight_should {
-            use crate::{desire::{Desire, DemandCurve}, item::Item};
+        mod current_value_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
 
             #[test]
-            pub fn correctly_calculate_weight() {
+            pub fn correctly_calculate_current_value() {
                 let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
                     DemandCurve::linear(2.0))
                     .with_steps(0);
@@ -607,7 +665,7 @@ mod tests {
                 assert_eq!(current, 0.5);
 
                 let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
-                    DemandCurve::down_root(2.0))
+                    DemandCurve::root(2.0))
                     .with_steps(0);
                 test_quad.satisfaction = 1.0;
                 let current = test_quad.weight();
@@ -628,143 +686,10 @@ mod tests {
             }
         }
 
-        mod end_should {
-            use crate::{desire::{Desire, DemandCurve}, item::Item};
-
-            #[test]
-            pub fn correctly_calculate_end_value() {
-                // Base (1) step
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    DemandCurve::linear(1.0));
-                assert_eq!(d.end(), Some(1.0));
-
-                // Dictated ending step.
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    DemandCurve::linear(1.0))
-                    .with_steps(20);
-                assert_eq!(d.end(), Some(20.0));
-
-                // Unending
-                let d = Desire::new(Item::Want(0), 1.0, 0.0,
-                    DemandCurve::linear(1.0))
-                    .with_steps(0);
-                assert_eq!(d.end(), None);
-            }
-        }
-        /*
-        mod current_valuation_should {
-            use crate::{desire::{Desire, PriorityFn}, item::Item};
-
-            #[test]
-            pub fn calculate_single_step_value_correctly() {
-                let mut stepless = Desire::new(Item::Good(0), 2.0, 2.0, 
-                    PriorityFn::linear(4.0 / 3.0))
-                    .with_steps(0);
-                let unit_len = 1.0 - 5.0 / 3.0;
-
-                stepless.satisfaction = 1.0;
-                // partial satisfaction
-                let val = stepless.current_valuation();
-                let steps = val.0;
-                let value = val.1;
-                assert_eq!(steps, 0.5);
-                assert!((unit_len / 2.0) + 0.000000001 > value && 
-                    value > (unit_len / 2.0) - 0.000000001);
-                
-                // full step satisfaction
-                stepless.satisfaction = 2.0;
-                let val = stepless.current_valuation();
-                let steps = val.0;
-                let value = val.1;
-                assert_eq!(steps, 1.0);
-                assert!((unit_len) + 0.000000001 > value && 
-                    value > (unit_len) - 0.000000001);
-
-                // extra step satisfaction
-                stepless.satisfaction = 3.0;
-                let val = stepless.current_valuation();
-                let steps = val.0;
-                let value = val.1;
-                assert_eq!(steps, 1.5);
-                assert!((unit_len * 1.5) + 0.000000001 > value && 
-                    value > (unit_len * 1.5) - 0.000000001);
-
-                // extra step satisfaction
-                stepless.satisfaction = 4.5;
-                let val = stepless.current_valuation();
-                let steps = val.0;
-                let value = val.1;
-                assert_eq!(steps, 2.25);
-                assert!((unit_len * 2.25) + 0.000000001 > value && 
-                    value > (unit_len * 2.25) - 0.000000001);
-                
-                                // extra step satisfaction
-                stepless.satisfaction = 6.0;
-                let val = stepless.current_valuation();
-                let steps = val.0;
-                let value = val.1;
-                assert_eq!(steps, 3.0);
-                assert_eq!(value, unit_len * 3.0);
-            }
-        }
-
-        mod expected_value_should {
-            use crate::{desire::{Desire, PriorityFn}, item::Item};
-
-            #[test]
-            pub fn return_positive_and_correct_value_when_positive_satisfaction() {
-                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
-                    PriorityFn::linear(4.0 / 3.0))
-                    .with_steps(0);
-                test.satisfaction = 2.0;
-                let unit_len = 1.0 - 5.0 / 3.0;
-
-                let result = test.expected_value(3.0);
-                assert_eq!(result, unit_len * 3.0);
-            }
-
-            #[test]
-            pub fn return_negative_and_correct_value_when_negative_satisfaction() {
-                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
-                    PriorityFn::linear(4.0 / 3.0))
-                    .with_steps(0);
-                test.satisfaction = 6.0;
-                let unit_len = 1.0 - 5.0 / 3.0;
-
-                let result = test.expected_value(-3.0);
-                assert_eq!(result, -unit_len * 3.0);
-            }
-
-            #[test]
-            pub fn return_negative_and_correctly_capped_value_when_big_negative_satisfaction() {
-                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
-                    PriorityFn::linear(4.0 / 3.0))
-                    .with_steps(0);
-                test.satisfaction = 3.0;
-                let unit_len = 1.0 - 5.0 / 3.0;
-
-                let result = test.expected_value(-4.0);
-                assert_eq!(result, unit_len * -3.0);
-            }
-
-            #[test]
-            pub fn return_positive_and_correctly_capped_value_when_big_positive_satisfaction() {
-                let mut test = Desire::new(Item::Good(0), 1.0, 1.0, 
-                    PriorityFn::linear(4.0 / 3.0))
-                    .with_steps(3);
-                test.satisfaction = 2.0;
-                let unit_len = 1.0 - 5.0 / 3.0;
-
-                let result = test.expected_value(1.0);
-                assert_eq!(result, unit_len);
-            }
-        }
-        */
-        
         mod assertion_checks {
             use std::mem::discriminant;
 
-            use crate::{desire::{Desire, DesireTag, DemandCurve}, household::HouseholdMember, item::Item};
+            use crate::{demandcurve::DemandCurve, desire::{Desire, DesireTag}, household::HouseholdMember, item::Item};
 
             #[test]
             #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
@@ -827,49 +752,49 @@ mod tests {
 
     mod demand_curve_tests {
         mod value_should {
-            use crate::desire::DemandCurve;
+            use crate::demandcurve::DemandCurve;
 
             #[test]
             pub fn correctly_calculate_value_for_each_curve() {
                 let linear_test = DemandCurve::linear(-0.5);
-                assert_eq!(linear_test.value(1.0, 1.0), 1.0, "Incorrect value!");
-                assert_eq!(linear_test.value(1.0, 2.0), 0.5, "Incorrect value!");
-                assert_eq!(linear_test.value(1.0, 4.0), -0.5, "Incorrect value!");
+                assert_eq!(linear_test.value(1.0, 1.0), 0.5, "Incorrect value!");
+                assert_eq!(linear_test.value(1.0, 2.0), 0.0, "Incorrect value!");
+                assert_eq!(linear_test.value(1.0, 4.0), -1.0, "Incorrect value!");
 
-                let root_test = DemandCurve::down_root(1.0);
-                assert_eq!(root_test.value(1.0, 1.0), 1.0, "Incorrect value!");
-                assert_eq!(root_test.value(1.0, 5.0), -1.0, "Incorrect value!");
-                assert_eq!(root_test.value(1.0, 10.0), -2.0, "Incorrect value!");
+                let root_test = DemandCurve::root(1.0);
+                assert_eq!(root_test.value(1.0, 1.0), 0.0, "Incorrect value!");
+                assert_eq!(root_test.value(1.0, 4.0), -1.0, "Incorrect value!");
+                assert_eq!(root_test.value(1.0, 9.0), -2.0, "Incorrect value!");
 
                 let geometric_test = DemandCurve::geometric(0.5);
-                assert_eq!(geometric_test.value(8.0, 1.0), 8.0, "Incorrect value!");
-                assert_eq!(geometric_test.value(8.0, 2.0), 4.0, "Incorrect value!");
-                assert_eq!(geometric_test.value(8.0, 4.0), 1.0, "Incorrect value!");
+                assert_eq!(geometric_test.value(16.0, 1.0), 8.0, "Incorrect value!");
+                assert_eq!(geometric_test.value(16.0, 2.0), 4.0, "Incorrect value!");
+                assert_eq!(geometric_test.value(16.0, 4.0), 1.0, "Incorrect value!");
 
-                let asymptotic_test = DemandCurve::asymptotic(1.0);
-                assert_eq!(asymptotic_test.value(10.0, 1.0), 10.0, "Incorrect value!");
-                assert_eq!(asymptotic_test.value(10.0, 2.0), 5.0, "Incorrect value!");
-                assert_eq!(asymptotic_test.value(10.0, 4.0), 2.5, "Incorrect value!");
+                let asymptotic_test = DemandCurve::logarithmic(2.0);
+                assert_eq!(asymptotic_test.value(1.0, 1.0), 0.0, "Incorrect value!");
+                assert_eq!(asymptotic_test.value(1.0, 3.0), -1.0, "Incorrect value!");
+                assert_eq!(asymptotic_test.value(1.0, 7.0), -2.0, "Incorrect value!");
             }
         
             #[test]
             pub fn correctly_calculate_start() {
                 let linear_test = DemandCurve::linear(-0.5);
-                assert_eq!(linear_test.value(1.0, 1.0), 1.0, "Incorrect value!");
+                assert_eq!(linear_test.value(1.0, 0.0), 1.0, "Incorrect value!");
 
-                let root_test = DemandCurve::down_root(1.0);
-                assert_eq!(root_test.value(1.0, 1.0), 1.0, "Incorrect value!");
+                let root_test = DemandCurve::root(1.0);
+                assert_eq!(root_test.value(1.0, 0.0), 1.0, "Incorrect value!");
 
                 let geometric_test = DemandCurve::geometric(0.5);
-                assert_eq!(geometric_test.value(8.0, 1.0), 8.0, "Incorrect value!");
+                assert_eq!(geometric_test.value(8.0, 0.0), 8.0, "Incorrect value!");
 
-                let asymptotic_test = DemandCurve::asymptotic(1.0);
-                assert_eq!(asymptotic_test.value(10.0, 1.0), 10.0, "Incorrect value!");
+                let asymptotic_test = DemandCurve::logarithmic(2.0);
+                assert_eq!(asymptotic_test.value(10.0, 0.0), 10.0, "Incorrect value!");
             }
         }
 
         mod total_value_should {
-            use crate::desire::DemandCurve;
+            use crate::demandcurve::DemandCurve;
 
             #[test]
             pub fn correctly_calculate_summed_values() {
@@ -877,7 +802,7 @@ mod tests {
                 assert_eq!(linear_test.total_value(1.0, 1.0), 1.0, "Incorrect value!");
                 assert_eq!(linear_test.total_value(1.0, 4.0), 1.0, "Incorrect value!");
 
-                let root_test = DemandCurve::down_root(1.0);
+                let root_test = DemandCurve::root(1.0);
                 assert_eq!(root_test.total_value(1.0, 1.0), 1.0, "Incorrect value!");
                 //assert_eq!(root_test.total_value(1.0, 10.0), -2.0, "Incorrect value!");
 
@@ -885,9 +810,9 @@ mod tests {
                 assert_eq!(geometric_test.total_value(8.0, 1.0), 8.0, "Incorrect value!");
                 assert_eq!(geometric_test.total_value(8.0, 4.0), 15.0, "Incorrect value!");
 
-                let asymptotic_test = DemandCurve::asymptotic(1.0);
+                let asymptotic_test = DemandCurve::logarithmic(2.0);
                 assert_eq!(asymptotic_test.total_value(10.0, 1.0), 10.0, "Incorrect value!");
-                assert_eq!(asymptotic_test.total_value(10.0, 2.0), 15.0, "Incorrect value!");
+                assert_eq!(asymptotic_test.total_value(10.0, 2.0), 19.0, "Incorrect value!");
             }
 
             #[test]
@@ -897,48 +822,59 @@ mod tests {
                 // 1.0 + 0.0 - (1.0 * 0.5)
                 assert_eq!(linear_test.total_value(1.0, 2.5), 0.5, "Incorrect value!");
 
-                let root_test = DemandCurve::down_root(1.0);
+                let root_test = DemandCurve::root(1.0);
                 assert_eq!(root_test.total_value(1.0, 1.0), 1.0, "Incorrect value!");
                 // 1.0 + 0.0 + (0.5 * 1 - 0.2^(1/2))
-                //assert_eq!(root_test.total_value(1.0, 2.5), -2.0, "Incorrect value!");
+                let res = root_test.total_value(1.0, 2.5);
+                assert!(0.79 < res && res < 0.80, "Incorrect value!");
 
                 let geometric_test = DemandCurve::geometric(0.5);
                 assert_eq!(geometric_test.total_value(8.0, 1.0), 8.0, "Incorrect value!");
                 assert_eq!(geometric_test.total_value(8.0, 3.5), 14.5, "Incorrect value!");
 
-                let asymptotic_test = DemandCurve::asymptotic(1.0);
-                assert_eq!(asymptotic_test.total_value(10.0, 1.0), 10.0, "Incorrect value!");
-                //assert_eq!(asymptotic_test.total_value(10.0, 2.5), 15.0, "Incorrect value!");
+                let logarithmic_test = DemandCurve::logarithmic(2.0);
+                assert_eq!(logarithmic_test.total_value(10.0, 1.0), 10.0, "Incorrect value!");
+                let res = logarithmic_test.total_value(10.0, 2.5);
+                assert!(23.2 < res && res < 23.21, "Incorrect value!");
             }
         }
 
         mod inverse_should {
-            use crate::desire::DemandCurve;
+            use crate::demandcurve::DemandCurve;
 
             #[test]
             pub fn correctly_calculate_inverse_value() {
                 let linear_test = DemandCurve::linear(-1.0);
-                assert_eq!(linear_test.inverse(1.0, -3.0), 4.0, "Incorrect value!");
-                assert_eq!(linear_test.inverse(1.0, -10.0), 11.0, "Incorrect value!");
+                let val = linear_test.value(1.0, 4.0);
+                assert_eq!(linear_test.inverse(1.0, val), 4.0, "Incorrect value!");
+                let val = linear_test.value(1.0, 10.0);
+                assert_eq!(linear_test.inverse(1.0, val), 10.0, "Incorrect value!");
 
-                let root_test = DemandCurve::down_root(1.0);
-                assert_eq!(root_test.inverse(1.0, -1.0), 5.0, "Incorrect value!");
-                assert_eq!(root_test.inverse(1.0, -2.0), 10.0, "Incorrect value!");
+                let root_test = DemandCurve::root(1.0);
+                let val = root_test.value(1.0, 4.0);
+                assert_eq!(root_test.inverse(1.0, val), 4.0, "Incorrect value!");
+                let val = root_test.value(1.0, 8.0);
+                assert!(8.0 < root_test.inverse(1.0, val) && root_test.inverse(1.0, val) < 8.00000001, "Incorrect value!");
 
                 let geometric_test = DemandCurve::geometric(0.5);
-                assert_eq!(geometric_test.inverse(8.0, 1.0), 3.0, "Incorrect value!");
-                assert_eq!(geometric_test.inverse(8.0, 0.25), 5.0, "Incorrect value!");
+                let val = geometric_test.value(1.0, 3.0);
+                assert_eq!(geometric_test.inverse(1.0, val), 3.0, "Incorrect value!");
+                let val = geometric_test.value(1.0, 10.0);
+                assert_eq!(geometric_test.inverse(1.0, val), 10.0, "Incorrect value!");
 
-                let asymptotic_test = DemandCurve::asymptotic(1.0);
-                assert_eq!(asymptotic_test.inverse(10.0, 1.0), 10.0, "Incorrect value!");
-                assert_eq!(asymptotic_test.inverse(10.0, 5.0), 2.0, "Incorrect value!");
+                let logarithm_test = DemandCurve::logarithmic(2.0);
+                let val = logarithm_test.value(1.0, 3.0);
+                assert_eq!(logarithm_test.inverse(1.0, val), 3.0, "Incorrect value!");
+                let val = logarithm_test.value(1.0, 10.0);
+                assert!(10.0 < logarithm_test.inverse(1.0, val) && logarithm_test.inverse(1.0, val) < 10.000000001, 
+                    "Incorrect value!");
             }
         }
     }
 
     mod pop_tests {
         mod try_satisfy_until_incomplete_should {
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::{Good, GoodTags}, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::{Good, GoodTags}, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_stop_when_incomplete_found() {
@@ -1097,7 +1033,7 @@ mod tests {
         mod check_offer_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, offerresult::{AcceptReason, OfferResult, RejectReason}, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, offerresult::{AcceptReason, OfferResult, RejectReason}, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn reject_offer_due_to_hard_threshold() {
@@ -1351,7 +1287,7 @@ mod tests {
         }
 
         mod satisfaction_from_multiple_amvs_should {
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
             pub fn correctly_predict_gain_from_amv_complex() {
@@ -1403,7 +1339,7 @@ mod tests {
         }
 
         mod satisfaction_from_amv_should {
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::Pop};
 
             #[test]
             pub fn correctly_predict_gain_from_amv_simple() {
@@ -1478,7 +1414,7 @@ mod tests {
         mod make_offer_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             /// Tests when sat_lost == 0.0. This includes testing out money.
             #[test]
@@ -1683,7 +1619,7 @@ mod tests {
         mod satisfaction_gain_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_return_satisfaction_gained() {
@@ -1726,7 +1662,7 @@ mod tests {
         mod consume_desire_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -1972,7 +1908,7 @@ mod tests {
         mod consume_desires_should {
             use std::collections::HashMap;
 
-            use crate::{constants::TIME_ID, data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{constants::TIME_ID, data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn correctly_consume_desires() {
@@ -2075,7 +2011,7 @@ mod tests {
         mod satisfy_next_desire_should {
             use std::collections::{HashMap, VecDeque};
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -2232,7 +2168,7 @@ mod tests {
         mod satisfy_until_incomplete_should {
             use std::collections::VecDeque;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, pop::{Pop, PropertyRecord}};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, pop::{Pop, PropertyRecord}};
 
             #[test]
             pub fn correctly_stop_when_finished_incomplete() {
@@ -2325,7 +2261,7 @@ mod tests {
         mod try_satisfy_all_desires_should {
             use std::collections::HashMap;
 
-            use crate::{data::Data, desire::{Desire, DemandCurve}, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
+            use crate::{data::Data, demandcurve::DemandCurve, desire::Desire, good::Good, item::Item, markethistory::{GoodRecord, MarketHistory}, pop::{Pop, PropertyRecord, WantRecord}, want::Want};
 
             #[test]
             pub fn satisfy_good_correctly() {
@@ -2461,7 +2397,7 @@ mod tests {
         }
 
         mod integrate_desires_should {
-            use crate::{desire::{Desire, DesireTag, DemandCurve}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+            use crate::{demandcurve::DemandCurve, desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
 
             #[test]
             pub fn correctly_integrate_desires() {
@@ -2545,7 +2481,7 @@ mod tests {
         }
 
         mod get_desire_multiplier_should {
-            use crate::{desire::{Desire, DesireTag, DemandCurve}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
+            use crate::{demandcurve::DemandCurve, desire::{Desire, DesireTag}, drow::DRow, household::{Household, HouseholdMember}, item::Item, pop::Pop};
 
             #[test]
             pub fn calculate_multiplier_correctly() {
@@ -2596,7 +2532,7 @@ mod tests {
         mod ordered_desire_insert_should {
             use std::collections::VecDeque;
 
-            use crate::{desire::{Desire, DemandCurve}, item::Item, pop::Pop};
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item, pop::Pop};
 
             #[test]
             pub fn insert_correctly() {
