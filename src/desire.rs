@@ -257,14 +257,11 @@ impl Desire {
         self.demand_fn.value(self.starting_value, step)
     }
     
-    /// # Get Priority
+    /// # Get Value
     /// 
-    /// Gets the priority of the step given, if not a valid step it returns None.
+    /// Gets the value of the step given, if not a valid step it returns None.
     /// 
     /// This can be given fractional steps and will return properly.
-    /// 
-    /// NOTE: Not tested
-    /// NOTE: Seemingly Not used.
     pub(crate) fn get_value(&self, step: f64) -> Option<f64> {
         if step < 0.0 { // if negative value, return None
             None
@@ -297,14 +294,18 @@ impl Desire {
 
     /// # Value Change from Satisfaction
     /// 
-    /// Given the current desire, get how much value would be added if a given
+    /// Given the current desire, get how much value would be added (or removed) if a given
     /// satisfaction would be added (or removed) to our desire.
     /// 
     /// Should not change the desire.
     /// 
     /// TODO: Create This as it will almost certainly be useful later on.
     pub fn value_change_from_satisfaction(&self, satisfaction: f64) -> f64 {
-        todo!()
+        let current = self.current_value();
+        let mut dup = self.clone();
+        dup.satisfaction += satisfaction;
+        let other = dup.current_value();
+        other - current
     }
     
     /// # Satisfied At

@@ -696,9 +696,85 @@ mod tests {
             }
         }
 
+        mod get_value_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn return_none_when_step_negative() {
+                let test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0));
+
+                assert!(test.get_value(-1.0).is_none());
+            }
+
+            #[test]
+            pub fn return_none_when_steps_past_end() {
+                let test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+
+                assert!(test.get_value(11.0).is_none());
+            }
+
+            #[test]
+            pub fn return_some_when_in_interval() {
+                let test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+
+                if let Some(res) = test.get_value(9.0) {
+                    assert_eq!(res, 1.0);
+                } else { assert!(false); }
+            }
+
+            #[test]
+            pub fn return_some_when_endless() {
+                let test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(0);
+
+                if let Some(res) = test.get_value(9.0) {
+                    assert_eq!(res, 1.0);
+                } else { assert!(false); }
+            }
+        }
+
         mod is_fully_satisfied_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
             #[test]
             pub fn return_false_when_endless() {
+                let test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(0);
+
+                assert!(test.is_fully_satisfied() == false);
+            }
+
+            #[test]
+            pub fn return_false_when_unsatisfied() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                test.satisfaction = 4.0;
+
+                assert!(test.is_fully_satisfied() == false);
+            }
+
+            #[test]
+            pub fn return_true_when_satisfied() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                test.satisfaction = 10.0;
+
+                assert!(test.is_fully_satisfied());
+            }
+        }
+
+        mod value_change_from_satisfaction_should {
+            #[test]
+            pub fn calculate_change_correctly() {
                 
             }
         }
