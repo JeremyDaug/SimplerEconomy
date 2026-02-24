@@ -883,7 +883,7 @@ impl Pop {
                 continue;
             }
             low = low.min(desire.starting_value);
-            high = high.max(desire.satisfied_to_priority());
+            high = high.max(desire.satisfied_to_value());
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
@@ -895,7 +895,7 @@ impl Pop {
                 continue;
             }
             low = low.min(desire.starting_value);
-            high = high.max(desire.satisfied_to_priority());
+            high = high.max(desire.satisfied_to_value());
             // println!("Current Low: {}", low);
             // println!("Current High: {}", high);
             steps += desire.satisfied_steps();
@@ -937,7 +937,7 @@ impl Pop {
             let mut current_desire = working_desires.pop_front().unwrap();
 
             if self.consume_desire(&mut current_desire, data) { // if successful at satisfying
-                let next_step = current_desire.satisfied_to_priority();
+                let next_step = current_desire.satisfied_to_value();
                 println!("Next Step: {}", next_step);
                 if let Some(end) = current_desire.end() { 
                     if next_step < end { // if not past the end

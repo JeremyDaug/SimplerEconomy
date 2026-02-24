@@ -200,7 +200,7 @@ impl Desire {
     /// Assumes only 1 unit, is being satisfied.
     pub fn next_value(&self) -> f64 {
         let steps = self.satisfied_steps();
-        self.demand_fn.value(self.starting_value, steps + 1.0)
+        self.demand_fn.value(self.starting_value, (steps + 1.0).floor())
     }
 
     /// # Current Value
@@ -208,29 +208,12 @@ impl Desire {
     /// Gets the total sum value of the desire, summing the value
     /// over each step.
     /// 
-    /// This multiplies the value produced by the amount, meaning it scales with it's 
-    /// 
+    /// This multiplies the value produced by the amount, meaning it scales with the 
+    /// desire's amount. 
     pub fn current_value(&self) -> f64 {
-        todo!()
-    }
-
-    /// # Weight
-    /// 
-    /// Weight gives the value of these.
-    /// 
-    /// Weight is based on the range (current - start) / steps.
-    /// 
-    /// (Denser gives higher weight)
-    /// 
-    /// NOTE: Does not seem to be in use, not sure why I would use it right now. Will likely delete. Current prioritization does not need weight.
-    pub fn weight(&self) -> f64 {
-        let result =  self.satisfied_steps() / 
-            (self.next_value() - self.starting_value);
-        if result.is_nan() {
-            0.0
-        } else {
-            result
-        }
+        let total = self.demand_fn.total_value(self.starting_value, 
+            self.satisfied_steps());
+        total * self.amount
     }
 
     /// # Equals
@@ -239,6 +222,8 @@ impl Desire {
     /// It checks that everything BUT amount and satisfaction is the same.
     /// 
     /// Amount and satisfaction can be different due to population size differences.
+    /// 
+    /// NOTE: Not tested due to simplicity and directness.
     pub fn equals(&self, other: &Desire) -> bool {
         if self.item == other.item &&
         self.starting_value == other.starting_value &&
@@ -267,7 +252,7 @@ impl Desire {
     /// ## Note
     /// If desire has limited steps it will go to steps+1 as it's highest
     /// end point.
-    pub fn satisfied_to_priority(&self) -> f64 {
+    pub fn satisfied_to_value(&self) -> f64 {
         let step = self.satisfied_steps();
         self.demand_fn.value(self.starting_value, step)
     }
@@ -277,7 +262,10 @@ impl Desire {
     /// Gets the priority of the step given, if not a valid step it returns None.
     /// 
     /// This can be given fractional steps and will return properly.
-    pub(crate) fn get_priority(&self, step: f64) -> Option<f64> {
+    /// 
+    /// NOTE: Not tested
+    /// NOTE: Seemingly Not used.
+    pub(crate) fn get_value(&self, step: f64) -> Option<f64> {
         if step < 0.0 { // if negative value, return None
             None
         } else if let Some(max_steps) = self.steps { // if it has interval, check if in interval
@@ -305,6 +293,18 @@ impl Desire {
         } else { // if no end, cannot be fully satisfied.
             false
         }
+    }
+
+    /// # Value Change from Satisfaction
+    /// 
+    /// Given the current desire, get how much value would be added if a given
+    /// satisfaction would be added (or removed) to our desire.
+    /// 
+    /// Should not change the desire.
+    /// 
+    /// TODO: Create This as it will almost certainly be useful later on.
+    pub fn value_change_from_satisfaction(&self, satisfaction: f64) -> f64 {
+        todo!()
     }
     
     /// # Satisfied At

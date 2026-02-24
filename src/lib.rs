@@ -653,36 +653,53 @@ mod tests {
             use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
 
             #[test]
-            pub fn correctly_calculate_current_value() {
-                let mut test_linear = Desire::new(Item::Good(0), 1.0, 2.0, 
-                    DemandCurve::linear(2.0))
+            pub fn sum_over_the_values_without_amount() {
+                let mut test_linear = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
                 test_linear.satisfaction = 3.0;
-                let current = test_linear.weight();
-                assert_eq!(current, 0.5);
+                let current = test_linear.current_value();
+                assert_eq!(current, 27.0);
                 test_linear.satisfaction = 5.0;
-                let current = test_linear.weight();
-                assert_eq!(current, 0.5);
+                let current = test_linear.current_value();
+                assert_eq!(current, 40.0);
+            }
 
-                let mut test_quad = Desire::new(Item::Good(0), 1.0, -5.0,
-                    DemandCurve::root(2.0))
+            #[test]
+            pub fn sum_with_higher_amount() {
+                let mut test_linear = Desire::new(Item::Good(0), 10.0, 10.0, 
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
-                test_quad.satisfaction = 1.0;
-                let current = test_quad.weight();
-                assert_eq!(current, 0.25);
-                test_quad.satisfaction = 2.0;
-                let current = test_quad.weight();
-                assert_eq!(current, 0.125);
+                test_linear.satisfaction = 30.0;
+                let current = test_linear.current_value();
+                assert_eq!(current, 270.0);
+                test_linear.satisfaction = 50.0;
+                let current = test_linear.current_value();
+                assert_eq!(current, 400.0);
+                test_linear.satisfaction = 35.0;
+                let current = test_linear.current_value();
+                assert_eq!(current, 305.0);
+            }
+        }
 
-                let mut test_exp = Desire::new(Item::Good(0), 1.0, 10.0,
-                    DemandCurve::geometric(2.0))
-                    .with_steps(0);
-                test_exp.satisfaction = 0.0;
-                let current = test_exp.weight();
-                assert_eq!(current, 0.0);
-                test_exp.satisfaction = 1.0;
-                let current = test_exp.weight();
-                assert_eq!(current, 1.0 / 3.0);
+        mod satisfied_to_value_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, good::Good, item::Item};
+
+            #[test]
+            pub fn return_last_value() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 10.0, 
+                    DemandCurve::linear(-1.0));
+                test.satisfaction = 3.0;
+                assert_eq!(test.satisfied_to_value(), 7.0);
+                test.satisfaction = 7.0;
+                assert_eq!(test.satisfied_to_value(), 3.0);
+            }
+        }
+
+        mod is_fully_satisfied_should {
+            #[test]
+            pub fn return_false_when_endless() {
+                
             }
         }
 
