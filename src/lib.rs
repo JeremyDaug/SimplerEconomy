@@ -539,6 +539,72 @@ mod tests {
     }
 
     mod desire_tests {
+        mod max_satisfaction_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn return_none_when_no_max() {
+                let test = Desire::new(Item::Good(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(0);
+                assert!(test.max_satisfaction().is_none());
+            }
+
+            #[test]
+            pub fn return_correct_value_when_() {
+                let test = Desire::new(Item::Good(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                if let Some(res) = test.max_satisfaction() {
+                    assert_eq!(res, 100.0);
+                } else { assert!(false); }
+            }
+        }
+
+        mod change_satisfaction {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn correctly_change_satisfaction() {
+                let mut test = Desire::new(Item::Class(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+
+                test.satisfaction += 20.0;
+                assert!(test.change_satisfaction(20.0).is_none());
+                assert_eq!(test.satisfaction, 40.0);
+
+                assert!(test.change_satisfaction(-20.0).is_none());
+                assert_eq!(test.satisfaction, 20.0);
+            }
+
+            #[test]
+            pub fn return_excess_when_subtracting() {
+                let mut test = Desire::new(Item::Class(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+
+                test.satisfaction = 10.0;
+                if let Some(res) = test.change_satisfaction(-20.0) {
+                    assert_eq!(test.satisfaction, 0.0);
+                    assert_eq!(res, 10.0);
+                } else { assert!(false); }
+            }
+
+            #[test]
+            pub fn return_excess_when_adding_over_cap() {
+                let mut test = Desire::new(Item::Class(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+
+                test.satisfaction = 90.0;
+                if let Some(res) = test.change_satisfaction(20.0) {
+                    assert_eq!(test.satisfaction, 100.0);
+                    assert_eq!(res, 10.0);
+                } else { assert!(false); }
+            }
+        }
+
         mod end_should {
             use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
 
@@ -773,9 +839,55 @@ mod tests {
         }
 
         mod value_change_from_satisfaction_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
             #[test]
-            pub fn calculate_change_correctly() {
-                
+            pub fn calculate_change_within_bounds() {
+                let mut test = Desire::new(Item::Good(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                test.satisfaction = 50.0;
+
+                assert_eq!(test.value_change_from_satisfaction(10.0), 50.0);
+                assert_eq!(test.value_change_from_satisfaction(-10.0), -60.0);
+            }
+
+            #[test]
+            pub fn calculate_change_while_running_into_caps() {
+                let mut test = Desire::new(Item::Good(0), 10.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(2);
+                test.satisfaction = 10.0;
+
+                assert_eq!(test.value_change_from_satisfaction(20.0), 90.0);
+                assert_eq!(test.value_change_from_satisfaction(-20.0), -100.0);
+            }
+        }
+
+        mod satisfied_to_step_should {
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
+
+            #[test]
+            pub fn return_true_when_desire_satisfied_at_or_above_input() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                test.satisfaction = 5.0;
+
+                assert!(test.satisfied_to_step(0.0));
+                assert!(test.satisfied_to_step(2.5));
+                assert!(test.satisfied_to_step(5.0));
+            }
+
+            #[test]
+            pub fn return_false_when_outside_of_bounds() {
+                let mut test = Desire::new(Item::Good(0), 1.0, 10.0,
+                    DemandCurve::linear(-1.0))
+                    .with_steps(10);
+                test.satisfaction = 5.0;
+
+                assert!(!test.satisfied_to_step(-1.0));
+                assert!(!test.satisfied_to_step(7.5));
             }
         }
 

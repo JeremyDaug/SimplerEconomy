@@ -142,10 +142,47 @@ impl Desire {
         self
     }
 
-    /// # Satsfied Up To
+    /// # Max Satisfaction
     /// 
-    /// Given the current satisfaction of a desire, it returns the current prioirity it 
-    /// reaches. 
+    /// Calculates the maximum satisfaction possible for this desire.
+    /// This should be equal to the number of steps times the amount.
+    /// 
+    /// If desire is infinite, it returns None.
+    pub fn max_satisfaction(&self) -> Option<f64> {
+        if let Some(max_steps) = self.steps {
+            let steps = max_steps.get() as f64;
+            Some(steps * self.amount)
+        } else {
+            None
+        }
+    }
+
+    /// # Change Satisfaction
+    /// 
+    /// Adds (or subtracts) satisfaction from the desire.
+    /// 
+    /// Ensures that it does not overrun, and if it does, it returns the excess.
+    /// 
+    /// If no excess, it returns None.
+    pub fn change_satisfaction(&mut self, satisfaction: f64) -> Option<f64> {
+        self.satisfaction += satisfaction;
+        if self.satisfaction < 0.0 {
+            let ret = -self.satisfaction;
+            self.satisfaction = 0.0;
+            return Some(ret);
+        } else if let Some(cap) = self.max_satisfaction() {
+            if self.satisfaction > cap {
+                let ret = self.satisfaction - cap;
+                self.satisfaction = cap;
+                return Some(ret);
+            }
+        }
+        return None;
+    }
+
+    /// # Satsfied Steps
+    /// 
+    /// Given the current number of satisfied steps (satisfaction / amount)
     /// 
     /// Caps at the maximum number of steps (if any).
     /// 
@@ -245,9 +282,9 @@ impl Desire {
         }
     }
 
-    /// # Satisfied to Priority
+    /// # Satisfied to Value
     /// 
-    /// What Priority level the desire has been satisfied to.
+    /// What Value level the desire has been satisfied to.
     /// 
     /// ## Note
     /// If desire has limited steps it will go to steps+1 as it's highest
@@ -301,27 +338,22 @@ impl Desire {
     /// 
     /// TODO: Create This as it will almost certainly be useful later on.
     pub fn value_change_from_satisfaction(&self, satisfaction: f64) -> f64 {
-        let current = self.current_value();
+        let current_value = self.current_value();
         let mut dup = self.clone();
-        dup.satisfaction += satisfaction;
+        dup.change_satisfaction(satisfaction);
         let other = dup.current_value();
-        other - current
+        other - current_value
     }
     
     /// # Satisfied At
     /// 
-    /// Checks if the desire is satisdied to a particular step or not.
+    /// Checks if the desire is satisfied to a particular step or not.
     /// 
     /// If step is not valid, it returns false.
     pub(crate) fn satisfied_to_step(&self, step: f64) -> bool {
-        if let Some(on_step) = self.on_step(step) {
-            // if we have an equal or greater amount of satisfaction than 
-            // the amount * steps, then it's satisfied at that level.
-            if self.amount * on_step <= self.satisfaction {
-                true
-            } else {
-                false
-            }
+        let current_step = self.satisfied_steps();
+        if 0.0 <= step && step <= current_step {
+            true
         } else {
             false
         }
