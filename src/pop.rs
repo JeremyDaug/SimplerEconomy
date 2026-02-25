@@ -33,19 +33,16 @@ pub struct Pop {
     /// pop group. Pops have these enforced down into particular limitations,
     /// though this comes at the cost of increased processing and complexity.
     /// 
-    /// If different groups are in the same pop, then we assume they are being paid 
-    /// the same, though this will cause desires that may be specific to
-    /// some cultures to be flooded out by the larger demographics.
-    /// For example, a pop that doesn't care for coffee, may see the effective desires
-    /// it would've had suppressed by the flood of coffee drinkers. This is an
-    /// acceptable loss. Worse comes to worst, we can just may each pop exactly 1 DRow.
+    /// If different groups are in the same pop, meaning that it can create some
+    /// funny results of some pops getting priority as they value stuff more than
+    /// others. Think of this pop as working collectively and sharing everything,
+    /// including their joy.
     /// 
     /// If you want a pop to be paid differently, keep them separate.
     /// 
     /// The sum of each DRow should be equal to the size of the pop.
     /// 
     /// Fractional values in the breakdown represent stored up population growth.
-    /// Fractions are dropped 
     /// 
     /// This is sorted by household count, largest to smallest.
     pub demo_breakdown: Vec<DRow>,
@@ -53,6 +50,10 @@ pub struct Pop {
     /// 
     /// IE. If a household has only 1 working adult is has an efficiency of 1.0, if it
     /// has 2 working adults it has an efficiency of 2.0. and so on.
+    /// 
+    /// This is multiplied by the number of hours a in a turn to get their daily working
+    /// hours. This may not be literal time, but effective time (children get fewer 
+    /// hours then adults).
     pub efficiency: f64,
 
     /// The consolidated desires of the pop, a summation of the desires from 
@@ -64,6 +65,8 @@ pub struct Pop {
     pub wants: HashMap<usize, WantRecord>,
     /// Storage for satisfying desires between functions. This should be empty by the 
     /// end of the day.
+    /// 
+    /// These are organized by the desires next value step, Highest to Lowest.
     pub working_desires: VecDeque<Desire>,
     /// The current satisfaction of the pop. Should be updated periodically.
     pub satisfaction: SatisfactionValues,
@@ -423,9 +426,9 @@ impl Pop {
             // Accept if satisfaction increases.
             return OfferResult::Accept(AcceptReason::Satisfaction);
         }
-        let density_change = self.satisfaction.sat_density_change(&change);
-        println!("Density Change: {}", density_change);
-        if density_change > 0.0 {
+        let value_change = self.satisfaction.value;
+        println!("Density Change: {}", value_change);
+        if value_change > 0.0 {
             // Accept if Satisfaction density increases
             return OfferResult::Accept(AcceptReason::Density);
         }
@@ -655,7 +658,7 @@ impl Pop {
             }
             // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
             let dup_sat = dup.get_satisfaction(market);
-            let curr_range = dup_sat.range - self_sat.range - range_acc;
+            let curr_range = dup_sat.value - self_sat.value - range_acc;
             let curr_steps = dup_sat.steps - self_sat.steps - step_acc;
             println!("Current Satisfaction Level: {}", curr_range);
             println!("Current Satisfaction Value: {}", curr_steps);
@@ -726,7 +729,7 @@ impl Pop {
         // once you purchase and fill up the desires, get satisfcation and calculate how much was gained.
         let dup_sat = dup.get_satisfaction(market);
         let self_sat = self.get_satisfaction(market);
-        SatisfactionValues::new(dup_sat.range - self_sat.range, 
+        SatisfactionValues::new(dup_sat.value - self_sat.value, 
             dup_sat.steps - self_sat.steps, 
             dup_sat.satisfaction - self_sat.satisfaction, 
             dup_sat.excess_amv - self_sat.excess_amv)
@@ -785,11 +788,11 @@ impl Pop {
         }
         temp_pop.try_satisfy_all_desires(data, market);
         println!("Resulting Satisfaction:");
-        println!("Range: {}", temp_pop.satisfaction.range);
+        println!("Range: {}", temp_pop.satisfaction.value);
         println!("Steps: {}", temp_pop.satisfaction.steps);
         println!("Satisfaction: {}", temp_pop.satisfaction.satisfaction);
         println!("AMV: {}", temp_pop.satisfaction.excess_amv);
-        let range = temp_pop.satisfaction.range - self.satisfaction.range;
+        let range = temp_pop.satisfaction.value - self.satisfaction.value;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
         let satisfaction = temp_pop.satisfaction.satisfaction - self.satisfaction.satisfaction;
         let amv = temp_pop.satisfaction.excess_amv - self.satisfaction.excess_amv;
@@ -822,7 +825,7 @@ impl Pop {
         // satisfy the desires of the temporary pop.
         temp_pop.try_satisfy_all_desires(data, market);
         // with satisfaciton done, return the difference between the current and possible new
-        let range = self.satisfaction.range - temp_pop.satisfaction.range;
+        let range = self.satisfaction.value - temp_pop.satisfaction.value;
         let steps = self.satisfaction.steps - temp_pop.satisfaction.steps;
         let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
         let amv = self.satisfaction.excess_amv - temp_pop.satisfaction.excess_amv;
@@ -852,7 +855,7 @@ impl Pop {
         // satisfy the desires of the temporary pop.
         temp_pop.try_satisfy_all_desires(data, market);
         // with satisfaciton done, return the difference between the current and possible new
-        let range = temp_pop.satisfaction.range - self.satisfaction.range;
+        let range = temp_pop.satisfaction.value - self.satisfaction.value;
         let steps = temp_pop.satisfaction.steps - self.satisfaction.steps;
         let satisfaction = self.satisfaction.satisfaction - temp_pop.satisfaction.satisfaction;
         let amv = temp_pop.satisfaction.excess_amv - self.satisfaction.excess_amv;
@@ -1788,7 +1791,7 @@ impl Pop {
     pub(crate) fn ordered_desire_insert(working_desires: &mut VecDeque<Desire>, desire: Desire) {
         let value = desire.next_value();
         for idx in 0..working_desires.len() {
-            if value < working_desires.get(idx).unwrap().next_value() {
+            if value >= working_desires.get(idx).unwrap().next_value() {
                 working_desires.insert(idx, desire);
                 return;
             }
@@ -1923,29 +1926,20 @@ impl WantRecord {
 
 /// # Satsifaction Values
 /// 
-/// A helper storage unit which contains both the range of satisfaction and the 
-/// number of steps satisfied.
+/// A helper storage unit which stores the value satisfied, number of steps satisfied,
+/// total satisfaction, and excess AMV.
 /// 
-/// Allows us to compare possible satisfaction positions.
+/// Populations always seek to increase value first and formost.
+/// Though unlikely, if a pop can maintain it's value, but increase it's steps, it will do so.
+/// After that, they seek to improve satisfaction, then excess AMV.
 /// 
-/// It's important to remember the priority of importance.
+/// Satisfaction is an accululation of all units dedicated to satisfying to desires.
 /// 
-/// Pops will always prefer more satisfaciton, even if it gives up range.
-/// 
-/// Satisfaction changes work as follows.
-/// 
-/// Range \ Satisfaction | Decrease | Same   | Increase
-/// --------------+----------+--------+----------
-/// Decrease      | Reject   | Accept | Accept
-/// Same          | Reject   | Reject | Accept
-/// Increase      | Reject   | Reject | Accept
-/// 
-/// Another way to think of it is that if it can increase satisfaciton it does, if it can
-/// reduce range without reducing satisfaction, it will accept that as well.
+/// Excess AMV is all the rest of the goods, liquidated into their AMV value.
 #[derive(Debug, Copy, Clone)]
 pub struct SatisfactionValues {
-    /// The distance from lowest priority satisfied to highest.
-    pub range: f64,
+    /// The total value of all desires as satisfied right now.
+    pub value: f64,
     /// The number of steps (desire.satisfaction / desire.amount), completed.
     pub steps: f64,
     /// The total amount of satisfaction in raw units.
@@ -1958,49 +1952,15 @@ pub struct SatisfactionValues {
 }
 
 impl SatisfactionValues {
-    pub fn new(range: f64, steps: f64, satisfaction: f64, excess_amv: f64) -> Self {
+    pub fn new(value: f64, steps: f64, satisfaction: f64, excess_amv: f64) -> Self {
         Self {
-            range,
+            value,
             steps,
             satisfaction,
             excess_amv
         }
     }
 
-    /// Helper that gets the density of the current satisfaction.
-    pub fn step_density(&self) -> f64 {
-        if self.range == 0.0 {
-            0.0
-        } else {
-            self.steps / self.range
-        }
-    }
-
-    pub fn sat_density(&self) -> f64 {
-        if self.range == 0.0 {
-            0.0
-        } else {
-            self.satisfaction / self.range
-        }
-    }
-
-    /// # Density Change
-    /// 
-    /// Calculates the change in density from ourself to the difference.
-    pub fn sat_density_change(&self, difference: &Self) -> f64 {
-        let our_density = self.sat_density();
-        let other_sat = self.satisfaction + difference.satisfaction;
-        let other_range = self.range + difference.range;
-        let other_density = if other_range > 0.0 {
-            other_sat / other_range
-        } else { 0.0 };
-        println!("Existing Density: {}", our_density);
-        println!("Other Satisfaction: {}", other_sat);
-        println!("Other Range: {}", other_range);
-        println!("Other Density: {}", other_density);
-        other_density - our_density
-    }
-    
     fn zero() -> SatisfactionValues {
         Self::new(0.0, 0.0, 0.0, 0.0)
     }

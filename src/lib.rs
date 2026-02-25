@@ -749,7 +749,7 @@ mod tests {
         }
 
         mod satisfied_to_value_should {
-            use crate::{demandcurve::DemandCurve, desire::Desire, good::Good, item::Item};
+            use crate::{demandcurve::DemandCurve, desire::Desire, item::Item};
 
             #[test]
             pub fn return_last_value() {
@@ -900,7 +900,7 @@ mod tests {
             #[should_panic(expected = "A Desire with the tag LifeNeed must have a finite number of steps.")]
             pub fn fail_when_lifeneed_tag_and_no_end() {
                 Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_steps(0)
                 .with_tag(DesireTag::life_need(0.5));
             }
@@ -909,7 +909,7 @@ mod tests {
             #[should_panic(expected = "Desire has the LifeNeed tag. It must have a finite number of steps.")]
             pub fn fail_when_endless_interval_and_existing_lifeneed_tag() {
                 Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_tag(DesireTag::life_need(0.5))
                 .with_steps(0);
             }
@@ -918,7 +918,7 @@ mod tests {
             #[should_panic(expected = "Same Tags, never safe.")]
             pub fn panic_with_duplicate_tags_put_in() {
                 Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_tag(DesireTag::HouseholdNeed)
                 .with_tag(DesireTag::HouseholdNeed);
             }
@@ -927,7 +927,7 @@ mod tests {
             #[should_panic(expected = "Household Need cannot be next to a HouseMemberNeed.")]
             pub fn panic_when_inserting_housememberneed_and_householdneed_exists() {
                 Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_tag(DesireTag::HouseholdNeed)
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult));
             }
@@ -936,7 +936,7 @@ mod tests {
             #[should_panic(expected = "HouseMemberNeed cannot be next to a HouseholdNeed.")]
             pub fn panic_when_inserting_householdrneed_and_housememberneed_exists() {
                 Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
                 .with_tag(DesireTag::HouseholdNeed);
             }
@@ -944,7 +944,7 @@ mod tests {
             #[test]
             pub fn insert_tags_into_desire_sorted() {
                 let test = Desire::new(Item::Good(0), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                 .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult))
                 .with_tag(DesireTag::life_need(0.5));
 
@@ -1127,7 +1127,7 @@ mod tests {
 
                 // test results
                 assert_eq!(test_pop.satisfaction.excess_amv, 20.0);
-                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.value, 5.0);
                 assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
                 assert_eq!(test_pop.satisfaction.steps, 25.0);
 
@@ -1184,7 +1184,7 @@ mod tests {
 
                 // test results
                 assert_eq!(test_pop.satisfaction.excess_amv, 20.0);
-                assert_eq!(test_pop.satisfaction.range, 5.0);
+                assert_eq!(test_pop.satisfaction.value, 5.0);
                 assert_eq!(test_pop.satisfaction.satisfaction, 25.0);
                 assert_eq!(test_pop.satisfaction.steps, 25.0);
 
@@ -1475,7 +1475,7 @@ mod tests {
                 test_pop.property.insert(7, PropertyRecord::new(3.0));
                 test_pop.try_satisfy_all_desires(&data, &market);
                 println!("Base Satisfaction.");
-                println!("Range: {}", test_pop.satisfaction.range);
+                println!("Range: {}", test_pop.satisfaction.value);
                 println!("Steps: {}", test_pop.satisfaction.steps);
                 println!("Satisfaction: {}", test_pop.satisfaction.satisfaction);
                 println!("AMV: {}", test_pop.satisfaction.excess_amv);
@@ -1517,12 +1517,12 @@ mod tests {
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
                 test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
-                    DemandCurve::linear(1.0)));
+                    DemandCurve::linear(-1.0)));
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(2));
                 test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // then check the gain when given X amv
                 let results = test_pop.satisfaction_from_multiple_amvs(vec![10.0, 10.0], &market);
@@ -1530,15 +1530,15 @@ mod tests {
                 assert_eq!(results.len(), 3);
 
                 let sat = results.get(0).unwrap();
-                assert_eq!(sat.range, 19.0);
+                assert_eq!(sat.value, 19.0);
                 assert_eq!(sat.steps, 17.0);
 
                 let sat = results.get(1).unwrap();
-                assert_eq!(sat.range, 20.0);
+                assert_eq!(sat.value, 20.0);
                 assert_eq!(sat.steps, 20.0);
 
                 let sat = results.get(2).unwrap();
-                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.value, 39.0);
                 assert_eq!(sat.steps, 37.0);
             }
         }
@@ -1574,7 +1574,7 @@ mod tests {
                 // then check the gain when given X amv
                 let sat = test_pop.satisfaction_from_amv(4.0, &market);
 
-                assert_eq!(sat.range, 8.0);
+                assert_eq!(sat.value, 8.0);
                 assert_eq!(sat.steps, 4.0);
             }
 
@@ -1601,17 +1601,17 @@ mod tests {
                 // set up pop with empty desires
                 let mut test_pop = Pop::new(0, 0, 0);
                 test_pop.desires.push_back(Desire::new(Item::Good(4), 1.0, 20.0,
-                    DemandCurve::linear(1.0)));
+                    DemandCurve::linear(-1.0)));
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 0.5, 3.0,
-                    DemandCurve::linear(10.0))
+                    DemandCurve::linear(-10.0))
                     .with_steps(2));
                 test_pop.desires.push_back(Desire::new(Item::Good(6), 1.0, 8.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // then check the gain when given X amv
                 let sat = test_pop.satisfaction_from_amv(20.0, &market);
 
-                assert_eq!(sat.range, 39.0);
+                assert_eq!(sat.value, 39.0);
                 assert_eq!(sat.steps, 37.0);
             }
         }
@@ -1644,7 +1644,7 @@ mod tests {
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
@@ -1695,7 +1695,7 @@ mod tests {
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
@@ -1748,7 +1748,7 @@ mod tests {
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
@@ -1797,7 +1797,7 @@ mod tests {
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(3.0));
@@ -1847,7 +1847,7 @@ mod tests {
                 let mut test_pop = Pop::new(0, 0, 0);
                 // set up desires, only one, good 5, no cap.
                 test_pop.desires.push_back(Desire::new(Item::Good(5), 1.0, 0.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0));
                 // Add in 
                 test_pop.property.insert(5, PropertyRecord::new(1.0));
@@ -1857,7 +1857,7 @@ mod tests {
                 new_goods.insert(5, 1.0);
                 let result = test_pop.satisfaction_gain(&new_goods, &data, &market);
 
-                assert_eq!(result.range, 1.0);
+                assert_eq!(result.value, 1.0);
                 assert_eq!(result.steps, 1.0);
                 assert_eq!(result.excess_amv, 0.0);
                 assert_eq!(result.satisfaction, -1.0);
@@ -1876,7 +1876,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 2.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 // set up market data for goods.
@@ -1937,7 +1937,7 @@ mod tests {
                 market.currencies.insert(7);
 
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
@@ -1993,7 +1993,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 15.0, 1.0,
-                    DemandCurve::linear(1.0))
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 // set up market data for goods.
@@ -2180,7 +2180,7 @@ mod tests {
 
                 let result = test.consume_desires(&data, &market);
 
-                assert_eq!(result.range, 12.0);
+                assert_eq!(result.value, 12.0);
                 assert_eq!(result.steps, 18.0);
                 assert_eq!(result.excess_amv, 60.0);
                 assert_eq!(result.satisfaction, 180.0);
@@ -2225,7 +2225,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 2.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
@@ -2261,7 +2261,7 @@ mod tests {
                 .in_class(4));
 
                 let desire = Desire::new(Item::Class(4), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
@@ -2310,7 +2310,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 15.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
@@ -2385,16 +2385,16 @@ mod tests {
                 data.add_good(Good::new(7, String::from("testGood7"), String::new()));
 
                 let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
                 let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
                 let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
                 let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut working_desires = VecDeque::new();
@@ -2435,13 +2435,13 @@ mod tests {
                 data.add_good(Good::new(7, String::from("testGood7"), String::new()));
 
                 let desire1 = Desire::new(Item::Good(4), 10.0, 1.0,
-                        DemandCurve::linear(1.0));
+                        DemandCurve::linear(-1.0));
                 let desire2 = Desire::new(Item::Good(5), 10.0, 1.0,
-                        DemandCurve::linear(1.0));
+                        DemandCurve::linear(-1.0));
                 let desire3 = Desire::new(Item::Good(6), 10.0, 1.0,
-                        DemandCurve::linear(1.0));
+                        DemandCurve::linear(-1.0));
                 let desire4 = Desire::new(Item::Good(7), 10.0, 1.0,
-                        DemandCurve::linear(1.0));
+                        DemandCurve::linear(-1.0));
 
                 let mut working_desires = VecDeque::new();
                 working_desires.push_back(desire1);
@@ -2475,7 +2475,7 @@ mod tests {
                 data.add_good(Good::new(4, String::from("testGood"), String::new()));
 
                 let desire = Desire::new(Item::Good(4), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
                 
                 // set up market data for goods.
@@ -2523,7 +2523,7 @@ mod tests {
                 market.currencies.insert(7);
 
                 let desire = Desire::new(Item::Class(4), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
 
                 let mut test = Pop::new(0, 0, 0);
@@ -2558,7 +2558,7 @@ mod tests {
                     .with_consumption(1.0, wants.clone()));
 
                 let desire = Desire::new(Item::Want(4), 10.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                     .with_steps(0);
                 
                 // set up market data for goods.
@@ -2611,18 +2611,18 @@ mod tests {
 
                 let source_desires = vec![
                     Desire::new(Item::Good(0), 1.0, 0.3,
-                        DemandCurve::linear(1.0)),
+                        DemandCurve::linear(-1.0)),
                     Desire::new(Item::Good(1), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                         .with_tag(DesireTag::HouseholdNeed),
                     Desire::new(Item::Good(2), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
                     Desire::new(Item::Good(3), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Child)),
                     Desire::new(Item::Good(4), 1.0, 1.0,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Elder)),
                 ];
 
@@ -2649,12 +2649,12 @@ mod tests {
 
                 let source_desires = vec![
                     Desire::new(Item::Good(0), 1.0, 0.3,
-                        DemandCurve::linear(1.0)), // duplicate, combines with 0
+                        DemandCurve::linear(-1.0)), // duplicate, combines with 0
                     Desire::new(Item::Good(1), 1.0, 0.6,
-                        DemandCurve::linear(1.0))
+                        DemandCurve::linear(-1.0))
                         .with_tag(DesireTag::HouseholdNeed), // inserted into 1
                     Desire::new(Item::Good(2), 1.0, 1.5,
-                        DemandCurve::linear(1.0)) // inserted at end near duplicate
+                        DemandCurve::linear(-1.0)) // inserted at end near duplicate
                         .with_tag(DesireTag::HouseMemberNeed(HouseholdMember::Adult)),
                 ];
 
@@ -2697,7 +2697,7 @@ mod tests {
                     item: Item::Good(0),
                     amount: 1.0,
                     starting_value: 1.0,
-                    demand_fn: DemandCurve::linear(1.0),
+                    demand_fn: DemandCurve::linear(-1.0),
                     steps: None,
                     tags: vec![],
                     satisfaction: 0.0,
@@ -2743,55 +2743,55 @@ mod tests {
             pub fn insert_correctly() {
                 let mut working_desires = VecDeque::new();
 
-                let desire0 = Desire::new(Item::Good(0), 1.0, 10.0,
-                    DemandCurve::linear(1.0));
-                let desire1 = Desire::new(Item::Good(1), 1.0, 9.0,
-                    DemandCurve::linear(1.0));
-                let desire2 = Desire::new(Item::Good(2), 1.0, 1.0,
-                    DemandCurve::linear(1.0));
-                let desire3 = Desire::new(Item::Good(3), 1.0, 15.0,
-                    DemandCurve::linear(1.0))
+                let desire0 = Desire::new(Item::Good(0), 1.0, 10.0, // 2/3/4
+                    DemandCurve::linear(-1.0));
+                let desire1 = Desire::new(Item::Good(1), 1.0, 9.0, // 5
+                    DemandCurve::linear(-1.0));
+                let desire2 = Desire::new(Item::Good(2), 1.0, 1.0, // 6
+                    DemandCurve::linear(-1.0));
+                let desire3 = Desire::new(Item::Good(3), 1.0, 15.0, // 1
+                    DemandCurve::linear(-1.0))
                     .with_steps(0);
-                let desire4 = Desire::new(Item::Good(4), 1.0, 10.0,
-                    DemandCurve::linear(1.0));
-                let desire5 = Desire::new(Item::Good(5), 1.0, 10.0,
-                    DemandCurve::linear(1.0));
+                let desire4 = Desire::new(Item::Good(4), 1.0, 10.0, // 2/3/4
+                    DemandCurve::linear(-1.0));
+                let desire5 = Desire::new(Item::Good(5), 1.0, 10.0, // 2/3/4
+                    DemandCurve::linear(-1.0));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire0);
                 Pop::ordered_desire_insert(&mut working_desires, desire1);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire2);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(0));
                 assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(2));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire3);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(2));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire4);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(4));
                 assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
-                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(2));
 
                 Pop::ordered_desire_insert(&mut working_desires, desire5);
 
-                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(2));
-                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(1));
-                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(0));
-                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(4));
-                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(5));
-                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(0).unwrap().item, Item::Good(3));
+                assert_eq!(working_desires.get(1).unwrap().item, Item::Good(5));
+                assert_eq!(working_desires.get(2).unwrap().item, Item::Good(4));
+                assert_eq!(working_desires.get(3).unwrap().item, Item::Good(0));
+                assert_eq!(working_desires.get(4).unwrap().item, Item::Good(1));
+                assert_eq!(working_desires.get(5).unwrap().item, Item::Good(2));
 
                 let mut test_des = working_desires.pop_front().unwrap();
                 test_des.satisfaction = 10000.0;
