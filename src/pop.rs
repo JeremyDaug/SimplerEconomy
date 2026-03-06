@@ -1262,6 +1262,7 @@ impl Pop {
     /// 
     /// TODO: Expand to include a step/satisfaction target parameter so it can do more than 1 level at a time.
     /// TODO: Consider breaking out the sections to flatten out and make testing easier.
+    /// NOTE: Not directly tested, tested via satisfy_next_desire.
     pub fn satisfy_desire(&mut self, mut current_desire: Desire, data: &Data, step_target: f64) -> (Desire, f64) {
         assert!(step_target > 0.0, "Step target must be a positive value.");
         // println!("Step Target: {}", step_target);
@@ -1512,13 +1513,15 @@ impl Pop {
     /// caller for them to place properly.
     /// 
     /// Otherwise it puts it back into working desires.
+    /// 
+    /// NOTE: Seems functional after desire switch to value, don't worry about it.
     pub(crate) fn satisfy_next_desire(&mut self, working_desires: &mut VecDeque<Desire>, 
     data: &Data) -> Option<Desire> {
         assert!(working_desires.len() > 0, "Working Desires cannot be empty.");
         // Get current step and desire from the front of the working desires. If no next one, leave.
         let current_desire = 
         if let Some(current_desire) = working_desires.pop_front() {
-            // println!("Current Desire Item: {}", current_desire.item);
+            println!("Current Desire: {}", current_desire.item);
             // println!("Satisfied Steps: {}", current_desire.satisfied_steps());
             current_desire
         } else {
@@ -1532,8 +1535,12 @@ impl Pop {
             } else {
                 1.0
             }
-        } else {
-            1.0
+        } else { // if there is no next, satisfy as much as possible.
+            if let Some(max) = current_desire.steps {
+                (max.get() as f64 - current_desire.satisfied_steps()).max(1.0)
+            } else {
+                f64::infinity()
+            }
         };
         // Cap our steps so we don't overshoot also.
         if let Some(end) = current_desire.steps {
@@ -1557,10 +1564,10 @@ impl Pop {
     /// 
     /// Satisfies desires until a desire is unable to satisfy itself.
     /// 
-    /// The working desires starts with the next desire this will start with. So no need
+    /// The working desires starts with the next desire start at. So no need
     /// to give a starting vaule or desire.
     /// 
-    /// Returns the desire that was incomplete and the tier at which it was incomplete.
+    /// Returns the desire that was incomplete.
     /// 
     /// Desires that were fully satisfied get added back to self.desires.
     /// 
@@ -1571,11 +1578,13 @@ impl Pop {
             // satisfy the next desire
             // println!("--------------");
             if let Some(result) = self.satisfy_next_desire(working_desires, data) {
-                // println!("Incomplete Desire: {}", result.item);
+                // println!("Current Desire: {}", result.item);
                 // if we get a desire here, the desire is either incomplete or finished
                 if result.is_fully_satisfied() { // if fully satisfied, just add back to desires.
+                    println!("Fully Satisfied ---------------");
                     Self::ordered_desire_insert(&mut self.desires, result);
                 } else { // if incomplete, break out.
+                    println!("Incomplete Desire ------------");
                     return Some(result);
                 }
             }
