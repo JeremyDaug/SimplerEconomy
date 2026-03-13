@@ -2277,8 +2277,8 @@ mod tests {
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
                 assert!(result.is_none());
-                assert_eq!(working_desires.front().unwrap().satisfaction, 2.0);
-                assert_eq!(test.property.get(&4).unwrap().reserved, 2.0);
+                assert_eq!(working_desires.front().unwrap().satisfaction, 3.0);
+                assert_eq!(test.property.get(&4).unwrap().reserved, 3.0);
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
@@ -2315,8 +2315,8 @@ mod tests {
 
                 assert!(result.is_none());
                 assert_eq!(test.property.get(&4).unwrap().reserved, 10.0);
-                assert_eq!(test.property.get(&5).unwrap().reserved, 0.0);
-                assert_eq!(working_desires.get(0).unwrap().satisfaction, 10.0);
+                assert_eq!(test.property.get(&5).unwrap().reserved, 5.0);
+                assert_eq!(working_desires.get(0).unwrap().satisfaction, 15.0);
 
                 let result = test.satisfy_next_desire(&mut working_desires, &data);
 
