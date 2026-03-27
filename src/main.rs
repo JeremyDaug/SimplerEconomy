@@ -16,6 +16,11 @@ pub mod process;
 pub mod institution;
 pub mod state;
 
+use bevy::{
+    asset::RenderAssetUsages, mesh::Indices, prelude::Mesh,
+    render::render_resource::PrimitiveTopology,
+};
+
 fn main() {
 
 }
