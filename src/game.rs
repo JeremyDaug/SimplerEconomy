@@ -15,3 +15,4 @@ pub mod good;
 pub mod process;
 pub mod institution;
 pub mod state;
+pub mod techtree;

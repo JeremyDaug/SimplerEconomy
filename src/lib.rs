@@ -55,7 +55,7 @@ mod test {
             }
         }
 
-        mod find_city {
+        mod find_city_hex {
             use crate::game::map::Map;
             use hexx::Hex;
 
@@ -77,19 +77,19 @@ mod test {
                 testmap.tiles[3][1].region = Some(2);
 
                 // check both exact find, secondary, and failed find
-                if let Some(res) = testmap.find_city(Hex { x: 2, y: 2 }) {
+                if let Some(res) = testmap.find_city_hex(Hex { x: 2, y: 2 }) {
                     assert_eq!(res, Hex { x: 2, y: 2 });
                 } else { assert!(false); }
 
-                if let Some(res) = testmap.find_city(Hex { x: 4, y: 3 }) {
+                if let Some(res) = testmap.find_city_hex(Hex { x: 4, y: 3 }) {
                     assert_eq!(res, Hex { x: 4, y: 4 });
                 } else { assert!(false); }
 
-                assert!(testmap.find_city(Hex {x: 0, y: 0}).is_none());
+                assert!(testmap.find_city_hex(Hex {x: 0, y: 0}).is_none());
             }
         }
 
-        mod get_cities {
+        mod get_city_hexes {
             use crate::game::map::Map;
             use hexx::Hex;
 
@@ -105,7 +105,7 @@ mod test {
                 testmap.regions.push(vec![Hex {x: 5, y: 1}]);
 
                 // check one from each grouping. Row zero should return none.
-                let res = testmap.get_cities();
+                let res = testmap.get_city_hexes();
                 assert_eq!(res.len(), 3);
                 assert_eq!(res[0], Hex {x: 2, y: 2});
                 assert_eq!(res[1], Hex {x: 4, y: 4});

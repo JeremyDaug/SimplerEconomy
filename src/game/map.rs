@@ -55,14 +55,22 @@ impl Map {
     /// 
     /// Assumes no wrapping.
     pub fn new(width: usize, height: usize) -> Self {
-        Self {
+        let mut ret = Self {
             width,
             height,
             vwrap: false,
             hwrap: false,
-            tiles: vec![vec![Tile::new(None); height]; width],
+            tiles: vec![],
             regions: vec![],
+        };
+        // set up tiles with their locations.
+        for x in 0..width {
+            ret.tiles.push(vec![]);
+            for y in 0..height {
+                ret.tiles[x][y] = Tile::new(Hex::new(x as i32, y as i32));
+            }
         }
+        ret
     }
 
     /// Sets vwrap to true.
@@ -123,7 +131,7 @@ impl Map {
     /// Given a hex, find the city tile which oversees it.
     /// 
     /// Returns the hex of the region's capital, or None if not in a region.
-    pub fn find_city(&mut self, hex: Hex) -> Option<Hex> {
+    pub fn find_city_hex(&mut self, hex: Hex) -> Option<Hex> {
         if let Some(region) = self.get_region(hex) {
             Some(self.regions[region][0])
         } else {
@@ -137,7 +145,7 @@ impl Map {
     /// 
     /// Cities are stored in the first spot of a region, their location in this
     /// list is the same location in the region's list.
-    pub fn get_cities(&self) -> Vec<Hex> {
+    pub fn get_city_hexes(&self) -> Vec<Hex> {
         self.regions.iter().map(|x| x[0]).collect_vec()
     }
 
@@ -212,28 +220,18 @@ impl Map {
                 // if in the targeted region, gtfo.
                 return false;
             }
-            // get distance to our region
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // TODO! Deal with this here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            let wrapped = self.wrap(hex).unwrap() + Hex::new(self.width as i32, self.height as i32);
-            for loc in self.regions[region].iter() {
-                // if distance 1, it must be adjacent 
-                // (ignore wrapping as that was checked above)
-                if loc.distance_to(hex) == 1 {
-                    return true;
-                }
-                // include wrapped to deal with multiples
-                if loc.distance_to(wrapped) == 1 {
-                    return true;
-                }
+            // get neighboring tiles
+            let neighbors = self.get_region_neighbors(region);
+            // check that our (wrapped) hex is in neighbors
+            if let Some(wrapped) = self.wrap(hex) && neighbors.contains(&wrapped) {
+                return true;
             }
             return false;
         }
         false
     }
 
-    /// # Add region
+    /// # Add city
     /// 
     /// Adds a new region to our map. This new region starts as just the capital of the
     /// region.

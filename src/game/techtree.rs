@@ -1,4 +1,4 @@
 #[derive(Debug, Clone)]
-pub struct Desire {
+pub struct TechTree {
     
 }
