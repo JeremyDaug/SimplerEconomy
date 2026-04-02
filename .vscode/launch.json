@@ -6,12 +6,37 @@
     "configurations": [
         
         {
+            "name": "Debug unit tests in library 'simpler_economy'",
             "type": "lldb",
             "request": "launch",
-            "name": "Debug",
-            "program": "${workspaceFolder}/target/debug/SimplerEconomy",
-            "args": [],
-            "cwd": "${workspaceFolder}"
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'simpler_economy'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=simpler_economy"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'simpler_economy'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=simpler_economy"
+                ]
+            }
         }
     ]
 }

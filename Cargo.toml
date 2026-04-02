@@ -8,8 +8,18 @@ itertools = "0.14.0"
 ordered-float = "5.2.0"
 circular-buffer = "1.2.0"
 # remove dynamic Linking for release.
-bevy = { version = "0.18.1", features = ["dynamic_linking"] }
-hexx = "0.24.0"
+bevy = { version = "0.18.1", features = [
+    "dynamic_linking",
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_render",
+    "bevy_pbr", 
+    "bevy_window", 
+    "bevy_winit",
+    "default_font"
+    ] }
+hexx = { version = "0.24.0", features = ["bevy"] }
 
 ### Debug mode Optimizations
 # Enable a small amount of optimization in the dev profile.
