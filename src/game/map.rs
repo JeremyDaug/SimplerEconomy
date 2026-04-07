@@ -67,7 +67,7 @@ impl Map {
         for x in 0..width {
             ret.tiles.push(vec![]);
             for y in 0..height {
-                ret.tiles[x][y] = Tile::new(Hex::new(x as i32, y as i32));
+                ret.tiles[x].push(Tile::new(Hex::new(x as i32, y as i32)));
             }
         }
         ret

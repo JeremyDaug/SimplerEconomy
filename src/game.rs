@@ -1,4 +1,3 @@
-pub mod city;
 pub mod region;
 pub mod map;
 pub mod tile;
@@ -16,3 +15,4 @@ pub mod process;
 pub mod institution;
 pub mod state;
 pub mod techtree;
+pub mod household;

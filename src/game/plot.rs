@@ -4,6 +4,8 @@ pub enum Plot {
     Hill,
     Mountain,
     Forest,
+    ForestHill,
+    ForestMountain,
     Coastal,
     Sea,
 }
