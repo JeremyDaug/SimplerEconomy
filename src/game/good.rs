@@ -8,10 +8,10 @@ use std::collections::{HashMap, HashSet};
 pub struct Good {
     /// Unique ID of the good
     pub id: usize,
-    /// The name of the good, shoudl be unique.
+    /// The name of the good, should be unique.
     pub name: String,
 
-    /// What class the good is 
+    /// What class the good this is in.
     pub class: Option<usize>,
 
     /// The rate that the good decays.
