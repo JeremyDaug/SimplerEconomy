@@ -1,5 +1,5 @@
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
 
@@ -74,6 +74,42 @@ impl Process {
             .collect()
     }
 
+    /// # Requirements
+    /// 
+    /// Gets the required inputs of the process. 
+    /// Excludes Factors.
+    pub fn requirements(&self) -> Vec<ProcessInput> {
+        self.inputs.iter()
+            .filter(|input| !matches!(input.input_output, InputType::Factor) && !input.is_optional())
+            .cloned()
+            .collect()
+    }
+
+    /// # Optional Inputs
+    /// 
+    /// Gets the optional inputs of the process, excluding factors.
+    pub fn optional_inputs(&self) -> Vec<ProcessInput> {
+        self.inputs.iter()
+            .filter(|input| input.is_optional() && !matches!(input.input_output, InputType::Factor))
+            .cloned()
+            .collect()
+    }
+
+    /// # Has Requirements
+    /// 
+    /// Gets the required input goods of the process for quick validity checking.
+    pub fn has_requirements(&self) -> HashMap<usize, f64> {
+        self.requirements().iter().map(|input| (input.good, input.amount)).collect()
+    }
+
+    /// # Has Factors
+    /// 
+    /// Gets a summary of factors needed for the process, a bool attached to them to define them as
+    /// required or optional. (true is optional)
+    pub fn has_factors(&self) -> HashMap<usize, bool> {
+        self.factors().iter().map(|input| (input.good, input.is_optional())).collect()
+    }
+
     /// # Do Process
     /// 
     /// Given Inputs, an optional target, and the factuals of the world, attempt to do 
@@ -99,7 +135,86 @@ impl Process {
     /// required inputs. Shifting goods from optional inputs to required as needed.
     pub fn do_process(&self, inputs: HashMap<usize, f64>, target: Option<f64>, 
     factuals: &Factuals) -> ProcessResult {
-        todo!()
+        // get copy of inputs for overall good availability checking.
+        let mut available = inputs.clone();
+        // start with factuals, checking that required factors are available before
+        // trying anything.
+        // Modifiers are stacks of pairs multiplier followed by iterations it covers.
+        let mut input_mult = vec![(1.0, f64::INFINITY)];
+        let mut output_mult = vec![(1.0, f64::INFINITY)];
+        let mut throughput_mult = vec![(1.0, f64::INFINITY)];
+        for factor in self.factors().iter() {
+            // If required and not available, then we can't continue.
+            if !factor.is_optional() && !inputs.contains_key(&factor.good) {
+                return ProcessResult {
+                    iterations: 0.0,
+                    changes: HashMap::new(),
+                    used_inputs: HashMap::new(),
+                    effects: Vec::new(),
+                };
+            }
+
+            // get bonuses and effects from factors.
+            if let Some(effects) = factor.optional_effects() {
+                for effect in effects {
+                    match effect {
+                        InputEffect::Throughput(mult) => {
+                            let last_mult = throughput_mult.last().unwrap().0;
+                            throughput_mult.push((last_mult + mult, f64::INFINITY));
+                        },
+                        InputEffect::Input(mult) => {
+                            let last_mult = input_mult.last().unwrap().0;
+                            input_mult.push((last_mult - mult, f64::INFINITY));
+                        },
+                        InputEffect::Output(mult) => {
+                            let last_mult = output_mult.last().unwrap().0;
+                            output_mult.push((last_mult + mult, f64::INFINITY));
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
+
+        // Next get optionals, maximizing effects and bonuses. We can always scale back 
+        // or reduce them later, but we want to know our bonuses as clearly as possible.
+        let mut optional_reserves: HashMap<usize, (f64, f64)> = HashMap::new(); // Good, (reserved, iterations covered)
+        for optional in self.optional_inputs() {
+            if let Some(available) = inputs.get(&optional.good) {
+                // If we have some of the optional, use it all to get max bonuses and effects.
+                // We can scale back later if we don't have enough required goods to cover the target.
+                if *available > 0.0 {
+                    if let Some(effects) = optional.optional_effects() {
+                        for effect in effects {
+                            match effect {
+                                InputEffect::Throughput(mult) => {
+                                    let last_mult = throughput_mult.last().unwrap().0;
+                                    throughput_mult.push((last_mult + mult, f64::INFINITY));
+                                },
+                                InputEffect::Input(mult) => {
+                                    let last_mult = input_mult.last().unwrap().0;
+                                    input_mult.push((last_mult - mult, f64::INFINITY));
+                                },
+                                InputEffect::Output(mult) => {
+                                    let last_mult = output_mult.last().unwrap().0;
+                                    output_mult.push((last_mult + mult, f64::INFINITY));
+                                },
+                                _ => {},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lastly, with bonuses calculated, iterate through the required inputs
+
+        return ProcessResult {
+            iterations: 0.0,
+            changes: HashMap::new(),
+            used_inputs: HashMap::new(),
+            effects: Vec::new(),
+        };
     }
 }
 
