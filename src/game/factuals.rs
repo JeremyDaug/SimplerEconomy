@@ -14,8 +14,8 @@ use crate::game::{good::Good, process::Process};
 /// given game, such as the map, players, goods in the market, prices, etc.
 #[derive(Debug, Clone)]
 pub struct Factuals {
-    goods: HashMap<usize, Good>,
-    processes: HashMap<usize, Process>,
+    pub goods: HashMap<usize, Good>,
+    pub processes: HashMap<usize, Process>,
 }
 
 impl Factuals {
