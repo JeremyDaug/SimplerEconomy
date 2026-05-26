@@ -360,9 +360,8 @@ mod test {
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
-            available.insert(OPTIN_GOOD, 100.0);
 
-            let factuals = make_factuals(vec![]);
+            let mut factuals = make_factuals(vec![]);
             let result = process.do_process(&available, None, &factuals);
 
             // Check Results
@@ -442,10 +441,149 @@ mod test {
             assert!(result.effects.is_empty()); // confirm no stray effects.
 
             // === Incluide Factor (and check it's exclusion cause failure)
+            let process = process
+                .with_input(make_input(FACTOR_GOOD, 1.0, true, InputType::Factor));
+
+            let result = process.do_process(&available, None, &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 0.0);
+            assert_eq!(result.changes.len(), 0); // only req and out should be changed
+            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
+            // Actually add the factor in.
+            available.insert(FACTOR_GOOD, 1.0);
+
+            let result = process.do_process(&available, None, &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 100.0);
+            assert_eq!(result.changes.len(), 3); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
+            let result = process.do_process(&available, Some(50.0), &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 50.0);
+            assert_eq!(result.changes.len(), 3); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
             // === Include Conusmed good and check it's output is correct also.
+            let process = process
+                .with_input(make_input(CONSUMED_GOOD, 1.0, true, InputType::Consumed));
+
+            available.insert(CONSUMED_GOOD, 100.0);
+
+            factuals.goods
+                .insert(CONSUMED_GOOD, 
+                    make_good(CONSUMED_GOOD, "Consumed", HashMap::from([(DECAY_OUTPUT, 1.0)])));
+            let result = process.do_process(&available, None, &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 100.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
+            let result = process.do_process(&available, Some(50.0), &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 50.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&50.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
             // === Include optional with no process bonus to ensure it really is optional
+            let process = process
+                .with_input(
+                    make_optional_input(OPTIN_GOOD, 1.0, true, 
+                        InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+
+            let result = process.do_process(&available, None, &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 100.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-100.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
+            let result = process.do_process(&available, Some(50.0), &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 50.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&50.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
 
             // === Include Test with uneven input goods to ensure the minimum is done when it should.
+            available.clear();
+            available.insert(REQ_GOOD, 100.0);
+            available.insert(CAPITAL_GOOD, 110.0);
+            available.insert(FIXED_GOOD, 130.0);
+            available.insert(CONSUMED_GOOD, 80.0);
+
+            let result = process.do_process(&available, None, &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 80.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-80.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-80.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-80.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&80.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&80.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&80.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
+
+            let result = process.do_process(&available, Some(50.0), &factuals);
+
+            // Check Results
+            assert_eq!(result.iterations, 50.0);
+            assert_eq!(result.changes.len(), 5); // only req and out should be changed
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-50.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&50.0));
+            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+            assert!(result.effects.is_empty()); // confirm no stray effects.
         }
 
 
