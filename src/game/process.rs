@@ -458,7 +458,7 @@ impl Process {
         }
 
         // cap input to ensure no negative input goods.
-        input_bonus = input_bonus.min(0.0).max(1.0);
+        input_bonus = input_bonus.max(0.0).min(1.0);
         println!("Input Bonus {}, Throughput Bonus {}, Output Bonus {}", input_bonus, throughput_bonus, output_bonus);
 
         // next, using our guaranteed input reduction, find how many iterations we can do

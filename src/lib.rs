@@ -573,11 +573,10 @@ mod test {
                 let result = process.do_process_leg(&available, None, 
                     (0.5, 1.0, 1.0), &factuals);
 
-                assert_eq!(result.iterations, 50.0);
-                assert_eq!(result.changes.len(), 3);
-                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-                assert_eq!(result.changes.get(&CAPITAL_GOOD), Some(&-50.0));
-                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.iterations, 200.0);
+                assert_eq!(result.changes.len(), 2);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&200.0));
                 assert_eq!(result.used_inputs.len(), 0);
                 assert_eq!(result.effects.len(), 0);
             }
