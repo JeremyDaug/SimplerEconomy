@@ -724,7 +724,7 @@ impl ProcessOutput {
 /// # Process Effect
 /// 
 /// Additional effects which a process produces when done.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ProcessEffect {
     /// Additional Research points produced by the process.
     /// Goes to the firm doing the process.
