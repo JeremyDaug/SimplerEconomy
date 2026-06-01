@@ -1,5 +1,5 @@
 
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, io::ErrorKind::Other};
 
 use crate::game::factuals::Factuals;
 
@@ -80,7 +80,7 @@ impl Process {
     /// Gets the factor inputs of the process.
     pub fn factors(&self) -> Vec<ProcessInput> {
         self.inputs.iter()
-            .filter(|input| matches!(input.input_output, InputType::Factor))
+            .filter(|input| matches!(input.input_type, InputType::Factor))
             .cloned()
             .collect()
     }
@@ -91,7 +91,7 @@ impl Process {
     /// Excludes Factors.
     pub fn requirements(&self) -> Vec<ProcessInput> {
         self.inputs.iter()
-            .filter(|input| !matches!(input.input_output, InputType::Factor) && !input.is_optional())
+            .filter(|input| !matches!(input.input_type, InputType::Factor) && !input.is_optional())
             .cloned()
             .collect()
     }
@@ -101,7 +101,7 @@ impl Process {
     /// Gets the optional inputs of the process, excluding factors.
     pub fn optional_inputs(&self) -> Vec<ProcessInput> {
         self.inputs.iter()
-            .filter(|input| input.is_optional() && !matches!(input.input_output, InputType::Factor))
+            .filter(|input| input.is_optional() && !matches!(input.input_type, InputType::Factor))
             .cloned()
             .collect()
     }
@@ -119,6 +119,14 @@ impl Process {
     /// required or optional. (true is optional)
     pub fn has_factors(&self) -> HashMap<usize, bool> {
         self.factors().iter().map(|input| (input.good, input.is_optional())).collect()
+    }
+
+    /// # Get Input
+    /// 
+    /// Helper which gets an input of a specific good. Returns None if no input
+    /// uses that good.
+    pub fn get_input(&self, good: usize) -> Option<&ProcessInput> {
+        self.inputs.iter().find(|x| x.good == good)
     }
 
     /// # Do Process
@@ -150,27 +158,16 @@ impl Process {
         target: Option<f64>,
         factuals: &Factuals,
     ) -> ProcessResult {
-        // --- 1. Factor check + factor-only multipliers ---
-        let mut factor_input_mult: f64 = 1.0;
-        let mut factor_output_mult: f64 = 1.0;
-        let mut factor_throughput_mult: f64 = 1.0;
-
-        for factor in self.factors() {
-            if !factor.is_optional() && !inputs.contains_key(&factor.good) {
-                return ProcessResult::empty();
-            }
-            if let Some(effects) = factor.optional_effects() {
-                for effect in effects {
-                    match effect {
-                        InputEffect::Throughput(v) => factor_throughput_mult += v,
-                        InputEffect::Input(v) => factor_input_mult -= v,
-                        InputEffect::Output(v) => factor_output_mult += v,
-                        _ => {}
-                    }
-                }
-            }
+        let mut factor_input_mult = 0.0;
+        let mut factor_throughput_mult;
+        let mut factor_output_mult;
+        if let Some((input, throughput, output, _other)) = self.check_factors(inputs) {
+            factor_input_mult = input;
+            factor_throughput_mult = throughput;
+            factor_output_mult = output;
+        } else {
+            return ProcessResult::empty();
         }
-        factor_input_mult = factor_input_mult.max(0.0).min(1.0);
 
         // --- 2. Base max iters using ONLY factors (no optional bonuses) ---
         let mut base_max_iters = target.unwrap_or(f64::INFINITY);
@@ -204,23 +201,20 @@ impl Process {
                 let support = avail / opt.amount;
                 optional_support = optional_support.min(support);
 
-                let coverage = if base_max_iters.is_infinite() {
-                    1.0
-                } else {
-                    (support / base_max_iters).min(1.0)
-                };
-
+                // NO COVERAGE MULTIPLIER for multipliers anymore!
+                // Full bonus strength applies only to the boosted_iters slice
                 if let Some(effects) = opt.optional_effects() {
                     for effect in effects {
                         match effect {
-                            InputEffect::Throughput(v) => opt_throughput_bonus += v * coverage,
-                            InputEffect::Input(v) => opt_input_bonus += v * coverage,
-                            InputEffect::Output(v) => opt_output_bonus += v * coverage,
+                            InputEffect::Throughput(v) => opt_throughput_bonus += v,
+                            InputEffect::Input(v) => opt_input_bonus += v,
+                            InputEffect::Output(v) => opt_output_bonus += v,
                             InputEffect::ExtraOutput(good_id, amt) => {
-                                *bonus_extra_outputs.entry(*good_id).or_insert(0.0) += amt * coverage;
+                                // ExtraOutput / Growth still get scaled by how many boosted iters they actually support
+                                *bonus_extra_outputs.entry(*good_id).or_insert(0.0) += amt * support.min(base_max_iters);
                             }
                             InputEffect::Growth(v) => {
-                                bonus_effects.push(ProcessEffect::Growth(v * coverage));
+                                bonus_effects.push(ProcessEffect::Growth(v * support.min(base_max_iters)));
                             }
                             _ => {}
                         }
@@ -294,7 +288,7 @@ impl Process {
             let gid = inp.good;
             let base = inp.amount;
             let is_fixed = inp.fixed;
-            let itype = &inp.input_output;
+            let itype = &inp.input_type;
 
             let eff_boosted = if is_fixed { base } else { base * final_input_mult * final_throughput_mult };
             let amt_boosted = eff_boosted * boosted_iters;
@@ -327,7 +321,7 @@ impl Process {
             let gid = opt.good;
             let base = opt.amount;
             let is_fixed = opt.fixed;
-            let itype = &opt.input_output;
+            let itype = &opt.input_type;
 
             let eff_boosted = if is_fixed { base } else { base * final_input_mult * final_throughput_mult };
             let amount_boosted = eff_boosted * boosted_iters;
@@ -383,6 +377,194 @@ impl Process {
             effects,
         }
     }
+
+    /// # Check Factors
+    /// 
+    /// Takes the inputs and returns the bonuses the facotrs give.
+    /// 
+    /// Result is Some(Input, Throughput, Output).
+    /// 
+    /// If None is returned, then it is missing a required factor.
+    pub(crate) fn check_factors(&self, inputs: &HashMap<usize, f64>) 
+    -> Option<(f64, f64, f64, Vec<ProcessEffect>)> {
+        let mut input_mult: f64 = 1.0;
+        let mut output_mult: f64 = 1.0;
+        let mut throughput_mult: f64 = 1.0;
+        let mut other_effects = vec![];
+
+        for factor in self.factors() {
+            if inputs.contains_key(&factor.good) {
+                // if contained, check if it's optional, add optinoal effect if it's there.
+                if let Some(effects) = factor.optional_effects() {
+                    for effect in effects {
+                        match effect {
+                            InputEffect::Throughput(v) => throughput_mult += v,
+                            InputEffect::Input(v) => input_mult -= v,
+                            InputEffect::Output(v) => output_mult += v,
+                            InputEffect::ExtraOutput(_, _) |
+                            InputEffect::Growth(_) => assert!(false, "Factors cannot include extra output or growth effects."),
+                        }
+                    }
+                }
+            } else if !factor.is_optional() {
+                // If not contained, and it's not optional, return none.
+                return None;
+            }
+        }
+        input_mult = input_mult.max(0.0).min(1.0);
+
+        Some((input_mult, throughput_mult, output_mult, other_effects))
+    }
+
+    /// # Do Process Leg
+    /// 
+    /// A helper which does a single leg of a process. In simplified terms, it takes 
+    /// the inputs (minus prior legs), a target it will stop at, and the bonuses 
+    /// gained from factuals (we don't recalculate them for each step)
+    /// 
+    /// This is public for testing purposes, but should not actually be called.
+    pub fn do_process_leg(
+        &self,
+        inputs: &HashMap<usize, f64>,
+        target: Option<f64>,
+        bonuses: (f64, f64, f64),
+        factuals: &Factuals,
+    ) -> ProcessResult {
+        // copy over our bonuses for modding.
+        let (mut input_bonus, mut throughput_bonus, mut output_bonus) = bonuses;
+        // Go through optionals, finding the shortest possible and collecting bonuses along
+        // the way.
+        let mut optional_iters = HashMap::new();
+        let mut shortest = target.unwrap_or(f64::INFINITY);
+        let mut other_bonuses = vec![];
+        for optional in self.optional_inputs() {
+            let available = *inputs.get(&optional.good).unwrap_or(&0.0);
+            if available > 0.0 { // Skip if none available, otherwise, add and check.
+                let iters = available / optional.amount;
+                optional_iters.insert(optional.good, iters);
+                shortest = shortest.min(iters);
+                let effects = optional.optional_and_effects.unwrap();
+                for effect in effects {
+                    match effect {
+                        // Add bonuses for our future calculation needs.
+                        InputEffect::Throughput(v) => throughput_bonus += v,
+                        InputEffect::Input(v) => input_bonus -= v,
+                        InputEffect::Output(v) => output_bonus += v,
+                        InputEffect::ExtraOutput(..) |
+                        InputEffect::Growth(_) => other_bonuses.push(effect),
+                    }
+                }
+            } // if not available, skip, optional goods don't matter.
+        }
+
+        // cap input to ensure no negative input goods.
+        input_bonus = input_bonus.min(0.0).max(1.0);
+        println!("Input Bonus {}, Throughput Bonus {}, Output Bonus {}", input_bonus, throughput_bonus, output_bonus);
+
+        // next, using our guaranteed input reduction, find how many iterations we can do
+        // with required goods.
+        let final_input_mod = input_bonus * throughput_bonus;
+
+        for required in self.requirements() {
+            let available = *inputs.get(&required.good).unwrap_or(&0.0);
+            println!("Required good {}: available {}, required per iter {}, final mod {}", required.good, available, required.amount, final_input_mod);
+            let effective_cost = if required.fixed {
+                required.amount
+            } else {
+                required.amount * final_input_mod 
+            };
+            if effective_cost > 0.0 {
+                let iters = available / effective_cost;
+                shortest = shortest.min(iters);
+            }
+            println!("Effective cost {}, iters {}", effective_cost, shortest);
+            // emergency shortcut if we hit a shortest of 0.
+            if shortest <= 0.0 {
+                return ProcessResult::empty();
+            }
+        }
+
+        // With final target gotten after bonuses, complete up to that shortest step.
+        let mut result = ProcessResult {
+            iterations: shortest,
+            changes: HashMap::new(),
+            used_inputs: HashMap::new(),
+            effects: Vec::new(),
+        };
+
+        // record all input effects.
+        for input in self.inputs.iter() {
+            // get how much we are moving.
+            let change = if input.is_optional() || input.fixed {
+                input.amount * shortest
+            } else {
+                input.amount * final_input_mod * shortest
+            };
+            // then record the change to where it belongs
+            match input.input_type {
+                InputType::Factor => {}, // skip factors
+                // capital goes to used.
+                InputType::Capital => { result.used_inputs.insert(input.good, change); },
+                // Destroyed is subtracted from changes.
+                InputType::Destroyed => { result.changes.insert(input.good, -change); },
+                // Consumed is subtracted and it's decay added to changes
+                InputType::Consumed => {
+                    result.changes.insert(input.good, -change);
+                    // also add decay results to output changes.
+                    // we can unwrap here since decay results are guaranteed to exist for consumed goods.
+                    if let Some(good) = factuals.goods.get(&input.good) {
+                        for (&decay_good, &decay_rate) in &good.decay_result {
+                            let decay_amount = change * decay_rate;
+                            *result.changes
+                                .entry(decay_good)
+                                .or_insert(0.0) += decay_amount;
+                        }
+                    } else { assert!(false, "Good not found!")}
+                },
+            }
+            // lastly, add any extra effects from the input to the process result.
+            if let Some(effects) = input.optional_effects() {
+                for effect in effects {
+                    match effect {
+                        InputEffect::ExtraOutput(good_id, amt) => {
+                            *result.changes.entry(*good_id)
+                                .or_insert(0.0) += amt * shortest;
+                        }
+                        InputEffect::Growth(v) => {
+                            result.effects.push(ProcessEffect::Growth(v * shortest));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // now do outputs
+        let final_output_mod = output_bonus * throughput_bonus;
+        for output in &self.outputs {
+            let change = if output.fixed {
+                output.amount * shortest
+            } else {
+                output.amount * final_output_mod * shortest
+            };
+            *result.changes.entry(output.good).or_insert(0.0) += change;
+        }
+
+        // finish with process level bonuses.
+        for effect in &self.effects {
+            let scaled_effect = match effect {
+                ProcessEffect::Research(v) => ProcessEffect::Research(v * shortest),
+                ProcessEffect::Culture(v) => ProcessEffect::Culture(v * shortest),
+                ProcessEffect::Faith(v) => ProcessEffect::Faith(v * shortest),
+                ProcessEffect::Authority(v) => ProcessEffect::Authority(v * shortest),
+                ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * shortest),
+                ProcessEffect::Growth(v) => ProcessEffect::Growth(v * shortest),
+            };
+            result.effects.push(scaled_effect);
+        }
+
+        result
+    }
 }
 
 /// # Process Result
@@ -430,7 +612,7 @@ pub struct ProcessInput {
     /// Whether the input is effected by Throughput or input bonuses.
     pub fixed: bool,
     /// Defines how the input and output of the good works.
-    pub input_output: InputType,
+    pub input_type: InputType,
     /// Defines the input as optional if this is Some().
     /// Additional Effects can be added to to the vector contained.
     /// 
@@ -442,12 +624,12 @@ impl ProcessInput {
     /// # New
     /// 
     /// Create a new process input with the given good, amount, fixed status, input type, and optional status.
-    pub fn new(good: usize, amount: f64, fixed: bool, input_output: InputType, optional: bool) -> Self {
+    pub fn new(good: usize, amount: f64, fixed: bool, input_type: InputType, optional: bool) -> Self {
         ProcessInput {
             good,
             amount,
             fixed,
-            input_output,
+            input_type,
             optional_and_effects: if optional { Some(Vec::new()) } else { None },
         }
     }
