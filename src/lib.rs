@@ -563,6 +563,26 @@ mod test {
             }
 
             #[test]
+            fn return_success_with_optional_input_but_none_given() {
+                let process = make_process()
+                    .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, 
+                        InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+
+                let mut factuals = make_factuals(vec![]);
+                let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 2);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0);
+                assert_eq!(result.effects.len(), 0);
+            }
+
+            #[test]
             fn correctly_include_factor_bonuses_and_fixed_input() {
                 let process = make_process()
                     .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed))
@@ -779,17 +799,111 @@ mod test {
                 assert_eq!(result.iterations, 30.0);
                 assert_eq!(result.changes.len(), 8);
                 assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
-                assert_eq!(result.changes.get(&CAPITAL_GOOD), Some(&-30.0));
                 assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-30.0));
                 assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-30.0));
                 assert_eq!(result.changes.get(&OPTTHROUGH_GOOD), Some(&-30.0));
                 assert_eq!(result.changes.get(&OPTOUT_GOOD), Some(&-30.0));
-                assert_eq!(result.changes.get(&OUT_GOOD), Some(&30.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&48.75));
                 assert_eq!(result.changes.get(&FACTOR_GOOD), Some(&30.0));
                 assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&30.0));
                 assert_eq!(result.used_inputs.len(), 1);
                 assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0));
                 assert_eq!(result.effects.len(), 0);
+
+                // second pass, remove stuff
+                for (good, change) in &result.changes {
+                    *available.entry(*good).or_insert(0.0) += *change;
+                }
+                if let Some(capital_used) = result.used_inputs.get(&CAPITAL_GOOD) {
+                    *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
+                }
+
+                let result = process.do_process_leg(&available, None, 
+                    (1.0, 1.0, 1.0), &factuals);
+                
+                assert_eq!(result.iterations, 20.0);
+                assert_eq!(result.changes.len(), 7);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-25.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-20.0));
+                assert_eq!(result.changes.get(&OPTTHROUGH_GOOD), Some(&-20.0));
+                assert_eq!(result.changes.get(&OPTOUT_GOOD), Some(&-20.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&32.5));
+                assert_eq!(result.changes.get(&FACTOR_GOOD), Some(&20.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&20.0));
+                assert_eq!(result.used_inputs.len(), 1);
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&20.0));
+                assert_eq!(result.effects.len(), 0);
+
+                // THird Pass, output bonus good next
+                for (good, change) in &result.changes {
+                    *available.entry(*good).or_insert(0.0) += *change;
+                }
+                if let Some(capital_used) = result.used_inputs.get(&CAPITAL_GOOD) {
+                    *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
+                }
+
+                let result = process.do_process_leg(&available, None, 
+                    (1.0, 1.0, 1.0), &factuals);
+                
+                assert_eq!(result.iterations, 30.0);
+                assert_eq!(result.changes.len(), 6);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&OPTOUT_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&39.0));
+                assert_eq!(result.changes.get(&FACTOR_GOOD), Some(&30.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&30.0));
+                assert_eq!(result.used_inputs.len(), 1);
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0));
+                assert_eq!(result.effects.len(), 0);
+
+                // Fourth Pass, no bonuses left, one last one.
+                for (good, change) in &result.changes {
+                    *available.entry(*good).or_insert(0.0) += *change;
+                }
+                if let Some(capital_used) = result.used_inputs.get(&CAPITAL_GOOD) {
+                    *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
+                }
+
+                let result = process.do_process_leg(&available, None, 
+                    (1.0, 1.0, 1.0), &factuals);
+                
+                assert_eq!(result.iterations, 60.0);
+                assert_eq!(result.changes.len(), 4);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-60.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-60.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&60.0));
+                assert_eq!(result.changes.get(&FACTOR_GOOD), Some(&60.0));
+                assert_eq!(result.used_inputs.len(), 1);
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&60.0));
+                assert_eq!(result.effects.len(), 0);
+
+                // Last Pass, should return 0 iterations.
+                for (good, change) in &result.changes {
+                    *available.entry(*good).or_insert(0.0) += *change;
+                }
+                if let Some(capital_used) = result.used_inputs.get(&CAPITAL_GOOD) {
+                    *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
+                }
+
+                let result = process.do_process_leg(&available, None, 
+                    (1.0, 1.0, 1.0), &factuals);
+
+                assert_eq!(result.iterations, 0.0);
+                assert_eq!(result.changes.len(), 0);
+                assert_eq!(result.used_inputs.len(), 0);
+                assert_eq!(result.effects.len(), 0);
+
+                // Lastly, check that our available goods have been correctly updated for sanity reasons.
+
+                assert_eq!(available.get(&REQ_GOOD), Some(&5.0));
+                assert_eq!(available.get(&FIXED_GOOD), Some(&50.0));
+                assert_eq!(available.get(&OPTIN_GOOD), Some(&0.0));
+                assert_eq!(available.get(&OPTTHROUGH_GOOD), Some(&0.0));
+                assert_eq!(available.get(&OPTOUT_GOOD), Some(&0.0));
+                assert_eq!(available.get(&OUT_GOOD), Some(&180.25));
+                assert_eq!(available.get(&FACTOR_GOOD), Some(&140.0));
+                assert_eq!(available.get(&DECAY_OUTPUT), Some(&80.0));
             }
         }
 
