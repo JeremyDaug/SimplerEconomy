@@ -907,491 +907,479 @@ mod test {
             }
         }
 
-        // ============================================================
-        // TESTS — now with explicit goods consumption/production checks
-        // ============================================================
-
-        #[test]
-        fn basic_process_and_target_plus_capital_and_fixed_good_check() {
-            let process = make_process();
-
-            let mut available = HashMap::new();
-            available.insert(REQ_GOOD, 100.0);
-
-            let mut factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert!(result.used_inputs.is_empty()); // confirm no capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert!(result.used_inputs.is_empty()); // confirm no capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            // Repeat, but with Capital good.
-            let process = process
-                .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
-
-            available.insert(CAPITAL_GOOD, 100.0);
-
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            // === Include Fixed Good
-            let process = process
-                .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
-
-            available.insert(FIXED_GOOD, 100.0);
-
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 3); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 3); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn process_with_factor() {
-            // === Incluide Factor (and check it's exclusion cause failure)
-            let process = make_process()
-                .with_input(make_input(FACTOR_GOOD, 1.0, true, InputType::Factor));
-
-            let mut available = HashMap::new();
-            available.insert(REQ_GOOD, 100.0);
-
-            let factuals = make_factuals(vec![]);
-
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 0.0);
-            assert_eq!(result.changes.len(), 0); // only req and out should be changed
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            // Actually add the factor in.
-            available.insert(FACTOR_GOOD, 1.0);
-
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn process_with_consumed_good() {
-            let process = make_process()
-                .with_input(make_input(CONSUMED_GOOD, 1.0, true, InputType::Consumed));
-
-            let mut available = HashMap::new();
-            available.insert(REQ_GOOD, 100.0);
-            available.insert(CONSUMED_GOOD, 100.0);
-
-            let factuals = make_factuals(vec![
-                make_good(CONSUMED_GOOD, "Consumed", HashMap::from([(DECAY_OUTPUT, 1.0)])),
-            ]);
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 5); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 5); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn process_with_optional_with_no_optionals_given() {
-            let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
-
-            let mut available = HashMap::new();
-            available.insert(REQ_GOOD, 100.0);
-                
-            let mut factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 100.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 2); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn insufficient_inputs_reduce_output() {
-            let process = make_process()
-                .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital))
-                .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
-            let mut available = HashMap::new();
-
-            available.insert(REQ_GOOD, 100.0);
-            available.insert(CAPITAL_GOOD, 80.0);
-            available.insert(FIXED_GOOD, 130.0);
-
-            let mut factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 80.0);
-            assert_eq!(result.changes.len(), 3); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-80.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-80.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&80.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&80.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-            let result = process.do_process(&available, Some(50.0), &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 50.0);
-            assert_eq!(result.changes.len(), 3); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
-            assert_eq!(result.used_inputs.len(), 1); // confirm capital used
-            assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn optional_input_gives_proportional_bonus() {
-            let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
-            let mut available = HashMap::new();
-
-            available.insert(REQ_GOOD, 100.0);
-            available.insert(OPTIN_GOOD, 50.0); // only half the optional provided
-
-            let mut factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            // Check Results
-            assert_eq!(result.iterations, 110.0); // should be a 10% boost from the optional
-            assert_eq!(result.changes.len(), 3); // only req and out should be changed
-            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
-            assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-50.0));
-            assert_eq!(result.changes.get(&OUT_GOOD), Some(&110.0));
-            assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-            assert!(result.effects.is_empty()); // confirm no stray effects.
-
-             let result = process.do_process(&available, Some(50.0), &factuals);
-
-             // Check Results
-             assert_eq!(result.iterations, 50.0); // should be a 10% boost from the optional
-             assert_eq!(result.changes.len(), 3); // only req and out should be changed
-             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
-             assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-50.0));
-             assert_eq!(result.changes.get(&OUT_GOOD), Some(&55.0));
-             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
-             assert!(result.effects.is_empty()); // confirm no stray effects.
-        }
-
-        #[test]
-        fn efficiency_modifiers_alone_and_stacked() {
-            let req_good = 10;
-            let out_good = 20;
-            let optin_good = 30;
-            let optin_effect = InputEffect::Input(0.2); // 20% input reduction when fully supplied
-            let optout_good = 31;
-            let optout_effect = InputEffect::Output(0.3); // 30% output boost when fully supplied
-            let optthrough_good = 32;
-            let optthrough_effect = InputEffect::Throughput(0.25); // 25% throughput boost when fully supplied
-            let mut available = HashMap::new();
-            available.insert(req_good, 100.0);
-            let factuals = make_factuals(vec![]);
-
-            // Base process (no bonuses)
-            let base = Process::new(1, "base", 0)
-                .with_input(make_input(req_good, 1.0, false, InputType::Destroyed))
-                .with_input(make_optional_input(optin_good, 1.0, false, InputType::Destroyed, vec![optin_effect]))
-                .with_input(make_optional_input(optout_good, 1.0, false, InputType::Destroyed, vec![optout_effect]))
-                .with_input(make_optional_input(optthrough_good, 1.0, false, InputType::Destroyed, vec![optthrough_effect]))
-                .with_output(ProcessOutput::new(out_good, 1.0, false));
-
-            // 1. Input modifier alone (20% reduction)
-            available.insert(optin_good, 100.0); // enough for full bonus
-            let res_input = base.do_process(&available, None, &factuals);
-            assert_eq!(res_input.iterations, 125.0, "Expected 125 iterations"); // 80 for first 100, full for remaining 20.
-            assert!((res_input.changes.get(&req_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
-            assert!((res_input.changes.get(&optin_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-            assert!((res_input.changes.get(&out_good).unwrap_or(&0.0).abs() - 125.0).abs() < 0.01); // output should match iterations
-
-            // 2. Output modifier alone (+30% output)
-            available.remove(&optin_good);
-            available.insert(optout_good, 100.0); // enough for full bonus
-            let res_output = base.do_process(&available, None, &factuals);
-            assert!((res_output.iterations - 100.0).abs() < 0.01); // 100 for all.
-            assert!((res_output.changes.get(&req_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // Full requirement
-            assert!((res_output.changes.get(&optout_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-            assert!((res_output.changes.get(&out_good).unwrap_or(&0.0).abs() - 130.0).abs() < 0.01); // output should be increased.
-
-            // 3. Throughput modifier alone (+25% both sides)
-            available.remove(&optout_good);
-            available.insert(optthrough_good, 100.0); // enough for full bonus
-            let res_throughput = base.do_process(&available, None, &factuals);
-            assert!((res_throughput.iterations - 120.0).abs() < 0.01); // 80 for first 100, full for remaining 20.
-            assert!((res_throughput.changes.get(&req_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
-            assert!((res_throughput.changes.get(&optin_good).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-            assert!((res_throughput.changes.get(&out_good).unwrap_or(&0.0).abs() - 120.0).abs() < 0.01); // output should match iterations
-
-            // 4. All stacked together on the same base
-            // let stacked = base
-            //     .with_input(make_optional_input(30, 1.0, false, InputType::Destroyed, vec![InputEffect::Input(0.2)]))
-            //     .with_input(make_optional_input(31, 1.0, false, InputType::Destroyed, vec![InputEffect::Output(0.3)]))
-            //     .with_input(make_optional_input(32, 1.0, false, InputType::Destroyed, vec![InputEffect::Throughput(0.25)]));
-            // //let res_stacked = run(stacked, None);
-            // let final_consumed = res_stacked.changes.get(&req_good).copied().unwrap_or(0.0).abs();
-            // let final_produced = res_stacked.changes.get(&out_good).copied().unwrap_or(0.0);
-            // // Combined multipliers: input = 4*0.8*1.25, output = 2*1.3*1.25
-            // assert!((res_stacked.iterations - 50.0).abs() < 0.01);
-            // assert!((final_consumed - 4.0 * 0.8 * 1.25 * 50.0).abs() < 0.01);
-            // assert!((final_produced - 2.0 * 1.3 * 1.25 * 50.0).abs() < 0.01);
-        }
-
-        #[test]
-        fn optional_inputs_with_target_do_not_overshoot() {
-            let req_good = 10;
-            let opt_good = 30;
-            let out_good = 20;
-
-            let opt_effect = InputEffect::Throughput(0.5); // big boost if fully supplied
-            let process = Process::new(1, "target_test", 0)
-                .with_input(make_input(req_good, 2.0, false, InputType::Destroyed))
-                .with_input(make_optional_input(opt_good, 1.0, false, InputType::Destroyed, vec![opt_effect]))
-                .with_output(ProcessOutput::new(out_good, 1.0, false));
-
-            let mut available = HashMap::new();
-            available.insert(req_good, 1000.0); // way more than needed
-            available.insert(opt_good, 1000.0); // enough for huge bonus
-
-            let factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, Some(7.3), &factuals); // hard target
-
-            assert!((result.iterations - 7.3).abs() < 0.001);
-
-            // Goods exactly match the target (no overshoot despite bonus)
-            let consumed_req = result.changes.get(&req_good).copied().unwrap_or(0.0).abs();
-            let consumed_opt = result.changes.get(&opt_good).copied().unwrap_or(0.0).abs();
-            let produced = result.changes.get(&out_good).copied().unwrap_or(0.0);
-
-            assert!((consumed_req - 2.0 * 7.3).abs() < 0.01); // required still at base (bonus doesn't change target)
-            assert!((consumed_opt - 1.0 * 7.3).abs() < 0.01); // optional only for the actual iterations
-            assert!((produced - 1.0 * 7.3).abs() < 0.01);
-        }
-
-        #[test]
-        fn optional_inputs_do_not_affect_fixed_inputs() {
-            let req_good = 10;   // variable
-            let fixed_good = 40; // capital-style fixed
-            let out_good = 20;
-
-            let opt_effect = InputEffect::Input(0.5); // 50% input reduction on variables
-            let process = Process::new(1, "fixed_test", 0)
-                .with_input(make_input(req_good, 4.0, false, InputType::Destroyed)) // variable
-                .with_input(make_input(fixed_good, 3.0, true, InputType::Capital))   // fixed
-                .with_input(make_optional_input(30, 1.0, false, InputType::Destroyed, vec![opt_effect]))
-                .with_output(ProcessOutput::new(out_good, 2.0, false));
-
-            let mut available = HashMap::new();
-            available.insert(req_good, 100.0);
-            available.insert(fixed_good, 50.0);
-            available.insert(30, 10.0);
-
-            let factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            let consumed_var = result.changes.get(&req_good).copied().unwrap_or(0.0).abs();
-            let used_fixed = result.used_inputs.get(&fixed_good).copied().unwrap_or(0.0);
-            let produced = result.changes.get(&out_good).copied().unwrap_or(0.0);
-
-            assert!(result.iterations > 0.0);
-            assert!((consumed_var / result.iterations - 4.0 * 1.5).abs() < 0.01); // variable got the bonus
-            assert!((used_fixed / result.iterations - 3.0).abs() < 0.001);       // fixed unchanged by bonus
-            assert!((produced / result.iterations - 2.0).abs() < 0.01);          // output unaffected by fixed
-        }
-
-        #[test]
-        fn capital_is_recorded_but_not_consumed() {
-            let capital_good = 50;
-            let req_good = 10;
-            let output_good = 20;
-
-            let process = Process::new(1, "use_furnace", 0)
-                .with_input(make_input(capital_good, 1.0, true, InputType::Capital))
-                .with_input(make_input(req_good, 2.0, false, InputType::Destroyed))
-                .with_output(ProcessOutput::new(output_good, 1.0, false));
-
-            let mut available = HashMap::new();
-            available.insert(capital_good, 5.0);
-            available.insert(req_good, 20.0);
-
-            let factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            assert!(result.iterations > 0.0);
-
-            // Capital is recorded as used but NOT consumed
-            assert_eq!(result.used_inputs.get(&capital_good), Some(&result.iterations));
-            assert!(!result.changes.contains_key(&capital_good) || (result.changes[&capital_good]).abs() < 0.001);
-
-            // Required input and output behave normally
-            assert!((result.changes.get(&req_good).copied().unwrap_or(0.0) + 2.0 * result.iterations).abs() < 0.001);
-            assert!((result.changes.get(&output_good).copied().unwrap_or(0.0) - 1.0 * result.iterations).abs() < 0.001);
-        }
-
-        #[test]
-        fn consumed_input_produces_decay_products() {
-            let wood = 100;
-            let ash = 101;
-
-            let mut decay = HashMap::new();
-            decay.insert(ash, 0.4); // 40% becomes ash
-
-            let good = make_good(wood, "wood", decay);
-            let factuals = make_factuals(vec![good]);
-
-            let process = Process::new(1, "burn_wood", 0)
-                .with_input(make_input(wood, 5.0, false, InputType::Consumed))
-                .with_output(ProcessOutput::new(200, 1.0, false));
-
-            let mut available = HashMap::new();
-            available.insert(wood, 20.0);
-
-            let result = process.do_process(&available, None, &factuals);
-
-            let wood_delta = result.changes.get(&wood).copied().unwrap_or(0.0);
-            let ash_delta = result.changes.get(&ash).copied().unwrap_or(0.0);
-
-            assert!(wood_delta < 0.0);
-            assert!(ash_delta > 0.0);
-
-            // Exact decay math: ash = 40% of wood consumed
-            assert!((ash_delta / wood_delta.abs() - 0.4).abs() < 0.001);
-            assert!((wood_delta + 5.0 * result.iterations).abs() < 0.001); // full consumption
-        }
-
-        #[test]
-        fn effects_are_scaled_by_iterations() {
-            let req_good = 10;
-
-            let process = Process::new(1, "research_process", 0)
-                .with_input(make_input(req_good, 1.0, false, InputType::Destroyed))
-                .with_effect(ProcessEffect::Research(2.0));
-
-            let mut available = HashMap::new();
-            available.insert(req_good, 10.0);
-
-            let factuals = make_factuals(vec![]);
-            let result = process.do_process(&available, None, &factuals);
-
-            let research = result.effects.iter().find_map(|e| match e {
-                ProcessEffect::Research(v) => Some(*v),
-                _ => None,
-            });
-
-            assert!(research.is_some());
-            assert!((research.unwrap() - result.iterations * 2.0).abs() < 0.001);
-
-            // Goods still correct
-            assert!((result.changes.get(&req_good).copied().unwrap_or(0.0) + 10.0).abs() < 0.001);
+        mod do_process_should {
+            use super::*;
+
+            #[test]
+            fn basic_process_and_target_plus_capital_and_fixed_good_check() {
+                let process = make_process();
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert!(result.used_inputs.is_empty()); // confirm no capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert!(result.used_inputs.is_empty()); // confirm no capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                // Repeat, but with Capital good.
+                let process = process
+                    .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
+
+                available.insert(CAPITAL_GOOD, 100.0);
+
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                // === Include Fixed Good
+                let process = process
+                    .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
+
+                available.insert(FIXED_GOOD, 100.0);
+
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn process_with_factor() {
+                // === Incluide Factor (and check it's exclusion cause failure)
+                let process = make_process()
+                    .with_input(make_input(FACTOR_GOOD, 1.0, true, InputType::Factor));
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+
+                let factuals = make_factuals(vec![]);
+
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 0.0);
+                assert_eq!(result.changes.len(), 0); // only req and out should be changed
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                // Actually add the factor in.
+                available.insert(FACTOR_GOOD, 1.0);
+
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn process_with_consumed_good() {
+                let process = make_process()
+                    .with_input(make_input(CONSUMED_GOOD, 1.0, true, InputType::Consumed));
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+                available.insert(CONSUMED_GOOD, 100.0);
+
+                let factuals = make_factuals(vec![
+                    make_good(CONSUMED_GOOD, "Consumed", HashMap::from([(DECAY_OUTPUT, 1.0)])),
+                ]);
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 4); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 4); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&CONSUMED_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn process_with_optional_with_no_optionals_given() {
+                let process = make_process()
+                    .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
+                        InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+                    
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0);
+                assert_eq!(result.changes.len(), 2); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn insufficient_inputs_reduce_output() {
+                let process = make_process()
+                    .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital))
+                    .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
+                let mut available = HashMap::new();
+
+                available.insert(REQ_GOOD, 100.0);
+                available.insert(CAPITAL_GOOD, 30.0);
+                available.insert(FIXED_GOOD, 130.0);
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 30.0);
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&30.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 30.0);
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&FIXED_GOOD), Some(&-30.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&30.0));
+                assert_eq!(result.used_inputs.len(), 1); // confirm capital used
+                assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0)); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn optional_input_gives_proportional_bonus() {
+                let process = make_process()
+                    .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
+                        InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+                let mut available = HashMap::new();
+
+                available.insert(REQ_GOOD, 100.0);
+                available.insert(OPTIN_GOOD, 50.0); // only half the optional provided
+
+                let mut factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 110.0); // should be a 10% boost from the optional
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&110.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+
+                let result = process.do_process(&available, Some(50.0), &factuals);
+
+                // Check Results
+                assert_eq!(result.iterations, 50.0); // should be a 10% boost from the optional
+                assert_eq!(result.changes.len(), 3); // only req and out should be changed
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-40.0));
+                assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-50.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
+                assert_eq!(result.used_inputs.len(), 0); // confirm capital used
+                assert!(result.effects.is_empty()); // confirm no stray effects.
+            }
+
+            #[test]
+            fn efficiency_modifiers_alone_and_stacked() {
+                // Base process (no bonuses)
+                let base = make_process()
+                    .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, InputType::Destroyed, vec![OPTIN_EFFECT.clone()]))
+                    .with_input(make_optional_input(OPTOUT_GOOD, 1.0, false, InputType::Destroyed, vec![OPTOUT_EFFECT.clone()]))
+                    .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, false, InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]))
+                    .with_output(ProcessOutput::new(FACTOR_GOOD, 1.0, true));
+
+                let mut available = HashMap::new();
+                available.insert(REQ_GOOD, 100.0);
+
+                let factuals = make_factuals(vec![]);
+
+                // 1. Input modifier alone (20% reduction)
+                available.insert(OPTIN_GOOD, 100.0); // enough for full bonus
+                let res_input = base.do_process(&available, None, &factuals);
+                assert_eq!(res_input.iterations, 125.0, "Expected 125 iterations"); // 80 for first 100, full for remaining 20.
+                assert!((res_input.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
+                assert!((res_input.changes.get(&OPTIN_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
+                assert!((res_input.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 125.0).abs() < 0.01); // output should match iterations
+
+                // 2. Output modifier alone (+30% output)
+                available.remove(&OPTIN_GOOD);
+                available.insert(OPTOUT_GOOD, 100.0); // enough for full bonus
+                let res_output = base.do_process(&available, None, &factuals);
+                assert!((res_output.iterations - 100.0).abs() < 0.01); // 100 for all.
+                assert!((res_output.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // Full requirement
+                assert!((res_output.changes.get(&OPTOUT_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
+                assert!((res_output.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 130.0).abs() < 0.01); // output should be increased.
+
+                // 3. Throughput modifier alone (+25% both sides)
+                available.remove(&OPTOUT_GOOD);
+                available.insert(OPTTHROUGH_GOOD, 100.0); // enough for full bonus
+                let res_throughput = base.do_process(&available, None, &factuals);
+                assert!((res_throughput.iterations - 120.0).abs() < 0.01); // 80 for first 100, full for remaining 20.
+                assert!((res_throughput.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
+                assert!((res_throughput.changes.get(&OPTIN_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
+                assert!((res_throughput.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 120.0).abs() < 0.01); // output should match iterations
+
+                // 4. All stacked together on the same base
+                // let stacked = base
+                //     .with_input(make_optional_input(30, 1.0, false, InputType::Destroyed, vec![InputEffect::Input(0.2)]))
+                //     .with_input(make_optional_input(31, 1.0, false, InputType::Destroyed, vec![InputEffect::Output(0.3)]))
+                //     .with_input(make_optional_input(32, 1.0, false, InputType::Destroyed, vec![InputEffect::Throughput(0.25)]));
+                // //let res_stacked = run(stacked, None);
+                // let final_consumed = res_stacked.changes.get(&REQ_GOOD).copied().unwrap_or(0.0).abs();
+                // let final_produced = res_stacked.changes.get(&OUT_GOOD).copied().unwrap_or(0.0);
+                // // Combined multipliers: input = 4*0.8*1.25, output = 2*1.3*1.25
+                // assert!((res_stacked.iterations - 50.0).abs() < 0.01);
+                // assert!((final_consumed - 4.0 * 0.8 * 1.25 * 50.0).abs() < 0.01);
+                // assert!((final_produced - 2.0 * 1.3 * 1.25 * 50.0).abs() < 0.01);
+            }
+
+            #[test]
+            fn optional_inputs_with_target_do_not_overshoot() {
+                let req_good = 10;
+                let opt_good = 30;
+                let out_good = 20;
+
+                let opt_effect = InputEffect::Throughput(0.5); // big boost if fully supplied
+                let process = Process::new(1, "target_test", 0)
+                    .with_input(make_input(req_good, 2.0, false, InputType::Destroyed))
+                    .with_input(make_optional_input(opt_good, 1.0, false, InputType::Destroyed, vec![opt_effect]))
+                    .with_output(ProcessOutput::new(out_good, 1.0, false));
+
+                let mut available = HashMap::new();
+                available.insert(req_good, 1000.0); // way more than needed
+                available.insert(opt_good, 1000.0); // enough for huge bonus
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, Some(7.3), &factuals); // hard target
+
+                assert!((result.iterations - 7.3).abs() < 0.001);
+
+                // Goods exactly match the target (no overshoot despite bonus)
+                let consumed_req = result.changes.get(&req_good).copied().unwrap_or(0.0).abs();
+                let consumed_opt = result.changes.get(&opt_good).copied().unwrap_or(0.0).abs();
+                let produced = result.changes.get(&out_good).copied().unwrap_or(0.0);
+
+                assert!((consumed_req - 2.0 * 7.3).abs() < 0.01); // required still at base (bonus doesn't change target)
+                assert!((consumed_opt - 1.0 * 7.3).abs() < 0.01); // optional only for the actual iterations
+                assert!((produced - 1.0 * 7.3).abs() < 0.01);
+            }
+
+            #[test]
+            fn optional_inputs_do_not_affect_fixed_inputs() {
+                let req_good = 10;   // variable
+                let fixed_good = 40; // capital-style fixed
+                let out_good = 20;
+
+                let opt_effect = InputEffect::Input(0.5); // 50% input reduction on variables
+                let process = Process::new(1, "fixed_test", 0)
+                    .with_input(make_input(req_good, 4.0, false, InputType::Destroyed)) // variable
+                    .with_input(make_input(fixed_good, 3.0, true, InputType::Capital))   // fixed
+                    .with_input(make_optional_input(30, 1.0, false, InputType::Destroyed, vec![opt_effect]))
+                    .with_output(ProcessOutput::new(out_good, 2.0, false));
+
+                let mut available = HashMap::new();
+                available.insert(req_good, 100.0);
+                available.insert(fixed_good, 50.0);
+                available.insert(30, 10.0);
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                let consumed_var = result.changes.get(&req_good).copied().unwrap_or(0.0).abs();
+                let used_fixed = result.used_inputs.get(&fixed_good).copied().unwrap_or(0.0);
+                let produced = result.changes.get(&out_good).copied().unwrap_or(0.0);
+
+                assert!(result.iterations > 0.0);
+                assert!((consumed_var / result.iterations - 4.0 * 1.5).abs() < 0.01); // variable got the bonus
+                assert!((used_fixed / result.iterations - 3.0).abs() < 0.001);       // fixed unchanged by bonus
+                assert!((produced / result.iterations - 2.0).abs() < 0.01);          // output unaffected by fixed
+            }
+
+            #[test]
+            fn capital_is_recorded_but_not_consumed() {
+                let capital_good = 50;
+                let req_good = 10;
+                let output_good = 20;
+
+                let process = Process::new(1, "use_furnace", 0)
+                    .with_input(make_input(capital_good, 1.0, true, InputType::Capital))
+                    .with_input(make_input(req_good, 2.0, false, InputType::Destroyed))
+                    .with_output(ProcessOutput::new(output_good, 1.0, false));
+
+                let mut available = HashMap::new();
+                available.insert(capital_good, 5.0);
+                available.insert(req_good, 20.0);
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                assert!(result.iterations > 0.0);
+
+                // Capital is recorded as used but NOT consumed
+                assert_eq!(result.used_inputs.get(&capital_good), Some(&result.iterations));
+                assert!(!result.changes.contains_key(&capital_good) || (result.changes[&capital_good]).abs() < 0.001);
+
+                // Required input and output behave normally
+                assert!((result.changes.get(&req_good).copied().unwrap_or(0.0) + 2.0 * result.iterations).abs() < 0.001);
+                assert!((result.changes.get(&output_good).copied().unwrap_or(0.0) - 1.0 * result.iterations).abs() < 0.001);
+            }
+
+            #[test]
+            fn consumed_input_produces_decay_products() {
+                let wood = 100;
+                let ash = 101;
+
+                let mut decay = HashMap::new();
+                decay.insert(ash, 0.4); // 40% becomes ash
+
+                let good = make_good(wood, "wood", decay);
+                let factuals = make_factuals(vec![good]);
+
+                let process = Process::new(1, "burn_wood", 0)
+                    .with_input(make_input(wood, 5.0, false, InputType::Consumed))
+                    .with_output(ProcessOutput::new(200, 1.0, false));
+
+                let mut available = HashMap::new();
+                available.insert(wood, 20.0);
+
+                let result = process.do_process(&available, None, &factuals);
+
+                let wood_delta = result.changes.get(&wood).copied().unwrap_or(0.0);
+                let ash_delta = result.changes.get(&ash).copied().unwrap_or(0.0);
+
+                assert!(wood_delta < 0.0);
+                assert!(ash_delta > 0.0);
+
+                // Exact decay math: ash = 40% of wood consumed
+                assert!((ash_delta / wood_delta.abs() - 0.4).abs() < 0.001);
+                assert!((wood_delta + 5.0 * result.iterations).abs() < 0.001); // full consumption
+            }
+
+            #[test]
+            fn effects_are_scaled_by_iterations() {
+                let req_good = 10;
+
+                let process = Process::new(1, "research_process", 0)
+                    .with_input(make_input(req_good, 1.0, false, InputType::Destroyed))
+                    .with_effect(ProcessEffect::Research(2.0));
+
+                let mut available = HashMap::new();
+                available.insert(req_good, 10.0);
+
+                let factuals = make_factuals(vec![]);
+                let result = process.do_process(&available, None, &factuals);
+
+                let research = result.effects.iter().find_map(|e| match e {
+                    ProcessEffect::Research(v) => Some(*v),
+                    _ => None,
+                });
+
+                assert!(research.is_some());
+                assert!((research.unwrap() - result.iterations * 2.0).abs() < 0.001);
+
+                // Goods still correct
+                assert!((result.changes.get(&req_good).copied().unwrap_or(0.0) + 10.0).abs() < 0.001);
+            }
         }
     }
 }

@@ -165,37 +165,44 @@ impl Process {
         };
 
         // loop through legs of the process until we get 0 iterations in return.
-        let working_inputs = inputs.clone();
+        let mut working_inputs = inputs.clone();
+        let mut working_target = target.unwrap_or(f64::INFINITY);
         let mut result_acc = ProcessResult::empty();
         loop {
-            let result = self.do_process_leg(&working_inputs, target, 
+            let result = self.do_process_leg(&working_inputs, Some(working_target), 
                 (bonuses.0, bonuses.1, bonuses.2), factuals);
             if result.iterations <= 0.0 {
                 break;
             }
+            result_acc.iterations += result.iterations;
+            working_target -= result.iterations;
             // add the results to the accumulator, and subtract used inputs from the working inputs for the next leg.
             for (good, change) in &result.changes {
                 *result_acc.changes.entry(*good).or_insert(0.0) += *change;
+                if *change < 0.0 {
+                    *working_inputs.entry(*good).or_insert(0.0) += *change;
+                }
             }
             for (good, used) in &result.used_inputs {
                 *result_acc.used_inputs.entry(*good).or_insert(0.0) += *used;
+                *working_inputs.entry(*good).or_insert(0.0) -= *used;
             }
             // add effects, consolidating into singular effects.
             let mut effects = vec![];
             for effect in &result.effects {
                 let mut added = false;
-                let mut new_effect = effect.clone();
-                for existing in &effects {
-                    if let Some(effect_sum) = effect.add(existing) {
-                        new_effect = effect_sum;
+                for existing in &mut result_acc.effects {
+                    if let Some(new_effect) = existing.add(effect) {
+                        *existing = new_effect;
                         added = true;
                         break;
                     }
                 }
                 if !added {
-                    effects.push(new_effect);
+                    effects.push(effect.clone());
                 }
             }
+            result_acc.effects.extend(effects);
         }
 
         result_acc
