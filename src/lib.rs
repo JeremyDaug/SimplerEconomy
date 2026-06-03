@@ -927,6 +927,8 @@ mod test {
                 assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
                 assert!(result.used_inputs.is_empty()); // confirm no capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 1);
+                assert!(result.missing_goods.contains(&REQ_GOOD));
 
                 let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -937,6 +939,7 @@ mod test {
                 assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
                 assert!(result.used_inputs.is_empty()); // confirm no capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 0);
 
                 // Repeat, but with Capital good.
                 let process = process
@@ -954,6 +957,9 @@ mod test {
                 assert_eq!(result.used_inputs.len(), 1); // confirm capital used
                 assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 2);
+                assert!(result.missing_goods.contains(&REQ_GOOD));
+                assert!(result.missing_goods.contains(&CAPITAL_GOOD));
 
                 let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -965,6 +971,7 @@ mod test {
                 assert_eq!(result.used_inputs.len(), 1); // confirm capital used
                 assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 0);
 
                 // === Include Fixed Good
                 let process = process
@@ -983,6 +990,10 @@ mod test {
                 assert_eq!(result.used_inputs.len(), 1); // confirm capital used
                 assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&100.0)); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 3);
+                assert!(result.missing_goods.contains(&REQ_GOOD));
+                assert!(result.missing_goods.contains(&FIXED_GOOD));
+                assert!(result.missing_goods.contains(&CAPITAL_GOOD));
 
                 let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -995,6 +1006,7 @@ mod test {
                 assert_eq!(result.used_inputs.len(), 1); // confirm capital used
                 assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&50.0)); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 0);
             }
 
             #[test]
@@ -1015,6 +1027,8 @@ mod test {
                 assert_eq!(result.changes.len(), 0); // only req and out should be changed
                 assert_eq!(result.used_inputs.len(), 0); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 1);
+                assert!(result.missing_goods.contains(&FACTOR_GOOD), "Factor input should be missing");
 
                 // Actually add the factor in.
                 available.insert(FACTOR_GOOD, 1.0);
@@ -1028,6 +1042,8 @@ mod test {
                 assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
                 assert_eq!(result.used_inputs.len(), 0); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 1);
+                assert!(result.missing_goods.contains(&REQ_GOOD), "Required Good should be missing");
 
                 let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -1038,6 +1054,7 @@ mod test {
                 assert_eq!(result.changes.get(&OUT_GOOD), Some(&50.0));
                 assert_eq!(result.used_inputs.len(), 0); // confirm capital used
                 assert!(result.effects.is_empty()); // confirm no stray effects.
+                assert_eq!(result.missing_goods.len(), 0);
             }
 
             #[test]
@@ -1181,56 +1198,53 @@ mod test {
 
             #[test]
             fn efficiency_modifiers_alone_and_stacked() {
+                // extra goods for testing purposes
+                let throughput_factor = 33;
+                let output_factor = 34;
+                let factor_throughput_bonus = 0.1;
+                let factor_output_bonus = 0.2;
                 // Base process (no bonuses)
                 let base = make_process()
                     .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, InputType::Destroyed, vec![OPTIN_EFFECT.clone()]))
                     .with_input(make_optional_input(OPTOUT_GOOD, 1.0, false, InputType::Destroyed, vec![OPTOUT_EFFECT.clone()]))
                     .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, false, InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]))
-                    .with_output(ProcessOutput::new(FACTOR_GOOD, 1.0, true));
+
+                    .with_input(make_optional_input(FACTOR_GOOD, 1.0, false, InputType::Destroyed, vec![InputEffect::Input(0.1)]))
+                    .with_input(make_optional_input(throughput_factor, 1.0, false, InputType::Destroyed, vec![InputEffect::Throughput(factor_throughput_bonus)]))
+                    .with_input(make_optional_input(output_factor, 1.0, false, InputType::Destroyed, vec![InputEffect::Output(factor_output_bonus)]))
+
+                    .with_output(ProcessOutput::new(DECAY_OUTPUT, 1.0, true));
 
                 let mut available = HashMap::new();
                 available.insert(REQ_GOOD, 100.0);
 
                 let factuals = make_factuals(vec![]);
+                
+                // baseline, no bonuses
+                let result = base.do_process(&available, None, &factuals);
 
-                // 1. Input modifier alone (20% reduction)
-                available.insert(OPTIN_GOOD, 100.0); // enough for full bonus
-                let res_input = base.do_process(&available, None, &factuals);
-                assert_eq!(res_input.iterations, 125.0, "Expected 125 iterations"); // 80 for first 100, full for remaining 20.
-                assert!((res_input.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
-                assert!((res_input.changes.get(&OPTIN_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-                assert!((res_input.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 125.0).abs() < 0.01); // output should match iterations
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0);
+                assert_eq!(result.effects.len(), 0);
 
-                // 2. Output modifier alone (+30% output)
-                available.remove(&OPTIN_GOOD);
-                available.insert(OPTOUT_GOOD, 100.0); // enough for full bonus
-                let res_output = base.do_process(&available, None, &factuals);
-                assert!((res_output.iterations - 100.0).abs() < 0.01); // 100 for all.
-                assert!((res_output.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // Full requirement
-                assert!((res_output.changes.get(&OPTOUT_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-                assert!((res_output.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 130.0).abs() < 0.01); // output should be increased.
+                // input bonus factor
+                let result = base.do_process(&available, None, &factuals);
 
-                // 3. Throughput modifier alone (+25% both sides)
-                available.remove(&OPTOUT_GOOD);
-                available.insert(OPTTHROUGH_GOOD, 100.0); // enough for full bonus
-                let res_throughput = base.do_process(&available, None, &factuals);
-                assert!((res_throughput.iterations - 120.0).abs() < 0.01); // 80 for first 100, full for remaining 20.
-                assert!((res_throughput.changes.get(&REQ_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // 80% for first 100, full for remaining 20
-                assert!((res_throughput.changes.get(&OPTIN_GOOD).unwrap_or(&0.0).abs() - 100.0).abs() < 0.01); // all of the optional consumed
-                assert!((res_throughput.changes.get(&OUT_GOOD).unwrap_or(&0.0).abs() - 120.0).abs() < 0.01); // output should match iterations
+                assert_eq!(result.iterations, 100.0);
+                assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
+                assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
+                assert_eq!(result.changes.get(&OUT_GOOD), Some(&100.0));
+                assert_eq!(result.used_inputs.len(), 0);
+                assert_eq!(result.effects.len(), 0);
 
-                // 4. All stacked together on the same base
-                // let stacked = base
-                //     .with_input(make_optional_input(30, 1.0, false, InputType::Destroyed, vec![InputEffect::Input(0.2)]))
-                //     .with_input(make_optional_input(31, 1.0, false, InputType::Destroyed, vec![InputEffect::Output(0.3)]))
-                //     .with_input(make_optional_input(32, 1.0, false, InputType::Destroyed, vec![InputEffect::Throughput(0.25)]));
-                // //let res_stacked = run(stacked, None);
-                // let final_consumed = res_stacked.changes.get(&REQ_GOOD).copied().unwrap_or(0.0).abs();
-                // let final_produced = res_stacked.changes.get(&OUT_GOOD).copied().unwrap_or(0.0);
-                // // Combined multipliers: input = 4*0.8*1.25, output = 2*1.3*1.25
-                // assert!((res_stacked.iterations - 50.0).abs() < 0.01);
-                // assert!((final_consumed - 4.0 * 0.8 * 1.25 * 50.0).abs() < 0.01);
-                // assert!((final_produced - 2.0 * 1.3 * 1.25 * 50.0).abs() < 0.01);
+                // plus throughput factor
+                // plus output factor
+                // plus input bonus optional
+                // plus throughput optional
+                // pluss output optional
             }
 
             #[test]

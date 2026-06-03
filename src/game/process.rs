@@ -142,8 +142,14 @@ impl Process {
     /// Fixed inputs and optional inputs never gain bonuses with throughput or input 
     /// bonuses to keep wierd scaling interactions from occurring.
     /// 
-    /// Factors and capital are never consumed or destroyed, just used and recorded in 
-    /// the output.
+    /// Factors and capital are never consumed or destroyed, just used. They are not 
+    /// added to changed or used.
+    /// 
+    /// Due to the way the logic works out, doing a process that can reach over 100% 
+    /// input reduction is lossy. It's not smart enough to conserve bonuses and ensure
+    /// maximum benefit. So, when you make a process be aware that a greater than 100% 
+    /// input bonus will end up being lost. Either cap input efficiency at 100%, or
+    /// break up that process into variants to keep it under the cap.
     /// 
     /// ## Functional Logic
     /// 
@@ -152,6 +158,15 @@ impl Process {
     /// 2. Work on optional inputs next, getting any bonuses and effects they have.
     /// 3. With all bonuses calculated, check how many iterations can be done with 
     /// required inputs. Shifting goods from optional inputs to required as needed.
+    /// 4. Only do this for as many as we can guarantee the current coverage.
+    /// 5. Collect results adn return to step 2 until we can't make any more iterations.
+    /// 
+    /// ## On End and Failure
+    /// 
+    /// Regardless of success or failure, the ProcessResult includes the last required 
+    /// good(s) that ran out, giving a hint to show what would be needed to do more 
+    /// iterations. Useful for both totally new processes, and processes that didn't 
+    /// reach their target.
     pub fn do_process(
         &self,
         inputs: &HashMap<usize, f64>,
@@ -161,7 +176,15 @@ impl Process {
         // first, check factors and get bonuses.
         let bonuses = match self.check_factors(inputs) {
             Some(bonuses) => bonuses,
-            None => return ProcessResult::empty(), // if missing a required factor, return empty result.
+            None => { // if missing a required factor, return an empty result.
+                let mut result = ProcessResult::empty();
+                for factor in self.factors() {
+                    if inputs.get(&factor.good).unwrap_or(&0.0) <= &0.0 {
+                        result.missing_goods.push(factor.good);
+                    }
+                }
+                return result;
+            },
         };
 
         // loop through legs of the process until we get 0 iterations in return.
@@ -172,10 +195,16 @@ impl Process {
             let result = self.do_process_leg(&working_inputs, Some(working_target), 
                 (bonuses.0, bonuses.1, bonuses.2), factuals);
             if result.iterations <= 0.0 {
+                // we ran out of inputs, so find which inputs
+                for req in self.requirements() {
+                    if *working_inputs.get(&req.good).unwrap_or(&0.0) <= 0.0 {
+                        result_acc.missing_goods.push(req.good);
+                    }
+                }
                 break;
             }
-            result_acc.iterations += result.iterations;
             working_target -= result.iterations;
+            result_acc.iterations += result.iterations;
             // add the results to the accumulator, and subtract used inputs from the working inputs for the next leg.
             for (good, change) in &result.changes {
                 *result_acc.changes.entry(*good).or_insert(0.0) += *change;
@@ -203,6 +232,10 @@ impl Process {
                 }
             }
             result_acc.effects.extend(effects);
+            // After adding up everything, break out if we reached the target.
+            if working_target <= 0.0 {
+                break;
+            }
         }
 
         result_acc
@@ -320,6 +353,7 @@ impl Process {
             changes: HashMap::new(),
             used_inputs: HashMap::new(),
             effects: Vec::new(),
+            missing_goods: Vec::new(),
         };
 
         // record all input effects.
@@ -416,6 +450,11 @@ pub struct ProcessResult {
     pub changes: HashMap<usize, f64>,
     pub used_inputs: HashMap<usize, f64>,
     pub effects: Vec<ProcessEffect>,
+    /// The goods that caused us to stop.
+    /// 
+    /// Should only be empty if the process ends by running out of goods, not because
+    /// of reaching it's target.
+    pub missing_goods: Vec<usize>,
 }
 
 impl ProcessResult {
@@ -428,6 +467,7 @@ impl ProcessResult {
             changes: HashMap::new(),
             used_inputs: HashMap::new(),
             effects: Vec::new(),
+            missing_goods: Vec::new(),
         }
     }
 }
