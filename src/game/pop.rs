@@ -14,7 +14,7 @@ pub struct Pop {
     pub job: usize,
 
     ///  The property and details of the property
-    pub property: HashMap<usize, PRow>,
+    pub property: HashMap<usize, PopPRow>,
     
     /// Desires of a pop, a consolidated and organized for satisfaction calculations.
     /// 
@@ -56,7 +56,7 @@ pub struct DemoRow {
     pub religion: usize,
 }
 
-/// # Property Row
+/// # Pop Property Row
 /// 
 /// A row of data attached to the property of a pop. This is used for fine tuned
 /// property management and consumption details.
@@ -64,7 +64,7 @@ pub struct DemoRow {
 /// This currently only contains the current quantity, the amount reserved for 
 /// consumption, and the target they want to reach.
 #[derive(Debug, Clone, Copy)]
-pub struct PRow {
+pub struct PopPRow {
     /// The total amount owned at the moment.
     pub quantity: f64,
     
