@@ -53,7 +53,7 @@ impl Process {
     /// 
     /// Does not allow for repeated goods as inputs.
     pub fn with_input(mut self, input: ProcessInput) -> Self {
-        assert!(!self.inputs.iter().any(|i| i.good == input.good), 
+        debug_assert!(!self.inputs.iter().any(|i| i.good == input.good), 
             "Process cannot have more than one of the same good as an input.");
         self.inputs.push(input);
         self
@@ -129,6 +129,46 @@ impl Process {
         self.inputs.iter().find(|x| x.good == good)
     }
 
+    /// # Is Valid
+    /// 
+    /// A helper function that checks if a process is valid, or more accurately if 
+    /// it's invalid.
+    /// 
+    /// It checks for repeated goods as inputs, or if it has factors that bring input 
+    /// down to zero but have no fixed required inputs to keep the process from going 
+    /// infinitely.
+    pub fn is_valid(&self) -> bool {
+        // check for repeated goods as inputs.
+        let mut seen = HashSet::new();
+        for input in &self.inputs {
+            if !seen.insert(input.good) {
+                return false;
+            }
+        }
+        // check for factors that reduce input to 0 without fixed required inputs.
+        if !self.requirements().iter().any(|input| input.fixed) {
+            // add up our input reduction factors.
+            let mut input_mult: f64 = 1.0;
+            for factor in self.factors() {
+                if let Some(effects) = factor.optional_effects() {
+                    for effect in effects {
+                        match effect {
+                            InputEffect::Input(v) => input_mult -= v,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // if the input multiplier is 0, then we can have an infinite process.
+            if input_mult <= 0.0 {
+                return false;
+            }
+        }
+        // if there are required inputs that are fixed, we don't need to work about 
+        // infinite runs.
+        true
+    }
+
     /// # Do Process
     /// 
     /// Given Inputs, an optional target, and the factuals of the world, attempt to do 
@@ -173,6 +213,8 @@ impl Process {
         target: Option<f64>,
         factuals: &Factuals,
     ) -> ProcessResult {
+        debug_assert!(target.is_none() || target.unwrap() > 0.0, "Target must be greater than 0 if provided.");
+
         // first, check factors and get bonuses.
         let bonuses = match self.check_factors(inputs) {
             Some(bonuses) => bonuses,
@@ -293,6 +335,7 @@ impl Process {
         bonuses: (f64, f64, f64),
         factuals: &Factuals,
     ) -> ProcessResult {
+        debug_assert!(target.is_none() || target.unwrap() > 0.0, "Target must be greater than 0 if provided.");
         // copy over our bonuses for modding.
         let (mut input_bonus, mut throughput_bonus, mut output_bonus) = bonuses;
         // Go through optionals, finding the shortest possible and collecting bonuses along
@@ -497,6 +540,7 @@ impl ProcessInput {
     /// 
     /// Create a new process input with the given good, amount, fixed status, input type, and optional status.
     pub fn new(good: usize, amount: f64, fixed: bool, input_type: InputType, optional: bool) -> Self {
+        debug_assert!(amount > 0.0, "Input amount must be greater than 0.");
         ProcessInput {
             good,
             amount,
