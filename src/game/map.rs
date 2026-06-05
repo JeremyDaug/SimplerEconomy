@@ -1,6 +1,4 @@
-use std::ops::Rem;
-
-use bevy::platform::collections::{HashMap, HashSet};
+use bevy::platform::collections::HashSet;
 use hexx::Hex;
 use itertools::Itertools;
 use super::tile::Tile;
@@ -163,7 +161,7 @@ impl Map {
 
     /// Internal getter for tiles. Skips safety checks, does NOT wrap the hex and returns
     /// the Tile. Use **Cautiously!**
-    fn unsafe_get_tile(&self, hex: Hex) -> &Tile {
+    fn _unsafe_get_tile(&self, hex: Hex) -> &Tile {
         &self.tiles[hex.x as usize][hex.y as usize]
     }
 

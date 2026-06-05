@@ -1,5 +1,5 @@
 
-use std::{collections::{HashMap, HashSet}, io::ErrorKind::Other};
+use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
 
@@ -295,7 +295,7 @@ impl Process {
         let mut input_mult: f64 = 1.0;
         let mut output_mult: f64 = 1.0;
         let mut throughput_mult: f64 = 1.0;
-        let mut other_effects = vec![];
+        let other_effects = vec![];
 
         for factor in self.factors() {
             if inputs.contains_key(&factor.good) {

@@ -467,9 +467,9 @@ mod test {
             fn return_empty_result_correctly() {
                 let process = make_process();
 
-                let mut available = HashMap::new();
+                let available = HashMap::new();
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
                 assert_eq!(result.iterations, 0.0);
@@ -485,7 +485,7 @@ mod test {
                 let mut available = HashMap::new();
                 available.insert(REQ_GOOD, 100.0);
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
                 assert_eq!(result.iterations, 100.0);
@@ -505,7 +505,7 @@ mod test {
                 available.insert(REQ_GOOD, 100.0);
                 available.insert(CAPITAL_GOOD, 100.0);
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
                 assert_eq!(result.iterations, 100.0);
@@ -526,7 +526,7 @@ mod test {
                 available.insert(REQ_GOOD, 100.0);
                 available.insert(CONSUMED_GOOD, 100.0);
 
-                let mut factuals = make_factuals(vec![make_good(CONSUMED_GOOD, 
+                let factuals = make_factuals(vec![make_good(CONSUMED_GOOD, 
                     "Consumed", vec![(DECAY_OUTPUT, 1.0)].into_iter().collect())]);
                 let result = process.do_process_leg(&available, None, 
                     (1.0, 1.0, 1.0), &factuals);
@@ -550,7 +550,7 @@ mod test {
                 available.insert(REQ_GOOD, 50.0);
                 available.insert(CAPITAL_GOOD, 100.0);
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
                 assert_eq!(result.iterations, 50.0);
@@ -571,7 +571,7 @@ mod test {
                 let mut available = HashMap::new();
                 available.insert(REQ_GOOD, 100.0);
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
                 assert_eq!(result.iterations, 100.0);
@@ -1179,7 +1179,7 @@ mod test {
                 available.insert(REQ_GOOD, 100.0);
                 available.insert(OPTIN_GOOD, 50.0); // only half the optional provided
 
-                let mut factuals = make_factuals(vec![]);
+                let factuals = make_factuals(vec![]);
                 let result = process.do_process(&available, None, &factuals);
 
                 // Check Results

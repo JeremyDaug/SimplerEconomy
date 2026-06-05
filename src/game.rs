@@ -17,3 +17,4 @@ pub mod state;
 pub mod techtree;
 pub mod household;
 pub mod factuals;
+pub mod actor;
