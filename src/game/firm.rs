@@ -8,6 +8,26 @@ use crate::game::market::Market;
 /// 
 /// A firm is the smallest unit of business. It deals with Production and local economic
 /// calculation
+/// 
+/// When connected together they form a Company, with the firms inside being called 
+/// Sub-Firms.
+/// 
+/// ## Properties
+/// 
+/// Firms (including sub-firms) should have unique ids and names to help with both
+/// navigation and player readability.
+/// 
+/// All firms have a market which they primarily act in and a location hex where
+/// they physically operate. The latter is used for when tiles change regions.
+/// 
+/// The Organizational Data of a firm is the Parent (ID for it's owning firm if any),
+/// children (the sub-firms it owns), level (the importance in a Company Structure),
+/// and org_ai_weights for how the firm operates and manages both itself and it's 
+/// children.
+/// 
+/// The Population Data is mostly connections and rules for who has a relationship
+/// with the firm. Owner defines who owns it, how it's owned, and how profits and
+/// losses are distributed, as well as a few other rules.
 #[derive(Debug, Clone)]
 pub struct Firm {
     /// Unique Id for the Firm.
@@ -32,7 +52,18 @@ pub struct Firm {
     pub level: usize,
     /// What kind of organization scheme the firm is operating under. Can only be
     /// changed by the highest level
-    pub org_system: FirmOrganization,
+    pub org_ai_weights: FirmOrganization,
+
+    /// Information on who own's the firm, profits and risk distribution, and other
+    /// such information.
+    pub owners: Owners,
+    /// Information on the workers, how many there are, how much they're payed, what 
+    /// they transer over and back, and similar information.
+    pub workforce: Workforce,
+    /// Contracts are long term deals that the firm has, typically buy or sell orders
+    /// to other firms, but it also forms a secondary source of labor in contactors,
+    /// as well as connecting to institutions and states for access to their stuff.
+    pub contracts: Contract,
 
     /// The Property owned by the firm. In some cases, this can be shared with the owner
     /// if it's an especially small business, but for most purposes, this is separate 
@@ -44,58 +75,24 @@ pub struct Firm {
     /// Production lines are ordered by priority, those first in the list get run
     /// first. This should be noted for production lines that feed into each other.
     pub production_line: Vec<ProductionLine>,
-
-    /// Information on who own's the firm, profits and risk distribution, and other
-    /// such information.
-    pub owners: Owners,
-
-    /// Information on the workers, how many there are, how much they're payed, what 
-    /// they transer over and back, and similar information.
-    pub workforce: Workforce,
-
-    /// Contracts are long term deals that the firm has, typically buy or sell orders
-    /// to other firms, but it also forms a secondary source of labor in contactors,
-    /// as well as connecting to institutions and states for access to their stuff.
-    pub contracts: Contract,
 }
-// 
+
 /// # Firm Organization
 /// 
-/// This is a set of categories that define Firm and Sub-firm actions, mostly internally.
+/// This defines how a firm organizes itself internally, and restricts what a firm can 
+/// or can't do. 
 /// 
-/// It defines how Bureaucratic loads are distributed, modifies base Costs of Scale,
-/// defines financial and resource sharing, and strategic level decision making.
+/// Rather than names, it gives level of control and influence.
+/// 
+/// Sub-firms can have different rules, from each other within a company, but the 
+/// superior sub-firm node's rules are obeyed first.
 #[derive(Debug, Clone)]
-pub enum FirmOrganization {
-    /// A special status to represent a large number of singular businesses, like 
-    /// subsistance farms.
-    /// 
-    /// Disorganized Firms have no Costs of Scale, but also little control over
-    /// their prices, often competing with themselves to their own detriment.
-    /// 
-    /// They also cannot be part of a larger Company. They can be dismantled or 
-    /// bought out, but no more.
-    Disorganized,
-    /// A small business that owns a single building and does very few things.
-    SmallBusiness,
-    /// A group of smaller businesses that, while nominally independent and 
-    /// separately owned, they work together closely for various purposes. 
-    /// 
-    /// A limitation of this structure is that businesses under it are generally small
-    /// and financially independent, allowing them to go bankrupt or break away when
-    /// it's convenient for them.
-    /// 
-    /// While they are independent at the sub-firm level, they have an easy time forming
-    /// contracts with each other, giving preferential treatment to those in the
-    /// assossiation.
-    BusinessAssossiation,
-    /// A business that's large and singularly owned, may have many different parts,
-    /// but they are all at the attention of the head and can be organized to it's end.
-    PrivateCompany,
-    /// A Business that is owne
-    PublicCorporation,
-    Conglomerate,
-    DecentralizedFirm,
+pub struct FirmOrganization {
+    /// How the firm determines prices and tha associated values
+    pub price_org: u8,
+    pub resource_sharing: u8,
+    pub independence: u8,
+
 }
 
 #[derive(Debug, Clone)]
