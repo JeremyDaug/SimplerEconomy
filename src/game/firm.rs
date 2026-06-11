@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hexx::Hex;
 
-use crate::game::{contract::Contract, firmorganization::FirmOrganization, market::Market, workforce::Workforce};
+use crate::game::{contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, market::Market, process::ProcessEffect, workforce::Workforce};
 
 /// # Firm 
 /// 
@@ -95,6 +95,100 @@ impl Firm {
             production_line: vec![],
         }
     }
+
+    /// # Run Production
+    /// 
+    /// Executes all production plans currently in `production_line` (in order).
+    /// Plans are assumed to have already been made for the day.
+    /// 
+    /// Regardless of whether the firm currently holds everything needed, the processes
+    /// will still run (let `do_process` handle throttling and restrictions).
+    /// 
+    /// - Applies all good changes (consumed inputs, produced outputs, decay results)
+    ///   directly to `property` quantities. New output goods are auto-created with
+    ///   sensible defaults.
+    /// - Used capital goods are removed from `quantity` **and** recorded into the new
+    ///   `used_capital` field on the corresponding `FirmPRow` (to be returned later).
+    /// - Records `last_success_rate`, `last_iterations`, `last_effects`, and
+    ///   `last_missing_goods` on each `ProductionLine` for later evaluation.
+    /// - Returns a flat collection of all `ProcessEffect`s produced across every
+    ///   process run this call (research, culture, growth, etc.). The caller is
+    ///   responsible for applying them (e.g. to the firm, workforce, or territory).
+    /// 
+    /// Only reads from `self.property` for available stock — all other sources
+    /// (contracts, workforce, market) are expected to have already been resolved
+    /// into property before this is called.
+    pub fn run_production(&mut self, factuals: &Factuals) -> Vec<ProcessEffect> {
+        let mut all_effects: Vec<ProcessEffect> = Vec::new();
+
+        for line in &mut self.production_line {
+            let Some(process) = factuals.processes.get(&line.process) else {
+                line.last_success_rate = 0.0;
+                line.last_iterations = 0.0;
+                line.last_effects.clear();
+                line.last_missing_goods.clear();
+                continue;
+            };
+
+            // Snapshot of available goods from this firm's property only
+            let available: HashMap<usize, f64> = self
+                .property
+                .iter()
+                .map(|(&gid, row)| (gid, row.quantity))
+                .collect();
+
+            let target_f = line.target.map(|t| t as f64);
+            let result = process.do_process(&available, target_f, factuals);
+
+            // Apply net changes to property (outputs + consumed inputs + decay)
+            for (&good_id, &delta) in &result.changes {
+                if let Some(row) = self.property.get_mut(&good_id) {
+                    row.quantity += delta;
+                } else if delta > 0.0 {
+                    // New good produced — create row with sensible defaults
+                    self.property.insert(
+                        good_id,
+                        FirmPRow {
+                            quantity: delta,
+                            rolling_average: 0.0,
+                            target: 0.0,
+                            reserve: 0.0,
+                            average_cost: 0.0,
+                            used_capital: 0.0,
+                        },
+                    );
+                }
+            }
+
+            // Remove used capital from quantity and record it in the row for later return
+            for (&good_id, &used) in &result.used_inputs {
+                if let Some(row) = self.property.get_mut(&good_id) {
+                    row.quantity = (row.quantity - used).max(0.0);
+                    row.used_capital += used;
+                }
+            }
+
+            // Record success + result details on the production line
+            let success = if let Some(t) = target_f {
+                if t > 0.0 {
+                    (result.iterations / t).min(1.0)
+                } else {
+                    0.0
+                }
+            } else {
+                if result.iterations > 0.0 { 1.0 } else { 0.0 }
+            };
+            line.last_success_rate = success;
+            line.last_iterations = result.iterations;
+            line.last_effects = result.effects.clone();
+            line.last_missing_goods = result.missing_goods.clone();
+
+            // Collect effects for the caller to apply elsewhere
+            all_effects.extend(result.effects);
+        }
+
+        all_effects
+    }
 }
 
 /// # Owners
@@ -130,6 +224,16 @@ pub struct ProductionLine {
     pub inputs: Vec<usize>,
     /// A record of the average productivity (amv out / amv in) of the process.
     pub historical_productivity: f64,
+
+    /// Success rate of the most recent production run (clamped 0.0–1.0 when a
+    /// target was provided).
+    pub last_success_rate: f64,
+    /// How many iterations were actually completed in the last run.
+    pub last_iterations: f64,
+    /// Effects (research, culture, growth, etc.) produced by the last run.
+    pub last_effects: Vec<ProcessEffect>,
+    /// Which goods ran out and caused the process to stop early.
+    pub last_missing_goods: Vec<usize>,
 }
 
 /// # Firm Property Row
@@ -153,4 +257,8 @@ pub struct FirmPRow {
     /// productive process.
     /// Used for value production efficiency calculations.
     pub average_cost: f64,
+
+    /// Amount of this good currently tied up as capital in active production runs.
+    /// Removed from `quantity` during `run_production`; returned later.
+    pub used_capital: f64,
 }
