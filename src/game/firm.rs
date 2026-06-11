@@ -104,22 +104,25 @@ impl Firm {
     /// Regardless of whether the firm currently holds everything needed, the processes
     /// will still run (let `do_process` handle throttling and restrictions).
     /// 
+    /// Side effects on the firm:
     /// - Applies all good changes (consumed inputs, produced outputs, decay results)
     ///   directly to `property` quantities. New output goods are auto-created.
     /// - Used capital goods are removed from `quantity` **and** recorded into the
     ///   `used_capital` field on the corresponding `FirmPRow` (to be returned at 
     ///   the end of the day).
-    /// - Records `last_success_rate`, `last_iterations`, `last_effects`, and
-    ///   `last_missing_goods` on each `ProductionLine` for later evaluation.
-    /// - Returns a flat collection of all `ProcessEffect`s produced across every
-    ///   process run this call (research, culture, growth, etc.). The caller is
-    ///   responsible for applying them (e.g. to the firm, workforce, or territory).
+    /// - Records success rate, iterations, effects, missing goods, **and AMV snapshots**
+    ///   of the goods involved on each `ProductionLine`.
     /// 
-    /// Only reads from `self.property` for available stock — all other sources
-    /// (contracts, workforce, market) are expected to have already been resolved
-    /// into property before this is called.
-    pub fn run_production(&mut self, factuals: &Factuals) -> Vec<ProcessEffect> {
-        let mut all_effects: Vec<ProcessEffect> = Vec::new();
+    /// Returns a `ProductionReport` containing:
+    /// - All `ProcessEffect`s produced (research, culture, growth...)
+    /// - Consolidated `produced` and `consumed` quantities across every process run.
+    ///   This single record can be fed to both the Market (to update `MarketGood.production`
+    ///   / `consumption`) and kept by the Firm for its own ledgers.
+    /// 
+    /// Only reads from `self.property` for available stock. The `market` parameter is
+    /// used solely to snapshot current AMV values for record-keeping.
+    pub fn run_production(&mut self, factuals: &Factuals, market: &Market) -> ProductionReport {
+        let mut report = ProductionReport::default();
 
         for line in &mut self.production_line {
             let Some(process) = factuals.processes.get(&line.process) else {
@@ -127,6 +130,8 @@ impl Firm {
                 line.last_iterations = 0.0;
                 line.last_effects.clear();
                 line.last_missing_goods.clear();
+                line.last_amv_consumed.clear();
+                line.last_amv_produced.clear();
                 continue;
             };
 
@@ -168,6 +173,26 @@ impl Firm {
                 }
             }
 
+            // --- Record AMV snapshots and build consolidated produced/consumed ---
+            for (&good_id, &delta) in &result.changes {
+                let amv = market
+                    .goods
+                    .get(&good_id)
+                    .map(|mg| mg.amv)
+                    .unwrap_or(0.0);
+
+                if delta > 0.0 {
+                    // Produced (outputs + decay results)
+                    *report.produced.entry(good_id).or_insert(0.0) += delta;
+                    line.last_amv_produced.insert(good_id, amv);
+                } else if delta < 0.0 {
+                    // Consumed (Destroyed or Consumed input types)
+                    let consumed_qty = -delta;
+                    *report.consumed.entry(good_id).or_insert(0.0) += consumed_qty;
+                    line.last_amv_consumed.insert(good_id, amv);
+                }
+            }
+
             // Record success + result details on the production line
             let success = if let Some(t) = target_f {
                 if t > 0.0 {
@@ -184,10 +209,10 @@ impl Firm {
             line.last_missing_goods = result.missing_goods.clone();
 
             // Collect effects for the caller to apply elsewhere
-            all_effects.extend(result.effects);
+            report.effects.extend(result.effects);
         }
 
-        all_effects
+        report
     }
 }
 
@@ -208,6 +233,19 @@ impl Owners {
             pop: 0,
         }
     }
+}
+
+/// Consolidated record of everything a production run created and consumed.
+/// Returned by `Firm::run_production` so a single object can be used by both
+/// the Market (to increment `MarketGood.production` / `consumption`) and by
+/// the Firm for its own record-keeping and later AMV/productivity analysis.
+#[derive(Debug, Clone, Default)]
+pub struct ProductionReport {
+    pub effects: Vec<ProcessEffect>,
+    /// Total quantity of each good created by production (outputs + decay results).
+    pub produced: HashMap<usize, f64>,
+    /// Total quantity of each good destroyed/consumed as non-capital inputs.
+    pub consumed: HashMap<usize, f64>,
 }
 
 /// # Production Line
@@ -234,6 +272,14 @@ pub struct ProductionLine {
     pub last_effects: Vec<ProcessEffect>,
     /// Which goods ran out and caused the process to stop early.
     pub last_missing_goods: Vec<usize>,
+
+    /// Snapshot of Abstract Market Value (AMV) for every good that was **consumed**
+    /// (non-capital inputs) during the last production run. Useful for AMV-based
+    /// productivity calculations (amv_out / amv_in) and historical tracking.
+    pub last_amv_consumed: HashMap<usize, f64>,
+    /// Snapshot of Abstract Market Value (AMV) for every good that was **produced**
+    /// (outputs + decay) during the last production run.
+    pub last_amv_produced: HashMap<usize, f64>,
 }
 
 /// # Firm Property Row
