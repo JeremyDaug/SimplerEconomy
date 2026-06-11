@@ -105,10 +105,10 @@ impl Firm {
     /// will still run (let `do_process` handle throttling and restrictions).
     /// 
     /// - Applies all good changes (consumed inputs, produced outputs, decay results)
-    ///   directly to `property` quantities. New output goods are auto-created with
-    ///   sensible defaults.
-    /// - Used capital goods are removed from `quantity` **and** recorded into the new
-    ///   `used_capital` field on the corresponding `FirmPRow` (to be returned later).
+    ///   directly to `property` quantities. New output goods are auto-created.
+    /// - Used capital goods are removed from `quantity` **and** recorded into the
+    ///   `used_capital` field on the corresponding `FirmPRow` (to be returned at 
+    ///   the end of the day).
     /// - Records `last_success_rate`, `last_iterations`, `last_effects`, and
     ///   `last_missing_goods` on each `ProductionLine` for later evaluation.
     /// - Returns a flat collection of all `ProcessEffect`s produced across every
