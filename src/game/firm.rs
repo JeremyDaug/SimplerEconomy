@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hexx::Hex;
 
-use crate::game::market::Market;
+use crate::game::{contract::Contract, firmorganization::FirmOrganization, market::Market, workforce::Workforce};
 
 /// # Firm 
 /// 
@@ -59,11 +59,11 @@ pub struct Firm {
     pub owners: Owners,
     /// Information on the workers, how many there are, how much they're payed, what 
     /// they transer over and back, and similar information.
-    pub workforce: Workforce,
+    pub workforce: Vec<Workforce>,
     /// Contracts are long term deals that the firm has, typically buy or sell orders
     /// to other firms, but it also forms a secondary source of labor in contactors,
     /// as well as connecting to institutions and states for access to their stuff.
-    pub contracts: Contract,
+    pub contracts: Vec<Contract>,
 
     /// The Property owned by the firm. In some cases, this can be shared with the owner
     /// if it's an especially small business, but for most purposes, this is separate 
@@ -77,31 +77,25 @@ pub struct Firm {
     pub production_line: Vec<ProductionLine>,
 }
 
-/// # Firm Organization
-/// 
-/// This defines how a firm organizes itself internally, and restricts what a firm can 
-/// or can't do. 
-/// 
-/// Rather than names, it gives level of control and influence.
-/// 
-/// Sub-firms can have different rules, from each other within a company, but the 
-/// superior sub-firm node's rules are obeyed first.
-#[derive(Debug, Clone)]
-pub struct FirmOrganization {
-    /// How the firm determines prices and tha associated values
-    pub price_org: u8,
-    pub resource_sharing: u8,
-    pub independence: u8,
-
+impl Firm {
+    pub fn new(id: usize, name: String, market: usize, location: Hex) -> Self {
+        Self {
+            id,
+            name,
+            market,
+            location,
+            parent: None,
+            children: vec![],
+            level: 0,
+            org_ai_weights: FirmOrganization::empty(),
+            owners: Owners::empty(),
+            workforce: vec![],
+            contracts: vec![],
+            property: HashMap::new(),
+            production_line: vec![],
+        }
+    }
 }
-
-#[derive(Debug, Clone)]
-pub struct Workforce {
-
-}
-
-#[derive(Debug, Clone)]
-pub struct Contract {}
 
 /// # Owners
 /// 
@@ -111,7 +105,15 @@ pub struct Contract {}
 /// Currently a placeholder.
 #[derive(Debug, Clone)]
 pub struct Owners {
-
+    /// The ID of the pop who owns the firm.
+    pub pop: usize,
+}
+impl Owners {
+    pub fn empty() -> Self {
+        Owners {
+            pop: 0,
+        }
+    }
 }
 
 /// # Production Line

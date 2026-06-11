@@ -18,3 +18,6 @@ pub mod techtree;
 pub mod household;
 pub mod factuals;
 pub mod actor;
+pub mod firmorganization;
+pub mod workforce;
+pub mod contract;
