@@ -1346,4 +1346,257 @@ mod test {
             }
         }
     }
+
+    mod firm {
+        use super::*;
+        use crate::game::factuals::Factuals;
+        use crate::game::good::Good; // if you need Good defs
+        use crate::game::market::{Market, MarketGood};
+        use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
+        use std::collections::HashMap;
+        use crate::game::firm::{Firm, FirmPRow, ProductionLine, ProductionReport};
+
+        // Helper to build a minimal Factuals with one process
+        fn make_factuals_with_process(process: Process) -> Factuals {
+            let mut processes = HashMap::new();
+            processes.insert(process.id, process);
+            Factuals {
+                goods: HashMap::new(), // goods not strictly needed for do_process in these tests
+                processes,
+            }
+        }
+
+        // Helper to build a Market with AMV data for the goods we care about
+        fn make_market_with_amvs(amvs: &[(usize, f64)]) -> Market {
+            let mut goods = HashMap::new();
+            for &(id, amv) in amvs {
+                goods.insert(id, MarketGood {
+                    amv,
+                    production: 0.0,
+                    consumption: 0.0,
+                    imported: 0.0,
+                    stock: 0.0,
+                });
+            }
+            Market {
+                id: 42,
+                pops: HashMap::new(),
+                goods,
+            }
+        }
+
+        mod run_production_should {
+            use super::*;
+
+            #[test]
+            fn test_basic_production_run() {
+                // Simple process: 2 wood -> 1 plank (Consumed input, fixed output)
+                let process = Process::new(1, "sawmill", 0)
+                    .with_input(ProcessInput::new(10, 2.0, true, InputType::Consumed, false))
+                    .with_output(ProcessOutput::new(20, 1.0, true));
+
+                let factuals = make_factuals_with_process(process);
+
+                let mut firm = Firm::new(1, "Test Sawmill".into(), 42, hexx::Hex::new(0, 0));
+                firm.property.insert(10, FirmPRow {
+                    quantity: 10.0,
+                    rolling_average: 0.0,
+                    target: 0.0,
+                    reserve: 0.0,
+                    average_cost: 0.0,
+                    used_capital: 0.0,
+                });
+
+                // Add a production line
+                firm.production_line.push(ProductionLine {
+                    process: 1,
+                    target: None,
+                    inputs: vec![10],
+                    historical_productivity: 0.0,
+                    last_success_rate: 0.0,
+                    last_iterations: 0.0,
+                    last_effects: vec![],
+                    last_missing_goods: vec![],
+                    last_amv_consumed: 0.0,
+                    last_amv_produced: 0.0,
+                });
+
+                let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0)]);
+
+                let report = firm.run_production(&factuals, &market);
+
+                // Property should be updated
+                assert_eq!(firm.property[&10].quantity, 0.0);
+                assert_eq!(firm.property[&20].quantity, 5.0); // 5 iterations * 1.0
+
+                // Report should show what was produced and consumed
+                assert_eq!(report.produced.get(&20), Some(&5.0));
+                assert_eq!(report.consumed.get(&10), Some(&10.0));
+                assert!(report.effects.is_empty());
+
+                // Line should have recorded success + AMV snapshots
+                let line = &firm.production_line[0];
+                assert_eq!(line.last_success_rate, 1.0);
+                assert_eq!(line.last_iterations, 5.0);
+                assert_eq!(line.last_amv_consumed, 5.0);
+                assert_eq!(line.last_amv_produced, 12.0);
+            }
+
+            #[test]
+            fn test_partial_run_with_target_and_missing_goods() {
+                let process = Process::new(2, "limited_craft", 0)
+                    .with_input(ProcessInput::new(30, 3.0, true, InputType::Consumed, false))
+                    .with_output(ProcessOutput::new(40, 1.0, true));
+
+                let factuals = make_factuals_with_process(process);
+
+                let mut firm = Firm::new(2, "Limited Workshop".into(), 42, hexx::Hex::new(0, 0));
+                firm.property.insert(30, FirmPRow {
+                    quantity: 7.0, // only enough for 2 iterations (need 3 per iter)
+                    ..Default::default() // we'll add used_capital etc. via insert if needed
+                });
+
+                firm.production_line.push(ProductionLine {
+                    process: 2,
+                    target: Some(10), // wants 10, will only get ~2
+                    inputs: vec![30],
+                    historical_productivity: 0.0,
+                    last_success_rate: 0.0,
+                    last_iterations: 0.0,
+                    last_effects: vec![],
+                    last_missing_goods: vec![],
+                    last_amv_consumed: 0.0,
+                    last_amv_produced: 0.0,
+                });
+
+                let market = make_market_with_amvs(&[(30, 2.0), (40, 8.0)]);
+
+                let report = firm.run_production(&factuals, &market);
+
+                let line = &firm.production_line[0];
+                assert!((line.last_success_rate - 0.2).abs() < 0.01); // 2/10
+                assert!((line.last_iterations - 2.0).abs() < f64::EPSILON);
+                assert_eq!(line.last_missing_goods, vec![30]);
+
+                assert_eq!(report.consumed.get(&30), Some(&6.0));
+                assert_eq!(report.produced.get(&40), Some(&2.0));
+            }
+
+            #[test]
+            fn test_capital_goods_not_counted_as_consumed() {
+                // Process that uses a Capital good (e.g. saw blade) + consumes wood
+                let process = Process::new(3, "capital_test", 0)
+                    .with_input(ProcessInput::new(50, 1.0, true, InputType::Capital, false)) // saw
+                    .with_input(ProcessInput::new(10, 2.0, true, InputType::Consumed, false))
+                    .with_output(ProcessOutput::new(20, 1.0, true));
+
+                let factuals = make_factuals_with_process(process);
+
+                let mut firm = Firm::new(3, "Capital Test Firm".into(), 42, hexx::Hex::new(0, 0));
+                firm.property.insert(10, FirmPRow { quantity: 10.0, ..Default::default() });
+                firm.property.insert(50, FirmPRow { quantity: 1.0, ..Default::default() });
+
+                firm.production_line.push(ProductionLine {
+                    process: 3,
+                    target: None,
+                    inputs: vec![50, 10],
+                    historical_productivity: 0.0,
+                    last_success_rate: 0.0,
+                    last_iterations: 0.0,
+                    last_effects: vec![],
+                    last_missing_goods: vec![],
+                    last_amv_consumed: HashMap::new(),
+                    last_amv_produced: HashMap::new(),
+                });
+
+                let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0), (50, 100.0)]);
+
+                let report = firm.run_production(&factuals, &market);
+
+                // Capital good should be recorded in used_capital, not in report.consumed
+                assert_eq!(firm.property[&50].used_capital, 5.0); // 5 iterations
+                assert_eq!(firm.property[&50].quantity, 1.0 - 5.0); // went negative? wait, max(0) in code
+                // Actually the code does (quantity - used).max(0.0) so it would clamp
+                // but for this test we started with 1.0 and used 5.0 → should be 0.0 used_capital=5.0
+                assert_eq!(firm.property[&50].quantity, 0.0);
+
+                assert!(report.consumed.get(&50).is_none()); // capital should NOT appear in consumed
+                assert_eq!(report.consumed.get(&10), Some(&10.0));
+                assert_eq!(report.produced.get(&20), Some(&5.0));
+            }
+
+            #[test]
+            fn test_effects_and_new_output_good() {
+                let process = Process::new(4, "researchy", 0)
+                    .with_input(ProcessInput::new(10, 1.0, true, InputType::Consumed, false))
+                    .with_output(ProcessOutput::new(99, 2.0, true))
+                    .with_effect(ProcessEffect::Research(10.0));
+
+                let factuals = make_factuals_with_process(process);
+
+                let mut firm = Firm::new(4, "Research Lab".into(), 42, hexx::Hex::new(0, 0));
+                firm.property.insert(10, FirmPRow { quantity: 5.0, ..Default::default() });
+
+                firm.production_line.push(ProductionLine {
+                    process: 4,
+                    target: None,
+                    inputs: vec![10],
+                    historical_productivity: 0.0,
+                    last_success_rate: 0.0,
+                    last_iterations: 0.0,
+                    last_effects: vec![],
+                    last_missing_goods: vec![],
+                    last_amv_consumed: HashMap::new(),
+                    last_amv_produced: HashMap::new(),
+                });
+
+                let market = make_market_with_amvs(&[(10, 3.0), (99, 50.0)]);
+
+                let report = firm.run_production(&factuals, &market);
+
+                assert_eq!(report.effects.len(), 5); // 5 iterations * 1 effect each
+                assert!(matches!(report.effects[0], ProcessEffect::Research(_)));
+
+                // New good 99 should have been created in property
+                assert!(firm.property.contains_key(&99));
+                assert_eq!(firm.property[&99].quantity, 10.0);
+            }
+
+            #[test]
+            fn test_unknown_process_skips_gracefully() {
+                let factuals = Factuals {
+                    goods: HashMap::new(),
+                    processes: HashMap::new(),
+                };
+
+                let mut firm = Firm::new(5, "Broken Firm".into(), 42, hexx::Hex::new(0, 0));
+                firm.production_line.push(ProductionLine {
+                    process: 999, // does not exist
+                    target: Some(5),
+                    inputs: vec![],
+                    historical_productivity: 0.0,
+                    last_success_rate: 0.42,
+                    last_iterations: 3.0,
+                    last_effects: vec![ProcessEffect::Culture(1.0)],
+                    last_missing_goods: vec![1],
+                    last_amv_consumed: HashMap::from([(1, 10.0)]),
+                    last_amv_produced: HashMap::new(),
+                });
+
+                let market = make_market_with_amvs(&[]);
+
+                let report = firm.run_production(&factuals, &market);
+
+                let line = &firm.production_line[0];
+                assert_eq!(line.last_success_rate, 0.0);
+                assert_eq!(line.last_iterations, 0.0);
+                assert!(line.last_effects.is_empty());
+                assert!(line.last_missing_goods.is_empty());
+                assert!(line.last_amv_consumed.is_empty());
+                assert!(report.effects.is_empty());
+                assert!(report.produced.is_empty());
+                assert!(report.consumed.is_empty());
+            }
+        }
+    }
 }

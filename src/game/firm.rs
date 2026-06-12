@@ -110,14 +110,12 @@ impl Firm {
     /// - Used capital goods are removed from `quantity` **and** recorded into the
     ///   `used_capital` field on the corresponding `FirmPRow` (to be returned at 
     ///   the end of the day).
-    /// - Records success rate, iterations, effects, missing goods, **and AMV snapshots**
+    /// - Records success rate, iterations, effects, missing goods, and AMV 
     ///   of the goods involved on each `ProductionLine`.
     /// 
     /// Returns a `ProductionReport` containing:
     /// - All `ProcessEffect`s produced (research, culture, growth...)
     /// - Consolidated `produced` and `consumed` quantities across every process run.
-    ///   This single record can be fed to both the Market (to update `MarketGood.production`
-    ///   / `consumption`) and kept by the Firm for its own ledgers.
     /// 
     /// Only reads from `self.property` for available stock. The `market` parameter is
     /// used solely to snapshot current AMV values for record-keeping.
@@ -130,8 +128,8 @@ impl Firm {
                 line.last_iterations = 0.0;
                 line.last_effects.clear();
                 line.last_missing_goods.clear();
-                line.last_amv_consumed.clear();
-                line.last_amv_produced.clear();
+                line.last_amv_consumed = 0.0;
+                line.last_amv_produced = 0.0;
                 continue;
             };
 
@@ -184,12 +182,12 @@ impl Firm {
                 if delta > 0.0 {
                     // Produced (outputs + decay results)
                     *report.produced.entry(good_id).or_insert(0.0) += delta;
-                    line.last_amv_produced.insert(good_id, amv);
+                    line.last_amv_produced += amv * delta;
                 } else if delta < 0.0 {
                     // Consumed (Destroyed or Consumed input types)
                     let consumed_qty = -delta;
                     *report.consumed.entry(good_id).or_insert(0.0) += consumed_qty;
-                    line.last_amv_consumed.insert(good_id, amv);
+                    line.last_amv_consumed -= amv * delta;
                 }
             }
 
@@ -274,19 +272,18 @@ pub struct ProductionLine {
     pub last_missing_goods: Vec<usize>,
 
     /// Snapshot of Abstract Market Value (AMV) for every good that was **consumed**
-    /// (non-capital inputs) during the last production run. Useful for AMV-based
-    /// productivity calculations (amv_out / amv_in) and historical tracking.
-    pub last_amv_consumed: HashMap<usize, f64>,
+    /// (non-capital inputs) during the last production run.
+    pub last_amv_consumed: f64,
     /// Snapshot of Abstract Market Value (AMV) for every good that was **produced**
     /// (outputs + decay) during the last production run.
-    pub last_amv_produced: HashMap<usize, f64>,
+    pub last_amv_produced: f64,
 }
 
 /// # Firm Property Row
 /// 
 /// A row of property data for a Firm. Includes data for management, oversight, and 
 /// targeting for both purchasing and use in production.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FirmPRow {
     /// The amount currently owned.
     pub quantity: f64,
