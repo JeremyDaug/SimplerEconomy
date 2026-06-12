@@ -124,13 +124,7 @@ impl Firm {
 
         for line in &mut self.production_line {
             let Some(process) = factuals.processes.get(&line.process) else {
-                line.last_success_rate = 0.0;
-                line.last_iterations = 0.0;
-                line.last_effects.clear();
-                line.last_missing_goods.clear();
-                line.last_amv_consumed = 0.0;
-                line.last_amv_produced = 0.0;
-                continue;
+                panic!("Process not found!");
             };
 
             // Snapshot of available goods from this firm's property only
