@@ -23,6 +23,9 @@ pub struct Market {
     pub goods: HashMap<usize, MarketGood>,
 }
 
+impl Market {
+}
+
 
 /// # Market Good
 /// 
@@ -52,4 +55,19 @@ pub struct MarketGood {
     /* placeholder for exchange data. This data should include both how many times 
     it was exchanged, and how many were exchanged overall and at what 'concrete' prices 
     they were exchanged for.*/
+}
+
+impl MarketGood {
+    /// # Default
+    /// 
+    /// Gets the default market good, AMV defaults to 1.0.
+    pub fn default() -> Self {
+        Self {
+            amv: 1.0,
+            production: 0.0,
+            consumption: 0.0,
+            imported: 0.0,
+            stock: 0.0,
+        }
+    }
 }

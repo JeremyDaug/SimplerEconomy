@@ -1471,7 +1471,7 @@ use super::*;
 
                 firm.production_line.push(ProductionLine {
                     process: 2,
-                    target: Some(10), // wants 10, will only get ~2
+                    target: Some(10.0), // wants 10, will only get ~2
                     inputs: vec![30],
                     historical_productivity: 0.0,
                     last_success_rate: 0.0,
@@ -1586,7 +1586,8 @@ use super::*;
             }
 
             #[test]
-            fn test_unknown_process_skips_gracefully() {
+            #[should_panic(expected = "Process not found!")]
+            fn test_unknown_process_panics() {
                 let factuals = Factuals {
                     goods: HashMap::new(),
                     processes: HashMap::new(),
@@ -1595,7 +1596,7 @@ use super::*;
                 let mut firm = Firm::new(5, "Broken Firm".into(), 42, hexx::Hex::new(0, 0));
                 firm.production_line.push(ProductionLine {
                     process: 999, // does not exist
-                    target: Some(5),
+                    target: Some(5.0),
                     inputs: vec![],
                     historical_productivity: 0.0,
                     last_success_rate: 0.42,
@@ -1608,17 +1609,7 @@ use super::*;
 
                 let market = make_market_with_amvs(&[]);
 
-                let report = firm.run_production(&factuals, &market);
-
-                let line = &firm.production_line[0];
-                assert_eq!(line.last_success_rate, 0.0);
-                assert_eq!(line.last_iterations, 0.0);
-                assert!(line.last_effects.is_empty());
-                assert!(line.last_missing_goods.is_empty());
-                assert_eq!(line.last_amv_consumed, 0.0);
-                assert!(report.effects.is_empty());
-                assert!(report.produced.is_empty());
-                assert!(report.consumed.is_empty());
+                firm.run_production(&factuals, &market);
             }
         }
     }

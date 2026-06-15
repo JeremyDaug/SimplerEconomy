@@ -489,9 +489,13 @@ impl Process {
 /// - Effects produced by the process, such as research or culture.
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
+    /// The number of iterations completed in total.
     pub iterations: f64,
+    /// The changes to the goods input, negative means destroyed, positive means created.
     pub changes: HashMap<usize, f64>,
+    /// Inputs that were used, but not consumed, always peositive value.
     pub used_inputs: HashMap<usize, f64>,
+    /// Any addititional effects produced by the process.
     pub effects: Vec<ProcessEffect>,
     /// The goods that caused us to stop.
     /// 

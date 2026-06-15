@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use hexx::Hex;
 
@@ -119,10 +119,15 @@ impl Firm {
     /// 
     /// Only reads from `self.property` for available stock. The `market` parameter is
     /// used solely to snapshot current AMV values for record-keeping.
+    /// 
+    /// ## Panic
+    /// 
+    /// Panics if good or process is not found in factuals.
     pub fn run_production(&mut self, factuals: &Factuals, market: &Market) -> ProductionReport {
         let mut report = ProductionReport::default();
 
         for line in &mut self.production_line {
+            // if process is not found, panic
             let Some(process) = factuals.processes.get(&line.process) else {
                 panic!("Process not found!");
             };
@@ -134,13 +139,14 @@ impl Firm {
                 .map(|(&gid, row)| (gid, row.quantity))
                 .collect();
 
-            let target_f = line.target.map(|t| t as f64);
-            let result = process.do_process(&available, target_f, factuals);
+            let result = process.do_process(&available, line.target, factuals);
 
             // Apply net changes to property (outputs + consumed inputs + decay)
             for (&good_id, &delta) in &result.changes {
                 if let Some(row) = self.property.get_mut(&good_id) {
+                    // if already in property, add delta
                     row.quantity += delta;
+                    debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
                 } else if delta > 0.0 {
                     // New good produced — create row with sensible defaults
                     self.property.insert(
@@ -154,24 +160,25 @@ impl Firm {
                             used_capital: 0.0,
                         },
                     );
+                } else if delta < 0.0 {
+                    unreachable!("A sanity checkpoint, we should never consume goods we don't have.");
                 }
             }
 
             // Remove used capital from quantity and record it in the row for later return
             for (&good_id, &used) in &result.used_inputs {
                 if let Some(row) = self.property.get_mut(&good_id) {
-                    row.quantity = (row.quantity - used).max(0.0);
+                    row.quantity -= used;
+                    debug_assert!(row.quantity >= 0.0, "Quantity should never be negative.");
                     row.used_capital += used;
                 }
             }
 
             // --- Record AMV snapshots and build consolidated produced/consumed ---
             for (&good_id, &delta) in &result.changes {
-                let amv = market
-                    .goods
-                    .get(&good_id)
-                    .map(|mg| mg.amv)
-                    .unwrap_or(0.0);
+                let amv = if let Some(good) = market.goods.get(&good_id) {
+                    good.amv
+                } else { 1.0 };
 
                 if delta > 0.0 {
                     // Produced (outputs + decay results)
@@ -186,7 +193,7 @@ impl Firm {
             }
 
             // Record success + result details on the production line
-            let success = if let Some(t) = target_f {
+            let success = if let Some(t) = line.target {
                 if t > 0.0 {
                     (result.iterations / t).min(1.0)
                 } else {
@@ -249,7 +256,7 @@ pub struct ProductionLine {
     /// The process being run.
     pub process: usize,
     /// The target being sought. If None, then the firm wants to do as many as possible.
-    pub target: Option<usize>,
+    pub target: Option<f64>,
     /// What goods are going to go into the process. Used to restrict optional inputs.
     pub inputs: Vec<usize>,
     /// A record of the average productivity (amv out / amv in) of the process.
