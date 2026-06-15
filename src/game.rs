@@ -21,3 +21,6 @@ pub mod actor;
 pub mod firmorganization;
 pub mod workforce;
 pub mod contract;
+pub mod populationdata;
+pub mod players;
+pub mod mapdata;
