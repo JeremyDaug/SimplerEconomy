@@ -428,7 +428,7 @@ impl Process {
                                 .entry(decay_good)
                                 .or_insert(0.0) += decay_amount;
                         }
-                    } else { assert!(false, "Good not found!")}
+                    } else { assert!(false, "Good '{}' not found!", input.good)}
                 },
             }
             // lastly, add any extra effects from the input to the process result.
