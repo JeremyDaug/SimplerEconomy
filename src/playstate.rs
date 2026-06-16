@@ -36,7 +36,7 @@ impl PlayState {
     pub fn advance_turn(&mut self) {
         self.turn += 1;
 
-        /*
+         /*
         1. Add turn start resources. Like time and environmental resources.
         2. Environment random effects and results which can interfere with plans
         3. Player actions, all run and applied simultaneously and before anything 
@@ -65,7 +65,8 @@ impl PlayState {
         9. Pop Growth/Decline.
         10.Pop migration.
         11.Record Keeping.
-        12.Good Decay.
+        12.Map Changes, like player claims, market consolidation/integration, etc.
+        13.Good Decay to wrap up the day.
         */
     }
 }
