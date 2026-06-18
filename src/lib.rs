@@ -15,6 +15,7 @@ use crate::game::good::Good;
             tags: Default::default(),
             decay_rate: 0.0,
             decay_result,
+            categories: vec![],
             // add any other fields your Good actually has
         }
     }
@@ -1809,13 +1810,14 @@ use super::*;
 
                 let mut factuals = make_factuals_with_process(process);
                 // Add decay info to the good definition (even if goods map is mostly empty)
-                let wood = crate::game::good::Good {
+                let wood = Good {
                     id: 100,
                     name: "Wood".into(),
                     class: None,
                     decay_rate: 0.25,
                     decay_result: HashMap::from([(130, 0.5)]), // 50% becomes sawdust
                     tags: Default::default(),
+                    categories: vec![],
                 };
                 factuals.goods.insert(100, wood);
                 factuals.goods.insert(130, make_good(110, "nice wood", HashMap::new()));

@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 /// # Good
 /// 
 /// Goods are things that are bought, sold, and traded in the economy.
-/// 
 #[derive(Debug, Clone)]
 pub struct Good {
     /// Unique ID of the good
@@ -12,6 +11,9 @@ pub struct Good {
     pub name: String,
 
     /// What class the good this is in.
+    /// 
+    /// This is another good which exists. it points to the 'ideal' example of the 
+    /// class of good. Think generic bread vs wonder bread.
     pub class: Option<usize>,
 
     /// The rate that the good decays.
@@ -30,6 +32,11 @@ pub struct Good {
 
     /// Tags which modify how the good is treated in markets.
     pub tags: HashSet<GoodTag>,
+
+    /// Categories that a Good belongs to. A tool for searching, sorting, and refining 
+    /// goods into various sections. For example, a bucket of desires should all be
+    /// goods which share a primary category.
+    pub categories: Vec<String>,
 }
 
 /// # Good Tag

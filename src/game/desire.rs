@@ -11,12 +11,72 @@ pub struct Desire {
 
     /// The goods beings desired. If of length 1, then it's a specific good,
     /// if it's multiple, then it's a bucket.
-    /// 
-    /// The f64 part is the 'effeciency' of the good. Ignored if of length 1.
-    pub target: Vec<(usize, f64)>,
+    pub target: Vec<DesireTarget>,
 
-    /// The amount of units needed 
+    /// The amount of units needed. Must always be a positive value.
     pub amount: f64,
+    /// The current satisfaction of the desire in units. Does not differentiate goods.
+    pub satisfaction: f64,
+
+    /// Desires should have a category of good they are restricted to expanding into.
+    pub category: Option<String>,
+
+    /// The effects (typically one or none) which are generated when a desire is either
+    /// satisfied (for bonuses) or unsatisfied (for maluses).
+    pub effect: Vec<DesireEffect>,
+
+    /// A Desire's Scalar is the factor by which the base amount of a desire is scaled
+    /// by to match the pop and it's household(s).
+    /// 
+    /// In particular, it represents selecting either everyone, a member of the 
+    /// household, or it is on a 'per house' basis.
+    pub scalar: DesireScalar,
+}
+
+/// # Desire Target 
+/// 
+/// A good and the efficiency of that good at satisfying our desires.
+#[derive(Debug, Clone)]
+pub struct DesireTarget {
+    /// Whe ID of the good which can satisfy this desire.
+    pub good: usize,
+    /// The efficiency at which the good can satisfy our desire.
+    /// Units * effenciency = satisfaction.
+    pub efficiency: f64,
+}
+
+/// # Desire Scalar
+/// 
+/// When a base amount targeted by a desire is being scaled, what part of the pop
+/// does it scale off of. 
+#[derive(Debug, Clone)]
+pub enum DesireScalar {
+    /// Scales with all of the members of a house.
+    All,
+    /// Scales by household, not members.
+    Household,
+    /// Scales by adults only.
+    Adults,
+    /// Scaled by children only.
+    Children,
+    /// Scaled by Elders only.
+    Elders,
+    /// Scaled by the effective labor output of the household.
+    Labor
+}
+
+/// # Desire Effect
+/// 
+/// When the condition of the effect is met (satisfaction or lack thereof) the effect
+/// is generated and applied to the pop who owns the desire.
+/// 
+/// Note: This is currently not comprehensive.
+#[derive(Debug, Clone)]
+pub enum DesireEffect {
+    /// When this desire is **not** met, it reduces growth by this value.
+    Mortality(f64),
+    /// When this desire **is** met, it increases growth by this value.
+    Birthrate(f64)
 }
 
 /// # Desire Source
