@@ -74,6 +74,14 @@ impl Pop {
         todo!()
     }
 
+    /// # Next Shopping Trip
+    /// 
+    /// Used during the day, this decides what a pop will want to buy next. It does this
+    /// 
+    pub fn next_shopping_trip(&self) {
+        todo!()
+    }
+
     /// # Consume
     /// 
     /// Consumes goods from `property` to satisfy a pop's desires.
@@ -89,73 +97,33 @@ impl Pop {
     ///
     /// The results of the consumption is stored in the desires as satisfaction.
     ///
-    /// Also mutates `self.property` (reduces `quantity`, increases `reserved`).
+    /// Also mutates `self.property` (reduces `quantity`, increases `consumed`).
+    /// 
+    /// The function assumes that all desires are currently in `self.desires` and
+    /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
-        let num_tiers = 3;
+        let mut curr_tier = 0;
+        let mut working_desires = vec![];
+        
+        
+    }
 
-        // Success tracking, same shape as desires
-        let mut success: Vec<Vec<f64>> = self
-            .desires
-            .iter()
-            .map(|tier| vec![0.0; tier.len()])
-            .collect();
-
-        for tier_idx in 0..num_tiers {
-            let is_luxury = tier_idx == 2;
-            let tier = &self.desires[tier_idx];
-
-            if tier.is_empty() {
-                continue;
-            }
-
-            if !is_luxury {
-                // Basic or Common: one pass, in order, fill as much as possible
-                for (d_idx, desire) in tier.iter().enumerate() {
-                    let satisfied = Self::satisfy_one_desire(&mut self.property, desire);
-                    let ratio = if desire.amount > 0.0 {
-                        (satisfied / desire.amount).min(1.0)
-                    } else {
-                        0.0
-                    };
-                    success[tier_idx][d_idx] = ratio;
-                }
-            } else {
-                // Luxury: repeat/cycle until we make no more progress
-                let mut luxury_satisfied = vec![0.0; tier.len()];
-                let mut made_progress = true;
-                let mut cycle_idx = 0usize;
-
-                while made_progress {
-                    made_progress = false;
-
-                    let d_idx = cycle_idx % tier.len();
-                    let desire = &tier[d_idx];
-
-                    let gained = Self::satisfy_one_desire(&mut self.property, desire);
-                    if gained > 0.0 {
-                        luxury_satisfied[d_idx] += gained;
-                        made_progress = true;
-                    }
-
-                    cycle_idx += 1;
-
-                    // Hard safety cap (should never be reached in normal use)
-                    if cycle_idx > 100_000 {
-                        break;
-                    }
-                }
-
-                for (d_idx, &total_sat) in luxury_satisfied.iter().enumerate() {
-                    let ratio = if tier[d_idx].amount > 0.0 {
-                        total_sat / tier[d_idx].amount
-                    } else {
-                        0.0
-                    };
-                    success[tier_idx][d_idx] = ratio;
-                }
+    /// # Satisfy Tier
+    /// 
+    /// Takes a list of desires (presumably a tier) and tries to satisfy each desire
+    /// in order.
+    /// 
+    /// Will consume desires for satisfaction.
+    /// 
+    /// Returns true if any of the desires was fully satisfied.
+    pub(crate) fn satify_tier(&mut self, desires: &mut Vec<Desire>) -> bool {
+        let mut success = false;
+        for desire in desires.iter_mut() {
+            let result = self.satisfy_one_desire(desire);
+            if result >= 1.0 {
+                success = true;
             }
         }
-
         success
     }
 
