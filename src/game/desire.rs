@@ -6,6 +6,11 @@
 /// 
 #[derive(Debug, Clone)]
 pub struct Desire {
+    /// An index value, for keeping desires order. 
+    /// 
+    /// This is set/reset when desires are added/rearranged, or
+    pub idx: usize,
+
     /// Useful Identifier which points back to where this desire comes from.
     pub source: DesireSource,
 
@@ -31,6 +36,15 @@ pub struct Desire {
     /// In particular, it represents selecting either everyone, a member of the 
     /// household, or it is on a 'per house' basis.
     pub scalar: DesireScalar,
+}
+
+impl Desire {
+    /// # Tiers Satisfied
+    /// 
+    /// `self.satisfaciton` / `self.amount`, or the number of times it's been satisfied.
+    pub fn tiers_satisfied(&self) -> f64 {
+        self.satisfaction / self.amount
+    }
 }
 
 /// # Desire Target 

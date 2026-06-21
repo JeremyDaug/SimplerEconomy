@@ -82,6 +82,14 @@ impl Pop {
         todo!()
     }
 
+    /// # Process Satisfaction
+    /// 
+    /// This extracts satisfaction data, applies effects from desires, and recalculates
+    /// the mood of a pop for political and future needs.
+    pub fn process_satisfaction(&mut self) -> () {
+        todo!()
+    }
+
     /// # Consume
     /// 
     /// Consumes goods from `property` to satisfy a pop's desires.
@@ -105,7 +113,43 @@ impl Pop {
         let mut curr_tier = 0;
         let mut working_desires = vec![];
         
-        
+        // first do basic desires, only one pass needed.
+        working_desires = self.desires.remove(0); // pop off front
+        self.satisfy_tier(&mut working_desires); // satisfy them
+        self.desires.insert(0, working_desires); // put back
+
+        // second do common needs, only one pass needed.
+        working_desires = self.desires.remove(1); // pop off
+        self.satisfy_tier(&mut working_desires); // satisfy
+        self.desires.insert(1, working_desires); // put back
+
+        // Last is Luxury Needs, do until we produce no more satisfaction.
+        let mut iter_target = 1.0;
+        working_desires = self.desires.remove(2); // pop off
+        let mut ordered_desires = vec![];
+        loop {// loop over desires
+            // satisfy the current working desires
+            self.satisfy_tier(&mut working_desires);
+            // remove any desires not fully satisfied.
+            let mut idx = 0;
+            loop {
+                if idx >= working_desires.len() { break; } // break out if we walk off the end.
+                if working_desires[idx].tiers_satisfied() < iter_target {
+                    // if not satisfied to our target, move to ordered_desires
+                    ordered_desires.push(working_desires.remove(idx));
+                } else {
+                    // otherwise, increment idx by one and go on
+                    idx += 1;
+                }
+            }
+            // if nothing to go onto next time, break out.
+            if working_desires.len() == 0 {
+                break;
+            } else { iter_target += 1.0; } // otherwise increment target and go again.
+        } 
+        // sasitsfacions done, reorganize
+        ordered_desires.sort_by(|a, b| a.idx.cmp(&b.idx));
+        self.desires.insert(2, ordered_desires); // put back
     }
 
     /// # Satisfy Tier
@@ -116,7 +160,7 @@ impl Pop {
     /// Will consume desires for satisfaction.
     /// 
     /// Returns true if any of the desires was fully satisfied.
-    pub(crate) fn satify_tier(&mut self, desires: &mut Vec<Desire>) -> bool {
+    pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> bool {
         let mut success = false;
         for desire in desires.iter_mut() {
             let result = self.satisfy_one_desire(desire);
