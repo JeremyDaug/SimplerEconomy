@@ -189,23 +189,24 @@ impl Pop {
                 break;
             }
             // get the target good, or continue on to the next target.
-            if let Some(row) = self.property.get_mut(&target.good) && row.quantity > 0.0 {
+            if let Some(row) = self.property.get_mut(&target.good) && row.consumeable() > 0.0 {
                 // satisfaction_gained = goods_consumed * eff
                 // => goods_needed = remaining / eff
                 let needed = remaining / target.efficiency;
                 let take = needed.min(row.quantity);
 
+                // remove from quantity and reserve.
+                row.quantity -= take;
+                row.reserved -= take;
                 match desire.target_type {
                     DesireTargetType::Consume => {
                         // shift to consumed.
-                        row.quantity -= take;
                         row.consumed += take;
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
                         remaining -= sat_gained;
                     },
                     DesireTargetType::Use => {
-                        row.quantity -= take;
                         row.used += take;
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
@@ -238,9 +239,12 @@ pub struct PopPRow {
     /// savings, fear, or similar 'hodl' moods activated, this target is pushed up.
     /// Supply volatility can also push it up to ensure 
     pub target: f64,
+
     /// The amount that has already been earmarked for the pop's use today. Used 
     /// to 'prepare' for consumption. Does not remove from quantity.
     pub reserved: f64,
+    /// The amount that we wish to preserve between days.
+    pub saved: f64,
 
     /// How many of this good was consumed for today's desires.
     /// All goods here are decayed at the end of the day.
@@ -269,6 +273,23 @@ impl PopPRow {
     /// they are willing to offer or sell.
     pub fn exchange(&self) -> f64 {
         self.quantity - self.target
+    }
+
+    /// # Consumeable
+    /// 
+    /// `quantity` - `saved`.
+    /// 
+    /// Gives the difference between Current quantity and the amount a pop wants to
+    /// save between days.
+    /// 
+    /// Should only be negative after decay has occurred.
+    /// 
+    /// Useful for picking out goods for consumption without overconsuming them.
+    /// 
+    /// This is typically a fraction of the target, and is modified along with target 
+    /// and 
+    pub fn consumeable(&self) -> f64 {
+        self.quantity - self.saved
     }
 
     /// # Available
