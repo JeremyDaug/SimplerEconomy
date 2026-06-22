@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::Desire, household::HouseholdDef};
+use bevy::utils::default;
+
+use crate::game::{desire::{Desire, DesireTargetType}, household::HouseholdDef};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -193,12 +195,23 @@ impl Pop {
                 let needed = remaining / target.efficiency;
                 let take = needed.min(row.quantity);
 
-                // Perform the consumption
-                row.quantity -= take;
-                row.consumed += take;
-                let sat_gained = take * target.efficiency;
-                desire.satisfaction += sat_gained;
-                remaining -= sat_gained;
+                match desire.target_type {
+                    DesireTargetType::Consume => {
+                        // shift to consumed.
+                        row.quantity -= take;
+                        row.consumed += take;
+                        let sat_gained = take * target.efficiency;
+                        desire.satisfaction += sat_gained;
+                        remaining -= sat_gained;
+                    },
+                    DesireTargetType::Use => {
+                        row.quantity -= take;
+                        row.used += take;
+                        let sat_gained = take * target.efficiency;
+                        desire.satisfaction += sat_gained;
+                        remaining -= sat_gained;
+                    },
+                }
             }
         }
         // return the current satisfaction rate (as a rate of 0.0 - 1.0)
@@ -213,30 +226,57 @@ impl Pop {
 /// 
 /// This currently only contains the current quantity, the amount reserved for 
 /// consumption, and the target they want to reach.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PopPRow {
     /// The total amount owned at the moment.
     pub quantity: f64,
     
     /// The Target amount the pop desires to have after all shopping is complete.
+    /// Simplifies purchases into bulk purchases.
+    /// 
+    /// Should target roughly 1.0-1.2x of the desire at minimum. When a pop has elevated
+    /// savings, fear, or similar 'hodl' moods activated, this target is pushed up.
+    /// Supply volatility can also push it up to ensure 
     pub target: f64,
-    /// The amount that has already been earmarked for the pop's use today.
+    /// The amount that has already been earmarked for the pop's use today. Used 
+    /// to 'prepare' for consumption. Does not remove from quantity.
     pub reserved: f64,
 
-    /// How many of this good was consumed yesterday for desires.
+    /// How many of this good was consumed for today's desires.
+    /// All goods here are decayed at the end of the day.
     pub consumed: f64,
+    /// Goods that were used for use desires, but not consumed, are stored here
+    /// until the end of the day. At day's end, goods here decay normally, and are
+    /// returned to total quantity.
+    pub used: f64,
 }
 
 impl PopPRow {
     pub fn new(quantity: f64) -> Self {
         Self {
             quantity,
-            target: 0.0,
-            reserved: 0.0,
-            consumed: 0.0,
+            ..default()
         }
     }
 
+    /// # Exchange
+    /// 
+    /// `quantity` - `target`.
+    /// 
+    /// This gives the difference between the target to reach and the amount a pop owns.
+    /// 
+    /// Negative values are how much they will want to buy. Positive values are how many
+    /// they are willing to offer or sell.
+    pub fn exchange(&self) -> f64 {
+        self.quantity - self.target
+    }
+
+    /// # Available
+    /// 
+    /// `quantity` - `reserved`.
+    /// 
+    /// This gives the amount of goods a pop has that have yet to be claimed by 
+    /// another desire. Should always be non-negative.
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
     }

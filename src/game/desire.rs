@@ -17,6 +17,8 @@ pub struct Desire {
     /// The goods beings desired. If of length 1, then it's a specific good,
     /// if it's multiple, then it's a bucket.
     pub target: Vec<DesireTarget>,
+    /// 
+    pub target_type: DesireTargetType,
 
     /// The amount of units needed. Must always be a positive value.
     pub amount: f64,
@@ -54,6 +56,8 @@ impl Desire {
 pub struct DesireTarget {
     /// Whe ID of the good which can satisfy this desire.
     pub good: usize,
+    /// Whether the desire is Consumed or Used by the pop.
+    pub desire_type: DesireTargetType,
     /// The efficiency at which the good can satisfy our desire.
     /// Units * effenciency = satisfaction.
     pub efficiency: f64,
@@ -77,6 +81,15 @@ pub enum DesireScalar {
     Elders,
     /// Scaled by the effective labor output of the household.
     Labor
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DesireTargetType {
+    /// The Desire is Consumed, producing the output goods of the good's decay.
+    Consume,
+    /// The Desire is to be used, not consumed. It is not decayed/destroyed, but instead used.
+    /// Currently, Use goods have no time cost attached. That may change, but not just yet.
+    Use,
 }
 
 /// # Desire Effect
