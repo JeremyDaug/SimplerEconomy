@@ -17,8 +17,6 @@ pub struct Desire {
     /// The goods beings desired. If of length 1, then it's a specific good,
     /// if it's multiple, then it's a bucket.
     pub target: Vec<DesireTarget>,
-    /// 
-    pub target_type: DesireTargetType,
 
     /// The amount of units needed. Must always be a positive value.
     pub amount: f64,
@@ -61,6 +59,22 @@ pub struct DesireTarget {
     /// The efficiency at which the good can satisfy our desire.
     /// Units * effenciency = satisfaction.
     pub efficiency: f64,
+    /// What proportion of the wider desire can be satisfied by this specific good.
+    /// 
+    /// Should be between 0.0 and 1.0 and should not go below 1 / number of goods, for 
+    /// the desire.
+    pub cap: f64,
+}
+
+impl DesireTarget {
+    pub fn new(good: usize, desire_type: DesireTargetType, eff: f64) -> Self {
+        Self {
+            good,
+            desire_type,
+            efficiency: eff,
+            cap: 1.0
+        }
+    }
 }
 
 /// # Desire Scalar

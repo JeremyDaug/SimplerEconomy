@@ -180,7 +180,8 @@ impl Pop {
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
         // Clone + sort by efficiency descending (best substitutes first)
         let mut targets = desire.target.clone();
-        targets.sort_by(|a, b| b.efficiency.partial_cmp(&a.efficiency).unwrap_or(std::cmp::Ordering::Equal));
+        targets.sort_by(|a, b| b.efficiency.partial_cmp(&a.efficiency)
+            .unwrap_or(std::cmp::Ordering::Equal));
 
         let mut remaining = desire.amount;
 
@@ -190,15 +191,15 @@ impl Pop {
             }
             // get the target good, or continue on to the next target.
             if let Some(row) = self.property.get_mut(&target.good) && row.consumeable() > 0.0 {
-                // satisfaction_gained = goods_consumed * eff
-                // => goods_needed = remaining / eff
-                let needed = remaining / target.efficiency;
-                let take = needed.min(row.quantity);
+                // remaining (Capped at the cap amount of the desire) divided by 
+                // efficiency is how much is needed.
+                let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
+                let take = needed.min(row.consumeable());
 
                 // remove from quantity and reserve.
                 row.quantity -= take;
                 row.reserved -= take;
-                match desire.target_type {
+                match target.desire_type {
                     DesireTargetType::Consume => {
                         // shift to consumed.
                         row.consumed += take;
@@ -216,7 +217,7 @@ impl Pop {
             }
         }
         // return the current satisfaction rate (as a rate of 0.0 - 1.0)
-        (desire.satisfaction / desire.amount) % 1.0 // double check this, I can never remember how Modulo works with floating point values.
+        desire.satisfaction / desire.amount
     }
 }
 
