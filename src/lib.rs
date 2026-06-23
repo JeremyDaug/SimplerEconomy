@@ -1357,6 +1357,39 @@ use super::*;
         }
     }
 
+    mod pop {
+        use std::collections::HashMap;
+
+use crate::game::{desire::DesireScalar::Household, household::HouseholdDef, pop::{DemoRow, Pop, PopPRow}};
+
+        fn make_pop() -> Pop {
+            Pop {
+                id: 0,
+                job: 0,
+                property: HashMap::new(),
+                desires: vec![],
+                working_desires: vec![],
+                demographics: DemoRow {
+                    count: 0.0,
+                    household: HouseholdDef::default(),
+                    species: 0,
+                    culture: 0,
+                    class: 0,
+                    religion: 0,
+                },
+            }
+        }
+
+        mod satisfy_one_desire_should {
+            use super::*;
+
+            #[test]
+            fn correctly_satisfy_simple_desire() {
+                let mut test_pop = make_pop();
+            }
+        }
+    }
+
     mod firm {
         use super::*;
         use crate::game::factuals::Factuals;
