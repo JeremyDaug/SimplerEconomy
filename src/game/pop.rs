@@ -263,6 +263,36 @@ impl PopPRow {
         }
     }
 
+    /// Fluent target setter
+    pub fn with_target(mut self, target: f64) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// fruent reserved setter
+    pub fn with_reserve(mut self, reserve: f64) -> Self {
+        self.reserved = reserve;
+        self
+    }
+
+    /// Fluent saved setter
+    pub fn with_saved(mut self, saved: f64) -> Self {
+        self.saved = saved;
+        self
+    }
+
+    /// Fluent Consumed Setter
+    pub fn with_consumed(mut self, consumed: f64) -> Self {
+        self.consumed = consumed;
+        self
+    }
+
+    /// Fluent Used Setter
+    pub fn with_used(mut self, used: f64) -> Self {
+        self.used = used;
+        self
+    }
+
     /// # Exchange
     /// 
     /// `quantity` - `target`.

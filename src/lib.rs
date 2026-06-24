@@ -1408,7 +1408,110 @@ use super::*;
         mod satisfy_tier_should {
             use super::*;
 
-            
+            #[test]
+            fn satisfy_multiple_empty_desires() {
+                // create Pop
+                let mut test_pop = make_pop();
+
+                // new up some simple desires
+                let des1 = make_desire(0, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let des2 = make_desire(1, DesireTarget::new(101, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let des3 = make_desire(2, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let mut test_desires = vec![des1, des2, des3];
+
+                // insert property to be consumed, don't forget the reservations
+                test_pop.property.insert(100, PopPRow::new(100.0).with_reserve(20.0));
+                test_pop.property.insert(101, PopPRow::new(100.0).with_reserve(20.0));
+
+                // call function
+                let result = test_pop.satisfy_tier(&mut test_desires);
+
+                // check outcomes
+                assert_eq!(result, 1.0);
+                assert_eq!(test_pop.property[&100].quantity, 80.0);
+                assert_eq!(test_pop.property[&100].reserved, 0.0);
+                assert_eq!(test_pop.property[&100].consumed, 20.0);
+                assert_eq!(test_pop.property[&101].quantity, 90.0);
+                assert_eq!(test_pop.property[&101].reserved, 10.0);
+                assert_eq!(test_pop.property[&101].consumed, 10.0);
+                assert_eq!(test_desires[0].satisfaction, 10.0);
+                assert_eq!(test_desires[1].satisfaction, 10.0);
+                assert_eq!(test_desires[2].satisfaction, 10.0);
+            }
+
+            #[test]
+            fn satisfy_multiple_after_first_pass_desires() {
+                // create Pop
+                let mut test_pop = make_pop();
+
+                // new up some simple desires
+                let mut des1 = make_desire(0, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                    des1.satisfaction = 10.0;
+                let mut des2 = make_desire(1, DesireTarget::new(101, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                    des2.satisfaction = 10.0;
+                let mut des3 = make_desire(2, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                    des3.satisfaction = 10.0;
+                let mut test_desires = vec![des1, des2, des3];
+
+                // insert property to be consumed, don't forget the reservations
+                test_pop.property.insert(100, PopPRow::new(100.0).with_reserve(20.0));
+                test_pop.property.insert(101, PopPRow::new(100.0).with_reserve(20.0));
+
+                // call function
+                let result = test_pop.satisfy_tier(&mut test_desires);
+
+                // check outcomes
+                assert_eq!(result, 2.0);
+                assert_eq!(test_pop.property[&100].quantity, 80.0);
+                assert_eq!(test_pop.property[&100].reserved, 0.0);
+                assert_eq!(test_pop.property[&100].consumed, 20.0);
+                assert_eq!(test_pop.property[&101].quantity, 90.0);
+                assert_eq!(test_pop.property[&101].reserved, 10.0);
+                assert_eq!(test_pop.property[&101].consumed, 10.0);
+                assert_eq!(test_desires[0].satisfaction, 20.0);
+                assert_eq!(test_desires[1].satisfaction, 20.0);
+                assert_eq!(test_desires[2].satisfaction, 20.0);
+            }
+
+            #[test]
+            fn return_largest_when_not_equal_satisfactions() {
+                // create Pop
+                let mut test_pop = make_pop();
+
+                // new up some simple desires
+                let des1 = make_desire(0, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let des2 = make_desire(1, DesireTarget::new(101, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let des3 = make_desire(2, DesireTarget::new(100, 
+                    DesireTargetType::Consume, 1.0), 10.0);
+                let mut test_desires = vec![des1, des2, des3];
+
+                // insert property to be consumed, don't forget the reservations
+                test_pop.property.insert(100, PopPRow::new(100.0).with_reserve(20.0));
+                test_pop.property.insert(101, PopPRow::new(100.0).with_reserve(20.0));
+
+                // call function
+                let result = test_pop.satisfy_tier(&mut test_desires);
+
+                // check outcomes
+                assert_eq!(result, 1.0);
+                assert_eq!(test_pop.property[&100].quantity, 80.0);
+                assert_eq!(test_pop.property[&100].reserved, 0.0);
+                assert_eq!(test_pop.property[&100].consumed, 20.0);
+                assert_eq!(test_pop.property[&101].quantity, 90.0);
+                assert_eq!(test_pop.property[&101].reserved, 10.0);
+                assert_eq!(test_pop.property[&101].consumed, 10.0);
+                assert_eq!(test_desires[0].satisfaction, 10.0);
+                assert_eq!(test_desires[1].satisfaction, 10.0);
+                assert_eq!(test_desires[2].satisfaction, 10.0);
+            }
         }
 
         mod satisfy_one_desire_should {
@@ -1418,7 +1521,8 @@ use super::*;
             fn correctly_satisfy_simple_consume_desire() {
                 let mut test_pop = make_pop();
 
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(100.0));
+                test_pop.property.insert(CONSUMED_GOOD, 
+                    PopPRow::new(100.0).with_reserve(10.0));
                 
                 let mut test_desire = make_desire(0, DesireTarget::new(CONSUMED_GOOD, 
                     DesireTargetType::Consume, 1.0), 10.0);
@@ -1427,6 +1531,7 @@ use super::*;
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 90.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 10.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
             }
@@ -1435,7 +1540,8 @@ use super::*;
             fn correctly_satisfy_simple_use_desire() {
                 let mut test_pop = make_pop();
 
-                test_pop.property.insert(USED_GOOD, PopPRow::new(100.0));
+                test_pop.property.insert(USED_GOOD, 
+                    PopPRow::new(100.0).with_reserve(10.0));
                 
                 let mut test_desire = make_desire(0, DesireTarget::new(USED_GOOD, 
                     DesireTargetType::Use, 1.0), 10.0);
@@ -1444,6 +1550,7 @@ use super::*;
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 90.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 10.0);
             }
@@ -1452,7 +1559,8 @@ use super::*;
             fn partially_fill_desire() {
                 let mut test_pop = make_pop();
 
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(5.0));
+                test_pop.property.insert(CONSUMED_GOOD, 
+                    PopPRow::new(5.0).with_reserve(5.0));
                 
                 let mut test_desire = make_desire(0, DesireTarget::new(CONSUMED_GOOD, 
                     DesireTargetType::Consume, 1.0), 10.0);
@@ -1461,6 +1569,7 @@ use super::*;
                 assert_eq!(result, 0.5);
                 assert_eq!{test_desire.satisfaction, 5.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
             }
@@ -1469,8 +1578,9 @@ use super::*;
             fn not_touch_savings() {
                 let mut test_pop = make_pop();
 
-                let mut prop = PopPRow::new(10.0);
-                prop.saved = 5.0;
+                let prop = PopPRow::new(10.0)
+                    .with_saved(5.0)
+                    .with_reserve(5.0);
                 test_pop.property.insert(CONSUMED_GOOD, prop);
                 
                 let mut test_desire = make_desire(0, DesireTarget::new(CONSUMED_GOOD, 
@@ -1480,6 +1590,7 @@ use super::*;
                 assert_eq!(result, 0.5);
                 assert_eq!{test_desire.satisfaction, 5.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 5.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].saved, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
@@ -1495,16 +1606,20 @@ use super::*;
                     DesireTarget::new(CONSUMED_GOOD, DesireTargetType::Consume, 1.0));
 
                 // Split evenly
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(5.0));
-                test_pop.property.insert(USED_GOOD, PopPRow::new(5.0));
+                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(5.0)
+                    .with_reserve(5.0));
+                test_pop.property.insert(USED_GOOD, PopPRow::new(5.0)
+                    .with_reserve(5.0));
 
                 let result = test_pop.satisfy_one_desire(&mut test_desire);
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 5.0);
             }
@@ -1519,16 +1634,20 @@ use super::*;
                     DesireTarget::new(CONSUMED_GOOD, DesireTargetType::Consume, 1.0));
 
                 // Split evenly
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(5.0));
-                test_pop.property.insert(USED_GOOD, PopPRow::new(5.0));
+                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(5.0)
+                    .with_reserve(5.0));
+                test_pop.property.insert(USED_GOOD, PopPRow::new(5.0)
+                    .with_reserve(5.0));
 
                 let result = test_pop.satisfy_one_desire(&mut test_desire);
                 assert_eq!(result, 0.75);
                 assert_eq!{test_desire.satisfaction, 7.5};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 5.0);
             }
@@ -1544,16 +1663,20 @@ use super::*;
                     DesireTarget::new(CONSUMED_GOOD, DesireTargetType::Consume, 1.0));
 
                 // Split evenly
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(10.0));
-                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0));
+                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(10.0)
+                    .with_reserve(5.0));
+                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0)
+                    .with_reserve(5.0));
 
                 let result = test_pop.satisfy_one_desire(&mut test_desire);
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 5.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 5.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 5.0);
             }
@@ -1570,15 +1693,18 @@ use super::*;
 
                 // used first, consumed second
                 test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(10.0));
-                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0));
+                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0)
+                    .with_reserve(10.0));
 
                 let result = test_pop.satisfy_one_desire(&mut test_desire);
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 10.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 0.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 10.0);
             }
@@ -1594,16 +1720,20 @@ use super::*;
                     DesireTarget::new(CONSUMED_GOOD, DesireTargetType::Consume, 1.25));
 
                 // consume first, then used
-                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(10.0));
-                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0));
+                test_pop.property.insert(CONSUMED_GOOD, PopPRow::new(10.0)
+                    .with_reserve(8.0));
+                test_pop.property.insert(USED_GOOD, PopPRow::new(10.0)
+                    .with_reserve(10.0));
 
                 let result = test_pop.satisfy_one_desire(&mut test_desire);
                 assert_eq!(result, 1.0);
                 assert_eq!{test_desire.satisfaction, 10.0};
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 2.0);
+                assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 8.0);
                 assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].quantity, 10.0);
+                assert_eq!(test_pop.property[&USED_GOOD].reserved, 10.0);
                 assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
                 assert_eq!(test_pop.property[&USED_GOOD].used, 0.0);
             }
