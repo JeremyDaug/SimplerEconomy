@@ -1405,6 +1405,12 @@ use super::*;
             pop
         }
 
+        mod satisfy_tier_should {
+            use super::*;
+
+            
+        }
+
         mod satisfy_one_desire_should {
             use super::*;
 

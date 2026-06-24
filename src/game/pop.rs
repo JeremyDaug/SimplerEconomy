@@ -161,14 +161,13 @@ impl Pop {
     /// 
     /// Will consume desires for satisfaction.
     /// 
-    /// Returns true if any of the desires was fully satisfied.
-    pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> bool {
-        let mut success = false;
+    /// Returns the highest success rate, useful for checking if any desire reached the 
+    /// next full level.
+    pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> f64 {
+        let mut success: f64 = 0.0;
         for desire in desires.iter_mut() {
             let result = self.satisfy_one_desire(desire);
-            if result >= 1.0 {
-                success = true;
-            }
+            success = success.max(result);
         }
         success
     }
@@ -176,7 +175,7 @@ impl Pop {
     /// # Satisfy One Desire
     /// 
     /// A helper which takes a single desire and tries to satisfy it to one level. It 
-    /// returns it's sucess rate (0.0-1.0) of satisfying the level.
+    /// returns final satisfaction level.
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
         // Clone + sort by efficiency descending (best substitutes first)
         let mut targets = desire.target.clone();
@@ -216,7 +215,7 @@ impl Pop {
                 }
             }
         }
-        // return the current satisfaction rate (as a rate of 0.0 - 1.0)
+        // The current satisfaction rate.
         desire.satisfaction / desire.amount
     }
 }
