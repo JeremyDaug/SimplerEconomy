@@ -1414,16 +1414,63 @@ use super::*;
                 let mut pop = make_pop();
 
                 // make a bunch of desires across it's tiers.
-                // ensure shared between at least 2 tiers.
+                // ensure shared good between at least 2 tiers.
                 // 2 basic
+                let basicdesire1 = make_desire(0, 
+                    DesireTarget::new(100, DesireTargetType::Consume, 1.0), 10.0);
+                let basicdesire2 = make_desire(1, 
+                    DesireTarget::new(101, DesireTargetType::Consume, 1.0), 10.0);
+                pop.desires[0].push(basicdesire1);
+                pop.desires[0].push(basicdesire2);
                 // 2 common
+                let commondesire1 = make_desire(0, 
+                    DesireTarget::new(200, DesireTargetType::Consume, 1.0), 10.0);
+                let commondesire2 = make_desire(1, 
+                    DesireTarget::new(101, DesireTargetType::Consume, 1.0), 10.0);
+                pop.desires[1].push(commondesire1);
+                pop.desires[1].push(commondesire2);
                 // 2 luxuries
+                let luxurydesire1 = make_desire(0, 
+                    DesireTarget::new(300, DesireTargetType::Consume, 1.0), 10.0);
+                let luxurydesire2 = make_desire(1, 
+                    DesireTarget::new(100, DesireTargetType::Consume, 1.0), 10.0);
+                pop.desires[2].push(luxurydesire1);
+                pop.desires[2].push(luxurydesire2);
 
                 // fill it's property as needed.
+                pop.property.insert(100, 
+                    PopPRow::new(100.0).with_reserve(100.0));
+                pop.property.insert(101, 
+                    PopPRow::new(100.0).with_reserve(20.0));
+                pop.property.insert(200, 
+                    PopPRow::new(100.0).with_reserve(10.0));
+                pop.property.insert(300, 
+                    PopPRow::new(100.0).with_reserve(100.0));
 
                 // run test
+                pop.consume();
 
                 // check results
+                // check property is correct
+                assert_eq!(pop.property[&100].quantity, 0.0);
+                assert_eq!(pop.property[&100].reserved, 0.0);
+                assert_eq!(pop.property[&100].consumed, 100.0);
+                assert_eq!(pop.property[&101].quantity, 80.0);
+                assert_eq!(pop.property[&101].reserved, 0.0);
+                assert_eq!(pop.property[&101].consumed, 20.0);
+                assert_eq!(pop.property[&200].quantity, 90.0);
+                assert_eq!(pop.property[&200].reserved, 0.0);
+                assert_eq!(pop.property[&200].consumed, 10.0);
+                assert_eq!(pop.property[&300].quantity, 0.0);
+                assert_eq!(pop.property[&300].reserved, 0.0);
+                assert_eq!(pop.property[&300].consumed, 100.0);
+                // check 
+                assert_eq!(pop.desires[0][0].satisfaction, 10.0);
+                assert_eq!(pop.desires[0][1].satisfaction, 10.0);
+                assert_eq!(pop.desires[1][0].satisfaction, 10.0);
+                assert_eq!(pop.desires[1][1].satisfaction, 10.0);
+                assert_eq!(pop.desires[2][0].satisfaction, 100.0);
+                assert_eq!(pop.desires[2][1].satisfaction, 90.0);
             }
         }
 
