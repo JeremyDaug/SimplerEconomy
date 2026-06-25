@@ -1411,8 +1411,13 @@ use super::*;
             #[test]
             fn correctly_satisfy_desires_across_all_tiers() {
                 // make pop
+                let mut pop = make_pop();
 
                 // make a bunch of desires across it's tiers.
+                // ensure shared between at least 2 tiers.
+                // 2 basic
+                // 2 common
+                // 2 luxuries
 
                 // fill it's property as needed.
 
