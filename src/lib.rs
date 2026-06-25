@@ -1405,6 +1405,23 @@ use super::*;
             pop
         }
 
+        mod consume_should {
+            use super::*;
+
+            #[test]
+            fn correctly_satisfy_desires_across_all_tiers() {
+                // make pop
+
+                // make a bunch of desires across it's tiers.
+
+                // fill it's property as needed.
+
+                // run test
+
+                // check results
+            }
+        }
+
         mod satisfy_tier_should {
             use super::*;
 
@@ -1494,23 +1511,23 @@ use super::*;
                 let mut test_desires = vec![des1, des2, des3];
 
                 // insert property to be consumed, don't forget the reservations
-                test_pop.property.insert(100, PopPRow::new(100.0).with_reserve(20.0));
-                test_pop.property.insert(101, PopPRow::new(100.0).with_reserve(20.0));
+                test_pop.property.insert(100, PopPRow::new(7.0).with_reserve(7.0));
+                test_pop.property.insert(101, PopPRow::new(1.0).with_reserve(1.0));
 
                 // call function
                 let result = test_pop.satisfy_tier(&mut test_desires);
 
                 // check outcomes
-                assert_eq!(result, 1.0);
-                assert_eq!(test_pop.property[&100].quantity, 80.0);
+                assert_eq!(result, 0.7);
+                assert_eq!(test_pop.property[&100].quantity, 0.0);
                 assert_eq!(test_pop.property[&100].reserved, 0.0);
-                assert_eq!(test_pop.property[&100].consumed, 20.0);
-                assert_eq!(test_pop.property[&101].quantity, 90.0);
-                assert_eq!(test_pop.property[&101].reserved, 10.0);
-                assert_eq!(test_pop.property[&101].consumed, 10.0);
-                assert_eq!(test_desires[0].satisfaction, 10.0);
-                assert_eq!(test_desires[1].satisfaction, 10.0);
-                assert_eq!(test_desires[2].satisfaction, 10.0);
+                assert_eq!(test_pop.property[&100].consumed, 7.0);
+                assert_eq!(test_pop.property[&101].quantity, 0.0);
+                assert_eq!(test_pop.property[&101].reserved, 0.0);
+                assert_eq!(test_pop.property[&101].consumed, 1.0);
+                assert_eq!(test_desires[0].satisfaction, 7.0);
+                assert_eq!(test_desires[1].satisfaction, 1.0);
+                assert_eq!(test_desires[2].satisfaction, 0.0);
             }
         }
 
