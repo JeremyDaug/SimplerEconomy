@@ -1,3 +1,5 @@
+use crate::game::scalingfactor::ScalingFactor;
+
 
 /// # Desire
 /// 
@@ -35,7 +37,7 @@ pub struct Desire {
     /// 
     /// In particular, it represents selecting either everyone, a member of the 
     /// household, or it is on a 'per house' basis.
-    pub scalar: DesireScalar,
+    pub scalar: ScalingFactor,
 }
 
 impl Desire {
@@ -75,26 +77,6 @@ impl DesireTarget {
             cap: 1.0
         }
     }
-}
-
-/// # Desire Scalar
-/// 
-/// When a base amount targeted by a desire is being scaled, what part of the pop
-/// does it scale off of. 
-#[derive(Debug, Clone)]
-pub enum DesireScalar {
-    /// Scales with all of the members of a house.
-    All,
-    /// Scales by household, not members.
-    Household,
-    /// Scales by adults only.
-    Adults,
-    /// Scaled by children only.
-    Children,
-    /// Scaled by Elders only.
-    Elders,
-    /// Scaled by the effective labor output of the household.
-    Labor
 }
 
 #[derive(Debug, Clone, Copy)]

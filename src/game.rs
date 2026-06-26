@@ -24,3 +24,4 @@ pub mod contract;
 pub mod populationdata;
 pub mod players;
 pub mod mapdata;
+pub mod scalingfactor;

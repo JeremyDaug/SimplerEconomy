@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use bevy::utils::default;
+use bevy::{reflect::DynamicArray, utils::default};
 
-use crate::game::{desire::{Desire, DesireTargetType}, household::HouseholdDef};
+use crate::game::{desire::{Desire, DesireTargetType}, household::HouseholdDef, scalingfactor::ScalingFactor};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -67,6 +67,24 @@ pub struct DemoRow {
 }
 
 impl Pop {
+    /// # Start Day
+    /// 
+    /// Function called at the start of the day to give a pop it's daily generating
+    /// goods.
+    /// 
+    /// `new_goods` are the goods the pop is gaining at the start of a day.
+    /// 
+    /// This includes both the good in question and the factor by which it is scaled,
+    /// if any. Some factors cannot be handled here, and must be replaced at higher 
+    /// levels.
+    /// 
+    /// The choice of Scaling factor ensures it can scale here, rather than above.
+    pub fn start_day(&mut self, new_goods: &Vec<(usize, ScalingFactor)>) {
+        for (good_id, scaling) in new_goods.iter() {
+
+        }
+    }
+
     /// # Update Desires
     /// 
     /// Called at the end of each day, after the population has changed in size due to 

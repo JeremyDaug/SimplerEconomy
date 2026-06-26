@@ -1361,8 +1361,8 @@ use super::*;
         use std::collections::HashMap;
 
         use crate::game::{desire::{
-            Desire, DesireScalar, DesireSource, DesireTarget, DesireTargetType
-        }, household::HouseholdDef, pop::{DemoRow, Pop, PopPRow}};
+            Desire, DesireSource, DesireTarget, DesireTargetType
+        }, household::HouseholdDef, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
 
         static CONSUMED_GOOD: usize = 100;
         static USED_GOOD: usize = 101;
@@ -1396,7 +1396,7 @@ use super::*;
                 satisfaction: 0.0,
                 category: None,
                 effect: vec![],
-                scalar: DesireScalar::Household,
+                scalar: ScalingFactor::Household,
             }
         }
 
