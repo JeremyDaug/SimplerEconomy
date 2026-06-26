@@ -1396,7 +1396,7 @@ use super::*;
                 satisfaction: 0.0,
                 category: None,
                 effect: vec![],
-                scalar: ScalingFactor::Household,
+                scalar: ScalingFactor::Household(1.0),
             }
         }
 

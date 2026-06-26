@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{reflect::DynamicArray, utils::default};
 
-use crate::game::{desire::{Desire, DesireTargetType}, household::HouseholdDef, scalingfactor::ScalingFactor};
+use crate::game::{desire::{Desire, DesireTargetType}, household::HouseholdDef, market::Market, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -49,23 +49,6 @@ pub struct Pop {
     pub demographics: DemoRow,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct DemoRow {
-    /// The Number of households, floating point as growth storage.
-    pub count: f64,
-    /// The definition of this row's household. This is the sum of the baseline plus
-    /// all other demographic effects.
-    pub household: HouseholdDef,
-    /// The species ID, currently should always be 0, which is default human.
-    pub species: usize,
-    /// The culture ID, 0 means none.
-    pub culture: usize,
-    /// The class ID, 0 means none.
-    pub class: usize,
-    /// The Religious ID, 0 means none.
-    pub religion: usize,
-}
-
 impl Pop {
     /// # Start Day
     /// 
@@ -81,8 +64,51 @@ impl Pop {
     /// The choice of Scaling factor ensures it can scale here, rather than above.
     pub fn start_day(&mut self, new_goods: &Vec<(usize, ScalingFactor)>) {
         for (good_id, scaling) in new_goods.iter() {
-
+            match scaling {
+                ScalingFactor::Fixed(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f)
+                        .or_insert(PopPRow::new(*f));
+                },
+                ScalingFactor::All(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.total_population())
+                        .or_insert(PopPRow::new(f * self.demographics.total_population()));
+                },
+                ScalingFactor::Household(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.count)
+                        .or_insert(PopPRow::new(f * self.demographics.count));
+                },
+                ScalingFactor::Adults(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.adult_pop())
+                        .or_insert(PopPRow::new(f * self.demographics.adult_pop()));
+                },
+                ScalingFactor::Children(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.children_pop())
+                        .or_insert(PopPRow::new(f * self.demographics.children_pop()));
+                },
+                ScalingFactor::Elders(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.elder_pop())
+                        .or_insert(PopPRow::new(f * self.demographics.elder_pop()));
+                },
+                ScalingFactor::Labor(f) => {
+                    self.property.entry(*good_id)
+                        .and_modify(|x| x.quantity += f * self.demographics.labor())
+                        .or_insert(PopPRow::new(f * self.demographics.labor()));
+                },
+            }
         }
+    }
+
+    /// # Create Orders
+    /// 
+    /// 
+    pub fn create_orders(&self, market: &Market) -> Vec<MarketOrder> {
+        todo!()
     }
 
     /// # Update Desires
@@ -235,6 +261,49 @@ impl Pop {
         }
         // The current satisfaction rate.
         desire.satisfaction / desire.amount
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DemoRow {
+    /// The Number of households, floating point as growth storage.
+    pub count: f64,
+    /// The definition of this row's household. This is the sum of the baseline plus
+    /// all other demographic effects.
+    pub household: HouseholdDef,
+    /// The species ID, currently should always be 0, which is default human.
+    pub species: usize,
+    /// The culture ID, 0 means none.
+    pub culture: usize,
+    /// The class ID, 0 means none.
+    pub class: usize,
+    /// The Religious ID, 0 means none.
+    pub religion: usize,
+}
+
+impl DemoRow {
+    /// # Total Population
+    /// 
+    /// Gets the total population of a demographic row, equal to the size
+    /// of a household times it's count.
+    pub fn total_population(&self) -> f64 {
+        self.count * self.household.size()
+    }
+
+    pub fn adult_pop(&self) -> f64 {
+        self.count * self.household.adults
+    }
+
+    pub fn elder_pop(&self) -> f64 {
+        self.count * self.household.elders
+    }
+
+    pub fn children_pop(&self) -> f64 {
+        self.count * self.household.children
+    }
+
+    pub fn labor(&self) -> f64 {
+        self.count * self.household.labor()
     }
 }
 
