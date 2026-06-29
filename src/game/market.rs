@@ -26,6 +26,14 @@ pub struct Market {
 impl Market {
 }
 
+/// # Market History
+/// 
+/// A saved record of minimal data for passing around.
+pub struct MarketHistory {
+    /// The last known prices of the good in AMV.
+    pub prices: HashMap<usize, f64>,
+}
+
 
 /// # Market Good
 /// 
