@@ -116,6 +116,21 @@ impl Pop {
         
     }
 
+    /// # Current Excess AMV
+    /// 
+    /// Returns the total AMV value of goods this pop holds above their individual targets.
+    /// This is the "excess" they can offer in trade to fund purchases.
+    pub fn current_excess_value(&self, market_history: &MarketHistory) -> f64 {
+        let mut excess: f64 = 0.0;
+        for (good, prop) in &self.property {
+            let surplus = (prop.quantity - prop.target).max(0.0);
+            if surplus > 0.001 {
+                excess += surplus * market_history.prices.get(good).unwrap_or(&0.0);
+            }
+        }
+        excess
+    }
+
     /// # Update Desires
     /// 
     /// Called at the end of each day, after the population has changed in size due to 
