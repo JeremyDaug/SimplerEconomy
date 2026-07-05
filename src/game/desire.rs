@@ -38,6 +38,17 @@ pub struct Desire {
     /// In particular, it represents selecting either everyone, a member of the 
     /// household, or it is on a 'per house' basis.
     pub scalar: ScalingFactor,
+
+    /// The rate at which the satisfaction of a desire over time.
+    /// 
+    /// The satisfaction is multiplied by this value each turn.
+    /// 
+    /// This should be within [0.0, 1.0).
+    /// 
+    /// 0.0 means the desire is reset each day.
+    /// 
+    /// It should never be 1.0, as that would mean the desire never get's unsatisfied.
+    pub decay: f64,
 }
 
 impl Desire {
@@ -46,6 +57,24 @@ impl Desire {
     /// `self.satisfaciton` / `self.amount`, or the number of times it's been satisfied.
     pub fn tiers_satisfied(&self) -> f64 {
         self.satisfaction / self.amount
+    }
+
+    /// # Ordered Targets
+    /// 
+    /// Organizes the target goods in the bucket, putting high priority goods first, 
+    /// then by efficiency.
+    pub fn ordered_targets(&self) -> Vec<&DesireTarget> {
+        let mut targets = self.target.iter().collect::<Vec<&DesireTarget>>();
+        targets.sort_by(|a, b| {
+            if a.high_priority && !b.high_priority {
+                std::cmp::Ordering::Less
+            } else if !a.high_priority && b.high_priority {
+                std::cmp::Ordering::Greater
+            } else {
+                b.efficiency.partial_cmp(&a.efficiency).unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
+        targets
     }
 }
 
@@ -66,6 +95,8 @@ pub struct DesireTarget {
     /// Should be between 0.0 and 1.0 and should not go below 1 / number of goods, for 
     /// the desire.
     pub cap: f64,
+    /// Whether this desire target is high priority and is always satisfied first.
+    pub high_priority: bool,
 }
 
 impl DesireTarget {
@@ -74,8 +105,19 @@ impl DesireTarget {
             good,
             desire_type,
             efficiency: eff,
-            cap: 1.0
+            cap: 1.0,
+            high_priority: false,
         }
+    }
+
+    pub fn with_cap(mut self, cap: f64) -> Self {
+        self.cap = cap;
+        self
+    }
+
+    pub fn with_high_priority(mut self, high_priority: bool) -> Self {
+        self.high_priority = high_priority;
+        self
     }
 }
 
@@ -93,13 +135,23 @@ pub enum DesireTargetType {
 /// When the condition of the effect is met (satisfaction or lack thereof) the effect
 /// is generated and applied to the pop who owns the desire.
 /// 
+/// Most effects define the rate they apply to the pop, and a bool which defines how they
+/// operate. True if the effect is treated as a 'bonus' and false if it is treated as a 
+/// 'malus'. Bonuses scale positively with satisfaction, malus's with the lack of satisfaction.
+/// 
+/// As a note, Luxury desires, due to their infinite nature, should not have malus effects.
+/// 
 /// Note: This is currently not comprehensive.
 #[derive(Debug, Clone)]
 pub enum DesireEffect {
     /// When this desire is **not** met, it reduces growth by this value.
-    Mortality(f64),
+    Mortality(f64, bool),
     /// When this desire **is** met, it increases growth by this value.
-    Birthrate(f64)
+    Birthrate(f64, bool),
+    /// An additional good which is added to the pop's inventory.
+    /// 
+    /// Useful for things like transportation.
+    BonusGood(usize, f64, bool),
 }
 
 /// # Desire Source

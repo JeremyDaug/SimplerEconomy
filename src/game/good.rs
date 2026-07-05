@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use itertools::Itertools;
+
 /// # Good
 /// 
 /// Goods are things that are bought, sold, and traded in the economy.
@@ -38,11 +40,16 @@ pub struct Good {
     /// goods which share a primary category.
     pub categories: Vec<String>,
 }
+impl Good {
+    pub fn is_buyable(&self) -> bool {
+        !self.tags.iter().contains(&GoodTag::Untradeable)
+    }
+}
 
 /// # Good Tag
 /// 
 /// Tags for goods.
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq)]
 pub enum GoodTag {
     /// Good cannot be transported between markets.
     Fixed,

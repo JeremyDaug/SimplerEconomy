@@ -20,6 +20,7 @@ use crate::game::actor::Actor;
 /// 
 /// These last parts are only allowed if the actor has access to Buy and Sell orders.
 /// Pops do not have access to this, but firms, institutions, and states do.
+#[derive(Debug, Clone)]
 pub struct MarketOrder {
     /// Who is making this order.
     pub origin: Actor,
@@ -80,7 +81,7 @@ impl MarketOrder {
         }
     }
 
-    pub fn request_orders(buyer: Actor, target: usize, target_amount: f64) -> Self {
+    pub fn request_order(buyer: Actor, target: usize, target_amount: f64) -> Self {
         debug_assert!(target_amount > 0.0, "Request Orders must have positive target amounts.");
 
         Self {
