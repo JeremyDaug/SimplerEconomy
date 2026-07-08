@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use bevy::{reflect::DynamicArray, utils::default};
+use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
 use crate::game::{actor::Actor, desire::{Desire, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
@@ -132,6 +132,7 @@ impl Pop {
         let mut orders: Vec<MarketOrder> = Vec::new();
 
         let mut remaining_budget = self.current_excess_value(market_history);
+        let mut seen = HashSet::new();
 
         // go through desires, creating orders only for those goods which have targets
         for tier in self.desires.iter() {
@@ -143,6 +144,10 @@ impl Pop {
                         // or if the good has no target.
                         continue;
                     }
+                    if  seen.contains(&target.good) {
+                        continue;
+                    }
+                    seen.insert(target.good);
 
                     let good_price = market_history.prices.get(&target.good)
                         .unwrap_or(&1.0);
@@ -154,6 +159,10 @@ impl Pop {
                     orders.push(MarketOrder::request_order(
                         Actor::Pop(self.id), target.good, purchase_target));
                     remaining_budget -= cost;
+                    if remaining_budget <= 0.0 {
+                        // if we've overdrawn by this point, break out early.
+                        break;
+                    }
                 }
             }
         }
@@ -178,6 +187,11 @@ impl Pop {
                             // if the good is not buyable, skip it.
                             continue;
                         }
+                        if  seen.contains(&target.good) {
+                            continue;
+                        }
+                        seen.insert(target.good);
+
                         let good_price = market_history.prices.get(&target.good).unwrap_or(&0.0);
                         let purchase_target = desire.amount * target.cap / target.efficiency;
                         let cost = purchase_target * good_price;
@@ -530,11 +544,13 @@ impl PopPRow {
 
 #[cfg(test)]
 mod pop {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    use crate::game::{desire::{
+    use bevy::ecs::name;
+
+use crate::game::{desire::{
         Desire, DesireSource, DesireTarget, DesireTargetType
-    }, household::HouseholdDef, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
+    }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
 
     static CONSUMED_GOOD: usize = 100;
     static USED_GOOD: usize = 101;
@@ -579,8 +595,120 @@ mod pop {
         pop
     }
 
+    fn add_pop_desires(mut pop: Pop) -> Pop {
+        // Add a desire for a good with no property entry
+        let desire0 = make_desire(0, DesireTarget::new(100, DesireTargetType::Consume, 1.0), 10.0);
+        let desire1 = make_desire(1, DesireTarget::new(101, DesireTargetType::Consume, 1.0), 10.0);
+        let desire2 = make_desire(0, DesireTarget::new(200, DesireTargetType::Consume, 1.0), 10.0);
+        let desire3 = make_desire(1, DesireTarget::new(201, DesireTargetType::Consume, 1.0), 10.0);
+        let desire4 = make_desire(0, DesireTarget::new(300, DesireTargetType::Consume, 1.0), 10.0);
+        pop.desires[0].push(desire0); // Basic tier
+        pop.desires[0].push(desire1); // Basic tier
+        pop.desires[1].push(desire2); // Common tier
+        pop.desires[1].push(desire3); // Common tier
+        pop.desires[2].push(desire4); // Luxury tier
+        pop
+    }
+
+    fn add_pop_targets(mut pop: Pop) -> Pop {
+        // Add a desire for a good with no property entry
+        pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
+        pop.property.insert(101, PopPRow::new(0.0).with_target(10.0));
+        pop.property.insert(200, PopPRow::new(0.0).with_target(10.0));
+        pop.property.insert(201, PopPRow::new(0.0).with_target(10.0));
+        pop.property.insert(300, PopPRow::new(0.0).with_target(40.0));
+        pop
+    }
+
+    fn make_good(id: usize, name: String) -> Good {
+        Good {
+            id,
+            name,
+            class: None,
+            decay_rate: 1.0,
+            decay_result: HashMap::new(),
+            tags: HashSet::new(),
+            categories: vec![],
+        }
+    }
+
+    fn make_default_factuals() -> Factuals {
+        let mut factuals = Factuals::new();
+        factuals.goods.insert(100, make_good(100, "Test Good".to_string()));
+        factuals.goods.insert(101, make_good(101, "Test Good 2".to_string()));
+        factuals.goods.insert(200, make_good(200, "Test Good 3".to_string()));
+        factuals.goods.insert(201, make_good(201, "Test Good 4".to_string()));
+        factuals.goods.insert(300, make_good(300, "Test Good 5".to_string()));
+        factuals
+    }
+
+    fn make_default_market_history() -> MarketHistory {
+        let mut market_history = MarketHistory::new();
+        market_history.prices.insert(100, 1.0);
+        market_history.prices.insert(101, 1.0);
+        market_history.prices.insert(200, 1.0);
+        market_history.prices.insert(201, 1.0);
+        market_history.prices.insert(300, 1.0);
+        market_history.prices.insert(500, 1.0);
+        market_history
+    }
+
     mod create_orders_should {
-        
+        use crate::game::{factuals::Factuals, market::MarketHistory};
+
+        use super::*;
+
+        #[test]
+        fn respect_one_time_overdraw_and_stop() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+
+            pop.property.insert(500, PopPRow::new(5.0)); // 5 AMV, should stop after first good.
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 1); 
+            assert_eq!(orders[0].target, 100); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn respect_property_filter_on_first_desires_pass() {
+            let mut pop = make_pop();
+            // Add a desire for a good with no property entry
+            let desire = make_desire(0, DesireTarget::new(999, DesireTargetType::Consume, 1.0), 10.0);
+            pop.desires[1].push(desire); // Common tier
+
+            let market_history = MarketHistory::new();
+            let factuals = Factuals::new(); // assume goods registered
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert!(orders.is_empty()); // should skip because no property target
+        }
+
+        #[test]
+        fn create_order_for_property_targeted_good() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(5.0).with_target(15.0));
+
+            let desire = make_desire(0, DesireTarget::new(100, DesireTargetType::Consume, 1.0), 10.0);
+            pop.desires[0].push(desire);
+
+            // Mock market with price
+            let mut market_history = MarketHistory::new();
+            market_history.prices.insert(100, 2.0);
+
+            let factuals = Factuals::new();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].target, 100);
+            assert_eq!(orders[0].target_amount, 10.0);
+            // amount should be ~10 (shortfall)
+        }
     }
 
     mod consume_should {

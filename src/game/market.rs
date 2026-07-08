@@ -34,6 +34,14 @@ pub struct MarketHistory {
     pub prices: HashMap<usize, f64>,
 }
 
+impl MarketHistory {
+    pub(crate) fn new() -> Self {
+        Self { 
+            prices: HashMap::new(), 
+        }
+    }
+}
+
 
 /// # Market Good
 /// 
