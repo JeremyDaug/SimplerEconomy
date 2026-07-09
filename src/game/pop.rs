@@ -138,6 +138,10 @@ impl Pop {
         for tier in self.desires.iter() {
             for desire in tier.iter() {
                 for &target in desire.ordered_targets().iter() {
+                    if remaining_budget <= 0.0 {
+                        // if we've overdrawn by this point, break out early.
+                        break;
+                    }
                     if !self.property.contains_key(&target.good) ||
                     self.property.get(&target.good).unwrap().target == 0.0 {
                         // skip if we don't have a record of the good
@@ -159,10 +163,6 @@ impl Pop {
                     orders.push(MarketOrder::request_order(
                         Actor::Pop(self.id), target.good, purchase_target));
                     remaining_budget -= cost;
-                    if remaining_budget <= 0.0 {
-                        // if we've overdrawn by this point, break out early.
-                        break;
-                    }
                 }
             }
         }
@@ -177,6 +177,10 @@ impl Pop {
             for tier in self.desires.iter() {
                 for desire in tier.iter() {
                     for &target in desire.ordered_targets().iter() {
+                        if remaining_budget <= 0.0 {
+                            // if we've overdrawn by this point, break out early.
+                            break;
+                        }
                         if self.property.contains_key(&target.good) &&
                         self.property.get(&target.good).unwrap().target > 0.0 {
                             // If we have a record of it, nad that record has a target, 
@@ -200,11 +204,6 @@ impl Pop {
                         orders.push(MarketOrder::request_order(
                             Actor::Pop(self.id), target.good, purchase_target));
                         remaining_budget -= cost;
-
-                        if remaining_budget <= 0.0 {
-                            // if we've overdrawn by this point, break out early.
-                            break;
-                        }
                     }
                 }
             }
@@ -639,6 +638,7 @@ use crate::game::{desire::{
         factuals.goods.insert(200, make_good(200, "Test Good 3".to_string()));
         factuals.goods.insert(201, make_good(201, "Test Good 4".to_string()));
         factuals.goods.insert(300, make_good(300, "Test Good 5".to_string()));
+        factuals.goods.insert(500, make_good(500, "Test Good 6".to_string()));
         factuals
     }
 
@@ -654,7 +654,7 @@ use crate::game::{desire::{
     }
 
     mod create_orders_should {
-        use crate::game::{factuals::Factuals, market::MarketHistory};
+        use crate::game::{factuals::Factuals, good::GoodTag, market::MarketHistory};
 
         use super::*;
 
@@ -664,7 +664,8 @@ use crate::game::{desire::{
             let pop = add_pop_desires(pop);
             let mut pop = add_pop_targets(pop);
 
-            pop.property.insert(500, PopPRow::new(5.0)); // 5 AMV, should stop after first good.
+            // 5 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(5.0)); 
 
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
@@ -677,37 +678,133 @@ use crate::game::{desire::{
 
         #[test]
         fn respect_property_filter_on_first_desires_pass() {
-            let mut pop = make_pop();
-            // Add a desire for a good with no property entry
-            let desire = make_desire(0, DesireTarget::new(999, DesireTargetType::Consume, 1.0), 10.0);
-            pop.desires[1].push(desire); // Common tier
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Remove target from first desire 100, our first desire.
+            pop.property.get_mut(&100).unwrap().target = 0.0;
 
-            let market_history = MarketHistory::new();
-            let factuals = Factuals::new(); // assume goods registered
+            // 5 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(5.0)); 
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
 
             let orders = pop.create_orders(&market_history, &factuals);
-            assert!(orders.is_empty()); // should skip because no property target
+            assert_eq!(orders.len(), 1); 
+            assert_eq!(orders[0].target, 101); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
         }
 
         #[test]
-        fn create_order_for_property_targeted_good() {
-            let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(5.0).with_target(15.0));
+        fn respect_seen_in_property_first_pass() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Add additional target for 100 that double dips.
+            pop.desires[0].insert(1, make_desire(1, 
+                DesireTarget { good: 100, desire_type: DesireTargetType::Consume, 
+                    efficiency: 1.0, cap: 15.0, high_priority: false }, 
+                10.0));
+            pop.desires[0][2].idx = 2; // fix index to be unique
 
-            let desire = make_desire(0, DesireTarget::new(100, DesireTargetType::Consume, 1.0), 10.0);
-            pop.desires[0].push(desire);
+            // 15 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(15.0)); 
 
-            // Mock market with price
-            let mut market_history = MarketHistory::new();
-            market_history.prices.insert(100, 2.0);
-
-            let factuals = Factuals::new();
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
 
             let orders = pop.create_orders(&market_history, &factuals);
-            assert_eq!(orders.len(), 1);
-            assert_eq!(orders[0].target, 100);
-            assert_eq!(orders[0].target_amount, 10.0);
-            // amount should be ~10 (shortfall)
+            assert_eq!(orders.len(), 2); 
+            assert_eq!(orders[0].target, 100); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[1].target, 101); // should be the first good in the list
+            assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn add_during_second_pass() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Remove targets from all desires
+            pop.property.get_mut(&100).unwrap().target = 0.0;
+            pop.property.get_mut(&101).unwrap().target = 0.0;
+            pop.property.get_mut(&200).unwrap().target = 0.0;
+            pop.property.get_mut(&201).unwrap().target = 0.0;
+            pop.property.get_mut(&300).unwrap().target = 0.0;
+
+            // 15 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(45.0)); 
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 5);
+            assert_eq!(orders[0].target, 100); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[1].target, 101); // should be the first good in the list
+            assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[2].target, 200); // should be the first good in the list
+            assert_eq!(orders[2].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[3].target, 201); // should be the first good in the list
+            assert_eq!(orders[3].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[4].target, 300); // should be the first good in the list
+            assert_eq!(orders[4].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn add_during_second_pass_with_budget() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Remove targets from all desires
+            pop.property.get_mut(&100).unwrap().target = 0.0;
+            pop.property.get_mut(&101).unwrap().target = 0.0;
+            pop.property.get_mut(&200).unwrap().target = 0.0;
+            pop.property.get_mut(&201).unwrap().target = 0.0;
+            pop.property.get_mut(&300).unwrap().target = 0.0;
+
+            // 15 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(15.0)); 
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 2);
+            assert_eq!(orders[0].target, 100); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[1].target, 101); // should be the first good in the list
+            assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn skip_untradeable_goods_on_second_pass() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Remove targets from all desires
+            pop.property.get_mut(&100).unwrap().target = 0.0;
+            pop.property.get_mut(&101).unwrap().target = 0.0;
+            pop.property.get_mut(&200).unwrap().target = 0.0;
+            pop.property.get_mut(&201).unwrap().target = 0.0;
+            pop.property.get_mut(&300).unwrap().target = 0.0;
+
+            // 15 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(15.0)); 
+
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 2);
+            assert_eq!(orders[0].target, 101); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[1].target, 200); // should be the first good in the list
+            assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
         }
     }
 

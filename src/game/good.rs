@@ -49,7 +49,7 @@ impl Good {
 /// # Good Tag
 /// 
 /// Tags for goods.
-#[derive(Debug, Clone, Copy, Hash, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum GoodTag {
     /// Good cannot be transported between markets.
     Fixed,
