@@ -20,7 +20,7 @@ use crate::game::actor::Actor;
 /// 
 /// These last parts are only allowed if the actor has access to Buy and Sell orders.
 /// Pops do not have access to this, but firms, institutions, and states do.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MarketOrder {
     /// Who is making this order.
     pub origin: Actor,

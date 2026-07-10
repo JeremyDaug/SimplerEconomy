@@ -5,7 +5,7 @@
 /// Pops, Firms, Institutions, and States (Players).
 /// 
 /// All work the same, the tag, and the ID of the actor.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Actor {
     Pop(usize),
     Firm(usize),

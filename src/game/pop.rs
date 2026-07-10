@@ -143,7 +143,7 @@ impl Pop {
                         break;
                     }
                     if !self.property.contains_key(&target.good) ||
-                    self.property.get(&target.good).unwrap().target == 0.0 {
+                    self.property.get(&target.good).unwrap().shop_target == 0.0 {
                         // skip if we don't have a record of the good
                         // or if the good has no target.
                         continue;
@@ -155,7 +155,7 @@ impl Pop {
 
                     let good_price = market_history.prices.get(&target.good)
                         .unwrap_or(&1.0);
-                    let purchase_target = self.property.get(&target.good).unwrap().target 
+                    let purchase_target = self.property.get(&target.good).unwrap().shop_target 
                         - self.property.get(&target.good).unwrap().quantity;
                     let cost = purchase_target * good_price;
 
@@ -182,7 +182,7 @@ impl Pop {
                             break;
                         }
                         if self.property.contains_key(&target.good) &&
-                        self.property.get(&target.good).unwrap().target > 0.0 {
+                        self.property.get(&target.good).unwrap().shop_target > 0.0 {
                             // If we have a record of it, nad that record has a target, 
                             // we've already added it, so skip.
                             continue;
@@ -221,7 +221,7 @@ impl Pop {
     pub fn current_excess_value(&self, market_history: &MarketHistory) -> f64 {
         let mut excess: f64 = 0.0;
         for (good, prop) in &self.property {
-            let surplus = (prop.quantity - prop.target).max(0.0);
+            let surplus = (prop.quantity - prop.shop_target).max(0.0);
             if surplus > 0.001 {
                 excess += surplus * market_history.prices.get(good).unwrap_or(&0.0);
             }
@@ -434,29 +434,55 @@ impl DemoRow {
 /// consumption, and the target they want to reach.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PopPRow {
-    /// The total amount owned at the moment.
+    /// The total amount owned at the moment. Not necessarily how much is available.
     pub quantity: f64,
-    
-    /// The Target amount the pop desires to have after all shopping is complete.
-    /// Simplifies purchases into bulk purchases.
+
+    /// The Desire Needs is a helper which helps define how much of the good a pop
+    /// needs or is targeting to satisfy it's needs. This should be equal to the amount
+    /// of goods needed to 
     /// 
-    /// Should target roughly 1.0-1.2x of the desire at minimum. When a pop has elevated
+    /// This should be equivalent to Reserved after shopping, and used + consumed after
+    /// consumption.
+    /// 
+    /// This get's updated after population changes to match growth/shrink, in 
+    /// population, and is used as a touchstone for other targets and values.
+    /// 
+    /// This does not alter mood based on differences.
+    /// 
+    /// Note: This may be removed at a later date if a better method to track this value
+    /// is found.
+    pub desire_needs: f64,
+    
+    /// The Shopping Target amount the pop desires to have after all shopping is 
+    /// complete. Simplifies purchases into bulk purchases.
+    /// 
+    /// Should target roughly 1.0-1.2x of desire needs at minimum. When a pop has elevated
     /// savings, fear, or similar 'hoarding' moods activated, this target is pushed up.
     /// 
     /// Before Decay, Target should be roughly equal to reserved + saved.
     /// 
     /// Goods which cannot be bought or sold should always have a target of 0.0.
-    pub target: f64,
+    pub shop_target: f64,
 
     /// The amount that has already been earmarked for the pop's use today. Used 
     /// to 'prepare' for consumption. Does not remove from quantity.
+    /// 
+    /// This is reset at the start of the day.
     pub reserved: f64,
-    /// The amount that we wish to preserve between days.
+
+    /// The amount that we wish to preserve between days. This is where 'hoarding' is 
+    /// recorded and tracked over time for specific goods.
+    /// 
+    /// This is not reset each day, instead just updating to match population changes.
+    /// Savings always comes after consumption.
+    /// 
+    /// Missing a savings target reduces a pop's mood.
     pub saved: f64,
 
     /// How many of this good was consumed for today's desires.
     /// All goods here are decayed at the end of the day.
     pub consumed: f64,
+
     /// Goods that were used for use desires, but not consumed, are stored here
     /// until the end of the day. At day's end, goods here decay normally, and are
     /// returned to total quantity.
@@ -473,7 +499,7 @@ impl PopPRow {
 
     /// Fluent target setter
     pub fn with_target(mut self, target: f64) -> Self {
-        self.target = target;
+        self.shop_target = target;
         self
     }
 
@@ -501,6 +527,12 @@ impl PopPRow {
         self
     }
 
+    /// Fluent Desire Needs Setter
+    pub fn with_desire_need(mut self, desire_needs: f64) -> Self {
+        self.desire_needs = desire_needs;
+        self
+    }
+
     /// # Exchange
     /// 
     /// `quantity` - `target`.
@@ -510,7 +542,7 @@ impl PopPRow {
     /// Negative values are how much they will want to buy. Positive values are how many
     /// they are willing to offer or sell.
     pub fn exchange(&self) -> f64 {
-        self.quantity - self.target
+        self.quantity - self.shop_target
     }
 
     /// # Consumeable
@@ -545,11 +577,9 @@ impl PopPRow {
 mod pop {
     use std::collections::{HashMap, HashSet};
 
-    use bevy::ecs::name;
-
-use crate::game::{desire::{
-        Desire, DesireSource, DesireTarget, DesireTargetType
-    }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
+    use crate::game::{desire::{
+            Desire, DesireSource, DesireTarget, DesireTargetType
+        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
 
     static CONSUMED_GOOD: usize = 100;
     static USED_GOOD: usize = 101;
@@ -682,7 +712,7 @@ use crate::game::{desire::{
             let pop = add_pop_desires(pop);
             let mut pop = add_pop_targets(pop);
             // Remove target from first desire 100, our first desire.
-            pop.property.get_mut(&100).unwrap().target = 0.0;
+            pop.property.get_mut(&100).unwrap().shop_target = 0.0;
 
             // 5 AM of extra goods, should stop after first good.
             pop.property.insert(500, PopPRow::new(5.0)); 
@@ -728,11 +758,11 @@ use crate::game::{desire::{
             let pop = add_pop_desires(pop);
             let mut pop = add_pop_targets(pop);
             // Remove targets from all desires
-            pop.property.get_mut(&100).unwrap().target = 0.0;
-            pop.property.get_mut(&101).unwrap().target = 0.0;
-            pop.property.get_mut(&200).unwrap().target = 0.0;
-            pop.property.get_mut(&201).unwrap().target = 0.0;
-            pop.property.get_mut(&300).unwrap().target = 0.0;
+            pop.property.get_mut(&100).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
 
             // 15 AM of extra goods, should stop after first good.
             pop.property.insert(500, PopPRow::new(45.0)); 
@@ -760,11 +790,11 @@ use crate::game::{desire::{
             let pop = add_pop_desires(pop);
             let mut pop = add_pop_targets(pop);
             // Remove targets from all desires
-            pop.property.get_mut(&100).unwrap().target = 0.0;
-            pop.property.get_mut(&101).unwrap().target = 0.0;
-            pop.property.get_mut(&200).unwrap().target = 0.0;
-            pop.property.get_mut(&201).unwrap().target = 0.0;
-            pop.property.get_mut(&300).unwrap().target = 0.0;
+            pop.property.get_mut(&100).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
 
             // 15 AM of extra goods, should stop after first good.
             pop.property.insert(500, PopPRow::new(15.0)); 
@@ -786,11 +816,11 @@ use crate::game::{desire::{
             let pop = add_pop_desires(pop);
             let mut pop = add_pop_targets(pop);
             // Remove targets from all desires
-            pop.property.get_mut(&100).unwrap().target = 0.0;
-            pop.property.get_mut(&101).unwrap().target = 0.0;
-            pop.property.get_mut(&200).unwrap().target = 0.0;
-            pop.property.get_mut(&201).unwrap().target = 0.0;
-            pop.property.get_mut(&300).unwrap().target = 0.0;
+            pop.property.get_mut(&100).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
 
             // 15 AM of extra goods, should stop after first good.
             pop.property.insert(500, PopPRow::new(15.0)); 
