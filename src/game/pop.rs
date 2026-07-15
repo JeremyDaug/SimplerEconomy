@@ -128,6 +128,9 @@ impl Pop {
     /// 
     /// When Offer Orders can be put out, it should only be when the pop is 
     /// despirate enough to offer goods in exchange for other things.
+    /// 
+    /// When creating oredrs for Luxury needs, it will only do one pass, even if the 
+    /// budget has excess at the end.
     pub fn create_orders(&self, market_history: &MarketHistory, factuals: &Factuals) -> Vec<MarketOrder> {
         let mut orders: Vec<MarketOrder> = Vec::new();
 
@@ -157,6 +160,7 @@ impl Pop {
                         .unwrap_or(&1.0);
                     let purchase_target = self.property.get(&target.good).unwrap().shop_target 
                         - self.property.get(&target.good).unwrap().quantity;
+                    debug_assert!(purchase_target >= 0.0, "Purchase target should not be negative.");
                     let cost = purchase_target * good_price;
 
                     // create order for full amount
@@ -234,8 +238,19 @@ impl Pop {
     /// Called at the end of each day, after the population has changed in size due to 
     /// growth and migration, this updates the amount requested by desires to correctly 
     /// scale with the new population.
-    pub fn update_desires(&mut self) {
-        todo!()
+    /// 
+    /// ## Note
+    /// 
+    /// Currently, because a pop only ever contains 1 demographic row, this is a simple
+    /// rescaling of the amount to fit the current population.
+    /// 
+    /// As simple as resetting amount to the scaling factor times population.
+    pub fn update_desires(&mut self, factuals: &Factuals) {
+        for tier in self.desires.iter_mut() {
+            for desire in tier.iter_mut() {
+                todo!("Waiting on culture, religion, and species to include desires.");
+            }
+        }
     }
 
     /// # Next Shopping Trip
@@ -835,6 +850,35 @@ mod pop {
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
             assert_eq!(orders[1].target, 200); // should be the first good in the list
             assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn deal_with_leftover_budget_mixed_passes() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            // Remove targets from all desires
+            pop.property.get_mut(&100).unwrap().shop_target = 10.0;
+            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
+
+            // 15 AM of extra goods, should stop after first good.
+            pop.property.insert(500, PopPRow::new(25.0)); 
+
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 3);
+            assert_eq!(orders[0].target, 100); // should be the first good in the list
+            assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[1].target, 101); // should be the first good in the list
+            assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[2].target, 200); // should be the first good in the list
+            assert_eq!(orders[2].target_amount, 10.0); // should be the first good in the list
         }
     }
 

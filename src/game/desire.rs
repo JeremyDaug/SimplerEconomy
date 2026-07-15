@@ -160,13 +160,13 @@ pub enum DesireEffect {
 #[derive(Debug, Clone, Copy)]
 pub enum DesireSource {
     /// Desire is sourced from the pop's biological needs.
-    Species(usize),
+    Species(usize, usize, usize),
     /// Desire is sourced from a Culture.
-    Culture(usize),
+    Culture(usize, usize, usize),
     /// Desire is sourced from a class (Not currently used).
-    Class(usize),
+    Class(usize, usize, usize),
     /// Desire is sourced from a religion.
-    Religion(usize),
+    Religion(usize, usize, usize),
 }
 
 impl DesireSource {

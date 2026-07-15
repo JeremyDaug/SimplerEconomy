@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::{good::Good, process::Process};
+use crate::game::{culture::Culture, good::Good, process::Process};
 
 /// # Factuals
 /// 
@@ -16,6 +16,7 @@ use crate::game::{good::Good, process::Process};
 pub struct Factuals {
     pub goods: HashMap<usize, Good>,
     pub processes: HashMap<usize, Process>,
+    pub cultures: HashMap<usize, Culture>,
 }
 
 impl Factuals {
@@ -26,6 +27,7 @@ impl Factuals {
         Factuals {
             goods: HashMap::new(),
             processes: HashMap::new(),
+            cultures: HashMap::new(),
         }
     }
 }
