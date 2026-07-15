@@ -1,11 +1,206 @@
+
 use crate::game::scalingfactor::ScalingFactor;
 
+/// # Platonic Desire
+/// 
+/// Platonic Desires are the 'maximalist' form of pre-existing desires that can be
+/// used by Cultures/Religions/Classes/Species to generate their own variants.
+/// 
+/// These should be defined at game start and never changed.
+#[derive(Debug, Clone)]
+pub struct PlatonicDesire {
+    /// Unique ID of the desire. 0 Is reserved as a 'blank spot'.
+    pub id: usize,
+    /// What goods this desire seeks out, their efficiency, and how they satisfy.
+    pub bucket: Vec<DesireTarget>,
+    /// The effects produced by satisfying the desire.
+    pub effects: Vec<DesireEffect>,
+    /// What part of a household this scales with.
+    pub scalar: ScalingFactor,
+    /// The rate that satisfaction is converted into the end effect(s).
+    /// 
+    /// This always assumes that 1.0 satisfaction => 1.0 effects.
+    pub effect_rate: DesireEffectRate,
+    /// The rate of decay for this desire once satisfied.
+    /// 0.0 means total decay between days, 1.0 would mean none. 
+    /// Bounded between [0.0, 1.0), decay likely shouldn't go above 0.8 or so.
+    pub decay: f64,
+    /// What category(s) of goods should go into this desire.
+    pub categories: Vec<String>,
+    /// What class(es) of goods should go into this desire.
+    pub classes: Vec<usize>,
+    /// What Tiers this desire may go into. (Few go into 0, most will be 1 or 2)
+    pub tiers: Vec<usize>,
+    /// The Desire Sources which are valid for using this Platonic Desire.
+    /// 
+    /// The ID is ignored in this case, instead focusing on the determinent.
+    pub users: Vec<DesireSource>
+}
+
+impl PlatonicDesire {
+    /// Creates new Platonic Desire with the given id.
+    /// 
+    /// Bucket, Effects, Categories, Class, Tier, and User are all empty.
+    /// Scalar is set to a factor of All(1.0)
+    /// effect rate is set to Linear(1.0)
+    /// decay is set to 0.0.
+    pub fn new(id: usize) -> Self {
+        PlatonicDesire {
+            id,
+            bucket: vec![],
+            effects: vec![],
+            scalar: ScalingFactor::All(1.0),
+            effect_rate: DesireEffectRate::Linear(1.0),
+            decay: 0.0,
+            categories: vec![],
+            classes: vec![],
+            tiers: vec![],
+            users: vec![],
+        }
+    }
+
+    pub fn with_user(mut self, user: DesireSource) -> Self {
+        self.users.push(user);
+        self
+    }
+
+    pub fn with_tier(mut self, tier: usize) -> Self {
+        assert!(tier < 3, "Tier must be 0, 1, or 2.");
+        self.tiers.push(tier);
+        self
+    }
+
+    pub fn with_class(mut self, class: usize) -> Self {
+        self.classes.push(class);
+        self
+    }
+
+    pub fn with_category(mut self, category: String) -> Self {
+        self.categories.push(category);
+        self
+    }
+
+    pub fn with_decay(mut self, decay: f64) -> Self {
+        self.decay = decay;
+        self
+    }
+
+    pub fn with_effect_rate(mut self, effect: DesireEffectRate) -> Self {
+        self.effect_rate = effect;
+        self
+    }
+
+    pub fn with_scalar(mut self, scalar: ScalingFactor) -> Self {
+        self.scalar = scalar;
+        self
+    }
+
+    pub fn with_good(mut self, target_good: DesireTarget) -> Self {
+        self.bucket.push(target_good);
+        self
+    }
+
+    pub fn with_effect(mut self, effect: DesireEffect) -> Self {
+        self.effects.push(effect);
+        self
+    }
+}
+
+/// # Demographic Desire
+/// 
+/// A desire as it exists in a Species, Culture, Class, or Religion.
+/// 
+/// This includes a targeted amount as though it were for a singular household.
+/// 
+/// This can be modified by players during the game. 
+/// 
+/// If a DemoDesire is 'new' and just to increase consumption, its `platonic_id` points 
+/// to 0.
+#[derive(Debug, Clone)]
+pub struct DemoDesire {
+    /// The ID of the Demographic Desire. Preferably unique to all demographics, but
+    /// being unique to just the demographic which contains it should be good enough.
+    pub id: usize,
+    /// The ID of the Platonic Desire it is based off of. This should be a subset of the
+    /// Platonic Desire. If 0, then it is not based on any Platonic Desire and thus is
+    /// open ended.
+    pub platonic_id: usize,
+    /// The Bucket of goods which satisfy this desire, as well as how they are used and
+    /// the efficiency they have in satisfying it.
+    /// 
+    /// This should be a subset of the Platonic Desire's Targets. Desire Targets should be
+    /// equivalent in terms of details.
+    pub bucket: Vec<DesireTarget>,
+    /// The effects produced by satisfaction. This is scaled with the amount targeted and
+    /// the rate defined by the Platonic Desire's Desire Effect Rate.
+    /// 
+    /// This is the result of meeting the amount fully.
+    pub effects: Vec<DesireEffect>,
+    /// The units of satisfaction needed to fully satisfy this desire.
+    /// This is multiplied by the Scaling factor to produce the final target per whatever.
+    /// 
+    /// Effectively equivalent to 1 per Household.
+    pub amount: f64,
+    pub scalar: ScalingFactor,
+    pub tier: usize,
+    pub idx: usize,
+    pub priority: f32,
+    pub decay: f64,
+}
+
+/// # Desire Effect Rate
+/// 
+/// As a desire's target amount increases, the effects/benefits it recieves alter as 
+/// well.
+/// 
+/// This effect alters the bonuses given to a pop by satisfying a desire, however pops
+/// will always linearly connect between 0 and the bonus effect given by the Culture.
+/// They will not follow the curve.
+#[derive(Debug, Clone, Copy)]
+pub enum DesireEffectRate {
+    /// (input - 1.0) * v + 1.0
+    /// Ensures that at 1, we get 1 of the effect.
+    /// Value must be positive.
+    Linear(f64),
+    /// input.sqrt()
+    SqareRoot,
+    /// Log_v (input) + 1.0
+    /// Ensures that 1.0 gives 1.0 effect.
+    /// Value must be a valid basis for a log.
+    Logarithmic(f64),
+}
+
+impl DesireEffectRate {
+    /// Safe Linear Maker. Ensures values are positive. Panics Otherwise.
+    pub fn linear(v: f64) -> Self {
+        assert!(v > 0.0, "V must be a Positive Value.");
+        Self::Linear(v)
+    }
+
+    /// Safe Logarithmic maker. Ensures values are > 1.0. Panic otherwise.
+    pub fn logarithmic(v: f64) -> Self {
+        assert!(v > 1.0, "V must be greater that 1.0.");
+        Self::Logarithmic(v)
+    }
+
+    /// # Calculate
+    /// 
+    /// Given an input value `v`, it calculates what the desire's effect rate is.
+    /// 
+    /// v must be >= 1.0. V should never be below 1.0.
+    pub fn calculate(&self, v: f64) -> f64 {
+        assert!(v >= 1.0, "Input value must be 1.0 or greater.");
+        match self {
+            DesireEffectRate::Linear(c) => (v - 1.0) * c + 1.0,
+            DesireEffectRate::SqareRoot => v.sqrt(),
+            DesireEffectRate::Logarithmic(b) => v.log(*b),
+        }
+    }
+}
 
 /// # Desire
 /// 
 /// A Desire is things or groups of things that are desired by a pop.
-/// 
-/// 
 #[derive(Debug, Clone)]
 pub struct Desire {
     /// An index value, for keeping desires order. 
@@ -121,6 +316,9 @@ impl DesireTarget {
     }
 }
 
+/// # Desire Target Type
+/// 
+/// What kind of desire the target is. 
 #[derive(Debug, Clone, Copy)]
 pub enum DesireTargetType {
     /// The Desire is Consumed, producing the output goods of the good's decay.
@@ -160,13 +358,13 @@ pub enum DesireEffect {
 #[derive(Debug, Clone, Copy)]
 pub enum DesireSource {
     /// Desire is sourced from the pop's biological needs.
-    Species(usize, usize, usize),
+    Species(usize),
     /// Desire is sourced from a Culture.
-    Culture(usize, usize, usize),
+    Culture(usize),
     /// Desire is sourced from a class (Not currently used).
-    Class(usize, usize, usize),
+    Class(usize),
     /// Desire is sourced from a religion.
-    Religion(usize, usize, usize),
+    Religion(usize),
 }
 
 impl DesireSource {
