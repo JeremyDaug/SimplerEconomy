@@ -104,6 +104,29 @@ impl PlatonicDesire {
         self.effects.push(effect);
         self
     }
+
+    /// # Create Empty Demo Desire
+    /// 
+    /// Creates and initializes a demographic desire based on this Platonic Desire.
+    /// 
+    /// Gives it the Platonic ID, base effects, scalar, and decay.
+    /// 
+    /// Sets priority to 1.
+    pub fn create_empty_demo_desire(&self, id: usize, tier: usize) -> DemoDesire {
+        debug_assert!(self.tiers.contains(&tier), 
+            "Tier must be a valid tier for the Platonic Desire.");
+        DemoDesire {
+            id,
+            platonic_id: self.id,
+            bucket: vec![],
+            effects: self.effects.clone(),
+            amount: 1.0,
+            scalar: self.scalar,
+            decay: self.decay,
+            tier,
+            priority: 1,
+        }
+    }
 }
 
 /// # Demographic Desire
@@ -139,13 +162,38 @@ pub struct DemoDesire {
     /// The units of satisfaction needed to fully satisfy this desire.
     /// This is multiplied by the Scaling factor to produce the final target per whatever.
     /// 
-    /// Effectively equivalent to 1 per Household.
+    /// Effectively equivalent to 1 per Scalar.
     pub amount: f64,
+    /// The Scaling Factor of the Desire. Multiply this value by the amount for the
+    /// actual target amount.
     pub scalar: ScalingFactor,
-    pub tier: usize,
-    pub idx: usize,
-    pub priority: f32,
+    /// The rate of decay for the Desire. Should be directly inherited from the 
+    /// Platonic Desire.
     pub decay: f64,
+    /// The Desire Tier for the pop.
+    pub tier: usize,
+    /// The Priority of the desire in Demographic Tier it's in. Used for organization 
+    /// both here and when consolidating into the pop at the end.
+    pub priority: isize,
+}
+
+impl DemoDesire {
+    /// # New
+    /// 
+    ///  Simple New, creates with no frills.
+    pub fn new(id: usize) -> Self {
+        Self {
+            id,
+            platonic_id: 0,
+            bucket: vec![],
+            effects: vec![],
+            amount: 1.0,
+            scalar: ScalingFactor::Household(1.0),
+            decay: 0.0,
+            tier: 1,
+            priority: 1,
+        }
+    }
 }
 
 /// # Desire Effect Rate
@@ -340,7 +388,7 @@ pub enum DesireTargetType {
 /// As a note, Luxury desires, due to their infinite nature, should not have malus effects.
 /// 
 /// Note: This is currently not comprehensive.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum DesireEffect {
     /// When this desire is **not** met, it reduces growth by this value.
     Mortality(f64, bool),

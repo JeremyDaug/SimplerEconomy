@@ -8,7 +8,7 @@
 /// 
 /// So, `ScalingFactor::Elders(3.0)` means that the effect is scaled by 3x the elder 
 /// population.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ScalingFactor {
     /// Fixed scalar value, allows multiplication by the value contained.
     Fixed(f64),
