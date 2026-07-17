@@ -231,15 +231,21 @@ impl Pop {
     /// ## Note
     /// 
     /// Currently assumes a single demographic row. Source demo desires are resolved
-    /// via `Factuals::source_demo_desire` (`desire.idx` must match `DemoDesire.id`).
+    /// via `Factuals::source_demo_desire`.
+    /// 
+    /// Per tier:
+    /// 1. Rescale amount/satisfaction from the source demo.
+    /// 2. Inherit `priority` from that demo (placement key for this pass).
+    /// 3. Sort with `Desire::cmp_order` (demo priority, then source kind / demo id ties).
+    /// 4. Rewrite `priority` to the post-sort index so later re-sorts can use priority alone.
     pub fn update_desires(&mut self, factuals: &Factuals) {
         // Index loops avoid borrowing `self.desires` while calling `get_scaling_factor`.
         for tier_idx in 0..self.desires.len() {
             for desire_idx in 0..self.desires[tier_idx].len() {
-                let (base_amount, scalar) = {
+                let (base_amount, scalar, priority) = {
                     let desire = &self.desires[tier_idx][desire_idx];
                     let demo = factuals.source_demo_desire(desire);
-                    (demo.amount, demo.scalar)
+                    (demo.amount, demo.scalar, demo.priority)
                 };
                 let new_amount = base_amount * self.get_scaling_factor(scalar);
 
@@ -250,6 +256,14 @@ impl Pop {
                     desire.satisfaction = 0.0;
                 }
                 desire.amount = new_amount;
+                // Place using the parent demo's priority for this update's sort.
+                desire.priority = priority;
+            }
+
+            self.desires[tier_idx].sort_by(Desire::cmp_order);
+            // Bake final order into priority so future sorts need only this field.
+            for (i, desire) in self.desires[tier_idx].iter_mut().enumerate() {
+                desire.priority = i as isize;
             }
         }
     }
@@ -290,11 +304,8 @@ impl Pop {
     /// The function assumes that all desires are currently in `self.desires` and
     /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
-        let mut curr_tier = 0;
-        let mut working_desires = vec![];
-        
         // first do basic desires, only one pass needed.
-        working_desires = self.desires.remove(0); // pop off front
+        let mut working_desires = self.desires.remove(0); // pop off front
         self.satisfy_tier(&mut working_desires); // satisfy them
         self.desires.insert(0, working_desires); // put back
 
@@ -323,12 +334,12 @@ impl Pop {
                 }
             }
             // if nothing to go onto next time, break out.
-            if working_desires.len() == 0 {
+            if working_desires.is_empty() {
                 break;
             } else { iter_target += 1.0; } // otherwise increment target and go again.
         } 
-        // sasitsfacions done, reorganize
-        ordered_desires.sort_by(|a, b| a.idx.cmp(&b.idx));
+        // Restoring original tier order: priority is the effective index from update_desires.
+        ordered_desires.sort_by_key(|d| d.priority);
         self.desires.insert(2, ordered_desires); // put back
     }
 
@@ -620,11 +631,13 @@ mod pop {
         }
     }
 
-    fn make_desire(idx: usize, desire_target: DesireTarget, amount: f64) -> Desire {
+    fn make_desire(demo_desire_id: usize, desire_target: DesireTarget, amount: f64) -> Desire {
         // Source doesn't matter for most uses, it's just for tracking purpopses.
+        // Priority mirrors demo_desire_id so within-tier order matches insertion when
+        // consume re-sorts luxury desires by priority (as update_desires would bake).
         Desire {
-            idx,
-            source: DesireSource::Religion(0),
+            source: DesireSource::Religion(0, demo_desire_id),
+            priority: demo_desire_id as isize,
             target: vec![desire_target],
             amount,
             satisfaction: 0.0,
@@ -752,7 +765,9 @@ mod pop {
                 DesireTarget { good: 100, desire_type: DesireTargetType::Consume, 
                     efficiency: 1.0, cap: 15.0, high_priority: false }, 
                 10.0));
-            pop.desires[0][2].idx = 2; // fix index to be unique
+            // Keep source id + priority unique after insert shifted this desire.
+            pop.desires[0][2].source = pop.desires[0][2].source.with_demo_desire_id(2);
+            pop.desires[0][2].priority = 2;
 
             // 15 AM of extra goods, should stop after first good.
             pop.property.insert(500, PopPRow::new(15.0)); 
@@ -880,6 +895,108 @@ mod pop {
             assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
             assert_eq!(orders[2].target, 200); // should be the first good in the list
             assert_eq!(orders[2].target_amount, 10.0); // should be the first good in the list
+        }
+    }
+
+    mod update_desires_should {
+        use super::*;
+        use crate::game::{
+            culture::Culture,
+            desire::DemoDesire,
+            species::Species,
+        };
+
+        fn household_demo(id: usize, amount: f64, priority: isize, tier: usize) -> DemoDesire {
+            DemoDesire::new(id)
+                .with_amount(amount)
+                .with_priority(priority)
+                .with_tier(tier)
+                .with_scalar(ScalingFactor::Household(1.0))
+        }
+
+        #[test]
+        fn rescales_amount_and_satisfaction_when_households_grow() {
+            // Demo base 2.0 per household; pop starts at 10 households.
+            let demo = household_demo(10, 2.0, 0, 0);
+            let culture = Culture::new(1, "Test").with_desire(demo.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop(); // count = 10
+            let mut desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            // create_desire: amount = 2.0 * 10 = 20; half satisfied.
+            desire.satisfaction = 10.0;
+            pop.desires[0].push(desire);
+
+            pop.demographics.count = 20.0; // double households
+            pop.update_desires(&factuals);
+
+            // new amount = 2.0 * 20 = 40; satisfaction scales 10 * (40/20) = 20
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(pop.desires[0][0].amount, 40.0);
+            assert_eq!(pop.desires[0][0].satisfaction, 20.0);
+            // sole desire; baked priority is its tier index
+            assert_eq!(pop.desires[0][0].priority, 0);
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
+        }
+
+        #[test]
+        fn sorts_by_demo_priority_then_bakes_tier_index() {
+            // Insert high-priority-value demo after low; sort should put low first.
+            let high = household_demo(1, 1.0, 50, 0);
+            let low = household_demo(2, 1.0, 1, 0);
+            let culture = Culture::new(1, "Test")
+                .with_desire(high.clone())
+                .with_desire(low.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop();
+            // Push in reverse of expected final order, and scramble baked priorities.
+            let mut d_high = high.create_desire(&pop, DesireSource::Culture(1, 0));
+            let mut d_low = low.create_desire(&pop, DesireSource::Culture(1, 0));
+            d_high.priority = 99;
+            d_low.priority = 99;
+            pop.desires[0].push(d_high);
+            pop.desires[0].push(d_low);
+
+            pop.update_desires(&factuals);
+
+            assert_eq!(pop.desires[0].len(), 2);
+            // low demo priority (1) before high (50)
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 2);
+            assert_eq!(*pop.desires[0][1].source.demo_desire_id(), 1);
+            // priorities rewritten to indices
+            assert_eq!(pop.desires[0][0].priority, 0);
+            assert_eq!(pop.desires[0][1].priority, 1);
+            // amounts still scaled to pop (1.0 * 10 households)
+            assert_eq!(pop.desires[0][0].amount, 10.0);
+            assert_eq!(pop.desires[0][1].amount, 10.0);
+        }
+
+        #[test]
+        fn ties_on_demo_priority_break_by_source_kind() {
+            // Same demo priority; Species should sort before Culture.
+            let species_demo = household_demo(5, 1.0, 0, 0);
+            let culture_demo = household_demo(7, 1.0, 0, 0);
+            let factuals = Factuals::new()
+                .with_species(Species::new(0, "Human").with_desire(species_demo.clone()))
+                .with_culture(Culture::new(1, "Test").with_desire(culture_demo.clone()));
+
+            let mut pop = make_pop();
+            // Insert culture first so only sort/tie-break can put species ahead.
+            let culture_desire = culture_demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            let species_desire = species_demo.create_desire(&pop, DesireSource::Species(0, 0));
+            pop.desires[0].push(culture_desire);
+            pop.desires[0].push(species_desire);
+
+            pop.update_desires(&factuals);
+
+            assert_eq!(pop.desires[0].len(), 2);
+            assert!(matches!(pop.desires[0][0].source, DesireSource::Species(_, _)));
+            assert!(matches!(pop.desires[0][1].source, DesireSource::Culture(_, _)));
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 5);
+            assert_eq!(*pop.desires[0][1].source.demo_desire_id(), 7);
+            assert_eq!(pop.desires[0][0].priority, 0);
+            assert_eq!(pop.desires[0][1].priority, 1);
         }
     }
 

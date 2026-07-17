@@ -112,15 +112,21 @@ impl Factuals {
 
     /// # Source Demo Desire
     /// 
-    /// Resolves the demographic desire behind a pop `Desire` via `source` + `idx`
-    /// (`DemoDesire.id`). Class is not implemented yet.
+    /// Resolves the demographic desire behind a pop `Desire` via `desire.source`
+    /// (`source_id`, `demo_desire_id`). Class is not implemented yet.
     pub fn source_demo_desire(&self, desire: &Desire) -> &DemoDesire {
         match desire.source {
-            DesireSource::Species(id) => self.find_species(id).find_desire(desire.idx),
-            DesireSource::Culture(id) => self.find_culture(id).find_desire(desire.idx),
-            DesireSource::Religion(id) => self.find_religion(id).find_desire(desire.idx),
-            DesireSource::Class(id) => {
-                todo!("Class desires are not supported yet (class id {id}).")
+            DesireSource::Species(source_id, demo_id) => {
+                self.find_species(source_id).find_desire(demo_id)
+            }
+            DesireSource::Culture(source_id, demo_id) => {
+                self.find_culture(source_id).find_desire(demo_id)
+            }
+            DesireSource::Religion(source_id, demo_id) => {
+                self.find_religion(source_id).find_desire(demo_id)
+            }
+            DesireSource::Class(source_id, _demo_id) => {
+                todo!("Class desires are not supported yet (class id {source_id}).")
             }
         }
     }

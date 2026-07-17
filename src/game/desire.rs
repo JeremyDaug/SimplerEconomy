@@ -260,15 +260,15 @@ impl DemoDesire {
     /// Creates a pop-level `Desire` from this demographic desire.
     /// 
     /// Copies bucket, effects, scalar, and decay. Satisfaction starts at 0.0 and
-    /// category is left empty. `idx` is set to this demo desire's `id` so
-    /// `Factuals::source_demo_desire` can resolve it later.
+    /// category is left empty. `source` is stored with this demo desire's `id`
+    /// filled in (second field of `DesireSource`) so lookups can resolve it later.
     /// 
     /// The target `amount` is this desire's base amount multiplied by the pop via
     /// `Pop::get_scaling_factor` and `self.scalar`.
     pub fn create_desire(&self, pop: &Pop, source: DesireSource) -> Desire {
         Desire {
-            idx: self.id,
-            source,
+            source: source.with_demo_desire_id(self.id),
+            priority: self.priority,
             target: self.bucket.clone(),
             amount: self.amount * pop.get_scaling_factor(self.scalar),
             satisfaction: 0.0,
@@ -335,13 +335,19 @@ impl DesireEffectRate {
 /// A Desire is things or groups of things that are desired by a pop.
 #[derive(Debug, Clone)]
 pub struct Desire {
-    /// Links back to the source `DemoDesire.id` (set by `DemoDesire::create_desire`).
-    /// 
-    /// May also be used for ordering when desires are rearranged.
-    pub idx: usize,
-
-    /// Useful Identifier which points back to where this desire comes from.
+    /// Where this desire comes from, including the source demographic id and the
+    /// linked `DemoDesire.id` (see `DesireSource`).
     pub source: DesireSource,
+
+    /// Ordering priority within a tier. Lower values come first when sorting.
+    /// 
+    /// Lifecycle under `Pop::update_desires`:
+    /// 1. Set from the parent `DemoDesire.priority` for placement sorting.
+    /// 2. After the tier is sorted, rewritten to the desire's index in that tier.
+    /// 
+    /// Once baked to index, later re-sorts can use `priority` alone without re-reading
+    /// `DesireSource`.
+    pub priority: isize,
 
     /// The goods beings desired. If of length 1, then it's a specific good,
     /// if it's multiple, then it's a bucket.
@@ -384,6 +390,25 @@ impl Desire {
     /// `self.satisfaciton` / `self.amount`, or the number of times it's been satisfied.
     pub fn tiers_satisfied(&self) -> f64 {
         self.satisfaction / self.amount
+    }
+
+    /// # Cmp Order
+    /// 
+    /// Orders one desire relative to another within a tier.
+    /// 
+    /// Used during `update_desires` **after** priorities have been loaded from each
+    /// parent `DemoDesire`, and for any later re-sort once priorities have been baked
+    /// to tier indices (then `priority` alone decides order).
+    /// 
+    /// 1. `priority` ascending (lower first) — demo priority, or post-update index
+    /// 2. source kind: Species → Culture → Class → Religion (tie-break only)
+    /// 3. demo desire id ascending (tie-break only)
+    /// 
+    /// Provisional; may be reworked after playtesting.
+    pub fn cmp_order(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority.cmp(&other.priority)
+            .then_with(|| self.source.order_rank().cmp(&other.source.order_rank()))
+            .then_with(|| self.source.demo_desire_id().cmp(&other.source.demo_desire_id()))
     }
 
     /// # Ordered Targets
@@ -487,30 +512,69 @@ pub enum DesireEffect {
 /// # Desire Source
 /// 
 /// Where is the desire's definition derived from.
+/// 
+/// Each variant is `(source_id, demo_desire_id)`:
+/// - `source_id`: Species / Culture / Class / Religion id
+/// - `demo_desire_id`: id of the `DemoDesire` within that demographic
+/// 
+/// For platonic / user lists that only care about the determinant, `demo_desire_id`
+/// may be `0`.
 #[derive(Debug, Clone, Copy)]
 pub enum DesireSource {
-    /// Desire is sourced from the pop's biological needs.
-    Species(usize),
-    /// Desire is sourced from a Culture.
-    Culture(usize),
-    /// Desire is sourced from a class.
+    /// Desire is sourced from the pop's biological needs. `(species_id, demo_desire_id)`
+    Species(usize, usize),
+    /// Desire is sourced from a Culture. `(culture_id, demo_desire_id)`
+    Culture(usize, usize),
+    /// Desire is sourced from a class. `(class_id, demo_desire_id)`
     /// 
     /// TODO: Class demographics / desires are not implemented yet.
-    Class(usize),
-    /// Desire is sourced from a religion.
-    Religion(usize),
+    Class(usize, usize),
+    /// Desire is sourced from a religion. `(religion_id, demo_desire_id)`
+    Religion(usize, usize),
 }
 
 impl DesireSource {
-    /// # Unwrap
+    /// # Desire Source ID
     /// 
-    /// Gets the ID of the Desire Source.
-    pub fn unwrap(&self) -> &usize {
+    /// Gets the demographic source id (species/culture/class/religion).
+    pub fn desire_source_id(&self) -> &usize {
         match self {
-            DesireSource::Species(id) |
-            DesireSource::Culture(id) |
-            DesireSource::Class(id) |
-            DesireSource::Religion(id) => id,
+            DesireSource::Species(id, _) |
+            DesireSource::Culture(id, _) |
+            DesireSource::Class(id, _) |
+            DesireSource::Religion(id, _) => id,
+        }
+    }
+
+    /// Gets the linked `DemoDesire.id`.
+    pub fn demo_desire_id(&self) -> &usize {
+        match self {
+            DesireSource::Species(_, id) |
+            DesireSource::Culture(_, id) |
+            DesireSource::Class(_, id) |
+            DesireSource::Religion(_, id) => id,
+        }
+    }
+
+    /// Returns a copy of this source with the demo desire id set.
+    pub fn with_demo_desire_id(self, demo_desire_id: usize) -> Self {
+        match self {
+            DesireSource::Species(source_id, _) => DesireSource::Species(source_id, demo_desire_id),
+            DesireSource::Culture(source_id, _) => DesireSource::Culture(source_id, demo_desire_id),
+            DesireSource::Class(source_id, _) => DesireSource::Class(source_id, demo_desire_id),
+            DesireSource::Religion(source_id, _) => DesireSource::Religion(source_id, demo_desire_id),
+        }
+    }
+
+    /// # Order Rank
+    /// 
+    /// Sort key for desire ordering: Species → Culture → Class → Religion.
+    pub fn order_rank(&self) -> u8 {
+        match self {
+            DesireSource::Species(_, _) => 0,
+            DesireSource::Culture(_, _) => 1,
+            DesireSource::Class(_, _) => 2,
+            DesireSource::Religion(_, _) => 3,
         }
     }
 }
