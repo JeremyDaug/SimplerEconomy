@@ -151,8 +151,7 @@ pub struct DemoDesire {
     /// The Bucket of goods which satisfy this desire, as well as how they are used and
     /// the efficiency they have in satisfying it.
     /// 
-    /// This should be a subset of the Platonic Desire's Targets. Desire Targets should be
-    /// equivalent in terms of details.
+    /// This should be a subset of the Platonic Desire's Targets goods.
     pub bucket: Vec<DesireTarget>,
     /// The effects produced by satisfaction. This is scaled with the amount targeted and
     /// the rate defined by the Platonic Desire's Desire Effect Rate.
@@ -333,6 +332,10 @@ impl DesireEffectRate {
 /// # Desire
 /// 
 /// A Desire is things or groups of things that are desired by a pop.
+/// 
+/// ## Contracts
+/// 
+/// Teh ordering of DesireTarget in here should be in the same order as the 
 #[derive(Debug, Clone)]
 pub struct Desire {
     /// Where this desire comes from, including the source demographic id and the
@@ -436,6 +439,8 @@ impl Desire {
 #[derive(Debug, Clone)]
 pub struct DesireTarget {
     /// Whe ID of the good which can satisfy this desire.
+    /// 
+    /// This should be unique within a bucket.
     pub good: usize,
     /// Whether the desire is Consumed or Used by the pop.
     pub desire_type: DesireTargetType,

@@ -53,6 +53,10 @@ pub struct Pop {
     /// This may be expanded to be a vector of Demographic Rows, to consolidate
     /// multiple pops of different cultures into one.
     pub demographics: DemoRow,
+
+    /// The amount of growth (or decline if negative) in the population since yesterday.
+    /// Used for various success tracking and scaling of things between days.
+    pub previous_growth: f64,
 }
 
 impl Pop {
@@ -216,17 +220,23 @@ impl Pop {
         excess
     }
 
+    /// # Demographic Update
+    /// 
+    /// Demographic Update is called very early on in the day, after 
+    pub fn demographic_update(&mut self, factuals: &Factuals) {
+        todo!()
+    }
+
     /// # Update Desires
     /// 
-    /// Called at the end of each day, after the population has changed in size due to
-    /// growth and migration, this updates each desire's `amount` (and scales
-    /// `satisfaction` with it) from its source demographic desire.
+    /// Called near the start of each day, after yesterday's growth/decline, and this
+    /// morning's demographic changes created by players. This updates the desire's 
+    /// `amount`, `targets`, as well as add/remove desires from the pop, and updates
+    /// the PopPRow's `target` and `desire_needs`, scaling with the pop's current size,
+    /// changes in demographic effects, and so on.
     /// 
     /// No prior population snapshot is required: the source `DemoDesire` provides the
-    /// base amount, which is multiplied by the current pop scaling factor. Satisfaction
-    /// is adjusted by `new_amount / old_amount` so relative fulfillment is preserved
-    /// under growth/shrink (equivalent to dividing down to the base unit then scaling
-    /// back up).
+    /// base amount, which is multiplied by the current pop scaling factor.
     /// 
     /// ## Note
     /// 
@@ -240,24 +250,30 @@ impl Pop {
     /// 4. Rewrite `priority` to the post-sort index so later re-sorts can use priority alone.
     pub fn update_desires(&mut self, factuals: &Factuals) {
         // Index loops avoid borrowing `self.desires` while calling `get_scaling_factor`.
+        let mut to_delete = vec![];
         for tier_idx in 0..self.desires.len() {
             for desire_idx in 0..self.desires[tier_idx].len() {
-                let (base_amount, scalar, priority) = {
-                    let desire = &self.desires[tier_idx][desire_idx];
-                    let demo = factuals.source_demo_desire(desire);
-                    (demo.amount, demo.scalar, demo.priority)
-                };
-                let new_amount = base_amount * self.get_scaling_factor(scalar);
+                if let Some(demo) = factuals.source_demo_desire(&self.desires[tier_idx][desire_idx]) {
+                    let base_amount = demo.amount;
+                    let scalar = demo.scalar;
+                    let priority = demo.priority;
+                    
+                    let new_amount = base_amount * self.get_scaling_factor(scalar);
 
-                let desire = &mut self.desires[tier_idx][desire_idx];
-                if desire.amount > 0.0 {
+                    let desire = &mut self.desires[tier_idx][desire_idx];
+                    // Place using the parent demo's priority for this update's sort.
+                    desire.priority = priority;
+                    // Update Satisfaction to scale up properly.
                     desire.satisfaction *= new_amount / desire.amount;
+                    // update amount
+                    desire.amount = new_amount;
+                    // Update desire targets for the desire, simply override the old set
+                    // as it's the same either way.
+                    desire.target = demo.bucket.clone(); // TODO, consider replacing this with a cheaper alternative.
                 } else {
-                    desire.satisfaction = 0.0;
+                    // if demographic no longer exists, mark for deletion.
+                    to_delete.push((tier_idx, desire_idx))
                 }
-                desire.amount = new_amount;
-                // Place using the parent demo's priority for this update's sort.
-                desire.priority = priority;
             }
 
             self.desires[tier_idx].sort_by(Desire::cmp_order);
@@ -490,13 +506,7 @@ pub struct PopPRow {
     /// 
     /// Goods which cannot be bought or sold should always have a target of 0.0.
     pub shop_target: f64,
-
-    /// The amount that has already been earmarked for the pop's use today. Used 
-    /// to 'prepare' for consumption. Does not remove from quantity.
-    /// 
-    /// This is reset at the start of the day.
-    pub reserved: f64,
-
+    
     /// The amount that we wish to preserve between days. This is where 'hoarding' is 
     /// recorded and tracked over time for specific goods.
     /// 
@@ -506,14 +516,24 @@ pub struct PopPRow {
     /// Missing a savings target reduces a pop's mood.
     pub saved: f64,
 
+    /// The amount that has already been earmarked for the pop's use today. Used 
+    /// to 'prepare' for consumption. Does not remove from quantity.
+    /// 
+    /// This is reset at the start of the day.
+    pub reserved: f64,
+
     /// How many of this good was consumed for today's desires.
-    /// All goods here are decayed at the end of the day.
+    /// All goods here are decayed at the end of the day at full percent.
     pub consumed: f64,
 
     /// Goods that were used for use desires, but not consumed, are stored here
     /// until the end of the day. At day's end, goods here decay normally, and are
     /// returned to total quantity.
     pub used: f64,
+
+    // TODO: consider adding history recording of consumed and used goods, as well as
+    // success records of reaching the shop_target and saved target (0.0-1.0).
+    // These would help with budgeting and forward looking planning for a pop, but may be too heavy.
 }
 
 impl PopPRow {
@@ -628,6 +648,7 @@ mod pop {
                 religion: 0,
             },
             current_orders: vec![],
+            previous_growth: 0.0,
         }
     }
 

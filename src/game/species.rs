@@ -62,12 +62,9 @@ impl Species {
         self
     }
 
-    /// Finds a demo desire by id across all tiers. Panics if missing.
-    pub fn find_desire(&self, desire_id: usize) -> &DemoDesire {
+    /// Finds a demo desire by id across all tiers.
+    pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
         self.desires.iter().flatten()
             .find(|d| d.id == desire_id)
-            .unwrap_or_else(|| {
-                panic!("DemoDesire {desire_id} not found on species {}.", self.id)
-            })
     }
 }

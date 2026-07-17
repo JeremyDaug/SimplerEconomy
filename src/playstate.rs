@@ -42,8 +42,9 @@ impl PlayState {
         //    else could interfere with player actions. This does not include player
         //    market purchasing, wich is saved for the market proper. This includes
         //    movement of units, but not map alterations.
-        // 4. Apply new player bonuses, including creating new actors, or applying new
-        //    bonuses.
+        // 4. Apply new player bonuses, including creating new actors, applying new
+        //    bonuses, updating pop demographic desires and priorities, and other similar
+        //    changes induced by the player.
         // 5. Intra-Market trading day. This is broken up and organized by group turns.
         //    The default order is Player(state), Institutions, Firms, and Pops.
         //    Firms and pops are always in this order, giving firms advantage in gathering

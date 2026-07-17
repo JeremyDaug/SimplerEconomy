@@ -114,7 +114,7 @@ impl Factuals {
     /// 
     /// Resolves the demographic desire behind a pop `Desire` via `desire.source`
     /// (`source_id`, `demo_desire_id`). Class is not implemented yet.
-    pub fn source_demo_desire(&self, desire: &Desire) -> &DemoDesire {
+    pub fn source_demo_desire(&self, desire: &Desire) -> Option<&DemoDesire> {
         match desire.source {
             DesireSource::Species(source_id, demo_id) => {
                 self.find_species(source_id).find_desire(demo_id)
