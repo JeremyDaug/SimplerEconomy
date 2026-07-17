@@ -715,11 +715,11 @@ mod processes {
     static DECAY_OUTPUT: usize = 200;
 
     fn make_factuals(goods: Vec<Good>) -> Factuals {
-        let mut map = HashMap::new();
+        let mut factuals = Factuals::new();
         for g in goods {
-            map.insert(g.id, g);
+            factuals.goods.insert(g.id, g);
         }
-        Factuals { goods: map, processes: HashMap::new() }
+        factuals
     }
 
     fn make_input(good: usize, amount: f64, fixed: bool, itype: InputType) -> ProcessInput {

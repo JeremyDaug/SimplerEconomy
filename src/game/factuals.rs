@@ -1,6 +1,13 @@
 use std::collections::HashMap;
 
-use crate::game::{culture::Culture, good::Good, process::Process};
+use crate::game::{
+    culture::Culture,
+    desire::{DemoDesire, Desire, DesireSource},
+    good::Good,
+    process::Process,
+    religion::Religion,
+    species::Species,
+};
 
 /// # Factuals
 /// 
@@ -16,7 +23,9 @@ use crate::game::{culture::Culture, good::Good, process::Process};
 pub struct Factuals {
     pub goods: HashMap<usize, Good>,
     pub processes: HashMap<usize, Process>,
+    pub species: HashMap<usize, Species>,
     pub cultures: HashMap<usize, Culture>,
+    pub religion: HashMap<usize, Religion>,
 }
 
 impl Factuals {
@@ -28,6 +37,91 @@ impl Factuals {
             goods: HashMap::new(),
             processes: HashMap::new(),
             cultures: HashMap::new(),
+            species: HashMap::new(),
+            religion: HashMap::new(),
+        }
+    }
+
+    /// Adds a good; panics if its ID is already present.
+    pub fn with_good(mut self, good: Good) -> Self {
+        let id = good.id;
+        if self.goods.contains_key(&id) {
+            panic!("Good ID {} already exists in factuals.", id);
+        }
+        self.goods.insert(id, good);
+        self
+    }
+
+    /// Adds a process; panics if its ID is already present.
+    pub fn with_process(mut self, process: Process) -> Self {
+        let id = process.id;
+        if self.processes.contains_key(&id) {
+            panic!("Process ID {} already exists in factuals.", id);
+        }
+        self.processes.insert(id, process);
+        self
+    }
+
+    /// Adds a species; panics if its ID is already present.
+    pub fn with_species(mut self, species: Species) -> Self {
+        let id = species.id;
+        if self.species.contains_key(&id) {
+            panic!("Species ID {} already exists in factuals.", id);
+        }
+        self.species.insert(id, species);
+        self
+    }
+
+    /// Adds a culture; panics if its ID is already present.
+    pub fn with_culture(mut self, culture: Culture) -> Self {
+        let id = culture.id;
+        if self.cultures.contains_key(&id) {
+            panic!("Culture ID {} already exists in factuals.", id);
+        }
+        self.cultures.insert(id, culture);
+        self
+    }
+
+    /// Adds a religion; panics if its ID is already present.
+    pub fn with_religion(mut self, religion: Religion) -> Self {
+        let id = religion.id;
+        if self.religion.contains_key(&id) {
+            panic!("Religion ID {} already exists in factuals.", id);
+        }
+        self.religion.insert(id, religion);
+        self
+    }
+
+    /// Looks up a species by id. Panics if missing.
+    pub fn find_species(&self, id: usize) -> &Species {
+        self.species.get(&id)
+            .unwrap_or_else(|| panic!("Species {id} missing from factuals."))
+    }
+
+    /// Looks up a culture by id. Panics if missing.
+    pub fn find_culture(&self, id: usize) -> &Culture {
+        self.cultures.get(&id)
+            .unwrap_or_else(|| panic!("Culture {id} missing from factuals."))
+    }
+
+    /// Looks up a religion by id. Panics if missing.
+    pub fn find_religion(&self, id: usize) -> &Religion {
+        self.religion.get(&id)
+            .unwrap_or_else(|| panic!("Religion {id} missing from factuals."))
+    }
+
+    /// # Source Demo Desire
+    /// 
+    /// Resolves the demographic desire behind a pop `Desire` via `source` + `idx`
+    /// (`DemoDesire.id`). Class is not implemented yet.
+    pub fn source_demo_desire(&self, desire: &Desire) -> &DemoDesire {
+        match desire.source {
+            DesireSource::Species(id) => self.find_species(id).find_desire(desire.idx),
+            DesireSource::Culture(id) => self.find_culture(id).find_desire(desire.idx),
+            DesireSource::Religion(id) => self.find_religion(id).find_desire(desire.idx),
+            DesireSource::Class(id) => {
+                todo!("Class desires are not supported yet (class id {id}).")
+            }
         }
     }
 }

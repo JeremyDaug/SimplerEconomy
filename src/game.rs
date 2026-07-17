@@ -26,3 +26,4 @@ pub mod players;
 pub mod mapdata;
 pub mod scalingfactor;
 pub mod marketorder;
+pub mod religion;

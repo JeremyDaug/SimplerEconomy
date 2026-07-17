@@ -1,31 +1,31 @@
 use crate::game::desire::DemoDesire;
 
-/// # Species
+/// # Religion
 /// 
-/// The species of a pop. Defines the basic needs required for life, and may later
-/// include environment-dependent needs and household baseline modifiers.
+/// The religion of a pop. Defines additional common and luxury needs as well as
+/// secondary benefits and influence the player can develop.
 /// 
-/// By default this is human; additional species types may be added later.
+/// Religion is maleable to the player it's attached to, similar to Culture.
 #[derive(Debug, Clone)]
-pub struct Species {
-    /// The unique ID of the species.
+pub struct Religion {
+    /// The unique ID of the religion.
     pub id: usize,
-    /// The name of the species.
+    /// The name of the religion.
     pub name: String,
-    /// The ID of the state this is connected to. If a species is not connected to any
+    /// The ID of the state this is connected to. If a religion is not connected to any
     /// state, it is set to 0.
     pub state: usize,
-    /// The desires of the species, organized by tier.
-    /// Basic, Common, and Luxury. Basic should dominate for species.
+    /// The desires of the religion, organized by tier.
+    /// Basic, Common, and Luxury. Basic should be uncommon.
     /// 
     /// The desires here are all scaled to the needs of 1 household.
     pub desires: Vec<Vec<DemoDesire>>,
 }
 
-impl Species {
+impl Religion {
     /// # New
     /// 
-    /// Creates a species with the given id and name.
+    /// Creates a religion with the given id and name.
     /// State defaults to 0 (no state). Desires start as three empty tiers.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
@@ -36,13 +36,13 @@ impl Species {
         }
     }
 
-    /// Sets the species' unique ID.
+    /// Sets the religion's unique ID.
     pub fn with_id(mut self, id: usize) -> Self {
         self.id = id;
         self
     }
 
-    /// Sets the species' display name.
+    /// Sets the religion's display name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -67,7 +67,7 @@ impl Species {
         self.desires.iter().flatten()
             .find(|d| d.id == desire_id)
             .unwrap_or_else(|| {
-                panic!("DemoDesire {desire_id} not found on species {}.", self.id)
+                panic!("DemoDesire {desire_id} not found on religion {}.", self.id)
             })
     }
 }

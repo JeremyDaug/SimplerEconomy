@@ -332,13 +332,9 @@ mod firm {
 
     // Helper to build a minimal Factuals with one process
     fn make_factuals_with_process(process: Process) -> Factuals {
-        let mut processes = HashMap::new();
-        processes.insert(process.id, process);
-        let mut goods = HashMap::new();
-        Factuals {
-            goods, // goods not strictly needed for do_process in these tests
-            processes,
-        }
+        let mut factuals = Factuals::new();
+        factuals.processes.insert(process.id, process);
+        factuals
     }
 
     // Helper to build a Market with AMV data for the goods we care about
@@ -581,10 +577,7 @@ mod firm {
         #[test]
         #[should_panic(expected = "Process not found!")]
         fn test_unknown_process_panics() {
-            let factuals = Factuals {
-                goods: HashMap::new(),
-                processes: HashMap::new(),
-            };
+            let factuals = Factuals::new();
 
             let mut firm = Firm::new(5, "Broken Firm".into(), 42, hexx::Hex::new(0, 0));
             firm.production_line.push(ProductionLine {

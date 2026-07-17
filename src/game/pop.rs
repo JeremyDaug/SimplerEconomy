@@ -56,6 +56,22 @@ pub struct Pop {
 }
 
 impl Pop {
+    /// # Apply Scaling Factor
+    /// 
+    /// Resolves a `ScalingFactor` against this pop's demographics, returning the
+    /// effective multiplier (scalar weight times households, adults, labor, etc.).
+    pub fn get_scaling_factor(&self, scaling: ScalingFactor) -> f64 {
+        match scaling {
+            ScalingFactor::Fixed(f) => f,
+            ScalingFactor::All(f) => f * self.demographics.total_population(),
+            ScalingFactor::Household(f) => f * self.demographics.count,
+            ScalingFactor::Adults(f) => f * self.demographics.adult_pop(),
+            ScalingFactor::Children(f) => f * self.demographics.children_pop(),
+            ScalingFactor::Elders(f) => f * self.demographics.elder_pop(),
+            ScalingFactor::Labor(f) => f * self.demographics.labor(),
+        }
+    }
+
     /// # Start Day
     /// 
     /// Function called at the start of the day to give a pop it's daily generating
@@ -70,43 +86,10 @@ impl Pop {
     /// The choice of Scaling factor ensures it can scale here, rather than above.
     pub fn start_day(&mut self, new_goods: &Vec<(usize, ScalingFactor)>) {
         for (good_id, scaling) in new_goods.iter() {
-            match scaling {
-                ScalingFactor::Fixed(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f)
-                        .or_insert(PopPRow::new(*f));
-                },
-                ScalingFactor::All(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.total_population())
-                        .or_insert(PopPRow::new(f * self.demographics.total_population()));
-                },
-                ScalingFactor::Household(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.count)
-                        .or_insert(PopPRow::new(f * self.demographics.count));
-                },
-                ScalingFactor::Adults(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.adult_pop())
-                        .or_insert(PopPRow::new(f * self.demographics.adult_pop()));
-                },
-                ScalingFactor::Children(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.children_pop())
-                        .or_insert(PopPRow::new(f * self.demographics.children_pop()));
-                },
-                ScalingFactor::Elders(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.elder_pop())
-                        .or_insert(PopPRow::new(f * self.demographics.elder_pop()));
-                },
-                ScalingFactor::Labor(f) => {
-                    self.property.entry(*good_id)
-                        .and_modify(|x| x.quantity += f * self.demographics.labor())
-                        .or_insert(PopPRow::new(f * self.demographics.labor()));
-                },
-            }
+            let amount = self.get_scaling_factor(*scaling);
+            self.property.entry(*good_id)
+                .and_modify(|x| x.quantity += amount)
+                .or_insert(PopPRow::new(amount));
         }
     }
 
@@ -235,20 +218,38 @@ impl Pop {
 
     /// # Update Desires
     /// 
-    /// Called at the end of each day, after the population has changed in size due to 
-    /// growth and migration, this updates the amount requested by desires to correctly 
-    /// scale with the new population.
+    /// Called at the end of each day, after the population has changed in size due to
+    /// growth and migration, this updates each desire's `amount` (and scales
+    /// `satisfaction` with it) from its source demographic desire.
+    /// 
+    /// No prior population snapshot is required: the source `DemoDesire` provides the
+    /// base amount, which is multiplied by the current pop scaling factor. Satisfaction
+    /// is adjusted by `new_amount / old_amount` so relative fulfillment is preserved
+    /// under growth/shrink (equivalent to dividing down to the base unit then scaling
+    /// back up).
     /// 
     /// ## Note
     /// 
-    /// Currently, because a pop only ever contains 1 demographic row, this is a simple
-    /// rescaling of the amount to fit the current population.
-    /// 
-    /// As simple as resetting amount to the scaling factor times population.
+    /// Currently assumes a single demographic row. Source demo desires are resolved
+    /// via `Factuals::source_demo_desire` (`desire.idx` must match `DemoDesire.id`).
     pub fn update_desires(&mut self, factuals: &Factuals) {
-        for tier in self.desires.iter_mut() {
-            for desire in tier.iter_mut() {
-                todo!("Waiting on culture, religion, and species to include desires.");
+        // Index loops avoid borrowing `self.desires` while calling `get_scaling_factor`.
+        for tier_idx in 0..self.desires.len() {
+            for desire_idx in 0..self.desires[tier_idx].len() {
+                let (base_amount, scalar) = {
+                    let desire = &self.desires[tier_idx][desire_idx];
+                    let demo = factuals.source_demo_desire(desire);
+                    (demo.amount, demo.scalar)
+                };
+                let new_amount = base_amount * self.get_scaling_factor(scalar);
+
+                let desire = &mut self.desires[tier_idx][desire_idx];
+                if desire.amount > 0.0 {
+                    desire.satisfaction *= new_amount / desire.amount;
+                } else {
+                    desire.satisfaction = 0.0;
+                }
+                desire.amount = new_amount;
             }
         }
     }

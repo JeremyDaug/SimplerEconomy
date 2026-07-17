@@ -1,5 +1,5 @@
 
-use crate::game::scalingfactor::ScalingFactor;
+use crate::game::{pop::Pop, scalingfactor::ScalingFactor};
 
 /// # Platonic Desire
 /// 
@@ -194,6 +194,90 @@ impl DemoDesire {
             priority: 1,
         }
     }
+
+    /// Sets the demographic desire's unique ID.
+    pub fn with_id(mut self, id: usize) -> Self {
+        self.id = id;
+        self
+    }
+
+    /// Sets the platonic desire this demo desire is based on (0 if open-ended).
+    pub fn with_platonic_id(mut self, platonic_id: usize) -> Self {
+        self.platonic_id = platonic_id;
+        self
+    }
+
+    /// Adds a good target to the satisfaction bucket.
+    pub fn with_good(mut self, target_good: DesireTarget) -> Self {
+        self.bucket.push(target_good);
+        self
+    }
+
+    /// Adds an effect produced when this desire is satisfied.
+    pub fn with_effect(mut self, effect: DesireEffect) -> Self {
+        self.effects.push(effect);
+        self
+    }
+
+    /// Sets the units of satisfaction needed to fully satisfy this desire.
+    /// Debug-asserts that `amount` is positive.
+    pub fn with_amount(mut self, amount: f64) -> Self {
+        debug_assert!(amount > 0.0, "Amount must be positive.");
+        self.amount = amount;
+        self
+    }
+
+    /// Sets how the desire amount scales with the household/pop.
+    pub fn with_scalar(mut self, scalar: ScalingFactor) -> Self {
+        self.scalar = scalar;
+        self
+    }
+
+    /// Sets the satisfaction decay rate between days.
+    /// Debug-asserts that `decay` is in `[0.0, 1.0)`.
+    pub fn with_decay(mut self, decay: f64) -> Self {
+        debug_assert!(0.0 <= decay && decay < 1.0, "Decay must be between 0.0 inclusive and 1.0 exclusive.");
+        self.decay = decay;
+        self
+    }
+
+    /// Sets the desire tier for the pop.
+    /// Debug-asserts that `tier` is 0, 1, or 2.
+    pub fn with_tier(mut self, tier: usize) -> Self {
+        debug_assert!(tier <= 2, "Tier must be between 0 and 1 inclusive.");
+        self.tier = tier;
+        self
+    }
+
+    /// Sets ordering priority within the demographic tier.
+    pub fn with_priority(mut self, priority: isize) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// # Create Desire
+    /// 
+    /// Creates a pop-level `Desire` from this demographic desire.
+    /// 
+    /// Copies bucket, effects, scalar, and decay. Satisfaction starts at 0.0 and
+    /// category is left empty. `idx` is set to this demo desire's `id` so
+    /// `Factuals::source_demo_desire` can resolve it later.
+    /// 
+    /// The target `amount` is this desire's base amount multiplied by the pop via
+    /// `Pop::get_scaling_factor` and `self.scalar`.
+    pub fn create_desire(&self, pop: &Pop, source: DesireSource) -> Desire {
+        Desire {
+            idx: self.id,
+            source,
+            target: self.bucket.clone(),
+            amount: self.amount * pop.get_scaling_factor(self.scalar),
+            satisfaction: 0.0,
+            category: None,
+            effect: self.effects.clone(),
+            scalar: self.scalar,
+            decay: self.decay,
+        }
+    }
 }
 
 /// # Desire Effect Rate
@@ -251,9 +335,9 @@ impl DesireEffectRate {
 /// A Desire is things or groups of things that are desired by a pop.
 #[derive(Debug, Clone)]
 pub struct Desire {
-    /// An index value, for keeping desires order. 
+    /// Links back to the source `DemoDesire.id` (set by `DemoDesire::create_desire`).
     /// 
-    /// This is set/reset when desires are added/rearranged, or
+    /// May also be used for ordering when desires are rearranged.
     pub idx: usize,
 
     /// Useful Identifier which points back to where this desire comes from.
@@ -409,7 +493,9 @@ pub enum DesireSource {
     Species(usize),
     /// Desire is sourced from a Culture.
     Culture(usize),
-    /// Desire is sourced from a class (Not currently used).
+    /// Desire is sourced from a class.
+    /// 
+    /// TODO: Class demographics / desires are not implemented yet.
     Class(usize),
     /// Desire is sourced from a religion.
     Religion(usize),
