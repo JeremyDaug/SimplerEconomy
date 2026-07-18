@@ -285,7 +285,7 @@ impl Pop {
         self.add_missing_demographic_desires(factuals, &existing_desires);
 
         // --- 3. Scale shopping / need targets with population growth ---
-        let growth_f = (self.demographics.count + self.previous_growth) / self.demographics.count;
+        let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
                 prop.shop_target *= growth_f;
