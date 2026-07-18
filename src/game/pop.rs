@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
+use crate::game::{actor::Actor, desire::{Desire, DesireSource, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -232,7 +232,7 @@ impl Pop {
     /// Called near the start of each day, after yesterday's growth/decline, and this
     /// morning's demographic changes created by players. This updates the desire's 
     /// `amount`, `targets`, as well as add/remove desires from the pop, and updates
-    /// the PopPRow's `target` and `desire_needs`, scaling with the pop's current size,
+    /// the PopPRow's `shopping_target` and `desire_needs`, scaling with the pop's current size,
     /// changes in demographic effects, and so on.
     /// 
     /// No prior population snapshot is required: the source `DemoDesire` provides the
@@ -243,43 +243,116 @@ impl Pop {
     /// Currently assumes a single demographic row. Source demo desires are resolved
     /// via `Factuals::source_demo_desire`.
     /// 
-    /// Per tier:
-    /// 1. Rescale amount/satisfaction from the source demo.
-    /// 2. Inherit `priority` from that demo (placement key for this pass).
-    /// 3. Sort with `Desire::cmp_order` (demo priority, then source kind / demo id ties).
-    /// 4. Rewrite `priority` to the post-sort index so later re-sorts can use priority alone.
+    /// Flow:
+    /// 1. Update existing desires (amount, satisfaction, targets, demo priority) or drop
+    ///    ones whose demo no longer exists.
+    /// 2. Add any new demo desires from the pop's species/culture/religion that are not
+    ///    already present (scaled via `DemoDesire::create_desire`).
+    /// 3. Scale property `shop_target` / `desire_needs` for population growth.
+    /// 4. Per tier: sort with `Desire::cmp_order`, then bake `priority` to index.
     pub fn update_desires(&mut self, factuals: &Factuals) {
-        // Index loops avoid borrowing `self.desires` while calling `get_scaling_factor`.
-        let mut to_delete = vec![];
+        // Sources already on the pop (after removals), used to skip re-adding.
+        let mut existing_desires = HashSet::new();
+
+        // --- 1. Update / remove existing pop desires ---
         for tier_idx in 0..self.desires.len() {
-            for desire_idx in 0..self.desires[tier_idx].len() {
+            let mut desire_idx = 0;
+            while desire_idx < self.desires[tier_idx].len() {
                 if let Some(demo) = factuals.source_demo_desire(&self.desires[tier_idx][desire_idx]) {
-                    let base_amount = demo.amount;
-                    let scalar = demo.scalar;
+                    let new_amount = demo.amount * self.get_scaling_factor(demo.scalar);
                     let priority = demo.priority;
-                    
-                    let new_amount = base_amount * self.get_scaling_factor(scalar);
+                    let targets = demo.bucket.clone();
 
                     let desire = &mut self.desires[tier_idx][desire_idx];
                     // Place using the parent demo's priority for this update's sort.
                     desire.priority = priority;
-                    // Update Satisfaction to scale up properly.
+                    // Scale satisfaction with the amount change.
                     desire.satisfaction *= new_amount / desire.amount;
-                    // update amount
+                    // update amount.
                     desire.amount = new_amount;
-                    // Update desire targets for the desire, simply override the old set
-                    // as it's the same either way.
-                    desire.target = demo.bucket.clone(); // TODO, consider replacing this with a cheaper alternative.
+                    // Override targets from the demo definition.
+                    desire.target = targets; // TODO: cheaper sync if needed later.
+                    existing_desires.insert(desire.source);
+                    desire_idx += 1;
                 } else {
-                    // if demographic no longer exists, mark for deletion.
-                    to_delete.push((tier_idx, desire_idx))
+                    // Demo desire removed from its demographic — drop from the pop.
+                    self.desires[tier_idx].remove(desire_idx);
                 }
             }
+        }
 
-            self.desires[tier_idx].sort_by(Desire::cmp_order);
-            // Bake final order into priority so future sorts need only this field.
-            for (i, desire) in self.desires[tier_idx].iter_mut().enumerate() {
+        // --- 2. Add new desires present on demographics but not yet on the pop ---
+        self.add_missing_demographic_desires(factuals, &existing_desires);
+
+        // --- 3. Scale shopping / need targets with population growth ---
+        let growth_f = self.demographics.count + self.previous_growth / self.demographics.count;
+        for (_, prop) in self.property.iter_mut() {
+            if prop.shop_target > 0.0 {
+                prop.shop_target *= growth_f;
+            }
+            if prop.desire_needs > 0.0 {
+                prop.desire_needs *= growth_f;
+            }
+        }
+
+        // --- 4. Sort each tier and bake priority to index ---
+        for tier in self.desires.iter_mut() {
+            tier.sort_by(Desire::cmp_order);
+            for (i, desire) in tier.iter_mut().enumerate() {
                 desire.priority = i as isize;
+            }
+        }
+    }
+
+    /// Creates scaled pop desires for any species/culture/religion demo desires not
+    /// already present in `existing` (keyed by full `DesireSource`).
+    /// 
+    /// Culture / religion id `0` means none and is skipped. Class is not supported yet.
+    fn add_missing_demographic_desires(
+        &mut self,
+        factuals: &Factuals,
+        existing: &HashSet<DesireSource>,
+    ) {
+        // Species (0 is the default human id — still valid).
+        if let Some(species) = factuals.species.get(&self.demographics.species) {
+            for demo in species.desires.iter().flat_map(|tier| tier.values()) {
+                let source = DesireSource::Species(species.id, demo.id);
+                if !existing.contains(&source) {
+                    let tier = demo.tier;
+                    let desire = demo.create_desire(self, source);
+                    debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                    self.desires[tier].push(desire);
+                }
+            }
+        }
+
+        // Culture (0 = none).
+        if self.demographics.culture != 0 {
+            if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
+                for demo in culture.desires.iter().flat_map(|tier| tier.values()) {
+                    let source = DesireSource::Culture(culture.id, demo.id);
+                    if !existing.contains(&source) {
+                        let tier = demo.tier;
+                        let desire = demo.create_desire(self, source);
+                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                        self.desires[tier].push(desire);
+                    }
+                }
+            }
+        }
+
+        // Religion (0 = none).
+        if self.demographics.religion != 0 {
+            if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
+                for demo in religion.desires.iter().flat_map(|tier| tier.values()) {
+                    let source = DesireSource::Religion(religion.id, demo.id);
+                    if !existing.contains(&source) {
+                        let tier = demo.tier;
+                        let desire = demo.create_desire(self, source);
+                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                        self.desires[tier].push(desire);
+                    }
+                }
             }
         }
     }
@@ -1003,6 +1076,7 @@ mod pop {
                 .with_culture(Culture::new(1, "Test").with_desire(culture_demo.clone()));
 
             let mut pop = make_pop();
+            pop.demographics.culture = 1;
             // Insert culture first so only sort/tie-break can put species ahead.
             let culture_desire = culture_demo.create_desire(&pop, DesireSource::Culture(1, 0));
             let species_desire = species_demo.create_desire(&pop, DesireSource::Species(0, 0));
@@ -1018,6 +1092,40 @@ mod pop {
             assert_eq!(*pop.desires[0][1].source.demo_desire_id(), 7);
             assert_eq!(pop.desires[0][0].priority, 0);
             assert_eq!(pop.desires[0][1].priority, 1);
+        }
+
+        #[test]
+        fn adds_new_demographic_desires_without_duplicating_existing() {
+            let existing_demo = household_demo(1, 1.0, 0, 0);
+            let new_demo = household_demo(2, 3.0, 5, 1); // common tier, base 3.0
+            let culture = Culture::new(1, "Test")
+                .with_desire(existing_demo.clone())
+                .with_desire(new_demo.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop(); // 10 households
+            pop.demographics.culture = 1;
+            // Only the first culture desire is on the pop already.
+            let existing = existing_demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            pop.desires[0].push(existing);
+
+            pop.update_desires(&factuals);
+
+            // Existing basic desire still present; new common desire added once.
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 1);
+            assert_eq!(pop.desires[0][0].amount, 10.0); // 1.0 * 10 households
+
+            assert_eq!(pop.desires[1].len(), 1);
+            assert_eq!(*pop.desires[1][0].source.demo_desire_id(), 2);
+            assert_eq!(pop.desires[1][0].amount, 30.0); // 3.0 * 10 households
+            assert_eq!(pop.desires[1][0].satisfaction, 0.0);
+            assert_eq!(pop.desires[1][0].priority, 0); // baked sole index in tier
+
+            // Second pass must not duplicate.
+            pop.update_desires(&factuals);
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(pop.desires[1].len(), 1);
         }
     }
 

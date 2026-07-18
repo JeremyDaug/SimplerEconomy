@@ -30,6 +30,8 @@ pub struct PlatonicDesire {
     /// What class(es) of goods should go into this desire.
     pub classes: Vec<usize>,
     /// What Tiers this desire may go into. (Few go into 0, most will be 1 or 2)
+    /// 
+    /// This should Never be empty.
     pub tiers: Vec<usize>,
     /// The Desire Sources which are valid for using this Platonic Desire.
     /// 
@@ -40,10 +42,11 @@ pub struct PlatonicDesire {
 impl PlatonicDesire {
     /// Creates new Platonic Desire with the given id.
     /// 
-    /// Bucket, Effects, Categories, Class, Tier, and User are all empty.
+    /// Bucket, Effects, Categories, Class, and User are all empty.
     /// Scalar is set to a factor of All(1.0)
     /// effect rate is set to Linear(1.0)
     /// decay is set to 0.0.
+    /// Tier is set to 1, as a default. Tier should never be empty.
     pub fn new(id: usize) -> Self {
         PlatonicDesire {
             id,
@@ -243,7 +246,7 @@ impl DemoDesire {
     /// Sets the desire tier for the pop.
     /// Debug-asserts that `tier` is 0, 1, or 2.
     pub fn with_tier(mut self, tier: usize) -> Self {
-        debug_assert!(tier <= 2, "Tier must be between 0 and 1 inclusive.");
+        debug_assert!(tier <= 2, "Tier must be between 0 and 2 inclusive.");
         self.tier = tier;
         self
     }
@@ -294,7 +297,7 @@ pub enum DesireEffectRate {
     /// Value must be positive.
     Linear(f64),
     /// input.sqrt()
-    SqareRoot,
+    SquareRoot,
     /// Log_v (input) + 1.0
     /// Ensures that 1.0 gives 1.0 effect.
     /// Value must be a valid basis for a log.
@@ -323,7 +326,7 @@ impl DesireEffectRate {
         assert!(v >= 1.0, "Input value must be 1.0 or greater.");
         match self {
             DesireEffectRate::Linear(c) => (v - 1.0) * c + 1.0,
-            DesireEffectRate::SqareRoot => v.sqrt(),
+            DesireEffectRate::SquareRoot => v.sqrt(),
             DesireEffectRate::Logarithmic(b) => v.log(*b),
         }
     }
@@ -524,7 +527,7 @@ pub enum DesireEffect {
 /// 
 /// For platonic / user lists that only care about the determinant, `demo_desire_id`
 /// may be `0`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DesireSource {
     /// Desire is sourced from the pop's biological needs. `(species_id, demo_desire_id)`
     Species(usize, usize),
