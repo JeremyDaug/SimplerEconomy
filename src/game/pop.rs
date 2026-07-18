@@ -29,6 +29,8 @@ pub struct Pop {
     /// first, then common needs, then Luxury needs. Once it has filled up Luxury needs
     /// it will repeatedly fill up Luxury needs indefinitely, stoping only when it runs
     /// out of goods to satisfy the desires with.
+    /// 
+    /// Desires should never change tier. If they do, it's a new desire.
     pub desires: Vec<Vec<Desire>>,
 
     /// The working desires of the pop, a flat structure that goes :
@@ -52,10 +54,16 @@ pub struct Pop {
     /// 
     /// This may be expanded to be a vector of Demographic Rows, to consolidate
     /// multiple pops of different cultures into one.
+    /// 
+    /// As this is one row, Demographic groups should never change after creation.
+    /// Assimilation/migration handles changing between groups.
     pub demographics: DemoRow,
 
     /// The amount of growth (or decline if negative) in the population since yesterday.
     /// Used for various success tracking and scaling of things between days.
+    /// 
+    /// Should never be larger than or equal to `self.demographics.count`.
+    /// (Negative pops aren't real, they can't hurt you.)
     pub previous_growth: f64,
 }
 
@@ -501,6 +509,8 @@ impl Pop {
 #[derive(Debug, Clone, Copy)]
 pub struct DemoRow {
     /// The Number of households, floating point as growth storage.
+    /// 
+    /// Should Never be smaller than 1.0.
     pub count: f64,
     /// The definition of this row's household. This is the sum of the baseline plus
     /// all other demographic effects.
