@@ -1127,6 +1127,155 @@ mod pop {
             assert_eq!(pop.desires[0].len(), 1);
             assert_eq!(pop.desires[1].len(), 1);
         }
+
+        #[test]
+        fn shrinks_population_preserves_satisfaction_ratio_and_luxury_oversat() {
+            // Basic: half-satisfied. Luxury: oversatisfied (3x amount).
+            let basic = household_demo(1, 1.0, 0, 0);
+            let luxury = household_demo(2, 1.0, 0, 2);
+            let culture = Culture::new(1, "Test")
+                .with_desire(basic.clone())
+                .with_desire(luxury.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop(); // 10 households → amount 10 each
+            pop.demographics.culture = 1;
+            let mut d_basic = basic.create_desire(&pop, DesireSource::Culture(1, 0));
+            let mut d_lux = luxury.create_desire(&pop, DesireSource::Culture(1, 0));
+            d_basic.satisfaction = 5.0;   // 0.5 tiers
+            d_lux.satisfaction = 30.0;    // 3.0 tiers (oversat)
+            pop.desires[0].push(d_basic);
+            pop.desires[2].push(d_lux);
+
+            pop.demographics.count = 5.0; // shrink to half
+            pop.update_desires(&factuals);
+
+            // amount 1.0 * 5 = 5; satisfaction scales by 5/10
+            assert_eq!(pop.desires[0][0].amount, 5.0);
+            assert_eq!(pop.desires[0][0].satisfaction, 2.5);
+            assert!((pop.desires[0][0].tiers_satisfied() - 0.5).abs() < 1e-9);
+
+            assert_eq!(pop.desires[2][0].amount, 5.0);
+            assert_eq!(pop.desires[2][0].satisfaction, 15.0);
+            assert!((pop.desires[2][0].tiers_satisfied() - 3.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn removes_desires_no_longer_on_demographic() {
+            let keep = household_demo(1, 1.0, 0, 0);
+            let drop = household_demo(2, 1.0, 1, 0);
+            let mut pop = make_pop();
+            pop.demographics.culture = 1;
+            // Pop still holds both; culture only keeps `keep` (player removed `drop`).
+            let d_keep = keep.create_desire(&pop, DesireSource::Culture(1, 0));
+            let d_drop = drop.create_desire(&pop, DesireSource::Culture(1, 0));
+            pop.desires[0].push(d_keep);
+            pop.desires[0].push(d_drop);
+
+            let culture_after = Culture::new(1, "Test").with_desire(keep.clone());
+            let factuals = Factuals::new().with_culture(culture_after);
+
+            pop.update_desires(&factuals);
+
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 1);
+            assert_eq!(pop.desires[0][0].priority, 0);
+        }
+
+        #[test]
+        fn scales_property_targets_with_previous_growth_positive_zero_and_negative() {
+            // growth_f = (count + previous_growth) / count
+            // count fixed at 10 for all three cases.
+            fn run(previous_growth: f64) -> (f64, f64) {
+                let demo = household_demo(1, 1.0, 0, 0);
+                let factuals = Factuals::new()
+                    .with_culture(Culture::new(1, "Test").with_desire(demo.clone()));
+                let mut pop = make_pop();
+                pop.demographics.culture = 1;
+                pop.previous_growth = previous_growth;
+                let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+                pop.desires[0].push(desire);
+                pop.property.insert(100, PopPRow::new(0.0).with_target(20.0).with_desire_need(10.0));
+                // Zero targets should stay zero (not scaled).
+                pop.property.insert(101, PopPRow::new(0.0).with_target(0.0).with_desire_need(0.0));
+
+                pop.update_desires(&factuals);
+                (
+                    pop.property[&100].shop_target,
+                    pop.property[&100].desire_needs,
+                )
+            }
+
+            // positive: (10 + 5) / 10 = 1.5 → 20*1.5=30, 10*1.5=15
+            let (shop_pos, need_pos) = run(5.0);
+            assert!((shop_pos - 30.0).abs() < 1e-9);
+            assert!((need_pos - 15.0).abs() < 1e-9);
+
+            // zero: factor 1.0
+            let (shop_zero, need_zero) = run(0.0);
+            assert!((shop_zero - 20.0).abs() < 1e-9);
+            assert!((need_zero - 10.0).abs() < 1e-9);
+
+            // negative: (10 + -2) / 10 = 0.8 → 16 and 8
+            let (shop_neg, need_neg) = run(-2.0);
+            assert!((shop_neg - 16.0).abs() < 1e-9);
+            assert!((need_neg - 8.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn multi_tier_adds_and_removes_in_one_update() {
+            // Start: species demos 1 (basic), 2 (common); culture demos 10 (basic), 11 (luxury).
+            // After: remove species 2 & culture 10; add species 3 (luxury) & culture 12 (common).
+            let s1 = household_demo(1, 1.0, 0, 0);
+            let s2 = household_demo(2, 2.0, 0, 1);
+            let s3 = household_demo(3, 1.5, 0, 2);
+            let c10 = household_demo(10, 1.0, 1, 0);
+            let c11 = household_demo(11, 1.0, 0, 2);
+            let c12 = household_demo(12, 4.0, 0, 1);
+
+            let species_after = Species::new(0, "Human")
+                .with_desire(s1.clone())
+                .with_desire(s3.clone());
+            let culture_after = Culture::new(1, "Test")
+                .with_desire(c11.clone())
+                .with_desire(c12.clone());
+            let factuals = Factuals::new()
+                .with_species(species_after)
+                .with_culture(culture_after);
+
+            let mut pop = make_pop(); // 10 households
+            pop.demographics.culture = 1;
+            let d_s1 = s1.create_desire(&pop, DesireSource::Species(0, 0));
+            let d_s2 = s2.create_desire(&pop, DesireSource::Species(0, 0));
+            let d_c10 = c10.create_desire(&pop, DesireSource::Culture(1, 0));
+            let d_c11 = c11.create_desire(&pop, DesireSource::Culture(1, 0));
+            pop.desires[0].push(d_s1);
+            pop.desires[1].push(d_s2);
+            pop.desires[0].push(d_c10);
+            pop.desires[2].push(d_c11);
+
+            pop.update_desires(&factuals);
+
+            // Basic: kept species 1, removed culture 10 → only species 1
+            assert_eq!(pop.desires[0].len(), 1);
+            assert!(matches!(pop.desires[0][0].source, DesireSource::Species(0, 1)));
+            assert_eq!(pop.desires[0][0].amount, 10.0);
+
+            // Common: removed species 2, added culture 12 → only culture 12 at 4.0*10
+            assert_eq!(pop.desires[1].len(), 1);
+            assert!(matches!(pop.desires[1][0].source, DesireSource::Culture(1, 12)));
+            assert_eq!(pop.desires[1][0].amount, 40.0);
+            assert_eq!(pop.desires[1][0].satisfaction, 0.0);
+
+            // Luxury: kept culture 11, added species 3 — sorted Species before Culture
+            assert_eq!(pop.desires[2].len(), 2);
+            assert!(matches!(pop.desires[2][0].source, DesireSource::Species(0, 3)));
+            assert!(matches!(pop.desires[2][1].source, DesireSource::Culture(1, 11)));
+            assert_eq!(pop.desires[2][0].amount, 15.0); // 1.5 * 10
+            assert_eq!(pop.desires[2][1].amount, 10.0);
+            assert_eq!(pop.desires[2][0].priority, 0);
+            assert_eq!(pop.desires[2][1].priority, 1);
+        }
     }
 
     mod consume_should {
