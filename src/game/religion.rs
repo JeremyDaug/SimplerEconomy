@@ -17,24 +17,23 @@ pub struct Religion {
     /// The ID of the state this is connected to. If a religion is not connected to any
     /// state, it is set to 0.
     pub state: usize,
-    /// The desires of the religion, organized by tier (Basic, Common, Luxury).
+    /// Demographic desires keyed by `DemoDesire.id` for O(1) lookup.
     /// 
-    /// Each tier is a map from `DemoDesire.id` → desire for O(1) lookup. Amounts are
-    /// scaled to the needs of 1 household.
-    pub desires: Vec<HashMap<usize, DemoDesire>>,
+    /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
+    pub desires: HashMap<usize, DemoDesire>,
 }
 
 impl Religion {
     /// # New
     /// 
     /// Creates a religion with the given id and name.
-    /// State defaults to 0 (no state). Desires start as three empty tier maps.
+    /// State defaults to 0 (no state). Desires start empty.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
             id,
             name: name.into(),
             state: 0,
-            desires: vec![HashMap::new(), HashMap::new(), HashMap::new()],
+            desires: HashMap::new(),
         }
     }
 
@@ -56,20 +55,20 @@ impl Religion {
         self
     }
 
-    /// Adds a demographic desire into the tier matching `desire.tier`.
+    /// Adds a demographic desire keyed by its id.
     /// Debug-asserts that the desire's tier is 0, 1, or 2.
-    /// Panics if a desire with the same id already exists in that tier.
+    /// Panics if a desire with the same id already exists.
     pub fn with_desire(mut self, desire: DemoDesire) -> Self {
         debug_assert!(desire.tier <= 2, "Desire tier must be 0, 1, or 2.");
         let id = desire.id;
-        if self.desires[desire.tier].insert(id, desire).is_some() {
+        if self.desires.insert(id, desire).is_some() {
             panic!("DemoDesire {id} already exists on religion {}.", self.id);
         }
         self
     }
 
-    /// Finds a demo desire by id across all tiers (O(1) per tier).
+    /// Finds a demo desire by id.
     pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
-        self.desires.iter().find_map(|tier| tier.get(&desire_id))
+        self.desires.get(&desire_id)
     }
 }

@@ -285,7 +285,7 @@ impl Pop {
         self.add_missing_demographic_desires(factuals, &existing_desires);
 
         // --- 3. Scale shopping / need targets with population growth ---
-        let growth_f = self.demographics.count + self.previous_growth / self.demographics.count;
+        let growth_f = (self.demographics.count + self.previous_growth) / self.demographics.count;
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
                 prop.shop_target *= growth_f;
@@ -315,7 +315,7 @@ impl Pop {
     ) {
         // Species (0 is the default human id — still valid).
         if let Some(species) = factuals.species.get(&self.demographics.species) {
-            for demo in species.desires.iter().flat_map(|tier| tier.values()) {
+            for demo in species.desires.values() {
                 let source = DesireSource::Species(species.id, demo.id);
                 if !existing.contains(&source) {
                     let tier = demo.tier;
@@ -329,7 +329,7 @@ impl Pop {
         // Culture (0 = none).
         if self.demographics.culture != 0 {
             if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
-                for demo in culture.desires.iter().flat_map(|tier| tier.values()) {
+                for demo in culture.desires.values() {
                     let source = DesireSource::Culture(culture.id, demo.id);
                     if !existing.contains(&source) {
                         let tier = demo.tier;
@@ -344,7 +344,7 @@ impl Pop {
         // Religion (0 = none).
         if self.demographics.religion != 0 {
             if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
-                for demo in religion.desires.iter().flat_map(|tier| tier.values()) {
+                for demo in religion.desires.values() {
                     let source = DesireSource::Religion(religion.id, demo.id);
                     if !existing.contains(&source) {
                         let tier = demo.tier;
@@ -427,7 +427,7 @@ impl Pop {
                 break;
             } else { iter_target += 1.0; } // otherwise increment target and go again.
         } 
-        // Restoring original tier order: priority is the effective index from update_desires.
+        // Restoring original tier order: priority is index for the pop and is set in update_desires.
         ordered_desires.sort_by_key(|d| d.priority);
         self.desires.insert(2, ordered_desires); // put back
     }
