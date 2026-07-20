@@ -1031,13 +1031,40 @@ mod pop {
             desire.satisfaction = 10.0;
             pop.desires[0].push(desire);
 
-            pop.demographics.count = 20.0; // double households
+            pop.demographics.count += 10.0; // double households
+            pop.previous_growth += 10.0; // include growth change.
             pop.update_desires(&factuals);
 
             // new amount = 2.0 * 20 = 40; satisfaction scales 10 * (40/20) = 20
             assert_eq!(pop.desires[0].len(), 1);
             assert_eq!(pop.desires[0][0].amount, 40.0);
             assert_eq!(pop.desires[0][0].satisfaction, 20.0);
+            // sole desire; baked priority is its tier index
+            assert_eq!(pop.desires[0][0].priority, 0);
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
+        }
+
+        #[test]
+        fn rescales_amount_and_satisfaction_when_households_shrinks() {
+            // Demo base 2.0 per household; pop starts at 10 households.
+            let demo = household_demo(10, 2.0, 0, 0);
+            let culture = Culture::new(1, "Test").with_desire(demo.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop(); // count = 10
+            let mut desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            // create_desire: amount = 2.0 * 10 = 20; half satisfied.
+            desire.satisfaction = 10.0;
+            pop.desires[0].push(desire);
+
+            pop.demographics.count -= 5.0; // halve households
+            pop.previous_growth -= 5.0; // include growth change.
+            pop.update_desires(&factuals);
+
+            // new amount = 2.0 * 20 = 40; satisfaction scales 10 * (40/20) = 20
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(pop.desires[0][0].amount, 10.0);
+            assert_eq!(pop.desires[0][0].satisfaction, 5.0);
             // sole desire; baked priority is its tier index
             assert_eq!(pop.desires[0][0].priority, 0);
             assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
