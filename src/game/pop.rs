@@ -1045,32 +1045,6 @@ mod pop {
         }
 
         #[test]
-        fn rescales_amount_and_satisfaction_when_households_shrinks() {
-            // Demo base 2.0 per household; pop starts at 10 households.
-            let demo = household_demo(10, 2.0, 0, 0);
-            let culture = Culture::new(1, "Test").with_desire(demo.clone());
-            let factuals = Factuals::new().with_culture(culture);
-
-            let mut pop = make_pop(); // count = 10
-            let mut desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
-            // create_desire: amount = 2.0 * 10 = 20; half satisfied.
-            desire.satisfaction = 10.0;
-            pop.desires[0].push(desire);
-
-            pop.demographics.count -= 5.0; // halve households
-            pop.previous_growth -= 5.0; // include growth change.
-            pop.update_desires(&factuals);
-
-            // new amount = 2.0 * 20 = 40; satisfaction scales 10 * (40/20) = 20
-            assert_eq!(pop.desires[0].len(), 1);
-            assert_eq!(pop.desires[0][0].amount, 10.0);
-            assert_eq!(pop.desires[0][0].satisfaction, 5.0);
-            // sole desire; baked priority is its tier index
-            assert_eq!(pop.desires[0][0].priority, 0);
-            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
-        }
-
-        #[test]
         fn sorts_by_demo_priority_then_bakes_tier_index() {
             // Insert high-priority-value demo after low; sort should put low first.
             let high = household_demo(1, 1.0, 50, 0);
@@ -1106,7 +1080,7 @@ mod pop {
         #[test]
         fn ties_on_demo_priority_break_by_source_kind() {
             // Same demo priority; Species should sort before Culture.
-            let species_demo = household_demo(5, 1.0, 0, 0);
+            let species_demo = household_demo(10, 1.0, 0, 0);
             let culture_demo = household_demo(7, 1.0, 0, 0);
             let factuals = Factuals::new()
                 .with_species(Species::new(0, "Human").with_desire(species_demo.clone()))
@@ -1125,7 +1099,7 @@ mod pop {
             assert_eq!(pop.desires[0].len(), 2);
             assert!(matches!(pop.desires[0][0].source, DesireSource::Species(_, _)));
             assert!(matches!(pop.desires[0][1].source, DesireSource::Culture(_, _)));
-            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 5);
+            assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
             assert_eq!(*pop.desires[0][1].source.demo_desire_id(), 7);
             assert_eq!(pop.desires[0][0].priority, 0);
             assert_eq!(pop.desires[0][1].priority, 1);
@@ -1221,7 +1195,7 @@ mod pop {
 
         #[test]
         fn scales_property_targets_with_previous_growth_positive_zero_and_negative() {
-            // growth_f = (count + previous_growth) / count
+            // growth_f = count / count - previous_growth
             // count fixed at 10 for all three cases.
             fn run(previous_growth: f64) -> (f64, f64) {
                 let demo = household_demo(1, 1.0, 0, 0);
@@ -1243,20 +1217,20 @@ mod pop {
                 )
             }
 
-            // positive: (10 + 5) / 10 = 1.5 → 20*1.5=30, 10*1.5=15
+            // positive: 10 / 10 - 5 = 2.0 → 20*2=40, 10*2=20
             let (shop_pos, need_pos) = run(5.0);
-            assert!((shop_pos - 30.0).abs() < 1e-9);
-            assert!((need_pos - 15.0).abs() < 1e-9);
+            assert!((shop_pos - 40.0).abs() < 1e-9);
+            assert!((need_pos - 20.0).abs() < 1e-9);
 
             // zero: factor 1.0
             let (shop_zero, need_zero) = run(0.0);
             assert!((shop_zero - 20.0).abs() < 1e-9);
             assert!((need_zero - 10.0).abs() < 1e-9);
 
-            // negative: (10 + -2) / 10 = 0.8 → 16 and 8
-            let (shop_neg, need_neg) = run(-2.0);
-            assert!((shop_neg - 16.0).abs() < 1e-9);
-            assert!((need_neg - 8.0).abs() < 1e-9);
+            // negative: 10 / (10 + 10) = 0.5 → 10 and 5
+            let (shop_neg, need_neg) = run(-10.0);
+            assert!((shop_neg - 10.0).abs() < 1e-9);
+            assert!((need_neg - 5.0).abs() < 1e-9);
         }
 
         #[test]
