@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::pop::Pop;
 
@@ -14,7 +14,9 @@ pub struct Market {
     /// The unique ID of the market, should match the ID of the region it represents.
     pub id: usize,
     /// The pops in the market.
-    pub pops: HashMap<usize, Pop>,
+    pub pops: HashSet<usize>,
+    /// The firms in the market.
+    pub firms: HashSet<usize>,
     /// The goods in the market and records of them available to all.
     /// 
     /// If needed, this will have to be culled and cleaned out of old goods periodically.
