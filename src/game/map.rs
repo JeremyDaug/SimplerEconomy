@@ -43,6 +43,8 @@ pub struct Map {
     /// 
     /// For quick region lookup, look at the Tile's region rather than doing an 
     /// iterative search.
+    /// 
+    /// regions[region][idx]
     pub regions: Vec<Vec<Hex>>,
 }
 

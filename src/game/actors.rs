@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::{firm::Firm, institution::Institution, pop::Pop};
+use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, pop::Pop};
 
 /// # Actors
 /// 
@@ -22,5 +22,9 @@ impl Actors {
             firms: HashMap::new(),
             institutions: HashMap::new(),
         }
+    }
+    
+    pub(crate) fn decay_goods(&self, factuals: &Factuals) {
+        todo!("Go through all actor property and decay their goods.")
     }
 }

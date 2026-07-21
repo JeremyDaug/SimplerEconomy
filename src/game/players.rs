@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::game::state::State;
+use crate::game::{factuals::Factuals, state::State};
 
 /// # Players
 /// 
@@ -9,4 +9,9 @@ use crate::game::state::State;
 #[derive(Debug)]
 pub struct Players {
     pub players: HashMap<usize, State>
+}
+impl Players {
+    pub(crate) fn decay_goods(&self, factuals: &Factuals) {
+        todo!()
+    }
 }

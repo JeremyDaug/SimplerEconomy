@@ -37,7 +37,7 @@ impl PlayState {
         self.turn += 1;
 
         // 1. Add turn start resources. Like time and environmental resources.
-        self.phase_start_of_day_resources();
+        self.phase_start_of_day();
         // 2. Environment random effects and results which can interfere with plans
         self.phase_environment_events();
         // 3. Player actions, all run and applied simultaneously and before anything 
@@ -84,7 +84,11 @@ impl PlayState {
 
     // --- Turn phase stubs (fill in from advance_turn) ---------------------------
 
-    fn phase_start_of_day_resources(&mut self) {
+    /// # Phase Start of Day
+    /// 
+    /// Add turn start resources. Like time and environmental resources.
+    /// Goes through 
+    fn phase_start_of_day(&mut self) {
         todo!("1. Start-of-day resources (time, environment regen, market day resets, …)")
     }
 
@@ -132,8 +136,19 @@ impl PlayState {
         todo!("12. Map changes (claims, market merge/split, …)")
     }
 
+    /// # Phase Good Decay
+    /// 
+    /// Goes through Markets and Actors, decaying goods in their storage as is
+    /// appropriate.
+    /// 
+    /// All goods that are stored or have been used (captial goods) are decayed at their
+    /// default rate.
+    /// 
+    /// Goods that were consumed should decay entirely.
     fn phase_good_decay(&mut self) {
-        todo!("13. Good decay")
+        self.map_data.decay_goods(&self.factuals);
+        self.actors.decay_goods(&self.factuals);
+        self.players.decay_goods(&self.factuals);
     }
 }
 

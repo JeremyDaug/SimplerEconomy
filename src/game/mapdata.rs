@@ -12,6 +12,11 @@ pub struct MapData {
     // Secondary environmental: weather, pollution, resources regen, etc.
     pub environment: EnvironmentData,
 }
+impl MapData {
+    pub(crate) fn decay_goods(&self, factuals: &super::factuals::Factuals) {
+        todo!("Decay goods in Markets and any tiles not contained in a market.")
+    }
+}
 
 /// # Environmental Data
 /// 
