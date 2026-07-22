@@ -68,6 +68,13 @@ pub struct Pop {
 }
 
 impl Pop {
+    /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
+    /// Only external input is factuals.
+    pub fn record_keeping(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Pop record keeping")
+    }
+
     /// # Apply Scaling Factor
     /// 
     /// Resolves a `ScalingFactor` against this pop's demographics, returning the

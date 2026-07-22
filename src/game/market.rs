@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::pop::Pop;
+use crate::game::factuals::Factuals;
 
 /// # Market
 /// 
@@ -26,6 +26,12 @@ pub struct Market {
 }
 
 impl Market {
+    /// End-of-day market bookkeeping (prices, volume history, clear day locals, …).
+    /// Only external input is factuals; does not touch actors.
+    pub fn record_keeping(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Market record keeping")
+    }
 }
 
 /// # Market History

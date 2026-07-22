@@ -78,6 +78,13 @@ pub struct Firm {
 }
 
 impl Firm {
+    /// End-of-day bookkeeping for this firm (production stats, costs, …).
+    /// Only external input is factuals.
+    pub fn record_keeping(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Firm record keeping")
+    }
+
     pub fn new(id: usize, name: String, market: usize, location: Hex) -> Self {
         Self {
             id,
@@ -314,7 +321,7 @@ mod firm {
     use crate::game::good::Good; // if you need Good defs
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use crate::game::firm::{Firm, FirmPRow, ProductionLine, ProductionReport};
 
     fn make_good(id: usize, name: &str, decay_result: HashMap<usize, f64>) -> Good {
@@ -351,7 +358,8 @@ mod firm {
         }
         Market {
             id: 42,
-            pops: HashMap::new(),
+            pops: HashSet::new(),
+            firms: HashSet::new(),
             goods,
         }
     }

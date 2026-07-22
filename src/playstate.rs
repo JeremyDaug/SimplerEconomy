@@ -124,16 +124,110 @@ impl PlayState {
         todo!("9. Pop growth / decline")
     }
 
+    /// # Phase Pop Migration
+    /// 
+    /// This covers and deals with the movement of pops.
+    /// 
+    /// This happens in a phased stage.
+    /// 
+    /// 1. Calculate Migratory Pressure on each pop. 
+    ///    Unhappiness * Pop Size * Pop Mobility Factor ~= Emmigration Pressure.
+    ///    Hiring Pressure also exists, pulling pops into the 
+    /// 2. Sum and calculate Migratory pressure on the Market Region. 
+    ///    Will need to keep Positive, negative, and sum in mind.
+    /// 3. Process Organized Migration Efforts (Migratory Firms, Institutions, Player Driven Efforts)
+    /// 4. Process Internal Migration (between jobs in the same market).
+    /// 5. Process Inter-Market Migration (Personal, long distance migration).
+    /// 
+    /// ### High Level Explanation
+    /// 
+    /// The idea is that all pops have a desire to move based on their mood and ability
+    /// to move (which is tied to their mobile wealth and cultural inclinations).
+    /// This is counteracted by Hiring/Expansion pressure, other pops who are wealthy(er)
+    /// and thus people wish to join, or employers wish to hire more employees.
+    /// 
+    /// These two combined in a market define the overall migratory pressure. Negative
+    /// pressure wants to draw people in while positive wants two push them out. 
+    /// It also creates a pool of potential migrants who will be available for moving 
+    /// today. This group should be preserved over the days.
+    /// 
+    /// After this calculation and summation, organized methods of migration occur first.
+    /// These are organize, intelligent, and mass migration patters that occur. These can
+    /// be created by pops with the right culture or institutions as well as by some 
+    /// firms which seek out workers from far and wide. They tend to move pops quickly 
+    /// and in large numbers, but only after building up enough internal and resources.
+    /// 
+    /// Second is internal migration, where pops move between jobs in the same market. 
+    /// This is where most pops move about, but should be relatively quick to do.
+    ///  
+    /// Lastly, Intermarket Migration takes the pool created in the previous steps and
+    /// opens up a portion of it to migration, attenuating it further by mobile 
+    /// wealth. The Longer the distance and the more expensive it is to move and
+    /// the more mobile their wealth needs or the more powerful the desire to leave
+    /// needs to be.
     fn phase_pop_migration(&mut self) {
+        
         todo!("10. Pop migration")
     }
 
+    /// # Phase Record Keeping
+    /// 
+    /// End-of-day bookkeeping for each independent actor/store. Only shared input is
+    /// `factuals` (read-only). Markets, pops, firms, institutions, and player states
+    /// do not need each other and can run in parallel.
     fn phase_record_keeping(&mut self) {
-        todo!("11. Record keeping")
+        use rayon::prelude::*;
+
+        let factuals = &self.factuals;
+        let markets = &mut self.map_data.markets;
+        let pops = &mut self.actors.pops;
+        let firms = &mut self.actors.firms;
+        let institutions = &mut self.actors.institutions;
+        let states = &mut self.players.players;
+
+        // Top-level stores are disjoint; each spawn only mutates its own map.
+        // Within a store, entries are independent and use par_iter_mut.
+        rayon::scope(|s| {
+            s.spawn(|_| {
+                markets
+                    .par_iter_mut()
+                    .for_each(|(_, market)| market.record_keeping(factuals));
+            });
+            s.spawn(|_| {
+                pops.par_iter_mut()
+                    .for_each(|(_, pop)| pop.record_keeping(factuals));
+            });
+            s.spawn(|_| {
+                firms
+                    .par_iter_mut()
+                    .for_each(|(_, firm)| firm.record_keeping(factuals));
+            });
+            s.spawn(|_| {
+                institutions
+                    .par_iter_mut()
+                    .for_each(|(_, institution)| institution.record_keeping(factuals));
+            });
+            s.spawn(|_| {
+                states
+                    .par_iter_mut()
+                    .for_each(|(_, state)| state.record_keeping(factuals));
+            });
+        });
     }
 
+    /// # Phase Map Changes
+    /// 
+    /// Alters the map, completing claims, altering market regions, moving units on the
+    /// map, and doing any slow terrain alterations that otherwise occur.
     fn phase_map_changes(&mut self) {
-        todo!("12. Map changes (claims, market merge/split, …)")
+        todo!("12. Map Changes. ")
+        // 1. First, go through the players and add any new claims they placed this turn,
+        //    noting any conflicts that arise from this.
+        // 2. Shift Tiles between market regions and consolidate/create. Be sure to 
+        //    record what was in the tile before moving and keep track of it for at 
+        //    least a little bit.
+        // 3. Complete any unit movements (troops, traders, workers, etc)
+        // 4. Any procedural (non-event driven) map changes are processed and arise here.
     }
 
     /// # Phase Good Decay

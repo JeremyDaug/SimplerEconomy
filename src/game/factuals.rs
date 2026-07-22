@@ -126,7 +126,8 @@ impl Factuals {
                 self.find_religion(source_id).find_desire(demo_id)
             }
             DesireSource::Class(source_id, _demo_id) => {
-                todo!("Class desires are not supported yet (class id {source_id}).")
+                todo!("Class desires are not supported yet (class id {source_id}).");
+                None
             }
         }
     }
