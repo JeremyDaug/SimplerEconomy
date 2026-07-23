@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireSource, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
+use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -73,6 +73,18 @@ impl Pop {
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Pop record keeping")
+    }
+
+    /// Emigration / mobility pressure for this pop (mood × size × mobility, …).
+    pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Pop calculate migratory pressure")
+    }
+
+    /// Job-to-job moves inside the same market (internal migration).
+    pub fn process_internal_migration(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Pop process internal migration")
     }
 
     /// # Apply Scaling Factor
@@ -511,13 +523,112 @@ impl Pop {
         // The current satisfaction rate.
         desire.satisfaction / desire.amount
     }
+    
+    /// # Growth Phase
+    /// 
+    /// Sum this pop's growth factors, multiply current households by that factor,
+    /// record the delta in `previous_growth`, and apply it to household count.
+    /// 
+    /// Sources of growth/decline are:
+    /// 1. Base growth is 2.0% (via household birth − mortality demographics).
+    /// 2. Basic Needs (species) reduces up to -30.0% from lack of satisfaction, plus
+    ///    Birthrate/Mortality desire effects on basic desires.
+    /// 3. Common Needs: `-0.0002 * total tiers_satisfied` in the tier, plus desire effects.
+    /// 4. Luxury Needs: `-0.005 * total tiers_satisfied` in the tier, plus desire effects.
+    /// 5. Institutional and Demographic effects can also be added in. Demographic 
+    ///    effects are brought in here, while Institutional effects are noted during
+    ///    Demographic Update or Day Start.
+    /// 
+    /// If household count would fall below 1.0, the household has died off: count is
+    /// snapped to 0.0 for later cleanup.
+    pub fn growth_phase(&mut self, factuals: &Factuals) {
+        let _ = factuals; // reserved for future species/culture lookups
+
+        // Net growth *rate* (additive). Household multiplier is `1.0 + rate`.
+        //
+        // 1 + 5. Base / demographic growth from household birth − mortality
+        // (default household nets ~2.0%; institutional mods are baked into household).
+        let mut rate = self.demographics.household.birth_rate
+            - self.demographics.household.mortality_rate;
+
+        // 2. Basic needs: up to -30% when fully unsatisfied, plus desire effects.
+        let basic_sat = self.tier_avg_satisfaction(0);
+        rate += -0.30 * (1.0 - basic_sat);
+        rate += self.tier_desire_effect_growth(0);
+
+        // 3. Common needs: penalty scales with total satisfaction in the tier.
+        rate += -0.0002 * self.tier_total_satisfaction(1);
+        rate += self.tier_desire_effect_growth(1);
+
+        // 4. Luxury needs: penalty scales with total satisfaction in the tier.
+        rate += -0.005 * self.tier_total_satisfaction(2);
+        rate += self.tier_desire_effect_growth(2);
+
+        let old_count = self.demographics.count;
+        let growth_factor = 1.0 + rate;
+        let mut new_count = old_count * growth_factor;
+        // Below one household ⇒ dead; snap to 0 for cleanup.
+        if new_count < 1.0 {
+            new_count = 0.0;
+        }
+        self.previous_growth = new_count - old_count;
+        self.demographics.count = new_count;
+    }
+
+    /// Average `tiers_satisfied` for a desire tier, clamped to [0, 1].
+    /// Empty tier counts as fully satisfied (no unmet needs).
+    fn tier_avg_satisfaction(&self, tier: usize) -> f64 {
+        let Some(desires) = self.desires.get(tier) else {
+            return 1.0;
+        };
+        if desires.is_empty() {
+            return 1.0;
+        }
+        let sum: f64 = desires
+            .iter()
+            .map(|d| d.tiers_satisfied().clamp(0.0, 1.0))
+            .sum();
+        sum / desires.len() as f64
+    }
+
+    /// Sum of `tiers_satisfied` across all desires in a tier (uncapped; luxury oversat counts).
+    fn tier_total_satisfaction(&self, tier: usize) -> f64 {
+        let Some(desires) = self.desires.get(tier) else {
+            return 0.0;
+        };
+        desires.iter().map(|d| d.tiers_satisfied()).sum()
+    }
+
+    /// Sum Birthrate/Mortality desire effects for a tier.
+    /// Bonuses scale with satisfaction; maluses with lack of satisfaction.
+    fn tier_desire_effect_growth(&self, tier: usize) -> f64 {
+        let Some(desires) = self.desires.get(tier) else {
+            return 0.0;
+        };
+        let mut rate = 0.0;
+        for desire in desires {
+            let sat = desire.tiers_satisfied().clamp(0.0, 1.0);
+            let lack = 1.0 - sat;
+            for effect in &desire.effect {
+                match effect {
+                    DesireEffect::Birthrate(v, true) => rate += v * sat,
+                    DesireEffect::Birthrate(v, false) => rate -= v * lack,
+                    DesireEffect::Mortality(v, true) => rate += v * sat,
+                    DesireEffect::Mortality(v, false) => rate -= v * lack,
+                    DesireEffect::BonusGood(_, _, _) => {}
+                }
+            }
+        }
+        rate
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoRow {
     /// The Number of households, floating point as growth storage.
     /// 
-    /// Should Never be smaller than 1.0.
+    /// Living pops should stay ≥ 1.0. `0.0` means the household has died off and
+    /// is pending cleanup.
     pub count: f64,
     /// The definition of this row's household. This is the sum of the baseline plus
     /// all other demographic effects.

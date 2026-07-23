@@ -12,6 +12,7 @@ use crate::game::players::Players;
 use crate::game::actors::Actors;
 use crate::game::pop::Pop;
 use crate::game::state::State;
+use rayon::prelude::*;
 
 /// # Play State
 /// 
@@ -120,8 +121,18 @@ impl PlayState {
         todo!("8. Pop consumption")
     }
 
+    /// # Phase Pop Growth
+    /// 
+    /// Population growth occurs here. 
+    /// 
+    /// This is fairly straight forward. Each pop in the system looks at it's growth 
+    /// factors and sums them. They multiply their current households by that growth 
+    /// factor, record it, then add that to their household.
     fn phase_pop_growth(&mut self) {
-        todo!("9. Pop growth / decline")
+        let factuals = &self.factuals;
+        self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
+            pop.growth_phase(factuals);
+        });
     }
 
     /// # Phase Pop Migration
@@ -166,8 +177,58 @@ impl PlayState {
     /// the more mobile their wealth needs or the more powerful the desire to leave
     /// needs to be.
     fn phase_pop_migration(&mut self) {
-        
-        todo!("10. Pop migration")
+        let factuals = &self.factuals;
+
+        // 1. Per-pop emigration pressure and per-firm hiring pressure (independent; MT).
+        let pops = &mut self.actors.pops;
+        let firms = &mut self.actors.firms;
+        rayon::join(
+            || {
+                pops.par_iter_mut().for_each(|(_, pop)| {
+                    pop.calculate_migratory_pressure(factuals);
+                });
+            },
+            || {
+                firms.par_iter_mut().for_each(|(_, firm)| {
+                    firm.calculate_hiring_pressure(factuals);
+                });
+            },
+        );
+
+        // 2. Sum pressures onto each market region (markets independent; MT).
+        let actors = &self.actors;
+        self.map_data.markets.par_iter_mut().for_each(|(_, market)| {
+            market.sum_migratory_pressure(actors, factuals);
+        });
+
+        // 3. Organized / mass migration (cross-market; sequential).
+        self.map_data.process_organized_migration(
+            &mut self.actors,
+            &self.players,
+            factuals,
+        );
+
+        // 4. Internal migration within each market (pops/firms independent; MT).
+        let pops = &mut self.actors.pops;
+        let firms = &mut self.actors.firms;
+        rayon::join(
+            || {
+                pops.par_iter_mut().for_each(|(_, pop)| {
+                    pop.process_internal_migration(factuals);
+                });
+            },
+            || {
+                firms.par_iter_mut().for_each(|(_, firm)| {
+                    firm.process_internal_labor_migration(factuals);
+                });
+            },
+        );
+
+        // 5. Inter-market personal migration (cross-market; sequential).
+        self.map_data.process_inter_market_migration(
+            &mut self.actors,
+            factuals,
+        );
     }
 
     /// # Phase Record Keeping
@@ -176,7 +237,6 @@ impl PlayState {
     /// `factuals` (read-only). Markets, pops, firms, institutions, and player states
     /// do not need each other and can run in parallel.
     fn phase_record_keeping(&mut self) {
-        use rayon::prelude::*;
 
         let factuals = &self.factuals;
         let markets = &mut self.map_data.markets;

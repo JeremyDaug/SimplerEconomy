@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::game::factuals::Factuals;
+use crate::game::{actors::Actors, factuals::Factuals};
 
 /// # Market
 /// 
@@ -31,6 +31,13 @@ impl Market {
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Market record keeping")
+    }
+
+    /// Aggregate pop emigration and firm hiring pressures for this market region.
+    /// Reads actor pressures already computed; does not move actors between markets.
+    pub fn sum_migratory_pressure(&mut self, actors: &Actors, factuals: &Factuals) {
+        let _ = (self, actors, factuals);
+        todo!("Market sum migratory pressure (positive / negative / net, migrant pool)")
     }
 }
 

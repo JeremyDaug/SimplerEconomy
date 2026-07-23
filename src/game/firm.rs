@@ -85,6 +85,18 @@ impl Firm {
         todo!("Firm record keeping")
     }
 
+    /// Hiring / expansion pressure that pulls workers into this firm.
+    pub fn calculate_hiring_pressure(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Firm calculate hiring pressure")
+    }
+
+    /// Local hiring / labor reallocation within the same market.
+    pub fn process_internal_labor_migration(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Firm process internal labor migration")
+    }
+
     pub fn new(id: usize, name: String, market: usize, location: Hex) -> Self {
         Self {
             id,
