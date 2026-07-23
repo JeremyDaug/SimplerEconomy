@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::desire::DemoDesire;
+use crate::game::{demographiceffect::DemographicEffect, desire::DemoDesire, household::HouseholdDef};
 
 /// # Species
 /// 
@@ -21,6 +21,28 @@ pub struct Species {
     /// 
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
+    /// The universal effects of Culture on a people with this culture.
+    /// 
+    /// This is for effects that are not contingent on other factors like desires.
+    /// For example, Flat birth/mortality rates, per household culture/research 
+    /// generation, household size or efficiency changes, and so on.
+    pub species_effects: Vec<DemographicEffect>,
+    /// The consolidated effects on a household. These are updated when 
+    /// `culture_effects` changes and intended to be added to the other demographics 
+    /// to define a pop's household.
+    pub species_household_modifiers: HouseholdDef,
+    /// A helper flag to mark when a culture has changed, and so pop_households should
+    /// also be updated. 
+    /// 
+    /// TODO: This and the effects of applying a household change should be smoother.
+    /// Instead of snapping into place, it should apply in smooth phases to keep massive
+    /// population swings from occurring. The current mechanism to keep things more 
+    /// smooth is from the data design level. Only allowing small changes to apply with 
+    /// each change and forcing those changes to be spread out over time.
+    /// The ideal desire would be to have th transitionary effect take place over a few
+    /// turns and possibly requiring population growth/shrink to make up the changes
+    /// appropriately. That latter part is likely too complicated for our needs.
+    pub household_changed: bool,
 }
 
 impl Species {
@@ -34,6 +56,9 @@ impl Species {
             name: name.into(),
             state: 0,
             desires: HashMap::new(),
+            species_effects: vec![],
+            species_household_modifiers: HouseholdDef::zero(),
+            household_changed: false,
         }
     }
 

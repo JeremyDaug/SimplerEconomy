@@ -41,6 +41,48 @@ pub struct HouseholdDef {
 }
 
 impl HouseholdDef {
+    /// # Zero
+    /// 
+    /// Creates a zeroed out Household Def, used for household modifiers and being able 
+    /// to add them together and collect them more nicely.
+    /// 
+    /// Pops start with the default, then depending on their Demographics, they add in 
+    /// each set of changes on top of it.
+    /// 
+    /// These changes should be additive.
+    pub fn zero() -> Self {
+        Self {
+            adults: 0.0,
+            adult_eff: 0.0,
+            elders: 0.0,
+            elder_eff: 0.0,
+            children: 0.0,
+            child_eff: 0.0,
+            birth_rate: 0.0,
+            mortality_rate: 0.0,
+            research_rate: 0.0,
+            culture_rate: 0.0,
+        }
+    }
+
+    /// # Add
+    /// 
+    /// Adds together two household definitions on a field by field basis.
+    pub fn add(&self, other: &Self) -> Self {
+        Self {
+            adults: self.adults + other.adults,
+            adult_eff: self.adult_eff + other.adult_eff,
+            elders: self.elders + other.elders,
+            elder_eff: self.elder_eff + other.elder_eff,
+            children: self.children + other.children,
+            child_eff: self.child_eff + other.child_eff,
+            birth_rate: self.birth_rate + other.birth_rate,
+            mortality_rate: self.mortality_rate + other.mortality_rate,
+            research_rate: self.research_rate + other.research_rate,
+            culture_rate: self.culture_rate + other.culture_rate,
+        }
+    }
+
     /// # Size
     /// 
     /// The total size of the house, adults, elders, and children.

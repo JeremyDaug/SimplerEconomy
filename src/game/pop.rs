@@ -249,9 +249,20 @@ impl Pop {
 
     /// # Demographic Update
     /// 
-    /// Demographic Update is called very early on in the day, after 
+    /// Demographic Update is called after player actions. Here, any demographic changes
+    /// which occured are applied, and the pop is updated.
+    /// 
+    /// This should mostly modify household and update the pop's desires. 
+    /// This can result in a mismatch of day start resources like labor, but that's
+    /// acceptable right now.
     pub fn demographic_update(&mut self, factuals: &Factuals) {
-        todo!()
+        // check if any demographic has update the household.
+        // if there is any updated households, update the household each.
+
+        // check that there was any population growth (growth != 0.0)
+        if self.previous_growth != 0.0 {
+            self.update_desires(factuals);
+        }
     }
 
     /// # Update Desires
@@ -541,6 +552,12 @@ impl Pop {
     /// 
     /// If household count would fall below 1.0, the household has died off: count is
     /// snapped to 0.0 for later cleanup.
+    /// 
+    /// Baseline effects from demographics are stored in the household during a turn, so
+    /// the getting birth rate and mortality from there should cover baseline effects.
+    /// 
+    /// TODO: Consider reworking this to keep birth and mortality separate until later
+    /// to allow for multiplicative effects instead of just additive effects.
     pub fn growth_phase(&mut self, factuals: &Factuals) {
         let _ = factuals; // reserved for future species/culture lookups
 
