@@ -121,6 +121,18 @@ Domain modules of note: `good`, `process`, `culture`, `species`, `religion`,
 - Do not drive-by refactor unrelated modules.
 - Do not rewrite design docs or README unless asked.
 
+### Code review log
+
+Open review findings live in repo-root `reviewlog.md`. **Whenever a code review
+is done** (including `/review` or ad-hoc review of commits/diffs):
+
+1. **Add** new open bugs, suggestions, and nits that are worth tracking later.
+2. **Remove or mark fixed** items that the review (or intervening work) shows
+   are no longer true — do not leave stale open bugs.
+3. Keep the log scannable: file path, short what/fix idea, optional priority.
+4. Do not treat `reviewlog.md` as a full design doc; it is a working backlog of
+   review debt only.
+
 ## Build and test
 
 ```bash
