@@ -255,14 +255,70 @@ impl Pop {
     /// This should mostly modify household and update the pop's desires. 
     /// This can result in a mismatch of day start resources like labor, but that's
     /// acceptable right now.
+    /// 
+    /// 1. If species/culture/religion marked `household_changed`, rebuild this pop's
+    ///    household as `Default + species + culture + religion` modifiers.
+    /// 2. Run `update_desires` so amounts, targets, and desire lists match current
+    ///    demographics, size (`previous_growth`), and any player desire edits.
+    /// 
+    /// Does not clear demographic `household_changed` flags (those are shared on
+    /// factuals; the turn orchestrator should clear them after all pops update).
     pub fn demographic_update(&mut self, factuals: &Factuals) {
-        // check if any demographic has update the household.
-        // if there is any updated households, update the household each.
-
-        // check that there was any population growth (growth != 0.0)
-        if self.previous_growth != 0.0 {
-            self.update_desires(factuals);
+        if self.any_demographic_household_changed(factuals) {
+            self.rebuild_household_from_demographics(factuals);
         }
+
+        // Resync desires: growth scaling, add/remove demo desires, refresh targets.
+        self.update_desires(factuals);
+    }
+
+    /// True if any of this pop's demographics has `household_changed`.
+    fn any_demographic_household_changed(&self, factuals: &Factuals) -> bool {
+        if factuals
+            .species
+            .get(&self.demographics.species)
+            .is_some_and(|s| s.household_changed)
+        {
+            return true;
+        }
+        if self.demographics.culture != 0
+            && factuals
+                .cultures
+                .get(&self.demographics.culture)
+                .is_some_and(|c| c.household_changed)
+        {
+            return true;
+        }
+        if self.demographics.religion != 0
+            && factuals
+                .religion
+                .get(&self.demographics.religion)
+                .is_some_and(|r| r.household_changed)
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Rebuilds `demographics.household` from default plus each demographic's modifiers.
+    fn rebuild_household_from_demographics(&mut self, factuals: &Factuals) {
+        let mut household = HouseholdDef::default();
+
+        if let Some(species) = factuals.species.get(&self.demographics.species) {
+            household = household.add(&species.species_household_modifiers);
+        }
+        if self.demographics.culture != 0 {
+            if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
+                household = household.add(&culture.culture_household_modifiers);
+            }
+        }
+        if self.demographics.religion != 0 {
+            if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
+                household = household.add(&religion.culture_household_modifiers);
+            }
+        }
+
+        self.demographics.household = household;
     }
 
     /// # Update Desires
@@ -843,7 +899,7 @@ mod pop {
     use std::collections::{HashMap, HashSet};
 
     use crate::game::{desire::{
-            Desire, DesireSource, DesireTarget, DesireTargetType
+            Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType
         }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
 
     static CONSUMED_GOOD: usize = 100;
@@ -1421,6 +1477,327 @@ mod pop {
             assert_eq!(pop.desires[2][1].amount, 10.0);
             assert_eq!(pop.desires[2][0].priority, 0);
             assert_eq!(pop.desires[2][1].priority, 1);
+        }
+    }
+
+    mod growth_phase_should {
+        use super::*;
+
+        #[test]
+        fn applies_default_household_net_growth_with_empty_desires() {
+            // Empty desires: basic treated as fully satisfied; common/luxury totals 0.
+            // rate = birth 0.025 - mortality 0.005 = 0.02
+            let mut pop = make_pop(); // count = 10
+            pop.growth_phase(&Factuals::new());
+
+            assert!((pop.demographics.count - 10.2).abs() < 1e-9);
+            assert!((pop.previous_growth - 0.2).abs() < 1e-9);
+        }
+
+        #[test]
+        fn unsatisfied_basic_needs_apply_up_to_thirty_percent_penalty() {
+            let mut pop = make_pop();
+            let mut basic = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            basic.satisfaction = 0.0; // fully unsatisfied
+            pop.desires[0].push(basic);
+
+            pop.growth_phase(&Factuals::new());
+
+            // rate = 0.02 - 0.30 = -0.28 → 10 * 0.72 = 7.2
+            assert!((pop.demographics.count - 7.2).abs() < 1e-9);
+            assert!((pop.previous_growth - (-2.8)).abs() < 1e-9);
+        }
+
+        #[test]
+        fn half_satisfied_basic_needs_apply_half_penalty() {
+            let mut pop = make_pop();
+            let mut basic = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            basic.satisfaction = 5.0; // 0.5 tiers
+            pop.desires[0].push(basic);
+
+            pop.growth_phase(&Factuals::new());
+
+            // rate = 0.02 - 0.30 * 0.5 = 0.02 - 0.15 = -0.13 → 10 * 0.87 = 8.7
+            assert!((pop.demographics.count - 8.7).abs() < 1e-9);
+            assert!((pop.previous_growth - (-1.3)).abs() < 1e-9);
+        }
+
+        #[test]
+        fn common_and_luxury_penalties_scale_with_total_satisfaction() {
+            let mut pop = make_pop();
+            // Zero household rates so only tier penalties apply.
+            pop.demographics.household.birth_rate = 0.0;
+            pop.demographics.household.mortality_rate = 0.0;
+
+            let mut common1 = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            common1.satisfaction = 10.0; // tiers_satisfied = 1.0
+            let mut common2 = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            common2.satisfaction = 10.0; // tiers_satisfied = 1.0
+            let mut luxury = make_desire(
+                1,
+                DesireTarget::new(101, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            luxury.satisfaction = 30.0; // tiers_satisfied = 3.0
+            pop.desires[1].push(common1);
+            pop.desires[1].push(common2);
+            pop.desires[2].push(luxury);
+
+            pop.growth_phase(&Factuals::new());
+
+            // rate = 0 - 0.0002*2 - 0.005*3 = -0.0004 - 0.015 = -0.0154
+            // 10 * (1 - 0.0154) = 9.846
+            assert!((pop.demographics.count - 9.846).abs() < 1e-9);
+            assert!((pop.previous_growth - (-0.154)).abs() < 1e-9);
+        }
+
+        #[test]
+        fn birthrate_bonus_effect_scales_with_satisfaction() {
+            let mut pop = make_pop();
+            pop.demographics.household.birth_rate = 0.0;
+            pop.demographics.household.mortality_rate = 0.0;
+
+            let mut common = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            common.satisfaction = 10.0; // fully satisfied once
+            common.effect.push(DesireEffect::Birthrate(0.1, true));
+            pop.desires[1].push(common);
+
+            pop.growth_phase(&Factuals::new());
+
+            // rate = -0.0002 * 1.0 + 0.1 * 1.0 = 0.0998
+            // 10 * 1.0998 = 10.998
+            assert!((pop.demographics.count - 10.998).abs() < 1e-9);
+            assert!((pop.previous_growth - 0.998).abs() < 1e-9);
+        }
+
+        #[test]
+        fn mortality_malus_effect_scales_with_lack_of_satisfaction() {
+            let mut pop = make_pop();
+            pop.demographics.household.birth_rate = 0.0;
+            pop.demographics.household.mortality_rate = 0.0;
+
+            let mut basic = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            basic.satisfaction = 0.0;
+            basic.effect.push(DesireEffect::Mortality(0.1, false));
+            pop.desires[0].push(basic);
+
+            pop.growth_phase(&Factuals::new());
+
+            // basic avg sat 0 → -0.30 * 1.0 = -0.30
+            // malus: -0.1 * 1.0 = -0.1
+            // rate = -0.40 → 10 * 0.6 = 6.0
+            assert!((pop.demographics.count - 6.0).abs() < 1e-9);
+            assert!((pop.previous_growth - (-4.0)).abs() < 1e-9);
+        }
+
+        #[test]
+        fn snaps_count_to_zero_when_household_would_die() {
+            let mut pop = make_pop();
+            pop.demographics.count = 1.0;
+            pop.demographics.household.birth_rate = 0.0;
+            pop.demographics.household.mortality_rate = 0.0;
+
+            let mut basic = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            basic.satisfaction = 0.0; // -30% → 1.0 * 0.7 = 0.7 < 1.0 → snap to 0
+            pop.desires[0].push(basic);
+
+            pop.growth_phase(&Factuals::new());
+
+            assert_eq!(pop.demographics.count, 0.0);
+            assert!((pop.previous_growth - (-1.0)).abs() < 1e-9);
+        }
+    }
+
+    mod demographic_update_should {
+        use super::*;
+        use crate::game::{
+            culture::Culture,
+            desire::DemoDesire,
+            religion::Religion,
+            species::Species,
+        };
+
+        fn household_demo(id: usize, amount: f64, priority: isize, tier: usize) -> DemoDesire {
+            DemoDesire::new(id)
+                .with_amount(amount)
+                .with_priority(priority)
+                .with_tier(tier)
+                .with_scalar(ScalingFactor::Household(1.0))
+        }
+
+        fn modifier(adults: f64, birth_rate: f64) -> HouseholdDef {
+            let mut m = HouseholdDef::zero();
+            m.adults = adults;
+            m.birth_rate = birth_rate;
+            m
+        }
+
+        #[test]
+        fn rebuilds_household_from_all_demographic_modifiers_when_flagged() {
+            let mut species = Species::new(0, "Human");
+            species.species_household_modifiers = modifier(1.0, 0.01);
+            species.household_changed = true;
+
+            let mut culture = Culture::new(1, "Test");
+            culture.culture_household_modifiers = {
+                let mut m = HouseholdDef::zero();
+                m.children = 0.5;
+                m
+            };
+            culture.household_changed = true;
+
+            let mut religion = Religion::new(2, "Faith");
+            religion.culture_household_modifiers = {
+                let mut m = HouseholdDef::zero();
+                m.mortality_rate = -0.001;
+                m
+            };
+            religion.household_changed = true;
+
+            let factuals = Factuals::new()
+                .with_species(species)
+                .with_culture(culture)
+                .with_religion(religion);
+
+            let mut pop = make_pop();
+            pop.demographics.species = 0;
+            pop.demographics.culture = 1;
+            pop.demographics.religion = 2;
+            // Start from a non-default household so rebuild is visible.
+            pop.demographics.household = HouseholdDef::zero();
+
+            pop.demographic_update(&factuals);
+
+            let expected = HouseholdDef::default()
+                .add(&modifier(1.0, 0.01))
+                .add(&{
+                    let mut m = HouseholdDef::zero();
+                    m.children = 0.5;
+                    m
+                })
+                .add(&{
+                    let mut m = HouseholdDef::zero();
+                    m.mortality_rate = -0.001;
+                    m
+                });
+
+            assert_eq!(pop.demographics.household, expected);
+            // Default adults 2 + 1 = 3; children 2.5 + 0.5 = 3.0
+            assert!((pop.demographics.household.adults - 3.0).abs() < 1e-9);
+            assert!((pop.demographics.household.children - 3.0).abs() < 1e-9);
+            assert!((pop.demographics.household.birth_rate - 0.035).abs() < 1e-9);
+            assert!((pop.demographics.household.mortality_rate - 0.004).abs() < 1e-9);
+        }
+
+        #[test]
+        fn does_not_rebuild_household_when_no_demographic_flags() {
+            let mut species = Species::new(0, "Human");
+            species.species_household_modifiers = modifier(5.0, 0.5);
+            species.household_changed = false;
+
+            let factuals = Factuals::new().with_species(species);
+            let mut pop = make_pop();
+            pop.demographics.household.adults = 99.0;
+
+            pop.demographic_update(&factuals);
+
+            assert!((pop.demographics.household.adults - 99.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn adds_missing_culture_desires_even_without_household_flag() {
+            let demo = household_demo(7, 2.0, 0, 1); // common tier, base 2.0
+            let culture = Culture::new(1, "Test").with_desire(demo);
+            // household_changed defaults false
+
+            let factuals = Factuals::new().with_culture(culture);
+            let mut pop = make_pop(); // count 10
+            pop.demographics.culture = 1;
+            assert!(pop.desires[1].is_empty());
+
+            pop.demographic_update(&factuals);
+
+            assert_eq!(pop.desires[1].len(), 1);
+            assert_eq!(*pop.desires[1][0].source.demo_desire_id(), 7);
+            assert_eq!(pop.desires[1][0].amount, 20.0); // 2.0 * 10 households
+            assert_eq!(pop.desires[1][0].satisfaction, 0.0);
+        }
+
+        #[test]
+        fn rescales_existing_desires_for_previous_growth() {
+            let demo = household_demo(3, 1.0, 0, 0);
+            let culture = Culture::new(1, "Test").with_desire(demo.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop(); // count 10
+            pop.demographics.culture = 1;
+            let mut desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            desire.satisfaction = 5.0; // half of amount 10
+            pop.desires[0].push(desire);
+
+            pop.demographics.count = 20.0;
+            pop.previous_growth = 10.0;
+
+            pop.demographic_update(&factuals);
+
+            // amount 1.0 * 20 = 20; satisfaction 5 * (20/10) = 10
+            assert_eq!(pop.desires[0].len(), 1);
+            assert_eq!(pop.desires[0][0].amount, 20.0);
+            assert_eq!(pop.desires[0][0].satisfaction, 10.0);
+        }
+
+        #[test]
+        fn skips_culture_and_religion_id_zero() {
+            let mut culture = Culture::new(1, "Unused");
+            culture.culture_household_modifiers = modifier(100.0, 0.0);
+            culture.household_changed = true;
+
+            // Pop has culture 0 (none) and religion 0 — must not apply culture 1.
+            let mut species = Species::new(0, "Human");
+            species.household_changed = true;
+            species.species_household_modifiers = modifier(0.0, 0.0);
+
+            let factuals = Factuals::new()
+                .with_species(species)
+                .with_culture(culture);
+
+            let mut pop = make_pop();
+            pop.demographics.culture = 0;
+            pop.demographics.religion = 0;
+            pop.demographics.household = HouseholdDef::zero();
+
+            pop.demographic_update(&factuals);
+
+            // Only default + zero species modifiers.
+            assert_eq!(pop.demographics.household, HouseholdDef::default());
         }
     }
 
