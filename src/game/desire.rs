@@ -359,7 +359,8 @@ pub struct Desire {
     /// if it's multiple, then it's a bucket.
     pub target: Vec<DesireTarget>,
 
-    /// The amount of units needed. Must always be a positive value.
+    /// The amount of units needed. Must always be a positive value and should always 
+    /// be >= 1.0.
     pub amount: f64,
     /// The current satisfaction of the desire in units. Does not differentiate goods.
     pub satisfaction: f64,

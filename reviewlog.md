@@ -26,11 +26,13 @@ When reviewing commits, a branch, a PR, or local changes:
 - **File:** `src/game/pop.rs` (~382)
 - **What:** Property target rescaling uses `growth_f = count / (count - previous_growth)`. When a pop is already dead (`count == 0`) and `previous_growth == 0`, this is `0/0` → NaN and poisons `shop_target` / `desire_needs`. Also Inf if `previous_growth == count` (grew from zero old count).
 - **Fix idea:** Guard before dividing: if old count is ~0, skip scaling or use `1.0`; if `count == 0`, zero targets and/or skip dead pops before `update_desires`. Assert/clamp the `previous_growth` invariant after `growth_phase`.
+- **Dev Response:** `debug_assert` included. Househould is only 0.0 when it's dead. That occurs in growth, which will kill the pop immediately afterwards. Previous growth should never drive it below 1 household either. New pop's previous growth is 0.0, regardless of the size of this new pop.
 
 ### 2. Satisfaction rescale divides by zero
 - **File:** `src/game/pop.rs` (~364)
 - **What:** Existing-desire resync does `desire.satisfaction *= new_amount / desire.amount`. Zero `desire.amount` yields Inf/NaN and breaks `tiers_satisfied()` / growth.
 - **Fix idea:** If `desire.amount` is ~0, set satisfaction to 0 (or only preserve ratio when both sides non-zero). Same caution in `Desire::tiers_satisfied` and `satisfy_one_desire` if needed.
+- **Dev Response:** `debug_assert` added. `desire.amount` is not allowed to be 0 anywhere outside of initialization.
 
 ### 3. Household rebuild wipes non-demographic mods
 - **File:** `src/game/pop.rs` (~303–321)
@@ -41,6 +43,7 @@ When reviewing commits, a branch, a PR, or local changes:
 - **File:** `src/game/pop.rs` (~686–690)
 - **What:** `tier_desire_effect_growth` treats `DesireEffect::Mortality` and `DesireEffect::Birthrate` with the same arms (`+v*sat` bonus, `-v*lack` malus). Docs distinguish them; `growth_phase` even TODOs separating birth vs mortality for multiplicative stacking. As written the variants are interchangeable for net rate.
 - **Fix idea:** Decide semantics. e.g. Birthrate only adds; Mortality only subtracts — or keep net-identical arms but accumulate birth/mortality separately before combining (match the TODO).
+- **Dev Response:** A known flaw that will need to be addressed eventually, current assumption is that Birth and Mortality are always Non-Negative values, but since they are just added right now, that is a rather meaningless distinction.
 
 ---
 

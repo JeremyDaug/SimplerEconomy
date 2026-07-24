@@ -361,6 +361,7 @@ impl Pop {
                     // Place using the parent demo's priority for this update's sort.
                     desire.priority = priority;
                     // Scale satisfaction with the amount change.
+                    debug_assert!(desire.amount > 1.0, "Desire Amount should always be >= 1.0.");
                     desire.satisfaction *= new_amount / desire.amount;
                     // update amount.
                     desire.amount = new_amount;
@@ -380,6 +381,7 @@ impl Pop {
 
         // --- 3. Scale shopping / need targets with population growth ---
         let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
+        debug_assert!(growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
                 prop.shop_target *= growth_f;
