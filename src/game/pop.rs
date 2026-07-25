@@ -4,6 +4,8 @@ use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default
 
 use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
+pub use crate::game::effects::PopEffect;
+
 #[derive(Debug, Clone)]
 pub struct Pop {
     /// The unique ID of the pop. May drop this or replace it to simplify.
@@ -65,6 +67,10 @@ pub struct Pop {
     /// Should never be larger than or equal to `self.demographics.count`.
     /// (Negative pops aren't real, they can't hurt you.)
     pub previous_growth: f64,
+
+    /// Any effects that the populace gains during the day and that should be
+    /// applied, but can't be applied initially.
+    pub stored_effects: Vec<PopEffect>,
 }
 
 impl Pop {
@@ -381,7 +387,7 @@ impl Pop {
 
         // --- 3. Scale shopping / need targets with population growth ---
         let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
-        debug_assert!(growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
+        debug_assert!(!growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
                 prop.shop_target *= growth_f;
@@ -896,6 +902,8 @@ impl PopPRow {
     }
 }
 
+/// # Pop Effect
+/// 
 #[cfg(test)]
 mod pop {
     use std::collections::{HashMap, HashSet};
@@ -925,6 +933,7 @@ mod pop {
             },
             current_orders: vec![],
             previous_growth: 0.0,
+            stored_effects: vec![]
         }
     }
 

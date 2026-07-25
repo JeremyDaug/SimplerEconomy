@@ -2,7 +2,7 @@ use std::{collections::HashMap};
 
 use hexx::Hex;
 
-use crate::game::{contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, market::Market, process::ProcessEffect, workforce::Workforce};
+use crate::game::{actor::Actor, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, market::Market, process::ProcessEffect, workforce::Workforce};
 
 /// # Firm 
 /// 
@@ -242,13 +242,24 @@ impl Firm {
 /// Currently a placeholder.
 #[derive(Debug, Clone)]
 pub struct Owners {
-    /// The ID of the pop who owns the firm.
-    pub pop: usize,
+    /// The Actor/ownser of the firm.
+    /// 
+    /// Most commonly held by Pops, who get access to profits, but are
+    /// also held accountable for losses in most circumstances.
+    /// 
+    /// If held by another firm, then they are also a child to that firm.
+    /// 
+    /// If owned by an institution, then they are also under their control, they will
+    /// obey that institution who will override the firm's logic with their own.
+    /// 
+    /// If owned by a state, then it is under the control of the player, and so the
+    /// player sets it's goals and rules.
+    pub owner: Actor,
 }
 impl Owners {
     pub fn empty() -> Self {
         Owners {
-            pop: 0,
+            owner: Actor::Pop(0),
         }
     }
 }

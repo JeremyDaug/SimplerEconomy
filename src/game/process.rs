@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
 
+pub use crate::game::effects::ProcessEffect;
+
 /// # Process
 /// 
 /// Proccesses are how one set of goods is transformed into another set of goods.
@@ -638,59 +640,6 @@ pub struct ProcessOutput {
 impl ProcessOutput {
     pub fn new(good: usize, amount: f64, fixed: bool) -> Self {
         ProcessOutput { good, amount, fixed }
-    }
-}
-
-/// # Process Effect
-/// 
-/// Additional effects which a process produces when done.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub enum ProcessEffect {
-    /// Additional Research points produced by the process.
-    /// Goes to the firm doing the process.
-    Research(f64),
-    /// Additional culture produced by the process.
-    /// Goes to the cultures of the workers.
-    Culture(f64),
-    /// Additional Faith produced by the process.
-    /// Goes to the religion of the workers.
-    Faith(f64),
-    /// Additional Authority produced by the process.
-    /// Goes to the player who's territory the process is done in..
-    Authority(f64),
-    /// Additional Legitimacy produced by the process.
-    /// Goes to the player who's territory the process is done in.
-    Legitimacy(f64),
-    /// Additional birth or mortality rate of the populace within the workers.
-    /// Does not scale with processes done, only with size of worker populace.
-    Growth(f64),
-}
-
-impl ProcessEffect {
-    /// # Scale
-    /// 
-    /// Scales the effect by the given multiplier, returning a new effect.
-    pub fn _scale(&self, multiplier: f64) -> Self {
-        match self {
-            ProcessEffect::Research(v) => ProcessEffect::Research(v * multiplier),
-            ProcessEffect::Culture(v) => ProcessEffect::Culture(v * multiplier),
-            ProcessEffect::Faith(v) => ProcessEffect::Faith(v * multiplier),
-            ProcessEffect::Authority(v) => ProcessEffect::Authority(v * multiplier),
-            ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * multiplier),
-            ProcessEffect::Growth(v) => ProcessEffect::Growth(v * multiplier),
-        }
-    }
-
-    pub fn add(&self, other: &ProcessEffect) -> Option<Self> {
-        match (self, other) {
-            (ProcessEffect::Research(v1), ProcessEffect::Research(v2)) => Some(ProcessEffect::Research(v1 + v2)),
-            (ProcessEffect::Culture(v1), ProcessEffect::Culture(v2)) => Some(ProcessEffect::Culture(v1 + v2)),
-            (ProcessEffect::Faith(v1), ProcessEffect::Faith(v2)) => Some(ProcessEffect::Faith(v1 + v2)),
-            (ProcessEffect::Authority(v1), ProcessEffect::Authority(v2)) => Some(ProcessEffect::Authority(v1 + v2)),
-            (ProcessEffect::Legitimacy(v1), ProcessEffect::Legitimacy(v2)) => Some(ProcessEffect::Legitimacy(v1 + v2)),
-            (ProcessEffect::Growth(v1), ProcessEffect::Growth(v2)) => Some(ProcessEffect::Growth(v1 + v2)),
-            _ => None,
-        }
     }
 }
 

@@ -1,6 +1,8 @@
 
 use crate::game::{pop::Pop, scalingfactor::ScalingFactor};
 
+pub use crate::game::effects::DesireEffect;
+
 /// # Platonic Desire
 /// 
 /// Platonic Desires are the 'maximalist' form of pre-existing desires that can be
@@ -505,19 +507,6 @@ pub enum DesireTargetType {
 /// 
 /// As a note, Luxury desires, due to their infinite nature, should not have malus effects.
 /// 
-/// Note: This is currently not comprehensive.
-#[derive(Debug, Clone, Copy)]
-pub enum DesireEffect {
-    /// When this desire is **not** met, it reduces growth by this value.
-    Mortality(f64, bool),
-    /// When this desire **is** met, it increases growth by this value.
-    Birthrate(f64, bool),
-    /// An additional good which is added to the pop's inventory.
-    /// 
-    /// Useful for things like transportation.
-    BonusGood(usize, f64, bool),
-}
-
 /// # Desire Source
 /// 
 /// Where is the desire's definition derived from.

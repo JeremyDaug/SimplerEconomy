@@ -27,4 +27,4 @@ pub mod mapdata;
 pub mod scalingfactor;
 pub mod marketorder;
 pub mod religion;
-pub mod demographiceffect;
+pub mod effects;

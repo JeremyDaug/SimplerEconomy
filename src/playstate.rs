@@ -101,6 +101,18 @@ impl PlayState {
         todo!("3. Player unit/map actions (not market purchasing)")
     }
 
+    /// # Phase Player Bonuses and Demographic Updates
+    /// 
+    /// During this phase, all effects caused by player actions (Institution effects, 
+    /// culture changes, etc) that exist outside of the market are applied here.
+    /// 
+    /// Pops should update their household from demographics first, then other effects 
+    /// can be done.
+    /// 
+    /// Institutions do not directly modify the household or desires, they do this by 
+    /// proxy, through modifying Demographics they own. Institutions can add other 
+    /// effects like altered birthrate/mortality, modified culture/research rate, and
+    /// possibly other things.
     fn phase_player_bonuses_and_demographic_updates(&mut self) {
         todo!("4. Player bonuses, new actors, pop desire / demographic updates")
     }

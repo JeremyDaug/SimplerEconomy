@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::{demographiceffect::DemographicEffect, desire::DemoDesire, household::HouseholdDef};
+use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::HouseholdDef};
 
 /// # Species
 /// 
