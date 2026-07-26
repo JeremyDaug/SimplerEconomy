@@ -129,15 +129,154 @@ impl Pop {
                 .or_insert(PopPRow::new(amount));
         }
     }
+    
+    /// # Update Desires
+    /// 
+    /// Called near the start of each day, after yesterday's growth/decline, and this
+    /// morning's demographic changes created by players. This updates the desire's 
+    /// `amount`, `targets`, as well as add/remove desires from the pop, and updates
+    /// the PopPRow's `shopping_target` and `desire_needs`, scaling with the pop's current size,
+    /// changes in demographic effects, and so on.
+    /// 
+    /// No prior population snapshot is required: the source `DemoDesire` provides the
+    /// base amount, which is multiplied by the current pop scaling factor.
+    /// 
+    /// ## Note
+    /// 
+    /// Currently assumes a single demographic row. Source demo desires are resolved
+    /// via `Factuals::source_demo_desire`.
+    /// 
+    /// Flow:
+    /// 1. Update existing desires (amount, satisfaction, targets, demo priority) or drop
+    ///    ones whose demo no longer exists.
+    /// 2. Add any new demo desires from the pop's species/culture/religion that are not
+    ///    already present (scaled via `DemoDesire::create_desire`).
+    /// 3. Scale property `shop_target` / `desire_needs` for population growth.
+    /// 4. Per tier: sort with `Desire::cmp_order`, then bake `priority` to index.
+    pub fn update_desires(&mut self, factuals: &Factuals) {
+        // Sources already on the pop (after removals), used to skip re-adding.
+        let mut existing_desires = HashSet::new();
 
-    /// # Initial Satisfaction
+        // --- 1. Update / remove existing pop desires ---
+        for tier_idx in 0..self.desires.len() {
+            let mut desire_idx = 0;
+            while desire_idx < self.desires[tier_idx].len() {
+                if let Some(demo) = factuals.source_demo_desire(&self.desires[tier_idx][desire_idx]) {
+                    let new_amount = demo.amount * self.get_scaling_factor(demo.scalar);
+                    let priority = demo.priority;
+                    let targets = demo.bucket.clone();
+
+                    let desire = &mut self.desires[tier_idx][desire_idx];
+                    // Place using the parent demo's priority for this update's sort.
+                    desire.priority = priority;
+                    // Scale satisfaction with the amount change.
+                    debug_assert!(desire.amount > 1.0, "Desire Amount should always be >= 1.0.");
+                    desire.satisfaction *= new_amount / desire.amount;
+                    // update amount.
+                    desire.amount = new_amount;
+                    // Override targets from the demo definition.
+                    desire.target = targets; // TODO: cheaper sync if needed later.
+                    existing_desires.insert(desire.source);
+                    desire_idx += 1;
+                } else {
+                    // Demo desire removed from its demographic — drop from the pop.
+                    self.desires[tier_idx].remove(desire_idx);
+                }
+            }
+        }
+
+        // --- 2. Add new desires present on demographics but not yet on the pop ---
+        self.add_missing_demographic_desires(factuals, &existing_desires);
+
+        // --- 3. Scale shopping / need targets with population growth ---
+        let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
+        debug_assert!(!growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
+        for (_, prop) in self.property.iter_mut() {
+            if prop.shop_target > 0.0 {
+                prop.shop_target *= growth_f;
+            }
+            if prop.desire_needs > 0.0 {
+                prop.desire_needs *= growth_f;
+            }
+        }
+
+        // --- 4. Sort each tier and bake priority to index ---
+        for tier in self.desires.iter_mut() {
+            tier.sort_by(Desire::cmp_order);
+            for (i, desire) in tier.iter_mut().enumerate() {
+                desire.priority = i as isize;
+            }
+        }
+    }
+
+    /// Creates scaled pop desires for any species/culture/religion demo desires not
+    /// already present in `existing` (keyed by full `DesireSource`).
+    /// 
+    /// Culture / religion id `0` means none and is skipped. Class is not supported yet.
+    fn add_missing_demographic_desires(
+        &mut self,
+        factuals: &Factuals,
+        existing: &HashSet<DesireSource>,
+    ) {
+        // Species (0 is the default human id — still valid).
+        if let Some(species) = factuals.species.get(&self.demographics.species) {
+            for demo in species.desires.values() {
+                let source = DesireSource::Species(species.id, demo.id);
+                if !existing.contains(&source) {
+                    let tier = demo.tier;
+                    let desire = demo.create_desire(self, source);
+                    debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                    self.desires[tier].push(desire);
+                }
+            }
+        }
+
+        // Culture (0 = none).
+        if self.demographics.culture != 0 {
+            if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
+                for demo in culture.desires.values() {
+                    let source = DesireSource::Culture(culture.id, demo.id);
+                    if !existing.contains(&source) {
+                        let tier = demo.tier;
+                        let desire = demo.create_desire(self, source);
+                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                        self.desires[tier].push(desire);
+                    }
+                }
+            }
+        }
+
+        // Religion (0 = none).
+        if self.demographics.religion != 0 {
+            if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
+                for demo in religion.desires.values() {
+                    let source = DesireSource::Religion(religion.id, demo.id);
+                    if !existing.contains(&source) {
+                        let tier = demo.tier;
+                        let desire = demo.create_desire(self, source);
+                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                        self.desires[tier].push(desire);
+                    }
+                }
+            }
+        }
+    }
+
+    /// # Initial Reservations and Update Satisfaction
     /// 
     /// Called early in the day, it sets aside goods for the pops desires pre-emptively, 
     /// reserving and ensuring desires can be readily satisfied.
     /// 
-    /// Used to prepare for the day and pre-empt
-    pub fn initial_satisfaction(&mut self) {
-
+    /// Best placed during the demographic updates phase, after demographics have 
+    /// updated.
+    /// 
+    /// Used to prepare for the day, do initial reservation, and decay/reduce their 
+    /// satifaction apropriately.
+    /// 
+    /// When doing initial reservations, be sure
+    pub fn initial_reservations_and_update_satisfaction(&mut self) {
+        // reduce satisfaction by the desire decay factor.
+        // Go through and reserve goods in order of desire.
     }
 
     /// # Create Orders
@@ -327,151 +466,11 @@ impl Pop {
         self.demographics.household = household;
     }
 
-    /// # Update Desires
-    /// 
-    /// Called near the start of each day, after yesterday's growth/decline, and this
-    /// morning's demographic changes created by players. This updates the desire's 
-    /// `amount`, `targets`, as well as add/remove desires from the pop, and updates
-    /// the PopPRow's `shopping_target` and `desire_needs`, scaling with the pop's current size,
-    /// changes in demographic effects, and so on.
-    /// 
-    /// No prior population snapshot is required: the source `DemoDesire` provides the
-    /// base amount, which is multiplied by the current pop scaling factor.
-    /// 
-    /// ## Note
-    /// 
-    /// Currently assumes a single demographic row. Source demo desires are resolved
-    /// via `Factuals::source_demo_desire`.
-    /// 
-    /// Flow:
-    /// 1. Update existing desires (amount, satisfaction, targets, demo priority) or drop
-    ///    ones whose demo no longer exists.
-    /// 2. Add any new demo desires from the pop's species/culture/religion that are not
-    ///    already present (scaled via `DemoDesire::create_desire`).
-    /// 3. Scale property `shop_target` / `desire_needs` for population growth.
-    /// 4. Per tier: sort with `Desire::cmp_order`, then bake `priority` to index.
-    pub fn update_desires(&mut self, factuals: &Factuals) {
-        // Sources already on the pop (after removals), used to skip re-adding.
-        let mut existing_desires = HashSet::new();
-
-        // --- 1. Update / remove existing pop desires ---
-        for tier_idx in 0..self.desires.len() {
-            let mut desire_idx = 0;
-            while desire_idx < self.desires[tier_idx].len() {
-                if let Some(demo) = factuals.source_demo_desire(&self.desires[tier_idx][desire_idx]) {
-                    let new_amount = demo.amount * self.get_scaling_factor(demo.scalar);
-                    let priority = demo.priority;
-                    let targets = demo.bucket.clone();
-
-                    let desire = &mut self.desires[tier_idx][desire_idx];
-                    // Place using the parent demo's priority for this update's sort.
-                    desire.priority = priority;
-                    // Scale satisfaction with the amount change.
-                    debug_assert!(desire.amount > 1.0, "Desire Amount should always be >= 1.0.");
-                    desire.satisfaction *= new_amount / desire.amount;
-                    // update amount.
-                    desire.amount = new_amount;
-                    // Override targets from the demo definition.
-                    desire.target = targets; // TODO: cheaper sync if needed later.
-                    existing_desires.insert(desire.source);
-                    desire_idx += 1;
-                } else {
-                    // Demo desire removed from its demographic — drop from the pop.
-                    self.desires[tier_idx].remove(desire_idx);
-                }
-            }
-        }
-
-        // --- 2. Add new desires present on demographics but not yet on the pop ---
-        self.add_missing_demographic_desires(factuals, &existing_desires);
-
-        // --- 3. Scale shopping / need targets with population growth ---
-        let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
-        debug_assert!(!growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
-        for (_, prop) in self.property.iter_mut() {
-            if prop.shop_target > 0.0 {
-                prop.shop_target *= growth_f;
-            }
-            if prop.desire_needs > 0.0 {
-                prop.desire_needs *= growth_f;
-            }
-        }
-
-        // --- 4. Sort each tier and bake priority to index ---
-        for tier in self.desires.iter_mut() {
-            tier.sort_by(Desire::cmp_order);
-            for (i, desire) in tier.iter_mut().enumerate() {
-                desire.priority = i as isize;
-            }
-        }
-    }
-
-    /// Creates scaled pop desires for any species/culture/religion demo desires not
-    /// already present in `existing` (keyed by full `DesireSource`).
-    /// 
-    /// Culture / religion id `0` means none and is skipped. Class is not supported yet.
-    fn add_missing_demographic_desires(
-        &mut self,
-        factuals: &Factuals,
-        existing: &HashSet<DesireSource>,
-    ) {
-        // Species (0 is the default human id — still valid).
-        if let Some(species) = factuals.species.get(&self.demographics.species) {
-            for demo in species.desires.values() {
-                let source = DesireSource::Species(species.id, demo.id);
-                if !existing.contains(&source) {
-                    let tier = demo.tier;
-                    let desire = demo.create_desire(self, source);
-                    debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
-                    self.desires[tier].push(desire);
-                }
-            }
-        }
-
-        // Culture (0 = none).
-        if self.demographics.culture != 0 {
-            if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
-                for demo in culture.desires.values() {
-                    let source = DesireSource::Culture(culture.id, demo.id);
-                    if !existing.contains(&source) {
-                        let tier = demo.tier;
-                        let desire = demo.create_desire(self, source);
-                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
-                        self.desires[tier].push(desire);
-                    }
-                }
-            }
-        }
-
-        // Religion (0 = none).
-        if self.demographics.religion != 0 {
-            if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
-                for demo in religion.desires.values() {
-                    let source = DesireSource::Religion(religion.id, demo.id);
-                    if !existing.contains(&source) {
-                        let tier = demo.tier;
-                        let desire = demo.create_desire(self, source);
-                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
-                        self.desires[tier].push(desire);
-                    }
-                }
-            }
-        }
-    }
-
     /// # Next Shopping Trip
     /// 
     /// Used during the day, this decides what a pop will want to buy next. It does this
     /// 
     pub fn next_shopping_trip(&self) {
-        todo!()
-    }
-
-    /// # Process Satisfaction
-    /// 
-    /// This extracts satisfaction data, applies effects from desires, and recalculates
-    /// the mood of a pop for political and future needs.
-    pub fn process_satisfaction(&mut self) -> () {
         todo!()
     }
 
@@ -598,7 +597,7 @@ impl Pop {
         // The current satisfaction rate.
         desire.satisfaction / desire.amount
     }
-    
+
     /// # Growth Phase
     /// 
     /// Sum this pop's growth factors, multiply current households by that factor,
@@ -701,6 +700,15 @@ impl Pop {
             }
         }
         rate
+    }
+
+
+    /// # Process Satisfaction
+    /// 
+    /// This extracts satisfaction data, applies effects from desires, and recalculates
+    /// the mood of a pop for political and future needs.
+    pub fn process_satisfaction(&mut self) -> () {
+        todo!()
     }
 }
 

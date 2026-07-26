@@ -129,8 +129,16 @@ impl PlayState {
         todo!("7. Firm/institution production and non-player planning")
     }
 
+    /// # Phase Pop Consumption
+    /// 
+    /// At this point, pops consume all goods they have reserved and planned.
     fn phase_pop_consumption(&mut self) {
-        todo!("8. Pop consumption")
+        let factuals = &self.factuals;
+
+        let pops = &mut self.actors.pops;
+        pops.par_iter_mut().for_each(|(_, pop)| {
+            pop.consume();
+        });
     }
 
     /// # Phase Pop Growth
