@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
+use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
 pub use crate::game::effects::PopEffect;
 
@@ -263,20 +263,87 @@ impl Pop {
     }
 
     /// # Initial Reservations and Update Satisfaction
-    /// 
-    /// Called early in the day, it sets aside goods for the pops desires pre-emptively, 
-    /// reserving and ensuring desires can be readily satisfied.
-    /// 
-    /// Best placed during the demographic updates phase, after demographics have 
-    /// updated.
-    /// 
-    /// Used to prepare for the day, do initial reservation, and decay/reduce their 
-    /// satifaction apropriately.
-    /// 
-    /// When doing initial reservations, be sure
+    ///
+    /// Called early in the day (Pop Day §3.4–3.6), after demographics / desire resize.
+    /// Prepares the pop for market day and later consumption:
+    ///
+    /// 1. Clear `reserved` on all property rows (fresh day earmarks).
+    /// 2. Decay each desire's `satisfaction` by multiplying by `desire.decay`
+    ///    (`0.0` wipes carryover; never `1.0` per Desire contract).
+    /// 3. Reserve on-hand goods for **one full desire level** (`amount` units of
+    ///    satisfaction), matching what `satisfy_one_desire` will try to apply later.
+    ///    Order: basic → common → luxury, then within-tier list order (priority).
+    ///    Within a desire: high-priority targets first, then higher efficiency
+    ///    (`Desire::ordered_targets`).
+    ///
+    /// Reservation only increases `reserved`; it does **not** reduce `quantity` or
+    /// grant satisfaction (that is `consume`). Savings is secondary to consumption:
+    /// reservable stock is `available()` (`quantity - reserved`), so earmarks may
+    /// claim stock that was counted toward `saved`. Missing goods stay unreserved —
+    /// market day buys the gap.
+    ///
+    /// Does not call `update_desires` (that runs in `demographic_update` / §3.5).
     pub fn initial_reservations_and_update_satisfaction(&mut self) {
-        // reduce satisfaction by the desire decay factor.
-        // Go through and reserve goods in order of desire.
+        // 1. Fresh reservation slate for the day.
+        for row in self.property.values_mut() {
+            row.reserved = 0.0;
+        }
+
+        // 2. Carry satisfaction forward after overnight decay.
+        for tier in self.desires.iter_mut() {
+            for desire in tier.iter_mut() {
+                desire.satisfaction *= desire.decay;
+            }
+        }
+
+        // 3. Reserve goods for one full level per desire, in priority order.
+        for tier_idx in 0..self.desires.len() {
+            let desire_count = self.desires[tier_idx].len();
+            for desire_idx in 0..desire_count {
+                self.reserve_one_desire_level(tier_idx, desire_idx);
+            }
+        }
+    }
+
+    /// Reserves goods for one full satisfaction level of a desire (`amount` sat).
+    /// Uses target caps / efficiency like `satisfy_one_desire`, but only earmarks stock.
+    /// 
+    /// This is part of `initial_reservations_and_update_satisfaction`
+    fn reserve_one_desire_level(&mut self, tier_idx: usize, desire_idx: usize) {
+        let amount = self.desires[tier_idx][desire_idx].amount;
+        if amount <= 0.0 {
+            return;
+        }
+        // Owned copies so we can mutate property without fighting the desire borrow.
+        let targets: Vec<DesireTarget> = self.desires[tier_idx][desire_idx]
+            .ordered_targets()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        let mut remaining = amount;
+        for target in targets {
+            if remaining <= 0.0 {
+                break;
+            }
+            let Some(row) = self.property.get_mut(&target.good) else {
+                continue;
+            };
+            // Unreserved stock (savings is secondary; may claim into `saved`).
+            let reservable = row.available().max(0.0);
+            if reservable <= 0.0 {
+                continue;
+            }
+            // Cap this good's contribution this level (same shape as satisfy_one_desire).
+            let want_sat = remaining.min(amount * target.cap);
+            if want_sat <= 0.0 || target.efficiency <= 0.0 {
+                continue;
+            }
+            let needed_qty = want_sat / target.efficiency;
+            let take = needed_qty.min(reservable);
+            row.reserved += take;
+            remaining -= take * target.efficiency;
+        }
     }
 
     /// # Create Orders
@@ -468,8 +535,10 @@ impl Pop {
 
     /// # Next Shopping Trip
     /// 
-    /// Used during the day, this decides what a pop will want to buy next. It does this
+    /// Used during the day and called when a pop has run out of existing buy orders.
     /// 
+    /// This solitifies purchases for the day, reserving new stuff, then creates a 
+    /// new set of orders by `create_orders`.
     pub fn next_shopping_trip(&self) {
         todo!()
     }
@@ -542,6 +611,8 @@ impl Pop {
     /// 
     /// Returns the highest success rate, useful for checking if any desire reached the 
     /// next full level.
+    /// 
+    /// This is part of consumption, and so will reduce quantity of goods.
     pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> f64 {
         let mut success: f64 = 0.0;
         for desire in desires.iter_mut() {
@@ -555,6 +626,8 @@ impl Pop {
     /// 
     /// A helper which takes a single desire and tries to satisfy it to one level. It 
     /// returns final satisfaction level.
+    /// 
+    /// This is part of Consumption, and so will reduce quantity of goods.
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
         // Clone + sort by efficiency descending (best substitutes first)
         let mut targets = desire.target.clone();
@@ -883,28 +956,25 @@ impl PopPRow {
     }
 
     /// # Consumeable
-    /// 
+    ///
     /// `quantity` - `saved`.
-    /// 
-    /// Gives the difference between Current quantity and the amount a pop wants to
-    /// save between days.
-    /// 
+    ///
+    /// Soft ceiling for `satisfy_one_desire`: prefer not to destroy stock the pop
+    /// wants to keep between days. **Initial reservation does not use this** —
+    /// reserves may claim into `saved` (consumption earmarks outrank savings).
+    ///
     /// Should only be negative after decay has occurred.
-    /// 
-    /// Useful for picking out goods for consumption without overconsuming them.
-    /// 
-    /// This is typically a fraction of the target, and is modified along with target 
-    /// and 
     pub fn consumeable(&self) -> f64 {
         self.quantity - self.saved
     }
 
     /// # Available
-    /// 
+    ///
     /// `quantity` - `reserved`.
-    /// 
-    /// This gives the amount of goods a pop has that have yet to be claimed by 
-    /// another desire. Should always be non-negative.
+    ///
+    /// Stock not yet claimed by a desire earmark. Used by initial reservation;
+    /// savings is ignored here so desires can claim into `saved`.
+    /// Should always be non-negative after reservation settles.
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
     }
@@ -1817,6 +1887,98 @@ mod pop {
 
             // Only default + zero species modifiers.
             assert_eq!(pop.demographics.household, HouseholdDef::default());
+        }
+    }
+
+    mod initial_reservations_and_update_satisfaction_should {
+        use super::*;
+
+        #[test]
+        fn clears_reserved_decays_satisfaction_and_reserves_one_level() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 10.0;
+            desire.decay = 0.5; // overnight → 5.0 sat remaining
+            pop.desires[0].push(desire);
+
+            // Stale reserved from yesterday; free stock of 20.
+            pop.property.insert(100, PopPRow::new(20.0).with_reserve(7.0));
+
+            pop.initial_reservations_and_update_satisfaction();
+
+            assert_eq!(pop.desires[0][0].satisfaction, 5.0);
+            // One full level: amount 10 @ eff 1.0 → reserve 10; quantity untouched.
+            assert_eq!(pop.property[&100].reserved, 10.0);
+            assert_eq!(pop.property[&100].quantity, 20.0);
+        }
+
+        #[test]
+        fn prefers_high_priority_then_efficiency_and_respects_cap() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 2.0), // higher eff, not high prio
+                10.0,
+            );
+            desire.target.push(
+                DesireTarget::new(101, DesireTargetType::Consume, 1.0)
+                    .with_high_priority(true)
+                    .with_cap(0.5), // at most 5 sat from good 101
+            );
+            pop.desires[0].push(desire);
+            pop.property.insert(100, PopPRow::new(100.0));
+            pop.property.insert(101, PopPRow::new(100.0));
+
+            pop.initial_reservations_and_update_satisfaction();
+
+            // High-priority 101 first: 5 sat / 1.0 eff = 5 qty.
+            assert_eq!(pop.property[&101].reserved, 5.0);
+            // Remainder 5 sat / 2.0 eff = 2.5 qty on 100.
+            assert_eq!(pop.property[&100].reserved, 2.5);
+        }
+
+        #[test]
+        fn earlier_desires_claim_shared_goods_first() {
+            let mut pop = make_pop();
+            // Two basic desires both want good 100; only 12 on hand.
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[0].push(make_desire(
+                1,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(12.0));
+
+            pop.initial_reservations_and_update_satisfaction();
+
+            // First desire takes 10; second only gets the leftover 2.
+            assert_eq!(pop.property[&100].reserved, 12.0);
+        }
+
+        #[test]
+        fn may_reserve_stock_counted_toward_saved() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            // All 10 units are also marked saved; consumption reserve still claims them.
+            pop.property.insert(100, PopPRow::new(10.0).with_saved(10.0));
+
+            pop.initial_reservations_and_update_satisfaction();
+
+            assert_eq!(pop.property[&100].reserved, 10.0);
+            assert_eq!(pop.property[&100].saved, 10.0);
+            assert_eq!(pop.property[&100].quantity, 10.0);
         }
     }
 

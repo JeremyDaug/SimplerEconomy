@@ -113,7 +113,13 @@ impl PlayState {
     /// proxy, through modifying Demographics they own. Institutions can add other 
     /// effects like altered birthrate/mortality, modified culture/research rate, and
     /// possibly other things.
+    /// 
+    /// All effects should already exist at institutional level, go through and push 
+    /// them downward as needed.
     fn phase_player_bonuses_and_demographic_updates(&mut self) {
+        // go through Institutions and apply their effects as dictated
+        // go through firms and apply their bonuses as dictated
+        // finally, apply effects on pops (this should be the end).
         todo!("4. Player bonuses, new actors, pop desire / demographic updates")
     }
 
