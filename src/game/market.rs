@@ -17,6 +17,10 @@ pub struct Market {
     pub pops: HashSet<usize>,
     /// The firms in the market.
     pub firms: HashSet<usize>,
+    /// Institutions present in this market (membership only; actors own the data).
+    ///
+    /// An institution may appear in multiple markets via its own `markets` list.
+    pub institution_ids: HashSet<usize>,
     /// The goods in the market and records of them available to all.
     /// 
     /// If needed, this will have to be culled and cleaned out of old goods periodically.

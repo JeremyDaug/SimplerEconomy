@@ -131,4 +131,9 @@ impl Factuals {
             }
         }
     }
+    
+    pub(crate) fn find_good(&self, id: usize) -> &Good {
+        self.goods.get(&id)
+            .unwrap_or_else(|| panic!("Good {id} missing from factuals."))
+    }
 }

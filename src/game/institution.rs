@@ -3,64 +3,156 @@ use crate::game::factuals::Factuals;
 pub use crate::game::effects::{EffectScope, InstitutionEffect};
 
 /// # Institution
-/// 
-/// An Institution is an organization which is not purely focused on economic activity.
-/// Institutions operate as as a collection of firms under an overriding directive and 
-/// shared resource pool.
-/// 
-/// Institutions are semi-autonomous. They make their own decisions and property separate 
-/// from the player, but players do have high level control of them. 
-/// 
-/// All Institutions include a list of firms they control and manage. 
-/// 
-/// Institutions do attempt to maintain at least minimum profitability, but will focus
-/// on things beyond profit or loss as well, and often have access to sell unique goods
-/// that cannot be found elsewhere like Charity, Piety, Unity, and other 'intangibles'.
-/// 
-/// Institutions can also oversee Cultures, Classes, and Religions.
-/// 
-/// ## Note: 
-/// 
-/// For now, Institutions only cover a few things expressly, more things will be added
-/// later.
-/// 1. Demographics (Culture, Class, and Religion. Possibly Species later as well).
-/// 2. Branches of the State (Administration, Military, Legislature, Judiciary, etc)
-/// 3. Special Organizations (Trade Leagues, Mercenary Forces, Academies, etc)
-/// 
-/// By the Alpha state I expect all Demographics and an example froth the others.
-/// 
-/// Beta should have mulitple examples of each.
-/// 
-/// ## Note 2 - Electric Boogaloo
-/// 
-/// Currently, this is just a very loose skeleton to hold up for other things.
-/// 
-/// It includes consolidated effects from the institution. A lot more work will be 
-/// needed and good thought will need to be put into it's structure.
+///
+/// An organization not purely focused on profit: state branches, religions, guilds,
+/// academies, and similar. Runtime actor stored in [`crate::game::actors::Actors`].
+///
+/// Institutions are semi-autonomous. Players may hold high-level control (`owner`),
+/// but day-to-day choices and (later) property stay with the institution.
+///
+/// Controlled firms live in `Actors.firms`; this type only keeps `firm_ids`.
+/// Multi-market presence is via `markets` / market membership sets — institutions
+/// are not children of a single market.
+///
+/// ## v0 scope
+///
+/// Kind, multi-market presence, controlled firms, flat level, loyalty, market-day
+/// slot, and passive [`InstitutionEffect`]s. Property, contracts, ability trees,
+/// and mandate AI come later.
 #[derive(Debug, Clone)]
 pub struct Institution {
-    /// The Unique Id of the Institution
+    /// Unique id (within `Actors.institutions`).
     pub id: usize,
-    /// The player who currently controls the institution.
-    pub owner: Option<usize>,
-
-    /// The Name of the institution.
+    /// Display name.
     pub name: String,
-
-    /// The collected bonuses and effects of the institution. 
-    /// Most of these are applied to pops, but can be applied to others as well.
+    /// State / player with high-level control (`None` = independent / NPC).
+    pub owner: Option<usize>,
+    /// What kind of institution this is.
+    pub kind: InstitutionKind,
+    /// Markets where this institution is present / may act.
+    pub markets: Vec<usize>,
+    /// Firms this institution directs (ids into `Actors.firms`).
+    pub firm_ids: Vec<usize>,
+    /// Development level (flat for v0; tree nodes later).
+    pub level: u32,
+    /// How content the institution is with its controller / conditions.
+    ///
+    /// Typically in `[0.0, 1.0]`; exact scale may be refined with mandate scoring.
+    pub loyalty: f64,
+    /// Where this institution inserts in market-day buy order.
+    pub market_slot: MarketSlot,
+    /// Passive bonuses applied by scope (realm members, firm workers, …).
+    ///
     /// See [`InstitutionEffect`] / [`EffectScope`] in `effects`.
     pub effects: Vec<InstitutionEffect>,
 }
 
+/// What kind of institution this is (template family; factual trees later).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum InstitutionKind {
+    /// Formal state arm (admin, military, judiciary as formalized structures).
+    StateBranch,
+    Religion,
+    Military,
+    Bureaucracy,
+    /// Merchant / craft.
+    Guild,
+    /// Research / culture.
+    Academy,
+    /// Trade league, mercenary company, and other specials.
+    #[default]
+    Special,
+}
+
+/// Where an institution places itself in the market-day purchase order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MarketSlot {
+    #[default]
+    BeforeFirms,
+    BetweenFirmsAndPops,
+    AfterPops,
+    /// Reserved for split state purchase queues; alpha uses a single slot.
+    Custom(u8),
+}
+
 impl Institution {
-    pub fn new(id: usize) -> Self {
+    /// Creates an institution with the given id and name.
+    ///
+    /// Defaults: no owner, [`InstitutionKind::Special`], empty markets/firms,
+    /// level `0`, loyalty `1.0`, [`MarketSlot::BeforeFirms`], no effects.
+    pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
             id,
+            name: name.into(),
             owner: None,
-            name: "".into(),
+            kind: InstitutionKind::Special,
+            markets: vec![],
+            firm_ids: vec![],
+            level: 0,
+            loyalty: 1.0,
+            market_slot: MarketSlot::BeforeFirms,
             effects: vec![],
         }
+    }
+
+    /// Sets the institution's unique id.
+    pub fn with_id(mut self, id: usize) -> Self {
+        self.id = id;
+        self
+    }
+
+    /// Sets the display name.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Sets the controlling state id, or `None` for independent / NPC.
+    pub fn with_owner(mut self, owner: Option<usize>) -> Self {
+        self.owner = owner;
+        self
+    }
+
+    /// Sets the institution kind.
+    pub fn with_kind(mut self, kind: InstitutionKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Adds a market id where this institution is present.
+    pub fn with_market(mut self, market_id: usize) -> Self {
+        self.markets.push(market_id);
+        self
+    }
+
+    /// Adds a controlled firm id.
+    pub fn with_firm(mut self, firm_id: usize) -> Self {
+        self.firm_ids.push(firm_id);
+        self
+    }
+
+    /// Sets the flat development level.
+    pub fn with_level(mut self, level: u32) -> Self {
+        self.level = level;
+        self
+    }
+
+    /// Sets loyalty (typically `[0.0, 1.0]`).
+    pub fn with_loyalty(mut self, loyalty: f64) -> Self {
+        self.loyalty = loyalty;
+        self
+    }
+
+    /// Sets market-day purchase order slot.
+    pub fn with_market_slot(mut self, slot: MarketSlot) -> Self {
+        self.market_slot = slot;
+        self
+    }
+
+    /// Adds a passive institution effect.
+    pub fn with_effect(mut self, effect: InstitutionEffect) -> Self {
+        self.effects.push(effect);
+        self
     }
 
     /// End-of-day bookkeeping for this institution.
@@ -68,5 +160,44 @@ impl Institution {
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Institution record keeping")
+    }
+
+    /// End-of-day good decay for this institution (property when present).
+    /// Only external input is factuals.
+    pub fn decay_goods(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Institution decay goods")
+    }
+}
+
+#[cfg(test)]
+mod institution_tests {
+    use super::*;
+    use crate::game::effects::EffectScope;
+
+    #[test]
+    fn new_defaults_and_fluent_builders() {
+        let inst = Institution::new(1, "Admiralty")
+            .with_owner(Some(10))
+            .with_kind(InstitutionKind::Military)
+            .with_market(3)
+            .with_market(4)
+            .with_firm(100)
+            .with_level(2)
+            .with_loyalty(0.75)
+            .with_market_slot(MarketSlot::BetweenFirmsAndPops)
+            .with_effect(InstitutionEffect::realm_birthrate(0.01));
+
+        assert_eq!(inst.id, 1);
+        assert_eq!(inst.name, "Admiralty");
+        assert_eq!(inst.owner, Some(10));
+        assert_eq!(inst.kind, InstitutionKind::Military);
+        assert_eq!(inst.markets, vec![3, 4]);
+        assert_eq!(inst.firm_ids, vec![100]);
+        assert_eq!(inst.level, 2);
+        assert_eq!(inst.loyalty, 0.75);
+        assert_eq!(inst.market_slot, MarketSlot::BetweenFirmsAndPops);
+        assert_eq!(inst.effects.len(), 1);
+        assert_eq!(inst.effects[0].scope(), EffectScope::OwnerRealm);
     }
 }

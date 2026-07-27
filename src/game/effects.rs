@@ -130,12 +130,18 @@ impl DesireEffect {
 // ---------------------------------------------------------------------------
 
 /// Same-day effects stored on a pop (environment, events, process spillover, …).
-/// Not intended to survive between days.
+/// Must not survive past end of day.
+///
+/// Non-goods arms are consumed in earlier phases (growth / mood / …).
+/// [`PopEffect::BonusGood`] is paid out last in
+/// [`crate::game::pop::Pop::decay_goods`], after which the store is empty.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopEffect {
     Birthrate(f64),
     Mortality(f64),
     Satisfaction(f64),
+    /// Extra goods already scaled; granted at end-of-day decay.
+    BonusGood { good: usize, amount: f64 },
 }
 
 impl PopEffect {
@@ -144,6 +150,7 @@ impl PopEffect {
             PopEffect::Birthrate(v) => EffectKind::BirthRate(v),
             PopEffect::Mortality(v) => EffectKind::MortalityRate(v),
             PopEffect::Satisfaction(v) => EffectKind::Satisfaction(v),
+            PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
         }
     }
 }

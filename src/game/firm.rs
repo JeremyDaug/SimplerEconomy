@@ -85,6 +85,13 @@ impl Firm {
         todo!("Firm record keeping")
     }
 
+    /// End-of-day good decay for this firm (stock, used capital, byproducts).
+    /// Only external input is factuals.
+    pub fn decay_goods(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Firm decay goods")
+    }
+
     /// Hiring / expansion pressure that pulls workers into this firm.
     pub fn calculate_hiring_pressure(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
@@ -383,6 +390,7 @@ mod firm {
             id: 42,
             pops: HashSet::new(),
             firms: HashSet::new(),
+            institution_ids: HashSet::new(),
             goods,
         }
     }

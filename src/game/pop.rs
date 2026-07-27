@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
+use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
 
 pub use crate::game::effects::PopEffect;
 
@@ -68,18 +68,16 @@ pub struct Pop {
     /// (Negative pops aren't real, they can't hurt you.)
     pub previous_growth: f64,
 
-    /// Any effects that the populace gains during the day and that should be
-    /// applied, but can't be applied initially.
+    /// Same-day effects that cannot be applied at the moment they arise
+    /// (environment, events, process spillover, …).
+    ///
+    /// Must be fully consumed by end of day: non-goods arms in earlier phases
+    /// (growth / mood / …); remaining [`PopEffect::BonusGood`] in
+    /// [`Self::decay_goods`]. Empty after decay.
     pub stored_effects: Vec<PopEffect>,
 }
 
 impl Pop {
-    /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
-    /// Only external input is factuals.
-    pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Pop record keeping")
-    }
 
     /// Emigration / mobility pressure for this pop (mood × size × mobility, …).
     pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals) {
@@ -783,6 +781,132 @@ impl Pop {
     pub fn process_satisfaction(&mut self) -> () {
         todo!()
     }
+
+    /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
+    /// Only external input is factuals.
+    pub fn record_keeping(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+        todo!("Pop record keeping")
+    }
+
+    /// # Decay Goods
+    ///
+    /// Called at the very end of the day (Pop Day §10). Only external input is
+    /// factuals (good definitions: decay rate, byproducts, tags).
+    ///
+    /// 1. Move `used` stock back into `quantity`.
+    /// 2. Decay remaining `quantity` by each good's `decay_rate` (skipped for
+    ///    [`GoodTag::Exposure`] — those only decay when unowned).
+    /// 3. Fully destroy `consumed` (100% decay) and clear the bucket.
+    /// 4. Credit decay byproducts from steps 2–3 into property (same-day
+    ///    byproducts do not decay again; goods only decay one level).
+    /// 5. Grant desire [`DesireEffect::BonusGood`] bonuses scaled by
+    ///    `tiers_satisfied` (malus path is ignored here).
+    /// 6. Pay out [`PopEffect::BonusGood`] from [`Self::stored_effects`] and
+    ///    remove those entries (other stored effects should have been removed in other
+    ///    phases).
+    ///
+    /// Does **not** rewrite `saved` / `reserved` after stock falls: `saved` is a
+    /// wish target (shortfall should remain visible for mood), and `reserved` is
+    /// cleared at next day-start.
+    pub fn decay_goods(&mut self, factuals: &Factuals) {
+        // Byproducts and bonus goods applied after the main pass so they do not
+        // decay again the same day, and so we can insert missing property rows.
+        let mut gains: HashMap<usize, f64> = HashMap::new();
+
+        for (&good_id, row) in self.property.iter_mut() {
+            // 1. Return used goods to quantity (consume had moved them out).
+            if row.used != 0.0 {
+                row.quantity += row.used;
+                row.used = 0.0;
+            }
+
+            // 2. Decay on-hand goods by the good's rate, excluding Exposure while owned.
+            let good = factuals.find_good(good_id);
+            let exposure = good.tags.contains(&GoodTag::Exposure);
+            if !exposure && good.decay_rate > 0.0 && row.quantity > 0.0 {
+                let lost = row.quantity * good.decay_rate;
+                row.quantity -= lost;
+                for (&byproduct, &ratio) in &good.decay_result {
+                    if ratio != 0.0 && lost != 0.0 {
+                        *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
+                    }
+                }
+            }
+
+            // 3. Consumed goods: full destruction + byproducts.
+            if row.consumed > 0.0 {
+                let lost = row.consumed;
+                row.consumed = 0.0;
+                for (&byproduct, &ratio) in &good.decay_result {
+                    if ratio != 0.0 && lost != 0.0 {
+                        *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
+                    }
+                }
+            }
+        }
+
+        // 4. Apply decay byproducts into property.
+        for (good_id, amount) in gains {
+            if amount == 0.0 {
+                continue;
+            }
+            self.property
+                .entry(good_id)
+                .or_insert_with(|| PopPRow::new(0.0))
+                .quantity += amount;
+        }
+
+        // 5. Bonus goods from satisfied desires.
+        let mut bonus_gains: HashMap<usize, f64> = HashMap::new();
+        for tier in &self.desires {
+            for desire in tier {
+                let sat = desire.tiers_satisfied().max(0.0);
+                if sat <= 0.0 {
+                    continue;
+                }
+                for effect in &desire.effect {
+                    if let DesireEffect::BonusGood(good_id, amount, true) = *effect {
+                        let qty = amount * sat;
+                        if qty != 0.0 {
+                            *bonus_gains.entry(good_id).or_insert(0.0) += qty;
+                        }
+                    }
+                }
+            }
+        }
+        for (good_id, amount) in bonus_gains {
+            self.property
+                .entry(good_id)
+                .or_insert_with(|| PopPRow::new(0.0))
+                .quantity += amount;
+        }
+
+        // 6. Remaining stored_effects should only be BonusGood (everything else
+        // was consumed earlier in the day). Pay them out; assert nothing left.
+        let mut kept_effects = Vec::with_capacity(self.stored_effects.len());
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::BonusGood { good, amount } => {
+                    if amount != 0.0 {
+                        self.property
+                            .entry(good)
+                            .or_insert_with(|| PopPRow::new(0.0))
+                            .quantity += amount;
+                    }
+                }
+                other => kept_effects.push(other),
+            }
+        }
+        debug_assert!(
+            kept_effects.is_empty(),
+            "No other effects should exist by this point, they should all have been used up by now."
+        );
+        debug_assert!(
+            self.stored_effects.is_empty(),
+            "stored_effects should be empty after end-of-day decay"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -988,7 +1112,7 @@ mod pop {
 
     use crate::game::{desire::{
             Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType
-        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopPRow}, scalingfactor::ScalingFactor};
+        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopEffect, PopPRow}, scalingfactor::ScalingFactor};
 
     static CONSUMED_GOOD: usize = 100;
     static USED_GOOD: usize = 101;
@@ -1011,7 +1135,7 @@ mod pop {
             },
             current_orders: vec![],
             previous_growth: 0.0,
-            stored_effects: vec![]
+            stored_effects: vec![],
         }
     }
 
@@ -1979,6 +2103,153 @@ mod pop {
             assert_eq!(pop.property[&100].reserved, 10.0);
             assert_eq!(pop.property[&100].saved, 10.0);
             assert_eq!(pop.property[&100].quantity, 10.0);
+        }
+    }
+
+    mod decay_goods_should {
+        use super::*;
+        use crate::game::good::{Good, GoodTag};
+
+        fn good_with_decay(
+            id: usize,
+            decay_rate: f64,
+            decay_result: HashMap<usize, f64>,
+        ) -> Good {
+            Good {
+                id,
+                name: format!("good_{id}"),
+                class: None,
+                decay_rate,
+                decay_result,
+                tags: HashSet::new(),
+                categories: vec![],
+            }
+        }
+
+        #[test]
+        fn returns_used_then_decays_quantity_with_byproducts() {
+            let mut pop = make_pop();
+            // 10 on hand + 5 used → 15 before rate decay at 0.2 → lose 3, keep 12.
+            // Byproduct 200 at 0.5 of lost → 1.5.
+            pop.property.insert(
+                100,
+                PopPRow::new(10.0).with_used(5.0),
+            );
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(
+                100,
+                good_with_decay(100, 0.2, HashMap::from([(200, 0.5)])),
+            );
+            factuals.goods.insert(200, good_with_decay(200, 0.0, HashMap::new()));
+
+            pop.decay_goods(&factuals);
+
+            assert_eq!(pop.property[&100].used, 0.0);
+            assert!((pop.property[&100].quantity - 12.0).abs() < 1e-9);
+            assert!((pop.property[&200].quantity - 1.5).abs() < 1e-9);
+        }
+
+        #[test]
+        fn consumed_decays_fully_with_byproducts() {
+            let mut pop = make_pop();
+            // Quantity already reduced at consume time; consumed holds 8 for 100% decay.
+            pop.property.insert(
+                100,
+                PopPRow::new(2.0).with_consumed(8.0),
+            );
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(
+                100,
+                good_with_decay(100, 0.0, HashMap::from([(200, 1.0)])),
+            );
+            factuals.goods.insert(200, good_with_decay(200, 0.0, HashMap::new()));
+
+            pop.decay_goods(&factuals);
+
+            assert_eq!(pop.property[&100].consumed, 0.0);
+            assert_eq!(pop.property[&100].quantity, 2.0); // rate 0, stock untouched
+            assert_eq!(pop.property[&200].quantity, 8.0);
+        }
+
+        #[test]
+        fn exposure_goods_skip_quantity_decay_while_owned() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0));
+
+            let mut factuals = Factuals::new();
+            let mut g = good_with_decay(100, 1.0, HashMap::from([(200, 1.0)]));
+            g.tags.insert(GoodTag::Exposure);
+            factuals.goods.insert(100, g);
+
+            pop.decay_goods(&factuals);
+
+            assert_eq!(pop.property[&100].quantity, 10.0);
+            assert!(!pop.property.contains_key(&200));
+        }
+
+        #[test]
+        fn grants_bonus_goods_scaled_by_tiers_satisfied() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 20.0; // 2.0 tiers
+            desire.effect.push(DesireEffect::BonusGood(300, 4.0, true));
+            pop.desires[0].push(desire);
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(100, good_with_decay(100, 0.0, HashMap::new()));
+
+            pop.decay_goods(&factuals);
+
+            // 4.0 * 2.0 tiers = 8.0
+            assert_eq!(pop.property[&300].quantity, 8.0);
+        }
+
+        #[test]
+        fn leaves_saved_target_unchanged_when_stock_decays() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(10.0).with_saved(10.0),
+            );
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(
+                100,
+                good_with_decay(100, 0.5, HashMap::new()),
+            );
+
+            pop.decay_goods(&factuals);
+
+            assert_eq!(pop.property[&100].quantity, 5.0);
+            // saved is a wish target; shortfall remains for mood / planning.
+            assert_eq!(pop.property[&100].saved, 10.0);
+        }
+
+        #[test]
+        fn applies_bonus_goods_from_stored_effects() {
+            let mut pop = make_pop();
+            pop.stored_effects.push(PopEffect::BonusGood {
+                good: 300,
+                amount: 7.5,
+            });
+            pop.stored_effects.push(PopEffect::BonusGood {
+                good: 301,
+                amount: 2.0,
+            });
+
+            let factuals = Factuals::new();
+            pop.decay_goods(&factuals);
+
+            assert_eq!(pop.property[&300].quantity, 7.5);
+            assert_eq!(pop.property[&301].quantity, 2.0);
+            assert_eq!(pop.stored_effects.len(), 0);
+            
         }
     }
 
