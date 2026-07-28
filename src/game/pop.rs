@@ -168,7 +168,7 @@ impl Pop {
                     // Place using the parent demo's priority for this update's sort.
                     desire.priority = priority;
                     // Scale satisfaction with the amount change.
-                    debug_assert!(desire.amount > 1.0, "Desire Amount should always be >= 1.0.");
+                    debug_assert!(desire.amount >= 1.0, "Desire Amount should always be >= 1.0.");
                     desire.satisfaction *= new_amount / desire.amount;
                     // update amount.
                     desire.amount = new_amount;
@@ -621,29 +621,39 @@ impl Pop {
     }
 
     /// # Satisfy One Desire
-    /// 
-    /// A helper which takes a single desire and tries to satisfy it to one level. It 
+    ///
+    /// A helper which takes a single desire and tries to satisfy it to one level. It
     /// returns final satisfaction level.
-    /// 
+    ///
+    /// Target order matches reservation: [`Desire::ordered_targets`] (high-priority
+    /// first, then higher efficiency).
+    ///
+    /// Draw from full on-hand [`PopPRow::quantity`]; `saved` is a wish target only and
+    /// does **not** cap consumption (same priority as reservation).
+    ///
     /// This is part of Consumption, and so will reduce quantity of goods.
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
-        // Clone + sort by efficiency descending (best substitutes first)
-        let mut targets = desire.target.clone();
-        targets.sort_by(|a, b| b.efficiency.partial_cmp(&a.efficiency)
-            .unwrap_or(std::cmp::Ordering::Equal));
+        // Owned copies so we can mutate property / desire without fighting borrows.
+        let targets: Vec<DesireTarget> = desire
+            .ordered_targets()
+            .into_iter()
+            .cloned()
+            .collect();
 
         let mut remaining = desire.amount;
 
-        for target in targets.iter() {
-            if remaining <=  0.0 {
+        for target in targets {
+            if remaining <= 0.0 {
                 break;
             }
             // get the target good, or continue on to the next target.
-            if let Some(row) = self.property.get_mut(&target.good) && row.consumeable() > 0.0 {
-                // remaining (Capped at the cap amount of the desire) divided by 
-                // efficiency is how much is needed.
+            if let Some(row) = self.property.get_mut(&target.good)
+                && row.quantity > 0.0
+            {
+                // remaining (capped at this target's cap) / efficiency = qty needed.
+                // Full quantity is fair game; savings does not fence stock.
                 let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
-                let take = needed.min(row.consumeable());
+                let take = needed.min(row.quantity);
 
                 // remove from quantity and reserve.
                 row.quantity -= take;
@@ -655,13 +665,13 @@ impl Pop {
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
                         remaining -= sat_gained;
-                    },
+                    }
                     DesireTargetType::Use => {
                         row.used += take;
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
                         remaining -= sat_gained;
-                    },
+                    }
                 }
             }
         }
@@ -1077,19 +1087,6 @@ impl PopPRow {
     /// they are willing to offer or sell.
     pub fn exchange(&self) -> f64 {
         self.quantity - self.shop_target
-    }
-
-    /// # Consumeable
-    ///
-    /// `quantity` - `saved`.
-    ///
-    /// Soft ceiling for `satisfy_one_desire`: prefer not to destroy stock the pop
-    /// wants to keep between days. **Initial reservation does not use this** —
-    /// reserves may claim into `saved` (consumption earmarks outrank savings).
-    ///
-    /// Should only be negative after decay has occurred.
-    pub fn consumeable(&self) -> f64 {
-        self.quantity - self.saved
     }
 
     /// # Available
@@ -2487,28 +2484,6 @@ mod pop {
             assert_eq!{test_desire.satisfaction, 5.0};
             assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 0.0);
             assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
-            assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
-            assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
-        }
-
-        #[test]
-        fn not_touch_savings() {
-            let mut test_pop = make_pop();
-
-            let prop = PopPRow::new(10.0)
-                .with_saved(5.0)
-                .with_reserve(5.0);
-            test_pop.property.insert(CONSUMED_GOOD, prop);
-            
-            let mut test_desire = make_desire(0, DesireTarget::new(CONSUMED_GOOD, 
-                DesireTargetType::Consume, 1.0), 10.0);
-
-            let result = test_pop.satisfy_one_desire(&mut test_desire);
-            assert_eq!(result, 0.5);
-            assert_eq!{test_desire.satisfaction, 5.0};
-            assert_eq!(test_pop.property[&CONSUMED_GOOD].quantity, 5.0);
-            assert_eq!(test_pop.property[&CONSUMED_GOOD].reserved, 0.0);
-            assert_eq!(test_pop.property[&CONSUMED_GOOD].saved, 5.0);
             assert_eq!(test_pop.property[&CONSUMED_GOOD].consumed, 5.0);
             assert_eq!(test_pop.property[&CONSUMED_GOOD].used, 0.0);
         }

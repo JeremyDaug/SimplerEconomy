@@ -26,25 +26,10 @@ playstate consumption wire-up
 
 ## Open bugs
 
-### B1. Reserved stock into `saved` is not consumable
-- **File:** `src/game/pop.rs` (`reserve_one_desire_level` ~330–343, `consumeable` ~1091–1093, `satisfy_one_desire` ~642–646)
-- **What:** Reservation may claim into `saved` (docs + test). Consumption still uses `quantity - saved`, so fully-saved reserved stock is never consumed; satisfaction stays low and `reserved` lingers.
-- **Fix idea:** Protect only `max(0, saved - reserved)` when computing consumable, or consume reserved first ignoring savings.
-
-### B2. Reserve vs satisfy target ordering mismatch
-- **File:** `src/game/pop.rs` (`reserve_one_desire_level` ~316–320 vs `satisfy_one_desire` ~630–633)
-- **What:** Reserve uses `ordered_targets()` (high_priority → efficiency); satisfy sorts by efficiency only. Can earmark one good and consume another.
-- **Fix idea:** Share one ordering helper in both paths; regression test high_priority first end-to-end.
-
 ### B3. Non-goods `PopEffect` never applied; discarded at EOD
 - **File:** `src/game/pop.rs` (`stored_effects`, `growth_phase`, `decay_goods` ~885–904), `src/game/effects.rs` (`PopEffect`)
 - **What:** Docs say Birthrate/Mortality/Satisfaction are consumed in growth/mood. Growth ignores them; `process_satisfaction` is `todo!()`. Decay drains non-`BonusGood` into `kept_effects` and `debug_assert`s empty (silent drop in release).
 - **Fix idea:** Apply and remove matching effects in `growth_phase` / mood; leave only `BonusGood` for decay. Test stored birthrate → growth delta.
-
-### B4. Desire amount assert is strict `> 1.0` vs docs `>= 1.0`
-- **File:** `src/game/pop.rs:171`, docs `src/game/desire.rs:364-366`
-- **What:** `debug_assert!(desire.amount > 1.0, "... >= 1.0")` fails for legal `amount == 1.0` and blocks satisfaction rescale.
-- **Fix idea:** `debug_assert!(desire.amount >= 1.0)` (or `> 0.0` if that is the real floor).
 
 ---
 
@@ -163,11 +148,18 @@ From the prior `update_desires` review. Re-check when next touching that path.
 
 ## Suggested priority when picking these up
 
-1. Fix reserve↔consume consistency (B1 savings, B2 ordering) before market-day integration.
-2. Wire demographic turn phase (#4) — unblocks household effect ordering (D1) and institution passives.
-3. Apply/drain non-goods `PopEffect`s (B3) before anything pushes into `stored_effects`.
-4. Household size conservation (#5) and `DemographicEffect` → modifiers (#1).
-5. Growth semantics: amount assert (B4), common/luxury sign (#3), later Birthrate vs Mortality (D2).
-6. Idempotency / Inf guard and tests (#2, #7).
-7. Nits (#8–#13) whenever touching those files.
-8. Re-verify earlier leftovers when next touching `update_desires`.
+1. Wire demographic turn phase (#4) — unblocks household effect ordering (D1) and institution passives.
+2. Apply/drain non-goods `PopEffect`s (B3) before anything pushes into `stored_effects`.
+3. Household size conservation (#5) and `DemographicEffect` → modifiers (#1).
+4. Growth semantics: common/luxury sign (#3), later Birthrate vs Mortality (D2).
+5. Idempotency / Inf guard and tests (#2, #7).
+6. Nits (#8–#13) whenever touching those files.
+7. Re-verify earlier leftovers when next touching `update_desires`.
+
+---
+
+## Fixed (recent)
+
+- **B1 / savings fence:** `consumeable` removed; `satisfy_one_desire` draws from full `quantity` (`saved` is wish-only).
+- **B2 / target order:** both reserve and satisfy use `Desire::ordered_targets()`.
+- **B4 / amount assert:** `debug_assert!(desire.amount >= 1.0)` matches docs.
