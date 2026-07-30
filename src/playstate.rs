@@ -263,7 +263,7 @@ impl PlayState {
     /// `factuals` (read-only). Markets, pops, firms, institutions, and player states
     /// do not need each other and can run in parallel.
     fn phase_record_keeping(&mut self) {
-
+        // TODO: Consider folding the actors into a singular thread and having the actor struct do the delegation. Shouldn't make a real difference, but just a thought.
         let factuals = &self.factuals;
         let markets = &mut self.map_data.markets;
         let pops = &mut self.actors.pops;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor};
+use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment};
 
 pub use crate::game::effects::PopEffect;
 
@@ -75,6 +75,10 @@ pub struct Pop {
     /// (growth / mood / …); remaining [`PopEffect::BonusGood`] in
     /// [`Self::decay_goods`]. Empty after decay.
     pub stored_effects: Vec<PopEffect>,
+
+    /// Political / social feeling of this pop (shares sum to 1).
+    /// Updated from satisfaction / events; blendable into firms, markets, etc.
+    pub sentiment: Sentiment,
 }
 
 impl Pop {
@@ -1109,7 +1113,7 @@ mod pop {
 
     use crate::game::{desire::{
             Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType
-        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopEffect, PopPRow}, scalingfactor::ScalingFactor};
+        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopEffect, PopPRow}, scalingfactor::ScalingFactor, sentiment::Sentiment};
 
     static CONSUMED_GOOD: usize = 100;
     static USED_GOOD: usize = 101;
@@ -1133,6 +1137,7 @@ mod pop {
             current_orders: vec![],
             previous_growth: 0.0,
             stored_effects: vec![],
+            sentiment: Sentiment::new(),
         }
     }
 

@@ -77,49 +77,19 @@ Domain modules of note: `good`, `process`, `culture`, `species`, `religion`,
 
 ## Coding style
 
-### Builders and fluent APIs
+**Full guide:** [`STYLE.md`](./STYLE.md) — enforce it for new and touched code.
 
-- Prefer `Type::new(...)` plus fluent `with_*` setters that take `mut self` and
-  return `Self`.
-- Collection fields that grow over time usually **push** one item per call
-  (e.g. `with_good`, `with_desire`, `with_effect`), matching existing patterns
-  on `PlatonicDesire`, `DemoDesire`, `Culture`, `Factuals`, `Process`.
-- One-line `///` docs on each fluent setter. If a setter has a `debug_assert`,
-  add a second doc line describing the constraint.
+Short reminders (details in `STYLE.md`):
 
-### Factuals and IDs
-
-- Construct with `Factuals::new()`, then chain or insert additions. Avoid
-  hand-written struct literals that omit fields.
-- Fluent `with_*` helpers on `Factuals` **panic** if an ID already exists; keep
-  that contract for any similar registries.
-- IDs are `usize`; `0` often means none / blank (e.g. no platonic base, no state).
-
-### Desires and demographics
-
-- Desire **tiers**: `0` Basic, `1` Common, `2` Luxury (three nested vecs on pops
-  and cultures).
-- `DemoDesire` amounts are scaled for **one household**; materialize a pop-level
-  `Desire` via `DemoDesire::create_desire(&pop, source)`, which multiplies amount
-  by `pop.apply_scaling_factor(self.scalar)`.
-- Put shared scalar resolution on `Pop::apply_scaling_factor` rather than
-  duplicating `match` arms.
-
-### Docs and tests
-
-- Public/domain types use section-style comments (`/// # Name`) where the
-  codebase already does.
-- Prefer `debug_assert!` for invariant checks in builders during development;
-  use `panic!` / `assert!` where failure must never be silent (e.g. duplicate
-  factual IDs).
-- Tests live in `#[cfg(test)]` modules beside the code. When building test
-  fixtures, use `Factuals::new()` and fluent helpers where available.
-
-### Scope discipline
-
-- Match existing naming and comment tone in the file you edit.
-- Do not drive-by refactor unrelated modules.
-- Do not rewrite design docs or README unless asked.
+- `Type::new` + fluent `with_*` (`mut self -> Self`); collections **push** one item
+  per `with_*`; document each setter; document `debug_assert` constraints.
+- `Factuals::new()` + fluent inserts; registry `with_*` **panics** on duplicate IDs.
+- IDs are `usize`; `0` often means none / blank. Prefer **`f64`** for quantities.
+- Desire tiers: `0` Basic, `1` Common, `2` Luxury. Scale demo amounts via
+  `Pop::get_scaling_factor` / `DemoDesire::create_desire`.
+- Section docs `/// # Name` on domain types and major methods; tests in
+  `#[cfg(test)]` modules named `*_should`.
+- Match the file you edit; no drive-by refactors; no vault edits unless asked.
 
 ### Code review log
 
