@@ -280,6 +280,7 @@ docs/proposals/          # short design drafts (trim when implemented)
 |-----|------|
 | `AGENTS.md` | Agent/project rules, vault paths, build commands, reviewlog |
 | `STYLE.md` (this file) | Coding style and structural conventions |
+| `docs/design-vocabulary.md` | Canonical design terms (tier fill, sentiment, …) |
 | `reviewlog.md` | Working backlog of review findings only |
 | `docs/proposals/*` | Short design drafts; trim after implementation |
 | EconCiv Obsidian vault | Authoritative long-form design |

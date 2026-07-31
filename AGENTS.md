@@ -18,6 +18,15 @@ when they conflict.
 In-repo high-level notes also live in `README.md` and `todo.md`. Those are
 secondary to the Obsidian design vault for intent and direction.
 
+### Design vocabulary (in-repo)
+
+**Canonical naming for design talk and comments:**
+[`docs/design-vocabulary.md`](./docs/design-vocabulary.md).
+
+Prefer those terms over chat shorthand (e.g. say **tier fill** / **desire fill**,
+not bare “ratio”). When language conflicts, the vocabulary file wins on **names**;
+the vault and proposals still own long-form intent.
+
 ## Design documents (external Obsidian vault)
 
 Authoritative long-form design, brainstorms, and direction live **outside this

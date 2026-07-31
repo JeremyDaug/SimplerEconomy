@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
 
-use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment};
+use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}};
 
 pub use crate::game::effects::PopEffect;
 
@@ -68,17 +68,19 @@ pub struct Pop {
     /// (Negative pops aren't real, they can't hurt you.)
     pub previous_growth: f64,
 
-    /// Same-day effects that cannot be applied at the moment they arise
-    /// (environment, events, process spillover, …).
-    ///
-    /// Must be fully consumed by end of day: non-goods arms in earlier phases
-    /// (growth / mood / …); remaining [`PopEffect::BonusGood`] in
-    /// [`Self::decay_goods`]. Empty after decay.
+    /// Same-day deferred effects (environment, events, process spillover, …).
+    /// Growth arms → [`Self::growth_phase`]; 
+    /// mood/sentiment/satisfaction → [`Self::process_satisfaction`]; 
+    /// [`PopEffect::BonusGood`] → [`Self::decay_goods`].
     pub stored_effects: Vec<PopEffect>,
 
     /// Political / social feeling of this pop (shares sum to 1).
-    /// Updated from satisfaction / events; blendable into firms, markets, etc.
+    /// Updated in [`Self::process_satisfaction`]; blendable into firms, markets, etc.
     pub sentiment: Sentiment,
+
+    /// Last recorded average `tiers_satisfied` per desire tier (0 basic, 1 common, 2 luxury).
+    /// Written by [`Self::process_satisfaction`] for inspectability / later systems.
+    pub recorded_tier_sat: [f64; 3],
 }
 
 impl Pop {
@@ -694,16 +696,18 @@ impl Pop {
     ///    Birthrate/Mortality desire effects on basic desires.
     /// 3. Common Needs: `-0.0002 * total tiers_satisfied` in the tier, plus desire effects.
     /// 4. Luxury Needs: `-0.005 * total tiers_satisfied` in the tier, plus desire effects.
-    /// 5. Institutional and Demographic effects can also be added in. Demographic 
+    /// 5. Institutional and Demographic effects can also be added in. Demographic
     ///    effects are brought in here, while Institutional effects are noted during
     ///    Demographic Update or Day Start.
-    /// 
+    /// 6. Same-day [`PopEffect::Birthrate`] / [`PopEffect::Mortality`] from
+    ///    [`Self::stored_effects`] (applied then removed; other stored arms kept).
+    ///
     /// If household count would fall below 1.0, the household has died off: count is
     /// snapped to 0.0 for later cleanup.
-    /// 
+    ///
     /// Baseline effects from demographics are stored in the household during a turn, so
     /// the getting birth rate and mortality from there should cover baseline effects.
-    /// 
+    ///
     /// TODO: Consider reworking this to keep birth and mortality separate until later
     /// to allow for multiplicative effects instead of just additive effects.
     pub fn growth_phase(&mut self, factuals: &Factuals) {
@@ -728,6 +732,24 @@ impl Pop {
         // 4. Luxury needs: penalty scales with total satisfaction in the tier.
         rate += -0.005 * self.tier_total_satisfaction(2);
         rate += self.tier_desire_effect_growth(2);
+
+        // 6. Same-day stored growth effects (already-scaled rates).
+        // Birthrate adds to net growth; Mortality subtracts (same shape as household).
+        let mut kept = Vec::with_capacity(self.stored_effects.len());
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::Birthrate(v) => {
+                    debug_assert!(v.is_finite(), "Stored birthrate must be finite.");
+                    rate += v;
+                }
+                PopEffect::Mortality(v) => {
+                    debug_assert!(v.is_finite(), "Stored mortality must be finite.");
+                    rate -= v;
+                }
+                other => kept.push(other),
+            }
+        }
+        self.stored_effects = kept;
 
         let old_count = self.demographics.count;
         let growth_factor = 1.0 + rate;
@@ -780,20 +802,210 @@ impl Pop {
                     DesireEffect::Birthrate(v, false) => rate -= v * lack,
                     DesireEffect::Mortality(v, true) => rate += v * sat,
                     DesireEffect::Mortality(v, false) => rate -= v * lack,
-                    DesireEffect::BonusGood(_, _, _) => {}
+                    // Applied in process_satisfaction / decay, not growth.
+                    DesireEffect::BonusGood(_, _, _)
+                    | DesireEffect::Satisfaction(_, _)
+                    | DesireEffect::SentimentFlat(_, _, _)
+                    | DesireEffect::SentimentRelative(_, _, _) => {}
                 }
             }
         }
         rate
     }
 
-
     /// # Process Satisfaction
-    /// 
-    /// This extracts satisfaction data, applies effects from desires, and recalculates
-    /// the mood of a pop for political and future needs.
-    pub fn process_satisfaction(&mut self) -> () {
-        todo!()
+    ///
+    /// Late-day satisfaction-boost + mood pass (after consume and growth).
+    /// Does **not** apply growth arms ([`Self::growth_phase`]) or bonus goods
+    /// ([`Self::decay_goods`]).
+    ///
+    /// 1. Collect satisfaction boosts (do **not** rewrite per-desire `satisfaction`):
+    ///    - Desire [`DesireEffect::Satisfaction`] → boost for **that desire's tier**
+    ///      (never basic). Desire boosts are sat-scaled via [`DesireEffect::signed_strength`].
+    ///    - Stored [`PopEffect::Satisfaction`] → boost for the **named tier** (1 or 2);
+    ///      amount is already “ratio mass” (e.g. process output / pop).
+    ///    - Tier result:
+    ///      `(Σ (satisfaction / amount) + boost) / desire_count`
+    ///      (boost = extra fulfilled ratio-mass; no common cap).
+    /// 2. Write boosted tier averages into [`Self::recorded_tier_sat`].
+    /// 3. Baseline sentiment nudges from those averages. Common uses full weight up
+    ///    to 1.0 and **half weight** on any overflow above 1.0 (spiritual surplus).
+    /// 4. Desire + stored sentiment effects.
+    /// 5. Leave growth + bonus-good stored arms for later phases.
+    pub fn process_satisfaction(&mut self) {
+        // 1. Collect boosts per tier (desire effects + stored Satisfaction).
+        let mut tier_boost = [0.0_f64; 3];
+        for (tier_idx, tier) in self.desires.iter().enumerate() {
+            for desire in tier {
+                let sat01 = desire.tiers_satisfied().clamp(0.0, 1.0);
+                for effect in &desire.effect {
+                    if let DesireEffect::Satisfaction(_, _) = *effect {
+                        debug_assert!(
+                            tier_idx != 0,
+                            "DesireEffect::Satisfaction is not allowed on basic desires"
+                        );
+                        if tier_idx == 0 {
+                            continue;
+                        }
+                        tier_boost[tier_idx] += effect.signed_strength(sat01);
+                    }
+                }
+            }
+        }
+        let pending_stored: Vec<PopEffect> = self.stored_effects.drain(..).collect();
+        let mut kept = Vec::with_capacity(pending_stored.len());
+        for effect in pending_stored {
+            match effect {
+                PopEffect::Satisfaction { tier, amount } => {
+                    debug_assert!(
+                        tier == 1 || tier == 2,
+                        "PopEffect::Satisfaction tier must be common (1) or luxury (2)"
+                    );
+                    if tier == 1 || tier == 2 {
+                        debug_assert!(amount.is_finite(), "Satisfaction boost must be finite.");
+                        tier_boost[tier] += amount;
+                    }
+                }
+                other => kept.push(other),
+            }
+        }
+        self.stored_effects = kept;
+
+        // 2. Record tier satisfaction (basic unboosted; common/luxury with formula).
+        self.recorded_tier_sat = [
+            self.tier_avg_satisfaction(0),
+            self.tier_satisfaction_with_boost(1, tier_boost[1]),
+            self.tier_satisfaction_with_boost(2, tier_boost[2]),
+        ];
+
+        let basic = self.recorded_tier_sat[0];
+        let common = self.recorded_tier_sat[1];
+        let luxury = self.recorded_tier_sat[2].clamp(0.0, 1.0);
+        // Common ≤1 full effect; overflow above 1.0 at half weight (spiritual surplus).
+        let common_mood = Self::common_mood_weight(common);
+
+        // 3. Baseline mood from needs (draft coefficients — tune with playtests).
+        let mut mods: Vec<SentimentMod> = vec![
+            SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta: 0.08 * (1.0 - basic),
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta: 0.04 * (1.0 - basic),
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta: 0.05 * common_mood,
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Contentment,
+                delta: 0.03 * basic * common_mood,
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta: 0.02 * luxury,
+            },
+        ];
+
+        // 4. Desire sentiment effects (skip growth, bonus goods, satisfaction — done).
+        for tier in &self.desires {
+            for desire in tier {
+                let sat01 = desire.tiers_satisfied().clamp(0.0, 1.0);
+                for effect in &desire.effect {
+                    match *effect {
+                        DesireEffect::Birthrate(_, _)
+                        | DesireEffect::Mortality(_, _)
+                        | DesireEffect::BonusGood(_, _, _)
+                        | DesireEffect::Satisfaction(_, _) => {}
+                        DesireEffect::SentimentFlat(kind, _, _) => {
+                            let delta = effect.signed_strength(sat01);
+                            if delta != 0.0 {
+                                mods.push(SentimentMod::Flat { kind, delta });
+                            }
+                        }
+                        DesireEffect::SentimentRelative(kind, _, _) => {
+                            let relative = effect.signed_strength(sat01);
+                            if relative != 0.0 {
+                                mods.push(SentimentMod::Relative { kind, relative });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Remaining stored: sentiment in; growth + bonus goods kept.
+        let mut kept = Vec::with_capacity(self.stored_effects.len());
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::Birthrate(_) | PopEffect::Mortality(_) | PopEffect::BonusGood { .. } => {
+                    kept.push(effect);
+                }
+                PopEffect::Satisfaction { .. } => {
+                    debug_assert!(false, "Satisfaction stored effect left after boost pass");
+                }
+                PopEffect::SentimentFlat { kind, delta } => {
+                    if delta != 0.0 {
+                        mods.push(SentimentMod::Flat { kind, delta });
+                    }
+                }
+                PopEffect::SentimentRelative { kind, relative } => {
+                    if relative != 0.0 {
+                        mods.push(SentimentMod::Relative { kind, relative });
+                    }
+                }
+            }
+        }
+        self.stored_effects = kept;
+
+        self.sentiment.apply_mods(mods);
+        debug_assert!(self.sentiment.is_valid());
+    }
+
+    /// Effective average fill ratio for a non-basic tier after a satisfaction boost,
+    /// without mutating individual desires.
+    ///
+    /// ```text
+    /// ( Σ (satisfaction / amount) + boost ) / desire_count
+    /// ```
+    ///
+    /// `boost` is **ratio-mass** (same units as a sum of `tiers_satisfied` pieces):
+    /// desire effects contribute via sat-scaled rates; stored effects contribute an
+    /// already-scaled amount (e.g. process output / pop).
+    ///
+    /// No upper clamp (common may exceed 1.0 for spiritual surplus). Floor at 0.
+    /// Empty tier: `1.0` (no unmet needs), boost ignored.
+    fn tier_satisfaction_with_boost(&self, tier: usize, boost: f64) -> f64 {
+        debug_assert!(
+            tier == 1 || tier == 2,
+            "Satisfaction boosts only apply to common (1) or luxury (2), got {tier}"
+        );
+        debug_assert!(boost.is_finite(), "Satisfaction boost must be finite.");
+        let desires = self.desires.get(tier).map(|d| d.as_slice()).unwrap_or(&[]);
+        if desires.is_empty() {
+            return 1.0;
+        }
+        let n = desires.len() as f64;
+        let sum_ratios: f64 = desires
+            .iter()
+            .map(|d| {
+                debug_assert!(d.amount > 0.0, "Desire amount must be positive.");
+                d.satisfaction / d.amount
+            })
+            .sum();
+        ((sum_ratios + boost) / n).max(0.0)
+    }
+
+    /// Map common tier ratio to mood weight: full effect on `[0, 1]`, half effect
+    /// on any overflow above 1.0.
+    fn common_mood_weight(common: f64) -> f64 {
+        let c = common.max(0.0);
+        if c <= 1.0 {
+            c
+        } else {
+            1.0 + 0.5 * (c - 1.0)
+        }
     }
 
     /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
@@ -896,8 +1108,8 @@ impl Pop {
                 .quantity += amount;
         }
 
-        // 6. Remaining stored_effects should only be BonusGood (everything else
-        // was consumed earlier in the day). Pay them out; assert nothing left.
+        // 6. Pay out BonusGood.
+        // Mood/sentiment should already be gone after process_satisfaction.
         let mut kept_effects = Vec::with_capacity(self.stored_effects.len());
         for effect in self.stored_effects.drain(..) {
             match effect {
@@ -909,16 +1121,23 @@ impl Pop {
                             .quantity += amount;
                     }
                 }
-                other => kept_effects.push(other),
+                other => {
+                    debug_assert!(
+                        false,
+                        "Unexpected stored effect at decay (should be applied earlier): {other:?}"
+                    );
+                    kept_effects.push(other);
+                }
             }
         }
+        // This is last action of the day, so stored effects should be empty
         debug_assert!(
             kept_effects.is_empty(),
-            "No other effects should exist by this point, they should all have been used up by now."
+            "No ether effects should exist at this point."
         );
         debug_assert!(
             self.stored_effects.is_empty(),
-            "stored_effects should be empty after end-of-day decay"
+            "No ether stored effects should exist at this point."
         );
     }
 }
@@ -1138,6 +1357,7 @@ mod pop {
             previous_growth: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            recorded_tier_sat: [1.0, 1.0, 1.0],
         }
     }
 
@@ -1849,6 +2069,44 @@ mod pop {
             assert_eq!(pop.demographics.count, 0.0);
             assert!((pop.previous_growth - (-1.0)).abs() < 1e-9);
         }
+
+        #[test]
+        fn applies_and_removes_stored_birthrate_and_mortality() {
+            // Base rate 0.02; +0.05 birthrate, −0.03 mortality → net +0.04
+            // 10 * 1.04 = 10.4
+            let mut pop = make_pop();
+            pop.stored_effects.push(PopEffect::Birthrate(0.05));
+            pop.stored_effects.push(PopEffect::Mortality(0.03));
+            // Non-growth arms must survive for later phases.
+            pop.stored_effects.push(PopEffect::BonusGood {
+                good: 300,
+                amount: 1.0,
+            });
+            pop.stored_effects.push(PopEffect::Satisfaction {
+                tier: 1,
+                amount: 0.1,
+            });
+
+            pop.growth_phase(&Factuals::new());
+
+            assert!((pop.demographics.count - 10.4).abs() < 1e-9);
+            assert!((pop.previous_growth - 0.4).abs() < 1e-9);
+            assert_eq!(pop.stored_effects.len(), 2);
+            assert!(matches!(
+                pop.stored_effects[0],
+                PopEffect::BonusGood {
+                    good: 300,
+                    amount: 1.0
+                }
+            ));
+            assert!(matches!(
+                pop.stored_effects[1],
+                PopEffect::Satisfaction {
+                    tier: 1,
+                    amount: 0.1
+                }
+            ));
+        }
     }
 
     mod demographic_update_should {
@@ -2105,6 +2363,175 @@ mod pop {
             assert_eq!(pop.property[&100].reserved, 10.0);
             assert_eq!(pop.property[&100].saved, 10.0);
             assert_eq!(pop.property[&100].quantity, 10.0);
+        }
+    }
+
+    mod process_satisfaction_should {
+        use super::*;
+        use crate::game::sentiment::SentimentKind;
+
+        #[test]
+        fn records_tier_sat_and_nudges_sentiment_from_unmet_basic() {
+            let mut pop = make_pop();
+            // Unsatisfied basic desire of amount 10.
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            // satisfaction stays 0 → basic avg 0.
+
+            pop.process_satisfaction();
+
+            assert_eq!(pop.recorded_tier_sat[0], 0.0);
+            // Empty common/luxury count as fully satisfied averages.
+            assert_eq!(pop.recorded_tier_sat[1], 1.0);
+            assert!(pop.sentiment.anger() > 0.0);
+            assert!(pop.sentiment.fear() > 0.0);
+            assert!(pop.sentiment.is_valid());
+        }
+
+        #[test]
+        fn applies_desire_sentiment_flat_and_skips_growth_and_bonus() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 10.0; // fully sat once
+            desire.effect.push(DesireEffect::SentimentFlat(
+                SentimentKind::Hope,
+                0.20,
+                true,
+            ));
+            desire.effect.push(DesireEffect::Birthrate(0.5, true));
+            desire.effect.push(DesireEffect::BonusGood(300, 99.0, true));
+            pop.desires[0].push(desire);
+
+            pop.process_satisfaction();
+
+            // Bonus +0.20 hope * sat 1.0, plus small baseline hope from luxury empty=1.
+            assert!(pop.sentiment.hope() > 0.15);
+            assert!(pop.property.get(&300).is_none()); // bonus good not granted here
+            assert!(pop.sentiment.is_valid());
+        }
+
+        #[test]
+        fn drains_mood_stored_effects_keeps_growth_and_bonus() {
+            let mut pop = make_pop();
+            pop.stored_effects.push(PopEffect::Satisfaction {
+                tier: 1,
+                amount: 2.0,
+            });
+            pop.stored_effects.push(PopEffect::SentimentFlat {
+                kind: SentimentKind::Anger,
+                delta: 0.05,
+            });
+            pop.stored_effects.push(PopEffect::Birthrate(0.01));
+            pop.stored_effects.push(PopEffect::BonusGood {
+                good: 300,
+                amount: 2.0,
+            });
+
+            pop.process_satisfaction();
+
+            assert!(pop.sentiment.anger() > 0.0);
+            assert_eq!(pop.stored_effects.len(), 2);
+            assert!(matches!(
+                pop.stored_effects[0],
+                PopEffect::Birthrate(0.01)
+            ));
+            assert!(matches!(
+                pop.stored_effects[1],
+                PopEffect::BonusGood {
+                    good: 300,
+                    amount: 2.0
+                }
+            ));
+            assert!(pop.sentiment.is_valid());
+        }
+
+        #[test]
+        fn desire_satisfaction_boosts_common_ratio_may_exceed_one() {
+            let mut pop = make_pop();
+            let mut d1 = make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            d1.satisfaction = 8.0; // ratio 0.8
+            let mut donor = make_desire(
+                1,
+                DesireTarget::new(201, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            donor.satisfaction = 10.0; // ratio 1.0
+            // +0.5 ratio-mass when fully satisfied.
+            donor.effect.push(DesireEffect::Satisfaction(0.5, true));
+            pop.desires[1].push(d1);
+            pop.desires[1].push(donor);
+
+            pop.process_satisfaction();
+
+            // Per-desire values unchanged.
+            assert_eq!(pop.desires[1][0].satisfaction, 8.0);
+            assert_eq!(pop.desires[1][1].satisfaction, 10.0);
+            // (0.8 + 1.0 + 0.5) / 2 = 1.15 — no common cap.
+            assert!((pop.recorded_tier_sat[1] - 1.15).abs() < 1e-9);
+        }
+
+        #[test]
+        fn desire_satisfaction_boosts_luxury_allows_oversat() {
+            let mut pop = make_pop();
+            let mut lux = make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            lux.satisfaction = 10.0; // ratio 1.0
+            lux.effect.push(DesireEffect::Satisfaction(0.5, true));
+            pop.desires[2].push(lux);
+
+            pop.process_satisfaction();
+
+            // Per-desire unchanged; recorded = (1.0 + 0.5) / 1 = 1.5.
+            assert_eq!(pop.desires[2][0].satisfaction, 10.0);
+            assert!((pop.recorded_tier_sat[2] - 1.5).abs() < 1e-9);
+        }
+
+        #[test]
+        fn stored_satisfaction_boosts_named_tier() {
+            let mut pop = make_pop();
+            let mut common = make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            common.satisfaction = 5.0; // ratio 0.5
+            pop.desires[1].push(common);
+            pop.stored_effects.push(PopEffect::Satisfaction {
+                tier: 1,
+                amount: 0.3, // ratio-mass
+            });
+
+            pop.process_satisfaction();
+
+            // Desire unchanged; (0.5 + 0.3) / 1 = 0.8.
+            assert_eq!(pop.desires[1][0].satisfaction, 5.0);
+            assert!((pop.recorded_tier_sat[1] - 0.8).abs() < 1e-9);
+            assert!(pop
+                .stored_effects
+                .iter()
+                .all(|e| !matches!(e, PopEffect::Satisfaction { .. })));
+        }
+
+        #[test]
+        fn common_oversat_uses_half_weight_above_one() {
+            // common_mood_weight(1.2) = 1.0 + 0.5*0.2 = 1.1
+            assert!((Pop::common_mood_weight(0.5) - 0.5).abs() < 1e-9);
+            assert!((Pop::common_mood_weight(1.0) - 1.0).abs() < 1e-9);
+            assert!((Pop::common_mood_weight(1.2) - 1.1).abs() < 1e-9);
         }
     }
 

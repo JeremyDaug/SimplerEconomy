@@ -58,6 +58,26 @@ pub enum SentimentKind {
     Hope,
 }
 
+/// A single sentiment change, for batch application via [`Sentiment::apply_mods`].
+///
+/// Focuses on the two common shapes used by desires / day effects:
+/// - **Flat**: absolute share of the whole pop (donors unspecified)
+/// - **Relative**: percent-of-part scale on one axis
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SentimentMod {
+    /// Absolute share of the whole pop into (positive) or out of (negative) `kind`.
+    /// Other axes scale proportionally — no donor named.
+    Flat {
+        kind: SentimentKind,
+        delta: f64,
+    },
+    /// Relative change to `kind`'s current share, then renormalize.
+    Relative {
+        kind: SentimentKind,
+        relative: f64,
+    },
+}
+
 impl Default for Sentiment {
     /// Fully content baseline (stable starting pops).
     fn default() -> Self {
@@ -261,6 +281,34 @@ impl Sentiment {
         }
         self.renormalize();
         debug_assert!(self.is_valid(), "Sentiment shares must form a unit partition.");
+    }
+
+    /// # Add Share
+    ///
+    /// Grow (or shrink, if `delta` is negative) one emotion by an absolute fraction
+    /// of the **whole pop**, without naming which other moods supply the mass.
+    ///
+    /// Alias of [`Self::adjust_global_share`] for call sites that only care about
+    /// “more of X,” not transfers between named pairs.
+    pub fn add_share(&mut self, kind: SentimentKind, delta: f64) {
+        self.adjust_global_share(kind, delta);
+    }
+
+    /// Apply one flat or relative modifier.
+    pub fn apply_mod(&mut self, m: SentimentMod) {
+        match m {
+            SentimentMod::Flat { kind, delta } => self.adjust_global_share(kind, delta),
+            SentimentMod::Relative { kind, relative } => {
+                self.adjust_part_relative(kind, relative)
+            }
+        }
+    }
+
+    /// Apply several modifiers in order (each step leaves a valid partition).
+    pub fn apply_mods(&mut self, mods: impl IntoIterator<Item = SentimentMod>) {
+        for m in mods {
+            self.apply_mod(m);
+        }
     }
 
     /// # Adjust Part Relative
@@ -669,6 +717,36 @@ mod sentiment_tests {
         assert!((s.anger() - 0.4).abs() < 1e-9);
         assert!((s.happiness() - 0.3).abs() < 1e-9);
         assert!((s.contentment() - 0.3).abs() < 1e-9);
+        assert_unit(&s);
+    }
+
+    #[test]
+    fn add_share_matches_adjust_global_share() {
+        let mut a = Sentiment::content();
+        let mut b = Sentiment::content();
+        a.add_share(SentimentKind::Hope, 0.2);
+        b.adjust_global_share(SentimentKind::Hope, 0.2);
+        assert_eq!(a, b);
+        assert_unit(&a);
+    }
+
+    #[test]
+    fn apply_mods_batch_flat_and_relative() {
+        let mut s = Sentiment::from_parts(0.0, 1.0, 0.0, 0.0, 0.0);
+        s.apply_mods([
+            SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta: 0.20,
+            },
+            SentimentMod::Relative {
+                kind: SentimentKind::Anger,
+                relative: 0.50, // 0.20 * 1.5 = 0.30 before renorm against rest
+            },
+        ]);
+        // After flat: anger 0.2, content 0.8
+        // After relative *1.5 on anger: anger 0.3, content 0.8 → renorm → 0.3/1.1, 0.8/1.1
+        assert!((s.anger() - 0.3 / 1.1).abs() < 1e-9);
+        assert!((s.contentment() - 0.8 / 1.1).abs() < 1e-9);
         assert_unit(&s);
     }
 }

@@ -11,6 +11,8 @@
 //! stay on `process` for now: they change production math, not actor state. Their
 //! `Growth` arm still bridges into [`ProcessEffect`] / [`EffectKind`].
 
+use crate::game::sentiment::SentimentKind;
+
 // ---------------------------------------------------------------------------
 // Master catalog
 // ---------------------------------------------------------------------------
@@ -54,6 +56,16 @@ pub enum EffectKind {
 
     // --- Mood / satisfaction ---
     Satisfaction(f64),
+    /// Flat share-of-pop shift into a sentiment axis (sign convention at site).
+    SentimentFlat {
+        kind: SentimentKind,
+        amount: f64,
+    },
+    /// Relative scale of one sentiment axis (sign convention at site).
+    SentimentRelative {
+        kind: SentimentKind,
+        relative: f64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +98,20 @@ pub enum DesireEffect {
     Birthrate(f64, bool),
     /// Extra goods granted from satisfaction path.
     BonusGood(usize, f64, bool),
+    /// Extra satisfaction units applied to the **same tier** as the source desire.
+    ///
+    /// Applied early in [`crate::game::pop::Pop::process_satisfaction`]. Never used
+    /// on basic (tier 0). Common clamps to one full level; luxury may oversat.
+    /// The `bool` is bonus (scales with sat) vs malus (scales with lack).
+    Satisfaction(f64, bool),
+    /// Flat share-of-pop shift into a sentiment axis (from other axes proportionally).
+    ///
+    /// Applied in [`crate::game::pop::Pop::process_satisfaction`]. The `bool` is
+    /// bonus (scales with sat) vs malus (scales with lack).
+    SentimentFlat(SentimentKind, f64, bool),
+    /// Relative scale of one sentiment axis, then renormalize.
+    /// Applied in [`crate::game::pop::Pop::process_satisfaction`].
+    SentimentRelative(SentimentKind, f64, bool),
 }
 
 impl DesireEffect {
@@ -95,6 +121,13 @@ impl DesireEffect {
             DesireEffect::Mortality(v, _) => EffectKind::MortalityRate(v),
             DesireEffect::Birthrate(v, _) => EffectKind::BirthRate(v),
             DesireEffect::BonusGood(good, amount, _) => EffectKind::BonusGood { good, amount },
+            DesireEffect::Satisfaction(amount, _) => EffectKind::Satisfaction(amount),
+            DesireEffect::SentimentFlat(kind, amount, _) => {
+                EffectKind::SentimentFlat { kind, amount }
+            }
+            DesireEffect::SentimentRelative(kind, relative, _) => {
+                EffectKind::SentimentRelative { kind, relative }
+            }
         }
     }
 
@@ -103,11 +136,14 @@ impl DesireEffect {
         match self {
             DesireEffect::Mortality(_, b)
             | DesireEffect::Birthrate(_, b)
-            | DesireEffect::BonusGood(_, _, b) => b,
+            | DesireEffect::BonusGood(_, _, b)
+            | DesireEffect::Satisfaction(_, b)
+            | DesireEffect::SentimentFlat(_, _, b)
+            | DesireEffect::SentimentRelative(_, _, b) => b,
         }
     }
 
-    /// Magnitude after applying satisfaction in `[0, 1]` (signed rate for growth kinds).
+    /// Magnitude after applying satisfaction in `[0, 1]`.
     ///
     /// Bonus → `+rate * sat`; malus → `-rate * (1 - sat)`.
     pub fn signed_strength(self, sat01: f64) -> f64 {
@@ -116,12 +152,28 @@ impl DesireEffect {
         let rate = match self {
             DesireEffect::Mortality(v, _) | DesireEffect::Birthrate(v, _) => v,
             DesireEffect::BonusGood(_, amount, _) => amount,
+            DesireEffect::Satisfaction(amount, _) => amount,
+            DesireEffect::SentimentFlat(_, amount, _) => amount,
+            DesireEffect::SentimentRelative(_, relative, _) => relative,
         };
         if self.is_bonus() {
             rate * sat
         } else {
             -rate * lack
         }
+    }
+
+    /// Growth arms left for growth phase.
+    pub fn is_growth(self) -> bool {
+        matches!(
+            self,
+            DesireEffect::Birthrate(..) | DesireEffect::Mortality(..)
+        )
+    }
+
+    /// Goods paid out at decay.
+    pub fn is_bonus_good(self) -> bool {
+        matches!(self, DesireEffect::BonusGood(..))
     }
 }
 
@@ -132,16 +184,24 @@ impl DesireEffect {
 /// Same-day effects stored on a pop (environment, events, process spillover, …).
 /// Must not survive past end of day.
 ///
-/// Non-goods arms are consumed in earlier phases (growth / mood / …).
-/// [`PopEffect::BonusGood`] is paid out last in
-/// [`crate::game::pop::Pop::decay_goods`], after which the store is empty.
+/// - Growth arms ([`PopEffect::Birthrate`] / [`PopEffect::Mortality`]) →
+///   [`crate::game::pop::Pop::growth_phase`] (applied and removed there).
+/// - Satisfaction boosts + mood/sentiment → [`crate::game::pop::Pop::process_satisfaction`].
+/// - [`PopEffect::BonusGood`] → [`crate::game::pop::Pop::decay_goods`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopEffect {
     Birthrate(f64),
     Mortality(f64),
-    Satisfaction(f64),
+    /// Extra satisfaction units for a **non-basic** desire tier (`tier` 1 = common,
+    /// 2 = luxury). Applied early in process_satisfaction. Common clamps to one
+    /// full level; luxury may oversat. `amount` is already scaled.
+    Satisfaction { tier: usize, amount: f64 },
     /// Extra goods already scaled; granted at end-of-day decay.
     BonusGood { good: usize, amount: f64 },
+    /// Flat share-of-pop into an axis (donors unspecified — other axes scale down).
+    SentimentFlat { kind: SentimentKind, delta: f64 },
+    /// Relative scale of one axis, then renormalize.
+    SentimentRelative { kind: SentimentKind, relative: f64 },
 }
 
 impl PopEffect {
@@ -149,9 +209,25 @@ impl PopEffect {
         match self {
             PopEffect::Birthrate(v) => EffectKind::BirthRate(v),
             PopEffect::Mortality(v) => EffectKind::MortalityRate(v),
-            PopEffect::Satisfaction(v) => EffectKind::Satisfaction(v),
+            PopEffect::Satisfaction { amount, .. } => EffectKind::Satisfaction(amount),
             PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
+            PopEffect::SentimentFlat { kind, delta } => {
+                EffectKind::SentimentFlat { kind, amount: delta }
+            }
+            PopEffect::SentimentRelative { kind, relative } => {
+                EffectKind::SentimentRelative { kind, relative }
+            }
         }
+    }
+
+    /// Growth arms left for growth phase.
+    pub fn is_growth(self) -> bool {
+        matches!(self, PopEffect::Birthrate(..) | PopEffect::Mortality(..))
+    }
+
+    /// Goods paid out at decay.
+    pub fn is_bonus_good(self) -> bool {
+        matches!(self, PopEffect::BonusGood { .. })
     }
 }
 
