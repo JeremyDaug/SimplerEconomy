@@ -16,20 +16,29 @@ When reviewing commits, a branch, a PR, or local changes:
 
 ---
 
-**Last updated:** review of `771e1a3..HEAD` (through `0d9a57e`)  
-**Scope:** effects consolidation (`effects.rs`), Institution v0 draft, Pop
-`initial_reservations_and_update_satisfaction` / `decay_goods` / `stored_effects`,
-playstate consumption wire-up  
-**Diff:** 15 files, +1189 / −265 · `cargo test --lib` 90 passed
+**Last updated:** review of `0d9a57e..HEAD` (through `43990ca`)  
+**Scope:** B1/B2/B4 fixes; Institution/decay; `Sentiment`; first draft
+`process_satisfaction`; stored Birthrate/Mortality in `growth_phase`  
+**Diff:** 16 files, +2685 / −470 · `cargo test --lib` 120 passed
 
 ---
 
 ## Open bugs
 
-### B3. Non-goods `PopEffect` never applied; discarded at EOD
-- **File:** `src/game/pop.rs` (`stored_effects`, `growth_phase`, `decay_goods` ~885–904), `src/game/effects.rs` (`PopEffect`)
-- **What:** Docs say Birthrate/Mortality/Satisfaction are consumed in growth/mood. Growth ignores them; `process_satisfaction` is `todo!()`. Decay drains non-`BonusGood` into `kept_effects` and `debug_assert`s empty (silent drop in release).
-- **Fix idea:** Apply and remove matching effects in `growth_phase` / mood; leave only `BonusGood` for decay. Test stored birthrate → growth delta.
+### B3. Mood/satisfaction `PopEffect`s still never applied in a real turn
+- **File:** `src/playstate.rs` (no `process_satisfaction` call); `src/game/pop.rs` (`process_satisfaction`, `decay_goods`)
+- **What:** Growth now applies/removes stored `Birthrate`/`Mortality` (partial B3 fix). `process_satisfaction` applies Satisfaction + Sentiment **when called**, but the day pipeline never calls it. Those effects sit until EOD decay, which expects only `BonusGood` — debug assert / silent drop in release. Migration/record-keeping never see updated `sentiment` / `recorded_tier_sat`.
+- **Fix idea:** Wire a mood/satisfaction phase (after consume; order vs growth must match docs — see B5) with `par_iter_mut` `pop.process_satisfaction()`. Keep this open until wired or explicitly deferred.
+
+### B5. `process_satisfaction` docs disagree on phase order vs growth
+- **File:** `src/game/pop.rs` (~818–834 vs step 5 ~938); `docs/proposals/satisfaction-ratio-and-boosts.md`
+- **What:** Header says the pass runs **after consume and growth**, but step 5 **keeps** `Birthrate`/`Mortality` “for later phases.” Both cannot be true; wrong wiring reintroduces B3-style leaks.
+- **Fix idea:** Pick one order. Post-growth: assert no growth arms remain. Pre-growth: keep them and update the header. Match playstate when B3 is fixed.
+
+### B6. Firm/institution `decay_goods` still `todo!()` under live fan-out
+- **File:** `src/game/firm.rs` (~90–93), `src/game/institution.rs` (~167–170), `src/game/actors.rs`, `src/playstate.rs` `phase_good_decay`
+- **What:** `Actors::decay_goods` always fans out to every firm and institution. Bodies are still `todo!()`, so any non-empty firms/institutions map panics when phase_good_decay runs. Pop decay is real; partial implementation made fan-out a landmine.
+- **Fix idea:** No-op stubs until real decay exists, or skip empty-logic maps until implemented.
 
 ---
 
@@ -37,72 +46,91 @@ playstate consumption wire-up
 
 ### 1. `DemographicEffect` never applied to household modifiers
 - **File:** `src/game/effects.rs` / species/culture/religion `*_effects`
-- **What:** Effects are stored but nothing folds them into `*_household_modifiers`. `demographic_update` only reads pre-baked modifiers. Setting `household_changed` without updating modifiers is a silent no-op.
+- **What:** Effects are stored but nothing folds them into `*_household_modifiers`. Setting `household_changed` without updating modifiers is a silent no-op.
 - **Fix idea:** `fn apply_to_household(&self, h: &mut HouseholdDef)` (or rebuild modifiers from effects whenever effects change).
-- **Related:** deferred D1 household rebuild order.
+- **Related:** deferred D1.
 
 ### 2. Property scaling by `previous_growth` not idempotent / can go Inf
-- **File:** `src/game/pop.rs` (~190–198)
+- **File:** `src/game/pop.rs` (update_desires property scale)
 - **What:** Second `update_desires` in the same day multiplies again. Denominator `0` yields `Inf` (NaN assert does not catch it).
 - **Fix idea:** Scale from absolute baseline, zero `previous_growth` after apply, assert finite growth factor.
 
 ### 3. Common/luxury growth terms may have wrong sign
-- **File:** `src/game/pop.rs` (~710–716)
+- **File:** `src/game/pop.rs` (`growth_phase`)
 - **What:** Common/luxury use `-k * tier_total_satisfaction` (penalize *having* satisfaction). Basic penalizes *lack*. Common coeff nearly a no-op.
 - **Fix idea:** Confirm wealth/transition intent and document, or use lack. Related: deferred D2.
 
 ### 4. `demographic_update` not wired into turn loop
-- **File:** `src/playstate.rs` (~119–123)
-- **What:** `phase_player_bonuses_and_demographic_updates` still `todo!()`. Institution effect push and `Pop::demographic_update` never run from the turn loop; nothing clears `household_changed`.
-- **Fix idea:** Institutions/firms → `par_iter` demographic_update → orchestrator clears flags → non-demo household effects (D1). Drop unused `factuals` bind in `phase_pop_consumption` until needed.
+- **File:** `src/playstate.rs` (`phase_player_bonuses_and_demographic_updates`)
+- **What:** Still `todo!()`. Institution effect push and `Pop::demographic_update` never run; nothing clears `household_changed`.
+- **Fix idea:** Institutions/firms → `par_iter` demographic_update → orchestrator clears flags → non-demo household effects (D1).
 
 ### 5. Household size change with fixed count jumps total pop
-- **File:** `src/game/pop.rs` (~514–531)
+- **File:** `src/game/pop.rs` (`rebuild_household_from_demographics`)
 - **What:** Rebuild changes adults/children/etc. while leaving `count` fixed; total pop jumps. `alter_household_maintain_members` unused.
 - **Fix idea:** Conserve members or phase deltas; `debug_assert` large swings in dev.
 
 ### 6. `growth_phase` takes unused `factuals`
-- **File:** `src/game/pop.rs` (~695–697)
-- **What:** Param ignored (`let _ = factuals`). Mid-turn effect-only factual edits never affect growth without household rebake.
+- **File:** `src/game/pop.rs`
+- **What:** Param ignored. Mid-turn effect-only factual edits never affect growth without household rebake.
 - **Fix idea:** Drop until needed, or resolve baseline rates from factuals if household is not sole source of truth.
 
 ### 7. Test coverage gaps (growth / demographic edges)
 - **File:** `src/game/pop.rs` tests
-- **What:** New reservation/decay tests help. Still missing: growth rate ≤ -100% before snap, Birthrate malus / Mortality bonus arms, household birth/mortality + desire interaction; demographic missing-species / efficiency-only modifiers; stored_effects → growth.
-- **Fix idea:** Lock intended growth and rebuild semantics once designs firm up.
+- **What:** Reservation/decay/process_satisfaction/sentiment tests help. Still missing: growth rate ≤ -100% before snap, Birthrate malus / Mortality bonus arms, household birth/mortality + desire interaction; demographic missing-species / efficiency-only modifiers.
+- **Fix idea:** Lock intended growth and rebuild semantics once designs firm up. Also add turn-loop integration once B3 is wired.
+
+### 8. Satisfaction effect docs still say “units” / “clamps”
+- **File:** `src/game/effects.rs` (`DesireEffect::Satisfaction`, `PopEffect::Satisfaction`)
+- **What:** Docs say “extra satisfaction units” and “Common clamps to one full level.” Implementation + proposal treat boosts as ratio-mass / fill boosts with no common hard cap on recorded tier fill.
+- **Fix idea:** Rewrite docs to match proposal and `process_satisfaction` (fill boost, never basic, no common hard cap; luxury open-ended).
+
+### 9. Baseline sentiment daily drift
+- **File:** `src/game/pop.rs` (`process_satisfaction` baseline mods)
+- **What:** Empty common/luxury treated as `1.0`; a “fine” pop still gets daily happiness/contentment/hope bumps with no pull-to-content. Draft-fine, easy to over-trust for migration/politics.
+- **Fix idea:** Document as draft daily pulse; consider dampening or return-to-content before relying on sentiment elsewhere.
+
+### 10. Invalid Satisfaction tier silently dropped in release
+- **File:** `src/game/pop.rs` (`process_satisfaction` boost pass)
+- **What:** Invalid tier (not 1/2) fails `debug_assert` then is neither applied nor kept — silent drop in release.
+- **Fix idea:** Keep invalid arms for decay assert, or log; do not vanish without a trail.
 
 ---
 
 ## Open nits
 
-### 8. Religion/species field names and docs say “Culture”
-- **Files:** `src/game/religion.rs` (~24–33), `src/game/species.rs` (~24–34)
-- **What:** Religion has `culture_effects` / `culture_household_modifiers`; species docs say “Culture” in places.
+### 11. Religion/species field names and docs say “Culture”
+- **Files:** `src/game/religion.rs`, `src/game/species.rs`
 - **Fix idea:** Rename religion fields to `religion_*` and fix comments.
 
-### 9. Growth test comment missing parentheses
-- **File:** `src/game/pop.rs` (~1602–1603)
-- **What:** Comment writes `count / count - previous_growth`; code uses `(count - previous_growth)`.
-- **Fix idea:** `count / (count - previous_growth)`.
+### 12. Growth test comment missing parentheses
+- **File:** `src/game/pop.rs` (property growth scale test)
+- **Fix idea:** Comment as `count / (count - previous_growth)`.
 
-### 10. Unreachable code after Class `todo!`
-- **File:** `src/game/factuals.rs` (~128–131)
-- **What:** `todo!(...); None` — `None` unreachable.
+### 13. Unreachable code after Class `todo!`
+- **File:** `src/game/factuals.rs`
 - **Fix idea:** Keep only `todo!(...)` until Class exists.
 
-### 11. Residual `decay_goods(&self)` on players / mapdata
-- **Files:** `src/game/players.rs:14`, `src/game/mapdata.rs:22`
-- **What:** Actor path fixed to `&mut self`. These stubs still take `&self`.
-- **Fix idea:** Use `&mut self` now so `phase_good_decay` call sites stay stable.
+### 14. Residual `decay_goods(&self)` on players / mapdata
+- **Files:** `src/game/players.rs`, `src/game/mapdata.rs`
+- **Fix idea:** Use `&mut self` now so call sites stay stable.
 
-### 12. Orphaned DesireEffect docs in desire.rs
-- **File:** `src/game/desire.rs` (~499–509)
-- **What:** Enum moved to `effects.rs`; `# Desire Effect` section header left above `# Desire Source`.
-- **Fix idea:** Remove orphaned docs (canonical on `effects::DesireEffect`).
+### 15. Orphaned DesireEffect docs in desire.rs
+- **File:** `src/game/desire.rs`
+- **Fix idea:** Remove orphaned section (canonical on `effects::DesireEffect`).
 
-### 13. Unused import / Owners typo
-- **Files:** `src/game/pop.rs:3` (`DynamicArray`), `src/game/firm.rs:252` (“ownser”)
+### 16. Unused `DynamicArray` import / firm “ownser” typo
+- **Files:** `src/game/pop.rs:3`, `src/game/firm.rs` (“ownser”)
 - **Fix idea:** Drop import; fix typo.
+
+### 17. `process_satisfaction` drains `stored_effects` twice
+- **File:** `src/game/pop.rs`
+- **What:** Satisfaction pass then Sentiment/growth/bonus pass. Correct but easy to desync.
+- **Fix idea:** Single drain with one match when next touching the function.
+
+### 18. Unused `factuals` bind in `phase_pop_consumption`
+- **File:** `src/playstate.rs`
+- **Fix idea:** Drop until consume needs definitions.
 
 ---
 
@@ -111,7 +139,7 @@ playstate consumption wire-up
 ### D1. Household rebuild and non-demographic mods
 - **Was:** Bug — rebuild from default + demo modifiers wipes institutional / day-start overlays.
 - **Dev response:** Intended order is demographic effects first, then other effects, in `phase_player_bonuses_and_demographic_updates`.
-- **Status:** Deferred / WIP with open suggestion #4. Not an independent bug once that phase exists.
+- **Status:** Deferred / WIP with open suggestion #4.
 
 ### D2. Mortality vs Birthrate desire effects identical in net growth
 - **Was:** Bug — same arms for both variants in `tier_desire_effect_growth`.
@@ -123,13 +151,25 @@ playstate consumption wire-up
 ## Resolved (this and prior reviews)
 
 ### R1. Dead-pop `growth_f` → NaN
-- **Resolution:** `debug_assert` + invariant on dead pops / `previous_growth`. (Inf on zero denominator still open under suggestion #2.)
+- **Resolution:** `debug_assert` + lifecycle invariants. (Inf on zero denominator still open under suggestion #2.)
 
 ### R2. Satisfaction rescale divides by zero
-- **Resolution:** `debug_assert` on desire amount (see open B4 for predicate/docs mismatch).
+- **Resolution:** `debug_assert!(desire.amount >= 1.0)` (see R6).
 
-### R3. Actors `decay_goods` signature / Pop decay implementation
-- **Resolution:** `Actors::decay_goods(&mut self)` parallel-calls `Pop`/`Firm`/`Institution` mut methods. `Pop::decay_goods` implemented (used return, rate decay, consumed destroy, byproducts, desire + stored bonus goods). Residual stubs: players/mapdata (nit #11).
+### R3. Actors `decay_goods` / Pop decay implementation
+- **Resolution:** Fan-out + `Pop::decay_goods` real (used return, rate decay, consumed destroy, byproducts, desire + stored bonus goods). Residual: firm/institution todos (B6), players/mapdata (nit #14).
+
+### R4. B1 — reserved stock vs `saved`
+- **Resolution:** `consumeable` removed; satisfy draws from full `quantity`; `saved` is wish-only.
+
+### R5. B2 — reserve vs satisfy target order
+- **Resolution:** Both use `Desire::ordered_targets()`.
+
+### R6. B4 — amount assert `>` vs `>=`
+- **Resolution:** `debug_assert!(desire.amount >= 1.0)` matches docs.
+
+### R7. B3 partial — stored growth arms
+- **Resolution:** `growth_phase` applies and removes stored `Birthrate`/`Mortality` (test present). Residual open as B3 (mood path + turn wire-up).
 
 ---
 
@@ -148,18 +188,11 @@ From the prior `update_desires` review. Re-check when next touching that path.
 
 ## Suggested priority when picking these up
 
-1. Wire demographic turn phase (#4) — unblocks household effect ordering (D1) and institution passives.
-2. Apply/drain non-goods `PopEffect`s (B3) before anything pushes into `stored_effects`.
-3. Household size conservation (#5) and `DemographicEffect` → modifiers (#1).
-4. Growth semantics: common/luxury sign (#3), later Birthrate vs Mortality (D2).
-5. Idempotency / Inf guard and tests (#2, #7).
-6. Nits (#8–#13) whenever touching those files.
-7. Re-verify earlier leftovers when next touching `update_desires`.
-
----
-
-## Fixed (recent)
-
-- **B1 / savings fence:** `consumeable` removed; `satisfy_one_desire` draws from full `quantity` (`saved` is wish-only).
-- **B2 / target order:** both reserve and satisfy use `Desire::ordered_targets()`.
-- **B4 / amount assert:** `debug_assert!(desire.amount >= 1.0)` matches docs.
+1. Wire `process_satisfaction` into the turn loop (B3) and fix phase-order docs (B5).
+2. No-op firm/institution `decay_goods` stubs (B6) so EOD does not panic.
+3. Wire demographic turn phase (#4) — unblocks D1 / institution passives.
+4. Household size conservation (#5) and `DemographicEffect` → modifiers (#1).
+5. Growth semantics: common/luxury sign (#3), Inf/idempotency (#2), later D2.
+6. Satisfaction/sentiment polish (#8–#10) while process_satisfaction is hot.
+7. Nits (#11–#18) whenever touching those files.
+8. Re-verify earlier leftovers when next touching `update_desires`.
