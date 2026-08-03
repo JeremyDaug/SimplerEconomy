@@ -775,8 +775,10 @@ impl Pop {
         self.demographics.count = new_count;
     }
 
-    /// Average `tiers_satisfied` for a desire tier, clamped to [0, 1].
-    /// Empty tier counts as fully satisfied (no unmet needs).
+    /// # Tier Average Satisfaction
+    /// 
+    /// A helper function that takes the current desires, gets the tiers satisfied,
+    /// and returns the average result..
     fn tier_avg_satisfaction(&self, tier: usize) -> f64 {
         let Some(desires) = self.desires.get(tier) else {
             return 1.0;
@@ -786,9 +788,24 @@ impl Pop {
         }
         let sum: f64 = desires
             .iter()
-            .map(|d| d.tiers_satisfied().clamp(0.0, 1.0))
+            .map(|d| d.tiers_satisfied())
             .sum();
         sum / desires.len() as f64
+    }
+
+    /// # Tier Satisfaction
+    /// 
+    /// A helper which gets the total number of desires satisfied in a tier.
+    /// 
+    /// Equal to `Sum(desire.satisfaction / desire.amount)` for a given tier.
+    fn tier_satisfaction(&self, arg: i32) -> f64 {
+        let Some(desires) = self.desires.get(tier) else {
+            return 1.0;
+        };
+        if desires.is_empty() {
+            return 1.0;
+        }
+        desires.iter().map(|d| d.tiers_satisfied()).sum()
     }
 
     /// Sum of `tiers_satisfied` across all desires in a tier (uncapped; luxury oversat counts).
@@ -893,7 +910,7 @@ impl Pop {
 
         // 2. Day records: tier sat, wealth, satisfaction units.
         let tier_sat_boosted = [
-            self.tier_avg_satisfaction(0),
+            self.tier_satisfaction(0),
             self.tier_sat_with_boost(1, tier_boosts[1]),
             self.tier_sat_with_boost(2, tier_boosts[2]),
         ];
@@ -983,9 +1000,21 @@ impl Pop {
     /// It returns it from this function for testing purposes, does not apply it.
     fn sentiment_mods_from_satisfaction(&self) -> Vec<SentimentMod> {
         // Get the ratio of total success (tier_sat / number of desires)
-        let basic = self.records.tier_sat[0] / self.desires[0].len() as f64;
-        let common = self.records.tier_sat[1] / self.desires[1].len() as f64;
-        let luxury = self.records.tier_sat[2] / self.desires[2].len() as f64;
+        let basic = if self.desires[0].is_empty() {
+            1.0
+        } else {
+            self.records.tier_sat[0] / self.desires[0].len() as f64
+        };
+        let common = if self.desires[1].is_empty() {
+            1.0
+        } else {
+            self.records.tier_sat[1] / self.desires[1].len() as f64
+        };
+        let luxury = if self.desires[2].is_empty() {
+            1.0
+        } else {
+            self.records.tier_sat[2] / self.desires[2].len() as f64
+        };
         // Common ≤1 full effect; overflow above 1.0 at half weight (common sat surplus).
         let common_mood = Self::common_sat_mood_weight(common);
         let mods: Vec<SentimentMod> = vec![
@@ -1015,30 +1044,31 @@ impl Pop {
         mods
     }
 
-    /// Effective **tier sat** for a non-basic tier after a satisfaction boost,
-    /// without mutating individual desires.
-    ///
+    /// # Tier Satisfaction with Boost
+    /// 
+    /// A helper function which calculates the Tier Satisfaction and
+    /// adds the given boost value to it.
+    /// 
     /// ```text
-    /// ( Σ (satisfaction / amount) + boost ) / desire_count
+    /// sum(satisfaction / amount) + boost
     /// ```
-    ///
-    /// `boost` is satisfaction-boost mass (same units as a sum of desire-sat pieces):
-    /// desire effects contribute via sat-scaled rates; stored effects contribute an
-    /// already-scaled amount (e.g. process output / pop).
-    ///
-    /// No upper clamp (common may exceed 1.0 for common sat surplus). Floor at 0.
-    /// Empty tier: `1.0` (no unmet needs), boost ignored.
+    /// 
+    /// Values produced cannot be negative.
+    /// 
+    /// TODO: Might allow negative values eventually, but not just yet, don't know what I would even do with negative values.
     fn tier_sat_with_boost(&self, tier: usize, boost: f64) -> f64 {
+        // TODO, consider removing this. A pop with an 'ascetic' religous/cultural trait
+        // might be a worthwhile thing to consider. Back burner for now.
         debug_assert!(
             tier == 1 || tier == 2,
             "Satisfaction boosts only apply to common (1) or luxury (2), got {tier}"
         );
         debug_assert!(boost.is_finite(), "Satisfaction boost must be finite.");
-        let desires = self.desires.get(tier).map(|d| d.as_slice()).unwrap_or(&[]);
+        let desires = self.desires.get(tier)
+            .unwrap();
         if desires.is_empty() {
             return 1.0;
         }
-        let n = desires.len() as f64;
         let sum_desire_sat: f64 = desires
             .iter()
             .map(|d| {
@@ -1046,7 +1076,7 @@ impl Pop {
                 d.satisfaction / d.amount
             })
             .sum();
-        ((sum_desire_sat + boost) / n).max(0.0)
+        (sum_desire_sat + boost).max(0.0)
     }
 
     /// Map common tier sat to sentiment weight: full effect on `[0, 1]`, half effect

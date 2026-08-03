@@ -133,7 +133,10 @@ impl PopPRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopRecords {
     /// Tier satisfactions [basic, common, luxury] after satisfaction boosts.
-    /// Measured as a percentage of success of each desire.
+    /// Measured as a percentage of success of each desire summed together. 
+    /// 
+    /// So a tier sat of 3.0 means at worst, 3 desires of that tier were fully satisfied.
+    /// Could be more desires at lower satisfaction or fewer with a satisfaction boost.
     /// 
     /// Filled in by the pop itself.
     pub tier_sat: [f64; 3],
