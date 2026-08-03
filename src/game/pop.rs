@@ -1,10 +1,24 @@
 use std::collections::HashMap;
 
-use bevy::{platform::collections::HashSet, reflect::DynamicArray, utils::default};
+use bevy::platform::collections::HashSet;
 
-use crate::game::{actor::Actor, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::HouseholdDef, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}};
+use crate::game::{
+    actor::Actor,
+    config::living_standard,
+    desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
+    factuals::Factuals,
+    good::GoodTag,
+    household::HouseholdDef,
+    market::MarketHistory,
+    marketorder::MarketOrder,
+    scalingfactor::ScalingFactor,
+    sentiment::{Sentiment, SentimentKind, SentimentMod},
+};
 
 pub use crate::game::effects::PopEffect;
+pub use crate::game::pop_property::{
+    DemoRow, LivingStandardHistory, PopPRow, PopRecords,
+};
 
 #[derive(Debug, Clone)]
 pub struct Pop {
@@ -78,13 +92,12 @@ pub struct Pop {
     /// Updated in [`Self::process_satisfaction`]; blendable into firms, markets, etc.
     pub sentiment: Sentiment,
 
-    /// Last recorded average `tiers_satisfied` per desire tier (0 basic, 1 common, 2 luxury).
-    /// Written by [`Self::process_satisfaction`] for inspectability / later systems.
-    pub recorded_tier_sat: [f64; 3],
+    /// End-of-pass snapshot from [`Self::process_satisfaction`] (tier sat, wealth, …).
+    pub records: PopRecords,
+
 }
 
 impl Pop {
-
     /// Emigration / mobility pressure for this pop (mood × size × mobility, …).
     pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
@@ -814,6 +827,9 @@ impl Pop {
     }
 
     /// # Process Satisfaction
+    /// 
+    /// Run after Growth_phase. This processes the Satisfaction of desires, applying some
+    /// more modifications, and recording the results. 
     ///
     /// Late-day satisfaction-boost + mood pass (after consume and growth).
     /// Does **not** apply growth arms ([`Self::growth_phase`]) or bonus goods
@@ -823,18 +839,20 @@ impl Pop {
     ///    - Desire [`DesireEffect::Satisfaction`] → boost for **that desire's tier**
     ///      (never basic). Desire boosts are sat-scaled via [`DesireEffect::signed_strength`].
     ///    - Stored [`PopEffect::Satisfaction`] → boost for the **named tier** (1 or 2);
-    ///      amount is already “ratio mass” (e.g. process output / pop).
-    ///    - Tier result:
+    ///      amount is already scaled (e.g. process output / pop).
+    ///    - **Tier sat** result:
     ///      `(Σ (satisfaction / amount) + boost) / desire_count`
-    ///      (boost = extra fulfilled ratio-mass; no common cap).
-    /// 2. Write boosted tier averages into [`Self::recorded_tier_sat`].
-    /// 3. Baseline sentiment nudges from those averages. Common uses full weight up
-    ///    to 1.0 and **half weight** on any overflow above 1.0 (spiritual surplus).
+    ///      (no common hard cap; surplus gives reduced benefits).
+    /// 2. Write [`PopRecords`]: tier sat, property wealth (AMV), satisfaction units.
+    /// 3. Baseline sentiment shifts from tier sat. Common uses full weight up
+    ///    to 1.0 and **half weight** on any overflow above 1.0 (common sat surplus).
     /// 4. Desire + stored sentiment effects.
-    /// 5. Leave growth + bonus-good stored arms for later phases.
-    pub fn process_satisfaction(&mut self) {
+    /// 5. Leave bonus-good stored arms for later phases (growth should already be consumed).
+    ///
+    /// `market_history` supplies prices for wealth AMV (missing good prices default to 1.0).
+    pub fn process_satisfaction(&mut self, market_history: &MarketHistory) {
         // 1. Collect boosts per tier (desire effects + stored Satisfaction).
-        let mut tier_boost = [0.0_f64; 3];
+        let mut tier_sat_unboost = [0.0_f64; 3];
         for (tier_idx, tier) in self.desires.iter().enumerate() {
             for desire in tier {
                 let sat01 = desire.tiers_satisfied().clamp(0.0, 1.0);
@@ -847,7 +865,7 @@ impl Pop {
                         if tier_idx == 0 {
                             continue;
                         }
-                        tier_boost[tier_idx] += effect.signed_strength(sat01);
+                        tier_sat_unboost[tier_idx] += effect.signed_strength(sat01);
                     }
                 }
             }
@@ -863,7 +881,7 @@ impl Pop {
                     );
                     if tier == 1 || tier == 2 {
                         debug_assert!(amount.is_finite(), "Satisfaction boost must be finite.");
-                        tier_boost[tier] += amount;
+                        tier_sat_unboost[tier] += amount;
                     }
                 }
                 other => kept.push(other),
@@ -871,18 +889,60 @@ impl Pop {
         }
         self.stored_effects = kept;
 
-        // 2. Record tier satisfaction (basic unboosted; common/luxury with formula).
-        self.recorded_tier_sat = [
+        // 2. Day records: tier sat, wealth, satisfaction units.
+        let tier_sat_boosted = [
             self.tier_avg_satisfaction(0),
-            self.tier_satisfaction_with_boost(1, tier_boost[1]),
-            self.tier_satisfaction_with_boost(2, tier_boost[2]),
+            self.tier_sat_with_boost(1, tier_sat_unboost[1]),
+            self.tier_sat_with_boost(2, tier_sat_unboost[2]),
         ];
 
-        let basic = self.recorded_tier_sat[0];
-        let common = self.recorded_tier_sat[1];
-        let luxury = self.recorded_tier_sat[2].clamp(0.0, 1.0);
-        // Common ≤1 full effect; overflow above 1.0 at half weight (spiritual surplus).
-        let common_mood = Self::common_mood_weight(common);
+        self.records.tier_sat = tier_sat_boosted;
+        self.records.wealth_amv = self.property_wealth_amv(market_history);
+        self.records.satisfaction_units_total = self
+            .desires
+            .iter()
+            .flatten()
+            .map(|d| d.satisfaction)
+            .sum();
+
+        let wealth_amv = self.property_wealth_amv(market_history);
+        let count = self.demographics.count;
+        // Living pops always have count ≥ 1.0; destroyed pops are snapped to 0.0.
+        debug_assert!(
+            count == 0.0 || count >= 1.0,
+            "Household count must be 0 (destroyed) or ≥ 1.0 (living), got {count}"
+        );
+        let wealth_amv_per_household = if count >= 1.0 {
+            wealth_amv / count
+        } else {
+            0.0
+        };
+        let satisfaction_units_total = self
+            .desires
+            .iter()
+            .flatten()
+            .map(|d| d.satisfaction)
+            .sum();
+        let living_standard = Self::living_standard_score(tier_sat_boosted);
+        // Preserve multi-turn history across the day snapshot rewrite.
+        let mut records = PopRecords {
+            tier_sat: tier_sat_boosted,
+            wealth_amv,
+            wealth_amv_per_household,
+            satisfaction_units_total,
+            living_standard: 0.0,
+            sol_avg: 0.0,
+            trend: 0.0,
+            living_history: std::mem::take(&mut self.records.living_history),
+        };
+        records.record_living_standard(living_standard);
+        self.records = records;
+
+        let basic = self.records.tier_sat[0];
+        let common = self.records.tier_sat[1];
+        let luxury = self.records.tier_sat[2].clamp(0.0, 1.0);
+        // Common ≤1 full effect; overflow above 1.0 at half weight (common sat surplus).
+        let common_mood = Self::common_sat_mood_weight(common);
 
         // 3. Baseline mood from needs (draft coefficients — tune with playtests).
         let mut mods: Vec<SentimentMod> = vec![
@@ -907,6 +967,8 @@ impl Pop {
                 delta: 0.02 * luxury,
             },
         ];
+        // Trend: falling standards sting more than rising ones comfort.
+        mods.extend(Self::living_trend_sentiment_mods(self.records.trend));
 
         // 4. Desire sentiment effects (skip growth, bonus goods, satisfaction — done).
         for tier in &self.desires {
@@ -935,11 +997,19 @@ impl Pop {
             }
         }
 
-        // 5. Remaining stored: sentiment in; growth + bonus goods kept.
+        // 5. Remaining stored: sentiment in; bonus goods kept.
+        // Growth arms must already have been applied in `growth_phase`.
         let mut kept = Vec::with_capacity(self.stored_effects.len());
         for effect in self.stored_effects.drain(..) {
             match effect {
-                PopEffect::Birthrate(_) | PopEffect::Mortality(_) | PopEffect::BonusGood { .. } => {
+                PopEffect::Birthrate(_) | PopEffect::Mortality(_) => {
+                    debug_assert!(
+                        false,
+                        "stored Birthrate/Mortality must be applied in growth_phase before process_satisfaction"
+                    );
+                    // Drop in release if growth was skipped — do not re-queue for later phases.
+                }
+                PopEffect::BonusGood { .. } => {
                     kept.push(effect);
                 }
                 PopEffect::Satisfaction { .. } => {
@@ -963,20 +1033,20 @@ impl Pop {
         debug_assert!(self.sentiment.is_valid());
     }
 
-    /// Effective average fill ratio for a non-basic tier after a satisfaction boost,
+    /// Effective **tier sat** for a non-basic tier after a satisfaction boost,
     /// without mutating individual desires.
     ///
     /// ```text
     /// ( Σ (satisfaction / amount) + boost ) / desire_count
     /// ```
     ///
-    /// `boost` is **ratio-mass** (same units as a sum of `tiers_satisfied` pieces):
+    /// `boost` is satisfaction-boost mass (same units as a sum of desire-sat pieces):
     /// desire effects contribute via sat-scaled rates; stored effects contribute an
     /// already-scaled amount (e.g. process output / pop).
     ///
-    /// No upper clamp (common may exceed 1.0 for spiritual surplus). Floor at 0.
+    /// No upper clamp (common may exceed 1.0 for common sat surplus). Floor at 0.
     /// Empty tier: `1.0` (no unmet needs), boost ignored.
-    fn tier_satisfaction_with_boost(&self, tier: usize, boost: f64) -> f64 {
+    fn tier_sat_with_boost(&self, tier: usize, boost: f64) -> f64 {
         debug_assert!(
             tier == 1 || tier == 2,
             "Satisfaction boosts only apply to common (1) or luxury (2), got {tier}"
@@ -987,25 +1057,81 @@ impl Pop {
             return 1.0;
         }
         let n = desires.len() as f64;
-        let sum_ratios: f64 = desires
+        let sum_desire_sat: f64 = desires
             .iter()
             .map(|d| {
                 debug_assert!(d.amount > 0.0, "Desire amount must be positive.");
                 d.satisfaction / d.amount
             })
             .sum();
-        ((sum_ratios + boost) / n).max(0.0)
+        ((sum_desire_sat + boost) / n).max(0.0)
     }
 
-    /// Map common tier ratio to mood weight: full effect on `[0, 1]`, half effect
-    /// on any overflow above 1.0.
-    fn common_mood_weight(common: f64) -> f64 {
-        let c = common.max(0.0);
+    /// Map common tier sat to sentiment weight: full effect on `[0, 1]`, half effect
+    /// on any overflow above 1.0 (common sat surplus).
+    fn common_sat_mood_weight(common_sat: f64) -> f64 {
+        let c = common_sat.max(0.0);
         if c <= 1.0 {
             c
         } else {
             1.0 + 0.5 * (c - 1.0)
         }
+    }
+
+    /// Composite living-standard score from tier sat (0..~1.25-ish with defaults).
+    fn living_standard_score(tier_sat: [f64; 3]) -> f64 {
+        let basic = tier_sat[0].clamp(0.0, 1.0);
+        let common = Self::common_sat_mood_weight(tier_sat[1]);
+        let luxury = tier_sat[2].clamp(0.0, 1.0);
+        living_standard::score(basic, common, luxury)
+    }
+
+    /// Sentiment shifts from living-standard trend. Declines use a higher gain than rises.
+    /// Small |trend| near zero is ignored (history deadband already damps noise).
+    fn living_trend_sentiment_mods(trend: f64) -> Vec<SentimentMod> {
+        let deadband = living_standard::SENTIMENT_TREND_DEADBAND;
+        let rise_gain = living_standard::SENTIMENT_RISE_GAIN;
+        let fall_gain = living_standard::SENTIMENT_FALL_GAIN;
+        let mut mods = Vec::new();
+        if trend > deadband {
+            let t = trend;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta: rise_gain * t,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta: rise_gain * 0.5 * t,
+            });
+        } else if trend < -deadband {
+            let t = -trend;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta: fall_gain * t,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta: fall_gain * 0.6 * t,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Contentment,
+                delta: -fall_gain * 0.4 * t,
+            });
+        }
+        mods
+    }
+
+    /// AMV of on-hand property: `Σ quantity × price`.
+    /// Missing prices default to `1.0` (same convention as order costing).
+    pub fn property_wealth_amv(&self, market_history: &MarketHistory) -> f64 {
+        let mut total = 0.0;
+        for (good_id, row) in &self.property {
+            debug_assert!(row.quantity.is_finite(), "Property quantity must be finite.");
+            let price = market_history.prices.get(good_id).copied().unwrap_or(1.0);
+            debug_assert!(price.is_finite(), "Market price must be finite.");
+            total += row.quantity * price;
+        }
+        total
     }
 
     /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
@@ -1142,197 +1268,20 @@ impl Pop {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct DemoRow {
-    /// The Number of households, floating point as growth storage.
-    /// 
-    /// Living pops should stay ≥ 1.0. `0.0` means the household has died off and
-    /// is pending cleanup.
-    pub count: f64,
-    /// The definition of this row's household. This is the sum of the baseline plus
-    /// all other demographic effects.
-    pub household: HouseholdDef,
-    /// The species ID, currently should always be 0, which is default human.
-    pub species: usize,
-    /// The culture ID, 0 means none.
-    pub culture: usize,
-    /// The class ID, 0 means none.
-    pub class: usize,
-    /// The Religious ID, 0 means none.
-    pub religion: usize,
-}
-
-impl DemoRow {
-    /// # Total Population
-    /// 
-    /// Gets the total population of a demographic row, equal to the size
-    /// of a household times it's count.
-    pub fn total_population(&self) -> f64 {
-        self.count * self.household.size()
-    }
-
-    pub fn adult_pop(&self) -> f64 {
-        self.count * self.household.adults
-    }
-
-    pub fn elder_pop(&self) -> f64 {
-        self.count * self.household.elders
-    }
-
-    pub fn children_pop(&self) -> f64 {
-        self.count * self.household.children
-    }
-
-    pub fn labor(&self) -> f64 {
-        self.count * self.household.labor()
-    }
-}
-
-/// # Pop Property Row
-/// 
-/// A row of data attached to the property of a pop. This is used for fine tuned
-/// property management and consumption details.
-/// 
-/// This currently only contains the current quantity, the amount reserved for 
-/// consumption, and the target they want to reach.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PopPRow {
-    /// The total amount owned at the moment. Not necessarily how much is available.
-    pub quantity: f64,
-
-    /// The Desire Needs is a helper which helps define how much of the good a pop
-    /// needs or is targeting to satisfy it's needs. This should be equal to the amount
-    /// of goods needed to 
-    /// 
-    /// This should be equivalent to Reserved after shopping, and used + consumed after
-    /// consumption.
-    /// 
-    /// This get's updated after population changes to match growth/shrink, in 
-    /// population, and is used as a touchstone for other targets and values.
-    /// 
-    /// This does not alter mood based on differences.
-    /// 
-    /// Note: This may be removed at a later date if a better method to track this value
-    /// is found.
-    pub desire_needs: f64,
-    
-    /// The Shopping Target amount the pop desires to have after all shopping is 
-    /// complete. Simplifies purchases into bulk purchases.
-    /// 
-    /// Should target roughly 1.0-1.2x of desire needs at minimum. When a pop has elevated
-    /// savings, fear, or similar 'hoarding' moods activated, this target is pushed up.
-    /// 
-    /// Before Decay, Target should be roughly equal to reserved + saved.
-    /// 
-    /// Goods which cannot be bought or sold should always have a target of 0.0.
-    pub shop_target: f64,
-    
-    /// The amount that we wish to preserve between days. This is where 'hoarding' is 
-    /// recorded and tracked over time for specific goods.
-    /// 
-    /// This is not reset each day, instead just updating to match population changes.
-    /// Savings always comes after consumption.
-    /// 
-    /// Missing a savings target reduces a pop's mood.
-    pub saved: f64,
-
-    /// The amount that has already been earmarked for the pop's use today. Used 
-    /// to 'prepare' for consumption. Does not remove from quantity.
-    /// 
-    /// This is reset at the start of the day.
-    pub reserved: f64,
-
-    /// How many of this good was consumed for today's desires.
-    /// All goods here are decayed at the end of the day at full percent.
-    pub consumed: f64,
-
-    /// Goods that were used for use desires, but not consumed, are stored here
-    /// until the end of the day. At day's end, goods here decay normally, and are
-    /// returned to total quantity.
-    pub used: f64,
-
-    // TODO: consider adding history recording of consumed and used goods, as well as
-    // success records of reaching the shop_target and saved target (0.0-1.0).
-    // These would help with budgeting and forward looking planning for a pop, but may be too heavy.
-}
-
-impl PopPRow {
-    pub fn new(quantity: f64) -> Self {
-        Self {
-            quantity,
-            ..default()
-        }
-    }
-
-    /// Fluent target setter
-    pub fn with_target(mut self, target: f64) -> Self {
-        self.shop_target = target;
-        self
-    }
-
-    /// fruent reserved setter
-    pub fn with_reserve(mut self, reserve: f64) -> Self {
-        self.reserved = reserve;
-        self
-    }
-
-    /// Fluent saved setter
-    pub fn with_saved(mut self, saved: f64) -> Self {
-        self.saved = saved;
-        self
-    }
-
-    /// Fluent Consumed Setter
-    pub fn with_consumed(mut self, consumed: f64) -> Self {
-        self.consumed = consumed;
-        self
-    }
-
-    /// Fluent Used Setter
-    pub fn with_used(mut self, used: f64) -> Self {
-        self.used = used;
-        self
-    }
-
-    /// Fluent Desire Needs Setter
-    pub fn with_desire_need(mut self, desire_needs: f64) -> Self {
-        self.desire_needs = desire_needs;
-        self
-    }
-
-    /// # Exchange
-    /// 
-    /// `quantity` - `target`.
-    /// 
-    /// This gives the difference between the target to reach and the amount a pop owns.
-    /// 
-    /// Negative values are how much they will want to buy. Positive values are how many
-    /// they are willing to offer or sell.
-    pub fn exchange(&self) -> f64 {
-        self.quantity - self.shop_target
-    }
-
-    /// # Available
-    ///
-    /// `quantity` - `reserved`.
-    ///
-    /// Stock not yet claimed by a desire earmark. Used by initial reservation;
-    /// savings is ignored here so desires can claim into `saved`.
-    /// Should always be non-negative after reservation settles.
-    pub fn available(&self) -> f64 {
-        self.quantity - self.reserved
-    }
-}
-
-/// # Pop Effect
-/// 
 #[cfg(test)]
 mod pop {
     use std::collections::{HashMap, HashSet};
 
-    use crate::game::{desire::{
-            Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType
-        }, factuals::Factuals, good::Good, household::HouseholdDef, market::MarketHistory, pop::{DemoRow, Pop, PopEffect, PopPRow}, scalingfactor::ScalingFactor, sentiment::Sentiment};
+    use crate::game::{
+        desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
+        factuals::Factuals,
+        good::Good,
+        household::HouseholdDef,
+        market::MarketHistory,
+        pop::{DemoRow, LivingStandardHistory, Pop, PopEffect, PopPRow, PopRecords},
+        scalingfactor::ScalingFactor,
+        sentiment::Sentiment,
+    };
 
     static CONSUMED_GOOD: usize = 100;
     static USED_GOOD: usize = 101;
@@ -1357,7 +1306,7 @@ mod pop {
             previous_growth: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
-            recorded_tier_sat: [1.0, 1.0, 1.0],
+            records: PopRecords::default(),
         }
     }
 
@@ -2381,11 +2330,12 @@ mod pop {
             ));
             // satisfaction stays 0 → basic avg 0.
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
-            assert_eq!(pop.recorded_tier_sat[0], 0.0);
+            assert_eq!(pop.records.tier_sat[0], 0.0);
             // Empty common/luxury count as fully satisfied averages.
-            assert_eq!(pop.recorded_tier_sat[1], 1.0);
+            assert_eq!(pop.records.tier_sat[1], 1.0);
             assert!(pop.sentiment.anger() > 0.0);
             assert!(pop.sentiment.fear() > 0.0);
             assert!(pop.sentiment.is_valid());
@@ -2409,7 +2359,8 @@ mod pop {
             desire.effect.push(DesireEffect::BonusGood(300, 99.0, true));
             pop.desires[0].push(desire);
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
             // Bonus +0.20 hope * sat 1.0, plus small baseline hope from luxury empty=1.
             assert!(pop.sentiment.hope() > 0.15);
@@ -2418,7 +2369,7 @@ mod pop {
         }
 
         #[test]
-        fn drains_mood_stored_effects_keeps_growth_and_bonus() {
+        fn drains_mood_stored_effects_keeps_bonus_goods() {
             let mut pop = make_pop();
             pop.stored_effects.push(PopEffect::Satisfaction {
                 tier: 1,
@@ -2428,22 +2379,18 @@ mod pop {
                 kind: SentimentKind::Anger,
                 delta: 0.05,
             });
-            pop.stored_effects.push(PopEffect::Birthrate(0.01));
             pop.stored_effects.push(PopEffect::BonusGood {
                 good: 300,
                 amount: 2.0,
             });
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
             assert!(pop.sentiment.anger() > 0.0);
-            assert_eq!(pop.stored_effects.len(), 2);
+            assert_eq!(pop.stored_effects.len(), 1);
             assert!(matches!(
                 pop.stored_effects[0],
-                PopEffect::Birthrate(0.01)
-            ));
-            assert!(matches!(
-                pop.stored_effects[1],
                 PopEffect::BonusGood {
                     good: 300,
                     amount: 2.0
@@ -2472,13 +2419,15 @@ mod pop {
             pop.desires[1].push(d1);
             pop.desires[1].push(donor);
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
             // Per-desire values unchanged.
             assert_eq!(pop.desires[1][0].satisfaction, 8.0);
             assert_eq!(pop.desires[1][1].satisfaction, 10.0);
             // (0.8 + 1.0 + 0.5) / 2 = 1.15 — no common cap.
-            assert!((pop.recorded_tier_sat[1] - 1.15).abs() < 1e-9);
+            assert!((pop.records.tier_sat[1] - 1.15).abs() < 1e-9);
+            assert!((pop.records.satisfaction_units_total - 18.0).abs() < 1e-9);
         }
 
         #[test]
@@ -2493,11 +2442,12 @@ mod pop {
             lux.effect.push(DesireEffect::Satisfaction(0.5, true));
             pop.desires[2].push(lux);
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
             // Per-desire unchanged; recorded = (1.0 + 0.5) / 1 = 1.5.
             assert_eq!(pop.desires[2][0].satisfaction, 10.0);
-            assert!((pop.recorded_tier_sat[2] - 1.5).abs() < 1e-9);
+            assert!((pop.records.tier_sat[2] - 1.5).abs() < 1e-9);
         }
 
         #[test]
@@ -2515,11 +2465,12 @@ mod pop {
                 amount: 0.3, // ratio-mass
             });
 
-            pop.process_satisfaction();
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
 
             // Desire unchanged; (0.5 + 0.3) / 1 = 0.8.
             assert_eq!(pop.desires[1][0].satisfaction, 5.0);
-            assert!((pop.recorded_tier_sat[1] - 0.8).abs() < 1e-9);
+            assert!((pop.records.tier_sat[1] - 0.8).abs() < 1e-9);
             assert!(pop
                 .stored_effects
                 .iter()
@@ -2527,11 +2478,84 @@ mod pop {
         }
 
         #[test]
+        fn records_property_wealth_amv() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(101, PopPRow::new(5.0));
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            history.prices.insert(101, 4.0);
+            // 10*2 + 5*4 = 40; per household count 10 → 4.0
+            pop.process_satisfaction(&history);
+            assert!((pop.records.wealth_amv - 40.0).abs() < 1e-9);
+            assert!((pop.records.wealth_amv_per_household - 4.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn records_satisfaction_units_total() {
+            let mut pop = make_pop();
+            let mut d = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            d.satisfaction = 7.0;
+            pop.desires[0].push(d);
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
+            assert!((pop.records.satisfaction_units_total - 7.0).abs() < 1e-9);
+        }
+
+        #[test]
         fn common_oversat_uses_half_weight_above_one() {
-            // common_mood_weight(1.2) = 1.0 + 0.5*0.2 = 1.1
-            assert!((Pop::common_mood_weight(0.5) - 0.5).abs() < 1e-9);
-            assert!((Pop::common_mood_weight(1.0) - 1.0).abs() < 1e-9);
-            assert!((Pop::common_mood_weight(1.2) - 1.1).abs() < 1e-9);
+            // common_sat_mood_weight(1.2) = 1.0 + 0.5*0.2 = 1.1
+            assert!((Pop::common_sat_mood_weight(0.5) - 0.5).abs() < 1e-9);
+            assert!((Pop::common_sat_mood_weight(1.0) - 1.0).abs() < 1e-9);
+            assert!((Pop::common_sat_mood_weight(1.2) - 1.1).abs() < 1e-9);
+        }
+
+        #[test]
+        fn living_history_tracks_avg_and_damps_small_spikes() {
+            let mut h = LivingStandardHistory::new();
+            h.push(1.0);
+            assert_eq!(h.len(), 1);
+            assert!((h.rolling_avg - 1.0).abs() < 1e-9);
+            assert!((h.trend - 0.0).abs() < 1e-9);
+
+            // Tiny noise under deadband → trend stays near 0.
+            h.push(1.01);
+            assert!(h.trend.abs() < 0.05);
+
+            // Sustained drop → negative trend.
+            for _ in 0..5 {
+                h.push(0.5);
+            }
+            assert!(h.trend < -0.1);
+            assert!(h.rolling_avg < 0.9);
+        }
+
+        #[test]
+        fn process_satisfaction_records_living_standard_and_trend() {
+            let mut pop = make_pop();
+            // Strong basic shortfall → low living standard.
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            let history = make_default_market_history();
+            pop.process_satisfaction(&history);
+            let first = pop.records.living_standard;
+            assert!(first < 0.8);
+            assert_eq!(pop.records.living_history.len(), 1);
+
+            // Improve: fully meet basic next pass.
+            pop.desires[0][0].satisfaction = 10.0;
+            pop.process_satisfaction(&history);
+            assert!(pop.records.living_standard > first);
+            assert_eq!(pop.records.living_history.len(), 2);
+            // May still be early for large trend, but avg should rise.
+            assert!(pop.records.sol_avg > first * 0.9);
         }
     }
 

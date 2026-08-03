@@ -28,12 +28,7 @@ When reviewing commits, a branch, a PR, or local changes:
 ### B3. Mood/satisfaction `PopEffect`s still never applied in a real turn
 - **File:** `src/playstate.rs` (no `process_satisfaction` call); `src/game/pop.rs` (`process_satisfaction`, `decay_goods`)
 - **What:** Growth now applies/removes stored `Birthrate`/`Mortality` (partial B3 fix). `process_satisfaction` applies Satisfaction + Sentiment **when called**, but the day pipeline never calls it. Those effects sit until EOD decay, which expects only `BonusGood` — debug assert / silent drop in release. Migration/record-keeping never see updated `sentiment` / `recorded_tier_sat`.
-- **Fix idea:** Wire a mood/satisfaction phase (after consume; order vs growth must match docs — see B5) with `par_iter_mut` `pop.process_satisfaction()`. Keep this open until wired or explicitly deferred.
-
-### B5. `process_satisfaction` docs disagree on phase order vs growth
-- **File:** `src/game/pop.rs` (~818–834 vs step 5 ~938); `docs/proposals/satisfaction-ratio-and-boosts.md`
-- **What:** Header says the pass runs **after consume and growth**, but step 5 **keeps** `Birthrate`/`Mortality` “for later phases.” Both cannot be true; wrong wiring reintroduces B3-style leaks.
-- **Fix idea:** Pick one order. Post-growth: assert no growth arms remain. Pre-growth: keep them and update the header. Match playstate when B3 is fixed.
+- **Fix idea:** Wire a mood/satisfaction phase **after growth** (docs settled: consume → growth → `process_satisfaction`) with `par_iter_mut` `pop.process_satisfaction()`. Keep open until wired or explicitly deferred.
 
 ### B6. Firm/institution `decay_goods` still `todo!()` under live fan-out
 - **File:** `src/game/firm.rs` (~90–93), `src/game/institution.rs` (~167–170), `src/game/actors.rs`, `src/playstate.rs` `phase_good_decay`
@@ -171,6 +166,9 @@ When reviewing commits, a branch, a PR, or local changes:
 ### R7. B3 partial — stored growth arms
 - **Resolution:** `growth_phase` applies and removes stored `Birthrate`/`Mortality` (test present). Residual open as B3 (mood path + turn wire-up).
 
+### R8. B5 — process_satisfaction phase order vs growth
+- **Resolution:** Docs/proposal/vocabulary place `process_satisfaction` **after consume and growth**. Step 5 `debug_assert`s if stored Birthrate/Mortality remain (must be applied in `growth_phase`); only BonusGood is re-kept for decay. Release builds drop stray growth arms rather than re-queue them.
+
 ---
 
 ## Earlier review leftovers (pre-`1c06bb3`, may still apply)
@@ -188,7 +186,7 @@ From the prior `update_desires` review. Re-check when next touching that path.
 
 ## Suggested priority when picking these up
 
-1. Wire `process_satisfaction` into the turn loop (B3) and fix phase-order docs (B5).
+1. Wire `process_satisfaction` into the turn loop after growth (B3).
 2. No-op firm/institution `decay_goods` stubs (B6) so EOD does not panic.
 3. Wire demographic turn phase (#4) — unblocks D1 / institution passives.
 4. Household size conservation (#5) and `DemographicEffect` → modifiers (#1).

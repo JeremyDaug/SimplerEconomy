@@ -123,8 +123,7 @@ Suggested future pair (not required yet):
 
 ## Day pipeline placement
 
-In the current draft, boosts + mood run in **`process_satisfaction`** (after consume;
-typically after growth). Growth still uses raw desire satisfaction for its own
+In the current draft, boosts + mood run in **`process_satisfaction`** (after consume and growth). Growth still uses raw desire satisfaction for its own
 terms unless later re-ordered.
 
 Stored effect ownership:

@@ -23,9 +23,9 @@ secondary to the Obsidian design vault for intent and direction.
 **Canonical naming for design talk and comments:**
 [`docs/design-vocabulary.md`](./docs/design-vocabulary.md).
 
-Prefer those terms over chat shorthand (e.g. say **tier fill** / **desire fill**,
-not bare “ratio”). When language conflicts, the vocabulary file wins on **names**;
-the vault and proposals still own long-form intent.
+Prefer those terms over chat shorthand (e.g. say **tier sat** / **desire sat**,
+not bare “ratio” or “tier fill”). When language conflicts, the vocabulary file
+wins on **names**; the vault and proposals still own long-form intent.
 
 ## Design documents (external Obsidian vault)
 
@@ -75,8 +75,9 @@ repo sources.
 | Area | Location |
 |------|----------|
 | Game modules | `src/game/` (see `src/game.rs` for the module list) |
+| Gameplay config | `config.rs` — centralized tunables (`config::living_standard`, …) |
 | Desire hierarchy | `desire.rs` — PlatonicDesire → DemoDesire → Desire |
-| Pops / demographics | `pop.rs` — `Pop`, `DemoRow`, property rows |
+| Pops / demographics | `pop.rs` — `Pop`, `DemoRow`; property/records in `pop_property.rs` |
 | World definitions | `factuals.rs` — goods, processes, species, cultures, religions |
 | Scaling | `scalingfactor.rs` + `Pop::apply_scaling_factor` |
 | App / play shell | `src/playstate.rs`, `src/main.rs` |

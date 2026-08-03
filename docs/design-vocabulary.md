@@ -59,8 +59,8 @@ before luxury.
 
 ## Satisfaction and fill
 
-### Desire fill (single desire)
-**Preferred:** desire fill, fill  
+### Desire Satisfaction (single desire)
+**Preferred:** desire Satisfaction, Desire Sat.  
 **Avoid:** ratio (too vague), satisfaction rate (ambiguous)
 
 **Meaning:** How complete **one** desire is:  
@@ -69,71 +69,78 @@ Same as number of full **satisfaction levels** met for that desire when not
 oversaturated.  
 **Code:** `Desire::tiers_satisfied()` (name is historical; means fill levels)
 
-### Tier fill
-**Preferred:** tier fill, common fill, basic fill, luxury fill  
-**Avoid:** ratio, tier ratio, average satisfaction (say **tier fill** or **units**)
+### Tier Satisfaction
+**Preferred:** tier sat, common sat, basic sat, luxury sat  
+**Avoid:** ratio, tier ratio, tier fill, average satisfaction (say **tier sat**)
 
-**Meaning:** Average desire fill across a tier, optionally after boosts:
+**Meaning:** Average desire sat across a tier, optionally after boosts:
 
 ```text
-tier_fill = ( Σ (satisfaction / amount) + boost ) / desire_count
+tier_sat = ( Σ (satisfaction / amount) + boost ) / desire_count
 ```
 
-- Empty non-basic tier: treat as fully filled (`1.0`) when evaluating “no unmet needs.”
+- Empty non-basic tier: treat as fully satisfied (`1.0`) when evaluating “no unmet needs.”
 - **Basic:** no satisfaction boosts.
-- **Common / luxury:** may exceed `1.0` after boosts (no hard cap on recorded fill).
+- **Common / luxury:** may exceed `1.0` after boosts (no hard cap on recorded tier sat).
 
-**Code:** `Pop::recorded_tier_sat[tier]` after `process_satisfaction` (boosted for
-common/luxury); raw averages via `tier_avg_satisfaction` / similar helpers.
+**Code:** `Pop::records.tier_sat[tier]` after `process_satisfaction` (boosted for
+common/luxury); helpers `tier_avg_satisfaction`, `tier_sat_with_boost`.
+Wealth: `Pop::records.wealth_amv` / `wealth_amv_per_household` (living count always ≥ 1.0).
+Satisfaction units total: `Pop::records.satisfaction_units_total`.
+
+### Standard of Living
+**Preferred:** Standard of Living, SOL, Wealth
+
+**Meaning:** The abstract quality of life for a pop. High standards are preferreble to lower standards, and raising or falling standards results in larger sentimental shifts than staying still. Roughly measured by a total Tiers of Satisfaciton satisfied (Basic + Common + Luxury) and overall wealth (Wealth owned + Goods Consumed/Used in Satisfaction).
 
 ### Satisfaction units
-**Preferred:** satisfaction units, fulfilled units  
+**Preferred:** satisfaction units, sat units, fulfilled units  
 **Avoid:** just “satisfaction” when units vs fill is unclear
 
 **Meaning:** Absolute amount of fulfillment toward a desire (`Desire.satisfaction`),
-in the same units as `amount` (goods-equivalent, not a 0–1 fraction).  
-**Not** the same as tier fill.
+in the same units as `amount` (goods times efficiency, not a 0–1 fraction).  
+**Not** the same as tier satisfaction.
 
-### Satisfaction boost (fill boost)
-**Preferred:** satisfaction boost, fill boost  
+### Satisfaction boost
+**Preferred:** satisfaction boost, Sat Boost, Bonus Satisfaction
 **Avoid:** ratio-mass (internal jargon unless defining), extra satisfaction (vague)
 
-**Meaning:** Extra **fill** added into the tier-fill formula (like an extra
-fulfilled desire, or a fraction of one)—**not** rewriting every desire’s
+**Meaning:** Extra **Satisfaction** added into the tier-satisfaction formula (like an extra
+fulfilled desire, or a fraction of one)—**not** added to every desire’s
 `satisfaction` field.
 
 | Source | Preferred phrasing | Notes |
 |--------|-------------------|--------|
-| On a desire | **desire fill boost** | Scales with that desire’s fill (`signed_strength`) |
-| Same-day store | **stored fill boost** | Already scaled (e.g. process output ÷ pop); applied by tier |
+| On a desire | **desire satisfaction boost** | Scales with that desire’s satisfaction (`signed_strength`) |
+| Same-day store | **stored satisfaction boost** | Already scaled (e.g. process output ÷ pop); applied by tier |
 
 **Code:** `DesireEffect::Satisfaction`, `PopEffect::Satisfaction { tier, amount }`;
-combined in `process_satisfaction` via `tier_satisfaction_with_boost`.
+combined in `process_satisfaction` via `tier_sat_with_boost`.
 
-### Common fill surplus
-**Preferred:** common fill surplus, common oversat (ok in code talk)  
+### Common Satisfaction surplus
+**Preferred:** common Satisfaction surplus, common oversaturation
 **Avoid:** spiritual ratio (unless defining culture/religion content)
 
-**Meaning:** Common **tier fill** above `1.0`—extra completeness beyond a full
+**Meaning:** Common **tier sat** above `1.0`—extra completeness beyond a full
 ordinary common basket (meaning, ritual, community weight, etc.).
 
-**Mood (draft):** full weight on fill in `[0, 1]`; **half weight** on overflow
-above `1.0` (`common_mood_weight`).
+**Sentiment (draft):** full weight on sat in `[0, 1]`; **half weight** on overflow
+above `1.0` (`common_sat_mood_weight`).
 
 **Not:** luxury oversat (open-ended wealth/status ladder).
 
 ### Luxury oversat
-**Preferred:** luxury oversat, luxury fill above 1  
+**Preferred:** luxury oversaturation, luxury oversat
 
-**Meaning:** Luxury tier fill beyond one full pass; intentional infinite ladder.  
-**Code:** luxury consume loops; unclamped luxury tier fill in recording.
+**Meaning:** Luxury tier sat beyond one full pass; intentional infinite ladder.  
+**Code:** luxury consume loops; unclamped luxury tier sat in recording.
 
 ---
 
 ## Sentiment (population feeling)
 
 ### Sentiment
-**Preferred:** sentiment  
+**Preferred:** sentiment
 **Avoid:** mood when meaning the **data structure** (mood is fine in loose prose)
 
 **Meaning:** Partition of a pop’s political/social feeling; shares sum to ~1.  
@@ -141,6 +148,7 @@ above `1.0` (`common_mood_weight`).
 
 ### Sentiment axes
 **Preferred:** use axis names: **happiness**, **contentment**, **anger**, **fear**, **hope**
+For a non-specific axis Mood is preferred and distinguishes from the combined sentiment.
 
 **Meaning:** Shares of the pop in each state; moving one axis takes mass from others
 unless a transfer names both ends.
@@ -155,8 +163,8 @@ unless a transfer names both ends.
 
 **Code:** `SentimentKind`, accessors on `Sentiment`
 
-### Sentiment mod
-**Preferred:** sentiment mod, flat share mod, relative part mod  
+### Sentiment Shift
+**Preferred:** sentiment Shift, flat share Shift, relative Shift  
 
 **Meaning:**  
 - **Flat share:** absolute fraction of the whole pop into/out of an axis (donors unspecified).  
@@ -169,7 +177,7 @@ unless a transfer names both ends.
 ## Property and day flow
 
 ### Reserve / reserved
-**Preferred:** reserve, reserved, earmark  
+**Preferred:** reserve, reserved
 
 **Meaning:** Goods set aside for today’s desires; does not remove from `quantity`.  
 Savings does not fence reserves or consumption.  
@@ -178,27 +186,30 @@ Savings does not fence reserves or consumption.
 ### Consume / consumption
 **Preferred:** consume, consumption  
 
-**Meaning:** Apply reserved/on-hand goods to raise desire **satisfaction units**
-(and move stock to consumed/used).  
+**Meaning:** Goods that have been used to satisfy desires and have been moved into the consumed category.
 **Code:** `Pop::consume`, `satisfy_one_desire`
+
+### Used
+**Preferred:** Used
+
+**Meaning:** Goods that have been used 
 
 ### Process satisfaction
 **Preferred:** process satisfaction  
 
-**Meaning:** Late-day pass: apply fill boosts → record tier fill → update sentiment
-from needs and effects. Not growth, not bonus goods, not goods decay.  
+**Meaning:** The function which processes satisfaction for it's wider effects to the pop, focusing on Sentiment shifts as opposed to Growth or 
 **Code:** `Pop::process_satisfaction`
 
 ### Stored effects
-**Preferred:** stored effects, same-day effects  
+**Preferred:** stored effects
 
-**Meaning:** Ephemeral pop effects applied later the same day.  
+**Meaning:** Effects a pop has gained throughout the day and which are applied by the end of the day.
 **Code:** `Pop.stored_effects`, `PopEffect`
 
 | Kind | Phase that should clear it |
 |------|----------------------------|
 | Birthrate / Mortality | `growth_phase` |
-| Satisfaction (fill boost), Sentiment*, soft Satisfaction mood arms | `process_satisfaction` |
+| Satisfaction (sat boost), Sentiment* | `process_satisfaction` |
 | BonusGood | `decay_goods` |
 
 ---
@@ -209,18 +220,23 @@ from needs and effects. Not growth, not bonus goods, not goods decay.
 **Preferred:** factuals  
 
 **Meaning:** Mostly static world definitions (goods, processes, species, cultures,
-religions).  
+religions). The "Facts" of the world the game is taking place in.
 **Not:** current prices, stocks, actors.  
 **Code:** `Factuals`
 
 ### Game state
-**Preferred:** game state, live state  
+**Preferred:** game state, play state
+**Meaning:** The Map, markets, actors, prices, property, current pops of the game. Expected to change constantly.
 
-**Meaning:** Map, markets, actors, prices, property, current pops.  
-**Opposite of:** factuals.
+### Actor
+**Preferred:** actor  
+
+**Meaning:** Something that can act economically/politically (pop, firm, institution,
+state).  
+**Code:** `Actor`, `Actors`
 
 ### Pop
-**Preferred:** pop  
+**Preferred:** pop, Population
 
 **Meaning:** Cohort of households sharing job/demographics in a market; unit of
 desire, labor, and sentiment.  
@@ -233,23 +249,22 @@ desire, labor, and sentiment.
 passive culture/research).  
 **Code:** `HouseholdDef`
 
----
-
-## Institutions and actors
-
 ### Institution
 **Preferred:** institution  
 
-**Meaning:** Semi-autonomous org (state branch, religion, guild, …); not the player
-shell and not a demographic.  
+**Meaning:** Semi-autonomous org (state branch, religion, guild, …); modified by owning player and events.
 **Code:** `Institution` — see `docs/proposals/institution-draft.md`
 
-### Actor
-**Preferred:** actor  
+### Firm
+**Preferred:** Firm, Business, Company, Corporation, Corp
 
-**Meaning:** Something that can act economically/politically (pop, firm, institution,
-state).  
-**Code:** `Actor`, `Actors`
+**Meaning:** A semi-autonomous org which handles and focuses on productive economic activity.
+**Code:**  `Firm`
+
+### State
+**Preferred:** State, Player
+
+**Meaning:** A state is the required aspects of a player, existing even when operated by a human player. State and Player should be treated as mostly synonymous. A State is the mechanisms of control and management, while the Player is the controller and decision making of the state.
 
 ---
 
@@ -257,12 +272,11 @@ state).
 
 | Avoid in design talk | Prefer instead |
 |----------------------|----------------|
-| ratio (alone) | **desire fill**, **tier fill** |
-| satisfaction rate | **desire fill** or **satisfaction units** (pick one) |
+| ratio (alone) | **desire sat**, **tier sat** |
+| tier fill / fill (for completeness) | **tier sat** / **desire sat** |
+| satisfaction rate | **desire sat** or **satisfaction units** (pick one) |
 | mood (for the struct) | **sentiment** |
 | level (for desire tier) | **tier** (basic/common/luxury) |
-| need (when tier/fill matters) | **desire**, **basic/common/luxury desires** |
-| spiritual ratio | **common fill surplus** (or name the content source) |
 
 ---
 
