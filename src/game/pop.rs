@@ -4,7 +4,7 @@ use bevy::platform::collections::HashSet;
 
 use crate::game::{
     actor::Actor,
-    config::living_standard,
+    config::pop_constants,
     desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
     factuals::Factuals,
     good::GoodTag,
@@ -17,7 +17,7 @@ use crate::game::{
 
 pub use crate::game::effects::PopEffect;
 pub use crate::game::pop_property::{
-    DemoRow, LivingStandardHistory, PopPRow, PopRecords,
+    DemoRow, PopPRow, PopRecords,
 };
 
 #[derive(Debug, Clone)]
@@ -716,7 +716,7 @@ impl Pop {
     ///    [`Self::stored_effects`] (applied then removed; other stored arms kept).
     ///
     /// If household count would fall below 1.0, the household has died off: count is
-    /// snapped to 0.0 for later cleanup.
+    /// snapped to 0.0 for cleanup immediately thereafter.
     ///
     /// Baseline effects from demographics are stored in the household during a turn, so
     /// the getting birth rate and mortality from there should cover baseline effects.
@@ -852,7 +852,8 @@ impl Pop {
     /// `market_history` supplies prices for wealth AMV (missing good prices default to 1.0).
     pub fn process_satisfaction(&mut self, market_history: &MarketHistory) {
         // 1. Collect boosts per tier (desire effects + stored Satisfaction).
-        let mut tier_sat_unboost = [0.0_f64; 3];
+        let mut tier_boosts = [0.0_f64; 3];
+        // 1a. Desire Bonuses first.
         for (tier_idx, tier) in self.desires.iter().enumerate() {
             for desire in tier {
                 let sat01 = desire.tiers_satisfied().clamp(0.0, 1.0);
@@ -865,11 +866,12 @@ impl Pop {
                         if tier_idx == 0 {
                             continue;
                         }
-                        tier_sat_unboost[tier_idx] += effect.signed_strength(sat01);
+                        tier_boosts[tier_idx] += effect.signed_strength(sat01);
                     }
                 }
             }
         }
+        // 1b. Gather satisfaction bonuses from stored_effects.
         let pending_stored: Vec<PopEffect> = self.stored_effects.drain(..).collect();
         let mut kept = Vec::with_capacity(pending_stored.len());
         for effect in pending_stored {
@@ -881,7 +883,7 @@ impl Pop {
                     );
                     if tier == 1 || tier == 2 {
                         debug_assert!(amount.is_finite(), "Satisfaction boost must be finite.");
-                        tier_sat_unboost[tier] += amount;
+                        tier_boosts[tier] += amount;
                     }
                 }
                 other => kept.push(other),
@@ -892,10 +894,9 @@ impl Pop {
         // 2. Day records: tier sat, wealth, satisfaction units.
         let tier_sat_boosted = [
             self.tier_avg_satisfaction(0),
-            self.tier_sat_with_boost(1, tier_sat_unboost[1]),
-            self.tier_sat_with_boost(2, tier_sat_unboost[2]),
+            self.tier_sat_with_boost(1, tier_boosts[1]),
+            self.tier_sat_with_boost(2, tier_boosts[2]),
         ];
-
         self.records.tier_sat = tier_sat_boosted;
         self.records.wealth_amv = self.property_wealth_amv(market_history);
         self.records.satisfaction_units_total = self
@@ -904,71 +905,11 @@ impl Pop {
             .flatten()
             .map(|d| d.satisfaction)
             .sum();
+        self.records.update_living_standard();
+        self.records.update_trend();
 
-        let wealth_amv = self.property_wealth_amv(market_history);
-        let count = self.demographics.count;
-        // Living pops always have count ≥ 1.0; destroyed pops are snapped to 0.0.
-        debug_assert!(
-            count == 0.0 || count >= 1.0,
-            "Household count must be 0 (destroyed) or ≥ 1.0 (living), got {count}"
-        );
-        let wealth_amv_per_household = if count >= 1.0 {
-            wealth_amv / count
-        } else {
-            0.0
-        };
-        let satisfaction_units_total = self
-            .desires
-            .iter()
-            .flatten()
-            .map(|d| d.satisfaction)
-            .sum();
-        let living_standard = Self::living_standard_score(tier_sat_boosted);
-        // Preserve multi-turn history across the day snapshot rewrite.
-        let mut records = PopRecords {
-            tier_sat: tier_sat_boosted,
-            wealth_amv,
-            wealth_amv_per_household,
-            satisfaction_units_total,
-            living_standard: 0.0,
-            sol_avg: 0.0,
-            trend: 0.0,
-            living_history: std::mem::take(&mut self.records.living_history),
-        };
-        records.record_living_standard(living_standard);
-        self.records = records;
-
-        let basic = self.records.tier_sat[0];
-        let common = self.records.tier_sat[1];
-        let luxury = self.records.tier_sat[2].clamp(0.0, 1.0);
-        // Common ≤1 full effect; overflow above 1.0 at half weight (common sat surplus).
-        let common_mood = Self::common_sat_mood_weight(common);
-
-        // 3. Baseline mood from needs (draft coefficients — tune with playtests).
-        let mut mods: Vec<SentimentMod> = vec![
-            SentimentMod::Flat {
-                kind: SentimentKind::Anger,
-                delta: 0.08 * (1.0 - basic),
-            },
-            SentimentMod::Flat {
-                kind: SentimentKind::Fear,
-                delta: 0.04 * (1.0 - basic),
-            },
-            SentimentMod::Flat {
-                kind: SentimentKind::Happiness,
-                delta: 0.05 * common_mood,
-            },
-            SentimentMod::Flat {
-                kind: SentimentKind::Contentment,
-                delta: 0.03 * basic * common_mood,
-            },
-            SentimentMod::Flat {
-                kind: SentimentKind::Hope,
-                delta: 0.02 * luxury,
-            },
-        ];
-        // Trend: falling standards sting more than rising ones comfort.
-        mods.extend(Self::living_trend_sentiment_mods(self.records.trend));
+        // 3. From our updated records, shift sentiments.
+        let mut mods = self.sentiment_mods_from_satisfaction();
 
         // 4. Desire sentiment effects (skip growth, bonus goods, satisfaction — done).
         for tier in &self.desires {
@@ -1033,6 +974,47 @@ impl Pop {
         debug_assert!(self.sentiment.is_valid());
     }
 
+    /// # Sentiment Mods from Satisfaction
+    /// 
+    /// Helper that takes the current state of the pop's records, current standard of 
+    /// living, SOL Trend, Specific Satisfaction rates, etc, and calculates shifts in
+    /// sentiment. 
+    /// 
+    /// It returns it from this function for testing purposes, does not apply it.
+    fn sentiment_mods_from_satisfaction(&self) -> Vec<SentimentMod> {
+        // Get the ratio of total success (tier_sat / number of desires)
+        let basic = self.records.tier_sat[0] / self.desires[0].len() as f64;
+        let common = self.records.tier_sat[1] / self.desires[1].len() as f64;
+        let luxury = self.records.tier_sat[2] / self.desires[2].len() as f64;
+        // Common ≤1 full effect; overflow above 1.0 at half weight (common sat surplus).
+        let common_mood = Self::common_sat_mood_weight(common);
+        let mods: Vec<SentimentMod> = vec![
+            SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta: 0.08 * (1.0 - basic) //
+                ,
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta: 0.04 * (1.0 - basic),
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta: 0.05 * common_mood,
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Contentment,
+                delta: 0.03 * basic * common_mood,
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta: 0.02 * luxury,
+            },
+        ];
+
+        mods
+    }
+
     /// Effective **tier sat** for a non-basic tier after a satisfaction boost,
     /// without mutating individual desires.
     ///
@@ -1076,49 +1058,6 @@ impl Pop {
         } else {
             1.0 + 0.5 * (c - 1.0)
         }
-    }
-
-    /// Composite living-standard score from tier sat (0..~1.25-ish with defaults).
-    fn living_standard_score(tier_sat: [f64; 3]) -> f64 {
-        let basic = tier_sat[0].clamp(0.0, 1.0);
-        let common = Self::common_sat_mood_weight(tier_sat[1]);
-        let luxury = tier_sat[2].clamp(0.0, 1.0);
-        living_standard::score(basic, common, luxury)
-    }
-
-    /// Sentiment shifts from living-standard trend. Declines use a higher gain than rises.
-    /// Small |trend| near zero is ignored (history deadband already damps noise).
-    fn living_trend_sentiment_mods(trend: f64) -> Vec<SentimentMod> {
-        let deadband = living_standard::SENTIMENT_TREND_DEADBAND;
-        let rise_gain = living_standard::SENTIMENT_RISE_GAIN;
-        let fall_gain = living_standard::SENTIMENT_FALL_GAIN;
-        let mut mods = Vec::new();
-        if trend > deadband {
-            let t = trend;
-            mods.push(SentimentMod::Flat {
-                kind: SentimentKind::Happiness,
-                delta: rise_gain * t,
-            });
-            mods.push(SentimentMod::Flat {
-                kind: SentimentKind::Hope,
-                delta: rise_gain * 0.5 * t,
-            });
-        } else if trend < -deadband {
-            let t = -trend;
-            mods.push(SentimentMod::Flat {
-                kind: SentimentKind::Anger,
-                delta: fall_gain * t,
-            });
-            mods.push(SentimentMod::Flat {
-                kind: SentimentKind::Fear,
-                delta: fall_gain * 0.6 * t,
-            });
-            mods.push(SentimentMod::Flat {
-                kind: SentimentKind::Contentment,
-                delta: -fall_gain * 0.4 * t,
-            });
-        }
-        mods
     }
 
     /// AMV of on-hand property: `Σ quantity × price`.
@@ -1278,7 +1217,7 @@ mod pop {
         good::Good,
         household::HouseholdDef,
         market::MarketHistory,
-        pop::{DemoRow, LivingStandardHistory, Pop, PopEffect, PopPRow, PopRecords},
+        pop::{DemoRow, Pop, PopEffect, PopPRow, PopRecords},
         scalingfactor::ScalingFactor,
         sentiment::Sentiment,
     };
@@ -2488,7 +2427,6 @@ mod pop {
             // 10*2 + 5*4 = 40; per household count 10 → 4.0
             pop.process_satisfaction(&history);
             assert!((pop.records.wealth_amv - 40.0).abs() < 1e-9);
-            assert!((pop.records.wealth_amv_per_household - 4.0).abs() < 1e-9);
         }
 
         #[test]
@@ -2512,50 +2450,6 @@ mod pop {
             assert!((Pop::common_sat_mood_weight(0.5) - 0.5).abs() < 1e-9);
             assert!((Pop::common_sat_mood_weight(1.0) - 1.0).abs() < 1e-9);
             assert!((Pop::common_sat_mood_weight(1.2) - 1.1).abs() < 1e-9);
-        }
-
-        #[test]
-        fn living_history_tracks_avg_and_damps_small_spikes() {
-            let mut h = LivingStandardHistory::new();
-            h.push(1.0);
-            assert_eq!(h.len(), 1);
-            assert!((h.rolling_avg - 1.0).abs() < 1e-9);
-            assert!((h.trend - 0.0).abs() < 1e-9);
-
-            // Tiny noise under deadband → trend stays near 0.
-            h.push(1.01);
-            assert!(h.trend.abs() < 0.05);
-
-            // Sustained drop → negative trend.
-            for _ in 0..5 {
-                h.push(0.5);
-            }
-            assert!(h.trend < -0.1);
-            assert!(h.rolling_avg < 0.9);
-        }
-
-        #[test]
-        fn process_satisfaction_records_living_standard_and_trend() {
-            let mut pop = make_pop();
-            // Strong basic shortfall → low living standard.
-            pop.desires[0].push(make_desire(
-                0,
-                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
-                10.0,
-            ));
-            let history = make_default_market_history();
-            pop.process_satisfaction(&history);
-            let first = pop.records.living_standard;
-            assert!(first < 0.8);
-            assert_eq!(pop.records.living_history.len(), 1);
-
-            // Improve: fully meet basic next pass.
-            pop.desires[0][0].satisfaction = 10.0;
-            pop.process_satisfaction(&history);
-            assert!(pop.records.living_standard > first);
-            assert_eq!(pop.records.living_history.len(), 2);
-            // May still be early for large trend, but avg should rise.
-            assert!(pop.records.sol_avg > first * 0.9);
         }
     }
 

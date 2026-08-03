@@ -3,7 +3,7 @@
 use bevy::utils::default;
 use circular_buffer::CircularBuffer;
 
-use crate::game::config::living_standard;
+use crate::game::config::pop_constants;
 use crate::game::household::HouseholdDef;
 use crate::game::util::lerp;
 
@@ -160,7 +160,7 @@ pub struct PopRecords {
     pub trend: f64,
     /// The history of the pop's standard of living. Covers `HISTORY_MAX` (currently
     /// 16 turns).
-    pub sol_history: CircularBuffer<{ living_standard::HISTORY_MAX }, f64>,
+    pub sol_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
 }
 
 impl Default for PopRecords {
@@ -183,12 +183,12 @@ impl PopRecords {
     /// Given the current `tier_sat`, update `self.living_standard` to 
     /// reflect the weighted sum of `tier_sat` values.
     /// 
-    /// Current formula is `living_stardard = basic + 0.6*Common + 0.4*Luxury`.
+    /// Current formula is `living_stardard = 3.0*basic + 1.5*Common + 1.0*Luxury`.
     pub fn update_living_standard(&mut self) {
         self.living_standard = 
-            self.tier_sat[0] * living_standard::SCORE_WEIGHT_BASIC +
-            self.tier_sat[1] * living_standard::SCORE_WEIGHT_COMMON +
-            self.tier_sat[2] * living_standard::SCORE_WEIGHT_LUXURY;
+            self.tier_sat[0] * pop_constants::SCORE_WEIGHT_BASIC +
+            self.tier_sat[1] * pop_constants::SCORE_WEIGHT_COMMON +
+            self.tier_sat[2] * pop_constants::SCORE_WEIGHT_LUXURY;
     }
 
     /// # Update Trend
@@ -210,7 +210,7 @@ impl PopRecords {
         // update the average using EMA method.
         let prev_avg = self.sol_avg;
         // weighted rolling average
-        self.sol_avg = lerp(self.sol_avg, self.living_standard, living_standard::ROLLING_AVG_WEIGHT);
+        self.sol_avg = lerp(self.sol_avg, self.living_standard, pop_constants::ROLLING_AVG_WEIGHT);
         // update the trend based on the change in living standard and the average.
         self.trend = self.living_standard - prev_avg;
         // push the current living standard to the history.

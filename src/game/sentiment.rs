@@ -447,8 +447,14 @@ impl Sentiment {
     // Internals
     // -----------------------------------------------------------------------
 
-    /// Pull `amount` share into `kind` from the other axes (proportional to their mass).
-    /// Intermediate may leave `total != 1` until [`Self::renormalize`].
+    /// # Shift In
+    /// 
+    /// Shifts percentage `amount` of the total weight into the given `kind`.
+    /// 
+    /// Does this by adding `amount` to the given kind, then scaling the rest down 
+    /// relative to their current weight. While it should be close to 1.0 total, it may
+    /// be off due to floating point error, so it is recommended to call 
+    /// [`Self::renormalize`] after this.
     fn shift_in(&mut self, kind: SentimentKind, amount: f64) {
         debug_assert!(amount.is_finite(), "shift_in amount must be finite.");
         debug_assert!(amount >= 0.0, "shift_in amount must be non-negative.");
@@ -471,7 +477,14 @@ impl Sentiment {
         self.set_raw(kind, self.get(kind) + take);
     }
 
-    /// Push `amount` share out of `kind` into the other axes (proportional to their mass).
+    /// # Shift Out
+    /// 
+    /// Shifts percentage `amount` of the total weight out of the given `kind`.
+    /// 
+    /// Does this by subtracting `amount` from the given kind, then scaling the rest up 
+    /// relative to their current weight. While it should be close to 1.0 total, it may
+    /// be off due to floating point error, so it is recommended to call 
+    /// [`Self::renormalize`] after this.
     fn shift_out(&mut self, kind: SentimentKind, amount: f64) {
         debug_assert!(amount.is_finite(), "shift_out amount must be finite.");
         debug_assert!(amount >= 0.0, "shift_out amount must be non-negative.");
