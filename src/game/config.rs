@@ -20,11 +20,30 @@ pub mod pop_constants {
     /// Weight of luxury tier sat in the composite living-standard score.
     pub const SCORE_WEIGHT_LUXURY: f64 = 1.0;
 
-    /// Rate at which anger sentiment is gained when 
+    /// Rate at which anger sentiment is gained from low living standard.
     pub const ANGER_SENTIMENT_RATE: f64 = 0.08;
+    // Rate at which fear sentiment is gained from low living standard.
+    pub const FEAR_SENTIMENT_RATE: f64 = 0.04;
+    // Rate at which Contentment is gained from moderate living standards.
+    pub const CONTENTMENT_SENTIMENT_RATE: f64 = 0.05;
+    /// Rate at which Happiness is gained from moderate Living Standards.
+    pub const HAPPINESS_SENTIMENT_RATE: f64 = 0.03;
+    /// Rate at which Hope is gained from high Living Standards.
+    pub const HOPE_SENTIMENT_RATE: f64 = 0.02;
+
+    /// Rate at which Contentment is gained from rising living standards.
+    pub const TREND_CONTENTMENT_SENTIMENT_RATE: f64 = 0.02;
+    /// Rate at which Happiness is gained from rising living standards.
+    pub const TREND_HAPPINESS_SENTIMENT_RATE: f64 = 0.03;
+    /// Rate at which Hope is gained from rising living standards.
+    pub const TREND_HOPE_SENTIMENT_RATE: f64 = 0.05;
+    /// Rate at which Anger is gained from falling living standards.
+    pub const TREND_ANGER_SENTIMENT_RATE: f64 = 0.04;
+    /// Rate at which Fear is gained from falling living standards.
+    pub const TREND_FEAR_SENTIMENT_RATE: f64 = 0.03;
 
     /// Ignore |trend| below this when applying sentiment shifts.
-    pub const SENTIMENT_TREND_DEADBAND: f64 = 0.05;
+    pub const SENTIMENT_TREND_DEADBAND: f64 = 0.5;
     /// Sentiment share gain scale when living standard is rising.
     pub const SENTIMENT_RISE_GAIN: f64 = 0.03;
     /// Sentiment share gain scale when living standard is falling (usually > rise).

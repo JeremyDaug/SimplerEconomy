@@ -76,6 +76,12 @@ pub enum SentimentMod {
         kind: SentimentKind,
         relative: f64,
     },
+    /// Transfer a share from one mood to another.
+    Transfer {
+        from: SentimentKind,
+        to: SentimentKind,
+        amount: f64,
+    },
 }
 
 impl Default for Sentiment {
@@ -294,6 +300,75 @@ impl Sentiment {
         self.adjust_global_share(kind, delta);
     }
 
+    /// # Apply Mods Simultaniously
+    /// 
+    /// Given a list of mods, it applies all of them to the sentiment at once.
+    /// 
+    /// - `Flat` are added to to the base.
+    /// - `Relative` multiply against the base then applies that to the output.
+    /// 
+    /// After modifiers are collected and applied, negative shares are clamped to 0.
+    /// If the result is all 0s, then we return `Self::Content` as a fallback.
+    /// Otherwise, it renormalizes the sentiment.
+    /// 
+    /// This is intended for batch applications of modifications, as applying 
+    /// sequentially can lead to unintended interactions.
+    pub fn apply_mods_simultaniously(&mut self, mods: impl IntoIterator<Item = SentimentMod>) {
+        debug_assert!(
+            self.is_valid(),
+            "apply_mods_simultanious requires a valid Sentiment."
+        );
+
+        // get current shares
+        let mut net = [0.0_f64; 5];
+        for m in mods {
+            match m {
+                SentimentMod::Flat { kind, delta } => {
+                    net[Self::kind_index(kind)] += delta;
+                }
+                SentimentMod::Relative { kind, relative } => {
+                    let current = self.get(kind);
+                    net[Self::kind_index(kind)] += current * relative;
+                }
+                SentimentMod::Transfer { from, to, amount } => {
+                    net[Self::kind_index(from)] -= amount;
+                    net[Self::kind_index(to)] += amount;
+                }
+            }
+        }
+
+        // apply net and clamp negatives.
+        self.happiness = (self.happiness + net[0]).max(0.0);
+        self.contentment = (self.contentment + net[1]).max(0.0);
+        self.anger = (self.anger + net[2]).max(0.0);
+        self.fear = (self.fear + net[3]).max(0.0);
+        self.hope = (self.hope + net[4]).max(0.0);
+
+        // if all 0s, fallback to content.
+        if self.total() <= f64::EPSILON {
+            *self = Self::content();
+        }
+
+        // renormalize
+        self.renormalize();
+
+        debug_assert!(
+            self.is_valid(),
+            "Sentiment shares must form a unit partition after apply_mods_simultaniously."
+        );
+    }
+
+    #[inline]
+    fn kind_index(kind: SentimentKind) -> usize {
+        match kind {
+            SentimentKind::Happiness => 0,
+            SentimentKind::Contentment => 1,
+            SentimentKind::Anger => 2,
+            SentimentKind::Fear => 3,
+            SentimentKind::Hope => 4,
+        }
+    }
+
     /// Apply one flat or relative modifier.
     pub fn apply_mod(&mut self, m: SentimentMod) {
         match m {
@@ -301,6 +376,9 @@ impl Sentiment {
             SentimentMod::Relative { kind, relative } => {
                 self.adjust_part_relative(kind, relative)
             }
+            SentimentMod::Transfer { from, to, amount } => {
+                self.transfer(from, to, amount);
+            },
         }
     }
 

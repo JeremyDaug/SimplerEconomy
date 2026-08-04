@@ -13,6 +13,7 @@ use crate::game::{
     marketorder::MarketOrder,
     scalingfactor::ScalingFactor,
     sentiment::{Sentiment, SentimentKind, SentimentMod},
+    util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -798,7 +799,7 @@ impl Pop {
     /// A helper which gets the total number of desires satisfied in a tier.
     /// 
     /// Equal to `Sum(desire.satisfaction / desire.amount)` for a given tier.
-    fn tier_satisfaction(&self, arg: i32) -> f64 {
+    fn tier_satisfaction(&self, tier: usize) -> f64 {
         let Some(desires) = self.desires.get(tier) else {
             return 1.0;
         };
@@ -843,31 +844,29 @@ impl Pop {
         rate
     }
 
-    /// # Process Satisfaction
+    /// # Update Sentiments
     /// 
     /// Run after Growth_phase. This processes the Satisfaction of desires, applying some
-    /// more modifications, and recording the results. 
+    ///  modifications, and recording the results to alter the pop's Sentiments.
     ///
     /// Late-day satisfaction-boost + mood pass (after consume and growth).
     /// Does **not** apply growth arms ([`Self::growth_phase`]) or bonus goods
     /// ([`Self::decay_goods`]).
     ///
-    /// 1. Collect satisfaction boosts (do **not** rewrite per-desire `satisfaction`):
-    ///    - Desire [`DesireEffect::Satisfaction`] → boost for **that desire's tier**
-    ///      (never basic). Desire boosts are sat-scaled via [`DesireEffect::signed_strength`].
-    ///    - Stored [`PopEffect::Satisfaction`] → boost for the **named tier** (1 or 2);
+    /// 1. Collect satisfaction and apply any boosts.
+    ///    - Desire [`DesireEffect::Satisfaction`] -> boost for **that desire's tier**.
+    ///      Desire boosts are sat-scaled via [`DesireEffect::signed_strength`].
+    ///    - Stored [`PopEffect::Satisfaction`] -> boost for the **named tier**;
     ///      amount is already scaled (e.g. process output / pop).
     ///    - **Tier sat** result:
-    ///      `(Σ (satisfaction / amount) + boost) / desire_count`
-    ///      (no common hard cap; surplus gives reduced benefits).
+    ///      `sum(satisfaction / amount) + boost`
     /// 2. Write [`PopRecords`]: tier sat, property wealth (AMV), satisfaction units.
-    /// 3. Baseline sentiment shifts from tier sat. Common uses full weight up
-    ///    to 1.0 and **half weight** on any overflow above 1.0 (common sat surplus).
+    /// 3. Baseline sentiment shifts from tier sat.
     /// 4. Desire + stored sentiment effects.
     /// 5. Leave bonus-good stored arms for later phases (growth should already be consumed).
     ///
     /// `market_history` supplies prices for wealth AMV (missing good prices default to 1.0).
-    pub fn process_satisfaction(&mut self, market_history: &MarketHistory) {
+    pub fn update_sentiments(&mut self, market_history: &MarketHistory) {
         // 1. Collect boosts per tier (desire effects + stored Satisfaction).
         let mut tier_boosts = [0.0_f64; 3];
         // 1a. Desire Bonuses first.
@@ -998,6 +997,10 @@ impl Pop {
     /// sentiment. 
     /// 
     /// It returns it from this function for testing purposes, does not apply it.
+    /// 
+    /// The way things are 'expected' to work is that each tier is satisfied fully 
+    /// before moving onto the next. As such, logic assumes little mixing of
+    /// satisfaction.
     fn sentiment_mods_from_satisfaction(&self) -> Vec<SentimentMod> {
         // Get the ratio of total success (tier_sat / number of desires)
         let basic = if self.desires[0].is_empty() {
@@ -1015,31 +1018,67 @@ impl Pop {
         } else {
             self.records.tier_sat[2] / self.desires[2].len() as f64
         };
-        // Common ≤1 full effect; overflow above 1.0 at half weight (common sat surplus).
+        // Common mood alteration, half rate above 1.0
         let common_mood = Self::common_sat_mood_weight(common);
-        let mods: Vec<SentimentMod> = vec![
+        // Use our satisfactions to cerate modifiers for our Sentiment.
+        // TODO: Modify the values below to meet the game's needs later.
+        let mut mods: Vec<SentimentMod> = vec![
             SentimentMod::Flat {
-                kind: SentimentKind::Anger,
-                delta: 0.08 * (1.0 - basic) //
-                ,
+                kind: SentimentKind::Anger, // 100% at 
+                delta: lerp(pop_constants::ANGER_SENTIMENT_RATE, 0.0, basic),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Fear,
-                delta: 0.04 * (1.0 - basic),
-            },
-            SentimentMod::Flat {
-                kind: SentimentKind::Happiness,
-                delta: 0.05 * common_mood,
+                delta: lerp(pop_constants::FEAR_SENTIMENT_RATE, 0.0, basic),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Contentment,
-                delta: 0.03 * basic * common_mood,
+                delta: lerp(0.0, pop_constants::CONTENTMENT_SENTIMENT_RATE, basic * common_mood),
+            },
+            SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta: lerp(0.0, pop_constants::HAPPINESS_SENTIMENT_RATE, common_mood),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Hope,
-                delta: 0.02 * luxury,
+                delta: lerp(0.0, pop_constants::HOPE_SENTIMENT_RATE, luxury),
             },
         ];
+
+        // Create Modifications based on the trend of SOL.
+        let trend = self.records.trend;
+        if trend.abs() >= pop_constants::SENTIMENT_TREND_DEADBAND {
+            let sol = self.records.living_standard.max(0.5);
+            let relative = trend / sol;
+
+            if relative > 0.0 {
+                let strength = relative * pop_constants::SENTIMENT_RISE_GAIN;
+                // rising: Extra Contentment, Happiness, and Hope.
+                mods.push(SentimentMod::Relative {
+                    kind: SentimentKind::Contentment,
+                    relative: relative * pop_constants::TREND_CONTENTMENT_SENTIMENT_RATE,
+                });
+                mods.push(SentimentMod::Relative {
+                    kind: SentimentKind::Happiness,
+                    relative: relative * pop_constants::TREND_HAPPINESS_SENTIMENT_RATE,
+                });
+                mods.push(SentimentMod::Relative {
+                    kind: SentimentKind::Hope,
+                    relative: relative * pop_constants::TREND_HOPE_SENTIMENT_RATE,
+                });
+            } else {
+                let strength = relative * pop_constants::SENTIMENT_FALL_GAIN;
+                // falling: Extra Anger and Fear.
+                mods.push(SentimentMod::Relative {
+                    kind: SentimentKind::Anger,
+                    relative: relative * pop_constants::TREND_ANGER_SENTIMENT_RATE,
+                });
+                mods.push(SentimentMod::Relative {
+                    kind: SentimentKind::Fear,
+                    relative: relative * pop_constants::TREND_FEAR_SENTIMENT_RATE,
+                });
+            }
+        }
 
         mods
     }
@@ -2300,7 +2339,7 @@ mod pop {
             // satisfaction stays 0 → basic avg 0.
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             assert_eq!(pop.records.tier_sat[0], 0.0);
             // Empty common/luxury count as fully satisfied averages.
@@ -2329,7 +2368,7 @@ mod pop {
             pop.desires[0].push(desire);
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             // Bonus +0.20 hope * sat 1.0, plus small baseline hope from luxury empty=1.
             assert!(pop.sentiment.hope() > 0.15);
@@ -2354,7 +2393,7 @@ mod pop {
             });
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             assert!(pop.sentiment.anger() > 0.0);
             assert_eq!(pop.stored_effects.len(), 1);
@@ -2389,7 +2428,7 @@ mod pop {
             pop.desires[1].push(donor);
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             // Per-desire values unchanged.
             assert_eq!(pop.desires[1][0].satisfaction, 8.0);
@@ -2412,7 +2451,7 @@ mod pop {
             pop.desires[2].push(lux);
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             // Per-desire unchanged; recorded = (1.0 + 0.5) / 1 = 1.5.
             assert_eq!(pop.desires[2][0].satisfaction, 10.0);
@@ -2435,7 +2474,7 @@ mod pop {
             });
 
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
 
             // Desire unchanged; (0.5 + 0.3) / 1 = 0.8.
             assert_eq!(pop.desires[1][0].satisfaction, 5.0);
@@ -2455,7 +2494,7 @@ mod pop {
             history.prices.insert(100, 2.0);
             history.prices.insert(101, 4.0);
             // 10*2 + 5*4 = 40; per household count 10 → 4.0
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
             assert!((pop.records.wealth_amv - 40.0).abs() < 1e-9);
         }
 
@@ -2470,7 +2509,7 @@ mod pop {
             d.satisfaction = 7.0;
             pop.desires[0].push(d);
             let history = make_default_market_history();
-            pop.process_satisfaction(&history);
+            pop.update_sentiments(&history);
             assert!((pop.records.satisfaction_units_total - 7.0).abs() < 1e-9);
         }
 
