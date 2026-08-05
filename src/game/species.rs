@@ -21,17 +21,17 @@ pub struct Species {
     /// 
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
-    /// The universal effects of Culture on a people with this culture.
+    /// The universal effects of species on a people with this species.
     /// 
     /// This is for effects that are not contingent on other factors like desires.
-    /// For example, Flat birth/mortality rates, per household culture/research 
+    /// For example, Flat birth/mortality rates, per household species/research 
     /// generation, household size or efficiency changes, and so on.
     pub species_effects: Vec<DemographicEffect>,
     /// The consolidated effects on a household. These are updated when 
-    /// `culture_effects` changes and intended to be added to the other demographics 
+    /// `species_effects` changes and intended to be added to the other demographics 
     /// to define a pop's household.
     pub species_household_modifiers: HouseholdDef,
-    /// A helper flag to mark when a culture has changed, and so pop_households should
+    /// A helper flag to mark when a species has changed, and so pop_households should
     /// also be updated. 
     /// 
     /// TODO: This and the effects of applying a household change should be smoother.

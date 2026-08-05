@@ -57,6 +57,24 @@ before luxury.
 
 ---
 
+## Pop Consumption Patterns
+
+A collection of names for consumption patterns to be aware of.
+
+### Ascetic
+**Preferred:** Ascetic
+**Avoid:** Poverty, Poor, Low-Impact
+
+**Meaning:** A pop with few desires and low total-unit consumption. Should result in relatively calm, easy to satisfy population, with little consumptive demand.
+
+### Affluent
+**Preferred:** Affluent, Rich
+**Avoid:** Wealthy
+
+**Meaning:** A pop with a large number of desires and sizeable total-unit consumption. Should be more restless and difficult to satisfy at the benefit of more culture production and demand placed on the market.
+
+---
+
 ## Satisfaction and fill
 
 ### Desire Satisfaction (single desire)
@@ -83,9 +101,9 @@ tier_sat = ( Σ (satisfaction / amount) + boost ) / desire_count
 - **Basic:** no satisfaction boosts.
 - **Common / luxury:** may exceed `1.0` after boosts (no hard cap on recorded tier sat).
 
-**Code:** `Pop::records.tier_sat[tier]` after `process_satisfaction` (boosted for
+**Code:** `Pop::records.tier_sat[tier]` after `update_sentiments` (boosted for
 common/luxury); helpers `tier_avg_satisfaction`, `tier_sat_with_boost`.
-Wealth: `Pop::records.wealth_amv` / `wealth_amv_per_household` (living count always ≥ 1.0).
+Wealth: `Pop::records.wealth_amv` (AMV of on-hand property).
 Satisfaction units total: `Pop::records.satisfaction_units_total`.
 
 ### Standard of Living
@@ -115,7 +133,7 @@ fulfilled desire, or a fraction of one)—**not** added to every desire’s
 | Same-day store | **stored satisfaction boost** | Already scaled (e.g. process output ÷ pop); applied by tier |
 
 **Code:** `DesireEffect::Satisfaction`, `PopEffect::Satisfaction { tier, amount }`;
-combined in `process_satisfaction` via `tier_sat_with_boost`.
+combined in `update_sentiments` via `tier_sat_with_boost`.
 
 ### Common Satisfaction surplus
 **Preferred:** common Satisfaction surplus, common oversaturation
@@ -194,11 +212,13 @@ Savings does not fence reserves or consumption.
 
 **Meaning:** Goods that have been used 
 
-### Process satisfaction
-**Preferred:** process satisfaction  
+### Update sentiments
+**Preferred:** update sentiments  
 
-**Meaning:** The function which processes satisfaction for it's wider effects to the pop, focusing on Sentiment shifts as opposed to Growth or 
-**Code:** `Pop::process_satisfaction`
+**Meaning:** Late-day pass that records tier sat (with boosts), wealth, and applies
+sentiment shifts from tier sat and stored mood effects. After consume and growth;
+does not apply growth arms or bonus goods.
+**Code:** `Pop::update_sentiments`
 
 ### Stored effects
 **Preferred:** stored effects
@@ -209,7 +229,7 @@ Savings does not fence reserves or consumption.
 | Kind | Phase that should clear it |
 |------|----------------------------|
 | Birthrate / Mortality | `growth_phase` |
-| Satisfaction (sat boost), Sentiment* | `process_satisfaction` |
+| Satisfaction (sat boost), Sentiment* | `update_sentiments` |
 | BonusGood | `decay_goods` |
 
 ---
@@ -285,10 +305,8 @@ passive culture/research).
 | Doc | Role |
 |-----|------|
 | EconCiv vault (`Pops.md`, `Desires.md`, …) | Long-form design intent |
-| `docs/proposals/satisfaction-ratio-and-boosts.md` | Fill boosts, units vs fill, surplus mood |
 | `docs/proposals/institution-draft.md` | Institutions v0 |
 | `STYLE.md` | Code style |
 | `AGENTS.md` | Agent rules + vault paths |
-
-When renaming a concept here, update the proposal’s wording in a follow-up if it
-still says “ratio” in the title body—glossary preferred terms still apply.
+| `TODO.md` | Working focus list |
+| `reviewlog.md` | Open review debt only |

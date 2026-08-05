@@ -19,7 +19,7 @@ pub struct MapData {
     pub environment: EnvironmentData,
 }
 impl MapData {
-    pub(crate) fn decay_goods(&self, factuals: &Factuals) {
+    pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Decay goods in Markets and any tiles not contained in a market.")
     }

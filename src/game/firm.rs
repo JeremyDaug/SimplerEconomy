@@ -1,8 +1,17 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 use hexx::Hex;
 
-use crate::game::{actor::Actor, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, market::Market, process::ProcessEffect, workforce::Workforce};
+use crate::game::{
+    actor::Actor,
+    contract::Contract,
+    factuals::Factuals,
+    firmorganization::FirmOrganization,
+    market::Market,
+    pop::Pop,
+    process::ProcessEffect,
+    workforce::Workforce,
+};
 
 /// # Firm 
 /// 
@@ -78,6 +87,19 @@ pub struct Firm {
 }
 
 impl Firm {
+    /// # Apply Passive Bonuses
+    ///
+    /// Push firm-level bonuses onto related pops (workforce, owners, …) during the
+    /// player-bonuses / demographic phase, **after** institutions and **before**
+    /// [`Pop::demographic_update`](crate::game::pop::Pop::demographic_update).
+    ///
+    /// v0: no firm bonus catalog yet — signature and call site only so later work
+    /// can attach effects without rewiring the turn.
+    pub fn apply_passive_bonuses(&self, pops: &mut HashMap<usize, Pop>) {
+        let _ = (self, pops);
+        // Stub: firm → pop passive bonuses (wages-as-effects, owner dividends, …).
+    }
+
     /// End-of-day bookkeeping for this firm (production stats, costs, …).
     /// Only external input is factuals.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
@@ -249,7 +271,7 @@ impl Firm {
 /// Currently a placeholder.
 #[derive(Debug, Clone)]
 pub struct Owners {
-    /// The Actor/ownser of the firm.
+    /// The Actor/owner of the firm.
     /// 
     /// Most commonly held by Pops, who get access to profits, but are
     /// also held accountable for losses in most circumstances.

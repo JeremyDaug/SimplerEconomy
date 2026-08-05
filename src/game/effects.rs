@@ -100,17 +100,17 @@ pub enum DesireEffect {
     BonusGood(usize, f64, bool),
     /// Extra satisfaction units applied to the **same tier** as the source desire.
     ///
-    /// Applied early in [`crate::game::pop::Pop::process_satisfaction`]. Never used
+    /// Applied early in [`crate::game::pop::Pop::update_sentiments`]. Never used
     /// on basic (tier 0). Common clamps to one full level; luxury may oversat.
     /// The `bool` is bonus (scales with sat) vs malus (scales with lack).
     Satisfaction(f64, bool),
     /// Flat share-of-pop shift into a sentiment axis (from other axes proportionally).
     ///
-    /// Applied in [`crate::game::pop::Pop::process_satisfaction`]. The `bool` is
+    /// Applied in [`crate::game::pop::Pop::update_sentiments`]. The `bool` is
     /// bonus (scales with sat) vs malus (scales with lack).
     SentimentFlat(SentimentKind, f64, bool),
     /// Relative scale of one sentiment axis, then renormalize.
-    /// Applied in [`crate::game::pop::Pop::process_satisfaction`].
+    /// Applied in [`crate::game::pop::Pop::update_sentiments`].
     SentimentRelative(SentimentKind, f64, bool),
 }
 
@@ -186,14 +186,14 @@ impl DesireEffect {
 ///
 /// - Growth arms ([`PopEffect::Birthrate`] / [`PopEffect::Mortality`]) →
 ///   [`crate::game::pop::Pop::growth_phase`] (applied and removed there).
-/// - Satisfaction boosts + mood/sentiment → [`crate::game::pop::Pop::process_satisfaction`].
+/// - Satisfaction boosts + mood/sentiment → [`crate::game::pop::Pop::update_sentiments`].
 /// - [`PopEffect::BonusGood`] → [`crate::game::pop::Pop::decay_goods`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopEffect {
     Birthrate(f64),
     Mortality(f64),
     /// Extra satisfaction units for a **non-basic** desire tier (`tier` 1 = common,
-    /// 2 = luxury). Applied early in process_satisfaction. Common clamps to one
+    /// 2 = luxury). Applied early in update_sentiments. Common clamps to one
     /// full level; luxury may oversat. `amount` is already scaled.
     Satisfaction { tier: usize, amount: f64 },
     /// Extra goods already scaled; granted at end-of-day decay.

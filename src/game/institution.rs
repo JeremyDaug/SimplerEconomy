@@ -1,4 +1,11 @@
-use crate::game::factuals::Factuals;
+use std::collections::HashMap;
+
+use crate::game::{
+    factuals::Factuals,
+    firm::Firm,
+    market::Market,
+    pop::{Pop, PopEffect},
+};
 
 pub use crate::game::effects::{EffectScope, InstitutionEffect};
 
@@ -155,6 +162,78 @@ impl Institution {
         self
     }
 
+    /// # Apply Passive Effects
+    ///
+    /// Push this institution's passive [`InstitutionEffect`]s onto firms and pops
+    /// for the day. Called from the player-bonuses / demographic phase **before**
+    /// [`Pop::demographic_update`](crate::game::pop::Pop::demographic_update).
+    ///
+    /// **Order / reach (v0):**
+    /// - [`EffectScope::Members`]: workforce pops of firms in `firm_ids`.
+    /// - [`EffectScope::OwnerRealm`]: pops listed on markets in `markets`
+    ///   (simple stand-in for realm membership until territory ownership is wired).
+    ///
+    /// Birth/mortality become same-day [`PopEffect`]s (growth phase consumes them).
+    /// Household/desire rewrites go through demographics later (D1); this path does
+    /// not set `household_changed` yet. `firms` is mut so later institution control
+    /// can attach firm-side modifiers without a signature change.
+    pub fn apply_passive_effects(
+        &self,
+        pops: &mut HashMap<usize, Pop>,
+        firms: &mut HashMap<usize, Firm>,
+        markets: &HashMap<usize, Market>,
+    ) {
+        for effect in &self.effects {
+            match effect.scope() {
+                EffectScope::Members => {
+                    for &firm_id in &self.firm_ids {
+                        // Collect worker ids first so pops can be mutably borrowed
+                        // without holding a firm borrow. `firms` is `&mut` so
+                        // firm-side institution modifiers can be applied later.
+                        let Some(firm) = firms.get(&firm_id) else {
+                            continue;
+                        };
+                        let worker_ids: Vec<usize> = firm
+                            .workforce
+                            .iter()
+                            .map(|w| w.id)
+                            .filter(|&id| id != 0)
+                            .collect();
+                        for pop_id in worker_ids {
+                            if let Some(pop) = pops.get_mut(&pop_id) {
+                                Self::push_effect_to_pop(pop, *effect);
+                            }
+                        }
+                    }
+                }
+                EffectScope::OwnerRealm => {
+                    for &market_id in &self.markets {
+                        let Some(market) = markets.get(&market_id) else {
+                            continue;
+                        };
+                        for &pop_id in &market.pops {
+                            if let Some(pop) = pops.get_mut(&pop_id) {
+                                Self::push_effect_to_pop(pop, *effect);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Map one institution effect onto a pop's same-day store.
+    fn push_effect_to_pop(pop: &mut Pop, effect: InstitutionEffect) {
+        match effect {
+            InstitutionEffect::BirthRate { rate, .. } => {
+                pop.stored_effects.push(PopEffect::Birthrate(rate));
+            }
+            InstitutionEffect::MortalityRate { rate, .. } => {
+                pop.stored_effects.push(PopEffect::Mortality(rate));
+            }
+        }
+    }
+
     /// End-of-day bookkeeping for this institution.
     /// Only external input is factuals.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
@@ -173,7 +252,42 @@ impl Institution {
 #[cfg(test)]
 mod institution_tests {
     use super::*;
-    use crate::game::effects::EffectScope;
+    use std::collections::{HashMap, HashSet};
+
+    use hexx::Hex;
+
+    use crate::game::{
+        effects::EffectScope,
+        firm::Firm,
+        household::HouseholdDef,
+        market::Market,
+        pop::{DemoRow, Pop, PopEffect, PopRecords},
+        sentiment::Sentiment,
+        workforce::Workforce,
+    };
+
+    fn make_pop(id: usize) -> Pop {
+        Pop {
+            id,
+            job: 0,
+            property: HashMap::new(),
+            desires: vec![vec![]; 3],
+            working_desires: vec![],
+            demographics: DemoRow {
+                count: 10.0,
+                household: HouseholdDef::default(),
+                species: 0,
+                culture: 0,
+                class: 0,
+                religion: 0,
+            },
+            current_orders: vec![],
+            previous_growth: 0.0,
+            stored_effects: vec![],
+            sentiment: Sentiment::new(),
+            records: PopRecords::default(),
+        }
+    }
 
     #[test]
     fn new_defaults_and_fluent_builders() {
@@ -199,5 +313,57 @@ mod institution_tests {
         assert_eq!(inst.market_slot, MarketSlot::BetweenFirmsAndPops);
         assert_eq!(inst.effects.len(), 1);
         assert_eq!(inst.effects[0].scope(), EffectScope::OwnerRealm);
+    }
+
+    #[test]
+    fn apply_passive_effects_members_pushes_birthrate_to_workforce_pops() {
+        let worker_id = 7;
+        let firm_id = 100;
+        let mut firm = Firm::new(firm_id, "Yard".into(), 1, Hex::new(0, 0));
+        let mut worker = Workforce::empty();
+        worker.id = worker_id;
+        firm.workforce.push(worker);
+
+        let mut firms = HashMap::from([(firm_id, firm)]);
+        let mut pops = HashMap::from([(worker_id, make_pop(worker_id))]);
+        let markets = HashMap::new();
+
+        let inst = Institution::new(1, "Guild")
+            .with_firm(firm_id)
+            .with_effect(InstitutionEffect::member_birthrate(0.02));
+
+        inst.apply_passive_effects(&mut pops, &mut firms, &markets);
+
+        assert_eq!(
+            pops[&worker_id].stored_effects,
+            vec![PopEffect::Birthrate(0.02)]
+        );
+    }
+
+    #[test]
+    fn apply_passive_effects_owner_realm_pushes_to_market_pops() {
+        let pop_id = 3;
+        let market_id = 5;
+        let market = Market {
+            id: market_id,
+            pops: HashSet::from([pop_id]),
+            firms: HashSet::new(),
+            institution_ids: HashSet::new(),
+            goods: HashMap::new(),
+        };
+        let markets = HashMap::from([(market_id, market)]);
+        let mut pops = HashMap::from([(pop_id, make_pop(pop_id))]);
+        let mut firms = HashMap::new();
+
+        let inst = Institution::new(1, "Church")
+            .with_market(market_id)
+            .with_effect(InstitutionEffect::realm_mortality(0.01));
+
+        inst.apply_passive_effects(&mut pops, &mut firms, &markets);
+
+        assert_eq!(
+            pops[&pop_id].stored_effects,
+            vec![PopEffect::Mortality(0.01)]
+        );
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use bevy::platform::collections::HashSet;
 
@@ -85,15 +85,15 @@ pub struct Pop {
 
     /// Same-day deferred effects (environment, events, process spillover, …).
     /// Growth arms → [`Self::growth_phase`]; 
-    /// mood/sentiment/satisfaction → [`Self::process_satisfaction`]; 
+    /// mood/sentiment/satisfaction → [`Self::update_sentiments`]; 
     /// [`PopEffect::BonusGood`] → [`Self::decay_goods`].
     pub stored_effects: Vec<PopEffect>,
 
     /// Political / social feeling of this pop (shares sum to 1).
-    /// Updated in [`Self::process_satisfaction`]; blendable into firms, markets, etc.
+    /// Updated in [`Self::update_sentiments`]; blendable into firms, markets, etc.
     pub sentiment: Sentiment,
 
-    /// End-of-pass snapshot from [`Self::process_satisfaction`] (tier sat, wealth, …).
+    /// End-of-pass snapshot from [`Self::update_sentiments`] (tier sat, wealth, …).
     pub records: PopRecords,
 
 }
@@ -208,7 +208,7 @@ impl Pop {
 
         // --- 3. Scale shopping / need targets with population growth ---
         let growth_f = self.demographics.count / (self.demographics.count - self.previous_growth);
-        debug_assert!(!growth_f.is_nan(), "population count - previous growth reached 0. Something has gone wrong.");
+        debug_assert!(growth_f.is_finite(), "population count - previous growth reached 0. Something has gone wrong.");
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
                 prop.shop_target *= growth_f;
@@ -724,9 +724,7 @@ impl Pop {
     ///
     /// TODO: Consider reworking this to keep birth and mortality separate until later
     /// to allow for multiplicative effects instead of just additive effects.
-    pub fn growth_phase(&mut self, factuals: &Factuals) {
-        let _ = factuals; // reserved for future species/culture lookups
-
+    pub fn growth_phase(&mut self) {
         // Net growth *rate* (additive). Household multiplier is `1.0 + rate`.
         //
         // 1 + 5. Base / demographic growth from household birth − mortality
@@ -833,7 +831,7 @@ impl Pop {
                     DesireEffect::Birthrate(v, false) => rate -= v * lack,
                     DesireEffect::Mortality(v, true) => rate += v * sat,
                     DesireEffect::Mortality(v, false) => rate -= v * lack,
-                    // Applied in process_satisfaction / decay, not growth.
+                    // Applied in update_sentiments / decay, not growth.
                     DesireEffect::BonusGood(_, _, _)
                     | DesireEffect::Satisfaction(_, _)
                     | DesireEffect::SentimentFlat(_, _, _)
@@ -888,7 +886,9 @@ impl Pop {
             }
         }
         // 1b. Gather satisfaction bonuses from stored_effects.
+        // While we're at it, drain setiment effects into a separate list for later processing.
         let pending_stored: Vec<PopEffect> = self.stored_effects.drain(..).collect();
+        let mut sentiment_effects = Vec::with_capacity(pending_stored.len());
         let mut kept = Vec::with_capacity(pending_stored.len());
         for effect in pending_stored {
             match effect {
@@ -901,10 +901,17 @@ impl Pop {
                         debug_assert!(amount.is_finite(), "Satisfaction boost must be finite.");
                         tier_boosts[tier] += amount;
                     }
-                }
+                },
+                PopEffect::SentimentFlat { .. } | PopEffect::SentimentRelative { .. } => {
+                    sentiment_effects.push(effect);
+                },
+                PopEffect::Birthrate(..) | PopEffect::Mortality(..) => {
+                    debug_assert!(false, "PopEffect::Birthrate and PopEffect::Mortality should have been applied in growth_phase, not update_sentiments.");
+                },
                 other => kept.push(other),
             }
         }
+        // wrap up by putting remainder back in stored_effects (bonus goods, etc).
         self.stored_effects = kept;
 
         // 2. Day records: tier sat, wealth, satisfaction units.
@@ -956,35 +963,23 @@ impl Pop {
 
         // 5. Remaining stored: sentiment in; bonus goods kept.
         // Growth arms must already have been applied in `growth_phase`.
-        let mut kept = Vec::with_capacity(self.stored_effects.len());
-        for effect in self.stored_effects.drain(..) {
+        for effect in sentiment_effects {
             match effect {
-                PopEffect::Birthrate(_) | PopEffect::Mortality(_) => {
-                    debug_assert!(
-                        false,
-                        "stored Birthrate/Mortality must be applied in growth_phase before process_satisfaction"
-                    );
-                    // Drop in release if growth was skipped — do not re-queue for later phases.
-                }
-                PopEffect::BonusGood { .. } => {
-                    kept.push(effect);
-                }
-                PopEffect::Satisfaction { .. } => {
-                    debug_assert!(false, "Satisfaction stored effect left after boost pass");
-                }
                 PopEffect::SentimentFlat { kind, delta } => {
                     if delta != 0.0 {
                         mods.push(SentimentMod::Flat { kind, delta });
                     }
-                }
+                },
                 PopEffect::SentimentRelative { kind, relative } => {
                     if relative != 0.0 {
                         mods.push(SentimentMod::Relative { kind, relative });
                     }
-                }
+                },
+                other => {
+                    unreachable!("sentiment_effects should only contain sentiment effects, got {other:?}");
+                },
             }
         }
-        self.stored_effects = kept;
 
         self.sentiment.apply_mods(mods);
         debug_assert!(self.sentiment.is_valid());
@@ -1243,7 +1238,7 @@ impl Pop {
         }
 
         // 6. Pay out BonusGood.
-        // Mood/sentiment should already be gone after process_satisfaction.
+        // Mood/sentiment should already be gone after update_sentiments.
         let mut kept_effects = Vec::with_capacity(self.stored_effects.len());
         for effect in self.stored_effects.drain(..) {
             match effect {
@@ -1778,7 +1773,7 @@ mod pop {
 
         #[test]
         fn scales_property_targets_with_previous_growth_positive_zero_and_negative() {
-            // growth_f = count / count - previous_growth
+            // growth_f = count / (count - previous_growth)
             // count fixed at 10 for all three cases.
             fn run(previous_growth: f64) -> (f64, f64) {
                 let demo = household_demo(1, 1.0, 0, 0);
@@ -1800,7 +1795,7 @@ mod pop {
                 )
             }
 
-            // positive: 10 / 10 - 5 = 2.0 → 20*2=40, 10*2=20
+            // positive: 10 / (10 - 5) = 2.0 → 20*2=40, 10*2=20
             let (shop_pos, need_pos) = run(5.0);
             assert!((shop_pos - 40.0).abs() < 1e-9);
             assert!((need_pos - 20.0).abs() < 1e-9);
@@ -1880,7 +1875,7 @@ mod pop {
             // Empty desires: basic treated as fully satisfied; common/luxury totals 0.
             // rate = birth 0.025 - mortality 0.005 = 0.02
             let mut pop = make_pop(); // count = 10
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             assert!((pop.demographics.count - 10.2).abs() < 1e-9);
             assert!((pop.previous_growth - 0.2).abs() < 1e-9);
@@ -1897,7 +1892,7 @@ mod pop {
             basic.satisfaction = 0.0; // fully unsatisfied
             pop.desires[0].push(basic);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             // rate = 0.02 - 0.30 = -0.28 → 10 * 0.72 = 7.2
             assert!((pop.demographics.count - 7.2).abs() < 1e-9);
@@ -1915,7 +1910,7 @@ mod pop {
             basic.satisfaction = 5.0; // 0.5 tiers
             pop.desires[0].push(basic);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             // rate = 0.02 - 0.30 * 0.5 = 0.02 - 0.15 = -0.13 → 10 * 0.87 = 8.7
             assert!((pop.demographics.count - 8.7).abs() < 1e-9);
@@ -1951,7 +1946,7 @@ mod pop {
             pop.desires[1].push(common2);
             pop.desires[2].push(luxury);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             // rate = 0 - 0.0002*2 - 0.005*3 = -0.0004 - 0.015 = -0.0154
             // 10 * (1 - 0.0154) = 9.846
@@ -1974,7 +1969,7 @@ mod pop {
             common.effect.push(DesireEffect::Birthrate(0.1, true));
             pop.desires[1].push(common);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             // rate = -0.0002 * 1.0 + 0.1 * 1.0 = 0.0998
             // 10 * 1.0998 = 10.998
@@ -1997,7 +1992,7 @@ mod pop {
             basic.effect.push(DesireEffect::Mortality(0.1, false));
             pop.desires[0].push(basic);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             // basic avg sat 0 → -0.30 * 1.0 = -0.30
             // malus: -0.1 * 1.0 = -0.1
@@ -2021,7 +2016,7 @@ mod pop {
             basic.satisfaction = 0.0; // -30% → 1.0 * 0.7 = 0.7 < 1.0 → snap to 0
             pop.desires[0].push(basic);
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             assert_eq!(pop.demographics.count, 0.0);
             assert!((pop.previous_growth - (-1.0)).abs() < 1e-9);
@@ -2044,7 +2039,7 @@ mod pop {
                 amount: 0.1,
             });
 
-            pop.growth_phase(&Factuals::new());
+            pop.growth_phase();
 
             assert!((pop.demographics.count - 10.4).abs() < 1e-9);
             assert!((pop.previous_growth - 0.4).abs() < 1e-9);
@@ -2323,7 +2318,7 @@ mod pop {
         }
     }
 
-    mod process_satisfaction_should {
+    mod update_sentiments_should {
         use super::*;
         use crate::game::sentiment::SentimentKind;
 

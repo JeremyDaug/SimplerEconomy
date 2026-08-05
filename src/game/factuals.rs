@@ -98,6 +98,23 @@ impl Factuals {
             .unwrap_or_else(|| panic!("Species {id} missing from factuals."))
     }
 
+    /// # Clear Household Changed Flags
+    ///
+    /// After every pop has run [`crate::game::pop::Pop::demographic_update`], clear
+    /// the shared demographic `household_changed` flags so the next day does not
+    /// rebuild households from a stale signal.
+    pub fn clear_household_changed_flags(&mut self) {
+        for species in self.species.values_mut() {
+            species.household_changed = false;
+        }
+        for culture in self.cultures.values_mut() {
+            culture.household_changed = false;
+        }
+        for religion in self.religion.values_mut() {
+            religion.household_changed = false;
+        }
+    }
+
     /// Looks up a culture by id. Panics if missing.
     pub fn find_culture(&self, id: usize) -> &Culture {
         self.cultures.get(&id)
@@ -111,7 +128,7 @@ impl Factuals {
     }
 
     /// # Source Demo Desire
-    /// 
+    ///
     /// Resolves the demographic desire behind a pop `Desire` via `desire.source`
     /// (`source_id`, `demo_desire_id`). Class is not implemented yet.
     pub fn source_demo_desire(&self, desire: &Desire) -> Option<&DemoDesire> {
@@ -127,13 +144,41 @@ impl Factuals {
             }
             DesireSource::Class(source_id, _demo_id) => {
                 todo!("Class desires are not supported yet (class id {source_id}).");
+                #[allow(unreachable_code)]
                 None
             }
         }
     }
-    
+
     pub(crate) fn find_good(&self, id: usize) -> &Good {
         self.goods.get(&id)
             .unwrap_or_else(|| panic!("Good {id} missing from factuals."))
+    }
+}
+
+#[cfg(test)]
+mod factuals_should {
+    use super::*;
+    use crate::game::{culture::Culture, religion::Religion, species::Species};
+
+    #[test]
+    fn clear_household_changed_flags_resets_all_demographics() {
+        let mut species = Species::new(0, "Human");
+        species.household_changed = true;
+        let mut culture = Culture::new(1, "C");
+        culture.household_changed = true;
+        let mut religion = Religion::new(2, "R");
+        religion.household_changed = true;
+
+        let mut factuals = Factuals::new()
+            .with_species(species)
+            .with_culture(culture)
+            .with_religion(religion);
+
+        factuals.clear_household_changed_flags();
+
+        assert!(!factuals.species[&0].household_changed);
+        assert!(!factuals.cultures[&1].household_changed);
+        assert!(!factuals.religion[&2].household_changed);
     }
 }

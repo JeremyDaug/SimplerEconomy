@@ -496,17 +496,6 @@ pub enum DesireTargetType {
     Use,
 }
 
-/// # Desire Effect
-/// 
-/// When the condition of the effect is met (satisfaction or lack thereof) the effect
-/// is generated and applied to the pop who owns the desire.
-/// 
-/// Most effects define the rate they apply to the pop, and a bool which defines how they
-/// operate. True if the effect is treated as a 'bonus' and false if it is treated as a 
-/// 'malus'. Bonuses scale positively with satisfaction, malus's with the lack of satisfaction.
-/// 
-/// As a note, Luxury desires, due to their infinite nature, should not have malus effects.
-/// 
 /// # Desire Source
 /// 
 /// Where is the desire's definition derived from.

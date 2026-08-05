@@ -7,7 +7,7 @@
 /// Living-standard score history, trend, and related mood knobs.
 pub mod pop_constants {
     // History Length
-    /// Compile-time max ring slots (array size on [`crate::game::pop_property::LivingStandardHistory`]).
+    /// Compile-time max ring slots for [`crate::game::pop_property::PopRecords::sol_history`].
     pub const HISTORY_MAX: usize = 16;
 
     // Living Standard Constants
@@ -48,12 +48,4 @@ pub mod pop_constants {
     pub const SENTIMENT_RISE_GAIN: f64 = 0.03;
     /// Sentiment share gain scale when living standard is falling (usually > rise).
     pub const SENTIMENT_FALL_GAIN: f64 = 0.05;
-
-    /// Composite living-standard score from tier pieces prepared for mood
-    /// (basic/luxury clamped, common via common-sat mood weight).
-    pub fn score(basic: f64, common_mood: f64, luxury: f64) -> f64 {
-        SCORE_WEIGHT_BASIC * basic
-            + SCORE_WEIGHT_COMMON * common_mood
-            + SCORE_WEIGHT_LUXURY * luxury
-    }
 }

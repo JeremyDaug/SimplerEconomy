@@ -15,7 +15,7 @@ when they conflict.
 - Keep systems playable and inspectable; favor clear data models over premature
   abstraction.
 
-In-repo high-level notes also live in `README.md` and `todo.md`. Those are
+In-repo high-level notes also live in `README.md` and `TODO.md`. Those are
 secondary to the Obsidian design vault for intent and direction.
 
 ### Design vocabulary (in-repo)
@@ -26,6 +26,8 @@ secondary to the Obsidian design vault for intent and direction.
 Prefer those terms over chat shorthand (e.g. say **tier sat** / **desire sat**,
 not bare “ratio” or “tier fill”). When language conflicts, the vocabulary file
 wins on **names**; the vault and proposals still own long-form intent.
+
+When a new term comes up, ask user to clarify and record in the file.
 
 ## Design documents (external Obsidian vault)
 

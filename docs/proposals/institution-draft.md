@@ -34,6 +34,6 @@ Fluent `new` + `with_*` builders. No property, contracts, trees, or mandates yet
 - Property / contracts / market-day buying
 - Ability trees (`InstitutionTree` / nodes) and exclusive branches
 - Mandates + loyalty scoring
-- Wiring passive household effects into `demographic_update`
+- Wiring passive household effects into demographic rebuild (phase calls `apply_passive_effects`; household overlay path still D1)
 - State.institution_ids registry (optional convenience)
 - Factuals institution trees

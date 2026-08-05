@@ -1,18 +1,10 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
-use crate::game::factuals::Factuals; use crate::game::firm::Firm;
-use crate::game::institution::Institution;
-// adjust paths as needed
-use crate::game::map::Map; 
-use crate::game::mapdata::MapData;
-use crate::game::market::Market;
-use crate::game::players::Players;
-// etc.
-use crate::game::actors::Actors;
-use crate::game::pop::Pop;
-use crate::game::state::State;
 use rayon::prelude::*;
+
+use crate::game::actors::Actors;
+use crate::game::factuals::Factuals;
+use crate::game::mapdata::MapData;
+use crate::game::players::Players;
 
 /// # Play State
 /// 
@@ -102,25 +94,47 @@ impl PlayState {
     }
 
     /// # Phase Player Bonuses and Demographic Updates
-    /// 
-    /// During this phase, all effects caused by player actions (Institution effects, 
-    /// culture changes, etc) that exist outside of the market are applied here.
-    /// 
-    /// Pops should update their household from demographics first, then other effects 
-    /// can be done.
-    /// 
-    /// Institutions do not directly modify the household or desires, they do this by 
-    /// proxy, through modifying Demographics they own. Institutions can add other 
-    /// effects like altered birthrate/mortality, modified culture/research rate, and
-    /// possibly other things.
-    /// 
-    /// All effects should already exist at institutional level, go through and push 
-    /// them downward as needed.
+    ///
+    /// Outside-market effects from institutions, firms, and demographic edits.
+    /// **Sequential** (institutions may touch firms and pops; firms touch pops).
+    ///
+    /// Order:
+    /// 1. Institutions push passive effects onto firms / pops.
+    /// 2. Firms push passive bonuses onto pops.
+    /// 3. Each pop runs [`Pop::demographic_update`] (household rebuild if flagged,
+    ///    then `update_desires`).
+    /// 4. Clear shared demographic `household_changed` flags on factuals.
+    ///
+    /// Institutions do not rewrite household/desires directly; they push effects
+    /// (and later demographic mods). Non-demo household overlays (D1) stay deferred.
     fn phase_player_bonuses_and_demographic_updates(&mut self) {
-        // go through Institutions and apply their effects as dictated
-        // go through firms and apply their bonuses as dictated
-        // finally, apply effects on pops (this should be the end).
-        todo!("4. Player bonuses, new actors, pop desire / demographic updates")
+        {
+            let markets = &self.map_data.markets;
+            let factuals = &self.factuals;
+            let Actors {
+                pops,
+                firms,
+                institutions,
+            } = &mut self.actors;
+
+            // 1. Institutions → firms / pops.
+            for institution in institutions.values() {
+                institution.apply_passive_effects(pops, firms, markets);
+            }
+
+            // 2. Firms → pops.
+            for firm in firms.values() {
+                firm.apply_passive_bonuses(pops);
+            }
+
+            // 3. Pops: rebuild household from demographics if needed, resync desires.
+            for pop in pops.values_mut() {
+                pop.demographic_update(factuals);
+            }
+        }
+
+        // 4. Orchestrator clears shared flags after all pops have read them.
+        self.factuals.clear_household_changed_flags();
     }
 
     fn phase_intra_market_day(&mut self) {
@@ -139,8 +153,6 @@ impl PlayState {
     /// 
     /// At this point, pops consume all goods they have reserved and planned.
     fn phase_pop_consumption(&mut self) {
-        let factuals = &self.factuals;
-
         let pops = &mut self.actors.pops;
         pops.par_iter_mut().for_each(|(_, pop)| {
             pop.consume();
@@ -157,7 +169,7 @@ impl PlayState {
     fn phase_pop_growth(&mut self) {
         let factuals = &self.factuals;
         self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
-            pop.growth_phase(factuals);
+            pop.growth_phase();
         });
     }
 

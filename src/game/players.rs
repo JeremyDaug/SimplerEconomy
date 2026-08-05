@@ -11,7 +11,7 @@ pub struct Players {
     pub players: HashMap<usize, State>
 }
 impl Players {
-    pub(crate) fn decay_goods(&self, factuals: &Factuals) {
+    pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
         todo!()
     }
 }
