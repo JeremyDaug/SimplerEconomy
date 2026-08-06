@@ -83,6 +83,11 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
   - [ ] Define how it modifies culture
   - [ ] Define how it selects members
   - [ ] Other Special features
+  - [ ] Default/baseline Classes
+    - [ ] Underclass/Poor
+    - [ ] Middle Class
+    - [ ] Upperclass/Rich/Aristocrats/etc
+    - [ ] Priesthood/Monastics
 - [ ] Firm
   - [ ] Planning
   - [ ] Management Logic
