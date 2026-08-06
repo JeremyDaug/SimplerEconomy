@@ -775,9 +775,9 @@ impl Pop {
     }
 
     /// # Tier Average Satisfaction
-    /// 
-    /// A helper function that takes the current desires, gets the tiers satisfied,
-    /// and returns the average result..
+    ///
+    /// Average desire success rate in a tier (`sum / count`). Used where a 0–1-ish
+    /// completeness is needed (e.g. growth penalties). Not what [`PopRecords::tier_sat`] stores.
     fn tier_avg_satisfaction(&self, tier: usize) -> f64 {
         let Some(desires) = self.desires.get(tier) else {
             return 1.0;
@@ -793,10 +793,10 @@ impl Pop {
     }
 
     /// # Tier Satisfaction
-    /// 
-    /// A helper which gets the total number of desires satisfied in a tier.
-    /// 
-    /// Equal to `Sum(desire.satisfaction / desire.amount)` for a given tier.
+    ///
+    /// Sum of desire success rates in a tier: `Sum(satisfaction / amount)`.
+    /// Empty tier counts as `1.0` (no unmet needs). This is the unboosted form of
+    /// what is written into [`PopRecords::tier_sat`].
     fn tier_satisfaction(&self, tier: usize) -> f64 {
         let Some(desires) = self.desires.get(tier) else {
             return 1.0;
@@ -808,6 +808,7 @@ impl Pop {
     }
 
     /// Sum of `tiers_satisfied` across all desires in a tier (uncapped; luxury oversat counts).
+    /// Empty tier returns `0.0` (unlike [`Self::tier_satisfaction`]).
     fn tier_total_satisfaction(&self, tier: usize) -> f64 {
         let Some(desires) = self.desires.get(tier) else {
             return 0.0;
@@ -856,10 +857,11 @@ impl Pop {
     ///      Desire boosts are sat-scaled via [`DesireEffect::signed_strength`].
     ///    - Stored [`PopEffect::Satisfaction`] -> boost for the **named tier**;
     ///      amount is already scaled (e.g. process output / pop).
-    ///    - **Tier sat** result:
-    ///      `sum(satisfaction / amount) + boost`
+    ///    - **Tier sat** result (sum of success rates, not an average):
+    ///      `Sum(satisfaction / amount) + boost`
+    ///      (no common hard cap; surplus gives reduced sentiment weight when normalized).
     /// 2. Write [`PopRecords`]: tier sat, property wealth (AMV), satisfaction units.
-    /// 3. Baseline sentiment shifts from tier sat.
+    /// 3. Baseline sentiment shifts from tier sat (mood path normalizes by desire count).
     /// 4. Desire + stored sentiment effects.
     /// 5. Leave bonus-good stored arms for later phases (growth should already be consumed).
     ///
@@ -914,7 +916,7 @@ impl Pop {
         // wrap up by putting remainder back in stored_effects (bonus goods, etc).
         self.stored_effects = kept;
 
-        // 2. Day records: tier sat, wealth, satisfaction units.
+        // 2. Day records: tier sat (sums of success rates), wealth, satisfaction units.
         let tier_sat_boosted = [
             self.tier_satisfaction(0),
             self.tier_sat_with_boost(1, tier_boosts[1]),
@@ -997,7 +999,8 @@ impl Pop {
     /// before moving onto the next. As such, logic assumes little mixing of
     /// satisfaction.
     fn sentiment_mods_from_satisfaction(&self) -> Vec<SentimentMod> {
-        // Get the ratio of total success (tier_sat / number of desires)
+        // `records.tier_sat` stores sums of desire success rates; normalize by count for mood.
+        // Empty tiers are recorded as 1.0 (treated as fully satisfied).
         let basic = if self.desires[0].is_empty() {
             1.0
         } else {
@@ -1079,17 +1082,21 @@ impl Pop {
     }
 
     /// # Tier Satisfaction with Boost
-    /// 
-    /// A helper function which calculates the Tier Satisfaction and
-    /// adds the given boost value to it.
-    /// 
+    ///
+    /// Sum of desire success rates in a non-basic tier, plus a satisfaction boost,
+    /// without mutating individual desires.
+    ///
     /// ```text
-    /// sum(satisfaction / amount) + boost
+    /// Sum(satisfaction / amount) + boost
     /// ```
-    /// 
-    /// Values produced cannot be negative.
-    /// 
-    /// TODO: Might allow negative values eventually, but not just yet, don't know what I would even do with negative values.
+    ///
+    /// `boost` is satisfaction-boost mass (same units as desire success rates):
+    /// desire effects contribute via sat-scaled rates; stored effects contribute an
+    /// already-scaled amount (e.g. process output / pop).
+    ///
+    /// No upper clamp. Floor at 0. Empty tier: `1.0` (no unmet needs), boost ignored.
+    ///
+    /// TODO: Might allow negative values eventually, but not just yet.
     fn tier_sat_with_boost(&self, tier: usize, boost: f64) -> f64 {
         // TODO, consider removing this. A pop with an 'ascetic' religous/cultural trait
         // might be a worthwhile thing to consider. Back burner for now.
@@ -1124,7 +1131,7 @@ impl Pop {
         }
     }
 
-    /// AMV of on-hand property: `Σ quantity × price`.
+    /// AMV of on-hand property: `Sum(quantity * price)`.
     /// Missing prices default to `1.0` (same convention as order costing).
     pub fn property_wealth_amv(&self, market_history: &MarketHistory) -> f64 {
         let mut total = 0.0;
@@ -2331,13 +2338,13 @@ mod pop {
                 DesireTarget::new(100, DesireTargetType::Consume, 1.0),
                 10.0,
             ));
-            // satisfaction stays 0 → basic avg 0.
+            // satisfaction stays 0 → basic sum of success rates = 0.
 
             let history = make_default_market_history();
             pop.update_sentiments(&history);
 
             assert_eq!(pop.records.tier_sat[0], 0.0);
-            // Empty common/luxury count as fully satisfied averages.
+            // Empty common/luxury count as fully satisfied (recorded as 1.0).
             assert_eq!(pop.records.tier_sat[1], 1.0);
             assert!(pop.sentiment.anger() > 0.0);
             assert!(pop.sentiment.fear() > 0.0);
@@ -2428,8 +2435,8 @@ mod pop {
             // Per-desire values unchanged.
             assert_eq!(pop.desires[1][0].satisfaction, 8.0);
             assert_eq!(pop.desires[1][1].satisfaction, 10.0);
-            // (0.8 + 1.0 + 0.5) / 2 = 1.15 — no common cap.
-            assert!((pop.records.tier_sat[1] - 1.15).abs() < 1e-9);
+            // Sum of success rates + boost: 0.8 + 1.0 + 0.5 = 2.3 (not averaged).
+            assert!((pop.records.tier_sat[1] - 2.3).abs() < 1e-9);
             assert!((pop.records.satisfaction_units_total - 18.0).abs() < 1e-9);
         }
 
@@ -2448,7 +2455,7 @@ mod pop {
             let history = make_default_market_history();
             pop.update_sentiments(&history);
 
-            // Per-desire unchanged; recorded = (1.0 + 0.5) / 1 = 1.5.
+            // Per-desire unchanged; recorded sum = 1.0 + 0.5 = 1.5.
             assert_eq!(pop.desires[2][0].satisfaction, 10.0);
             assert!((pop.records.tier_sat[2] - 1.5).abs() < 1e-9);
         }
@@ -2465,13 +2472,13 @@ mod pop {
             pop.desires[1].push(common);
             pop.stored_effects.push(PopEffect::Satisfaction {
                 tier: 1,
-                amount: 0.3, // ratio-mass
+                amount: 0.3, // success-rate mass
             });
 
             let history = make_default_market_history();
             pop.update_sentiments(&history);
 
-            // Desire unchanged; (0.5 + 0.3) / 1 = 0.8.
+            // Desire unchanged; recorded sum = 0.5 + 0.3 = 0.8.
             assert_eq!(pop.desires[1][0].satisfaction, 5.0);
             assert!((pop.records.tier_sat[1] - 0.8).abs() < 1e-9);
             assert!(pop

@@ -167,7 +167,7 @@ impl PlayState {
     /// factors and sums them. They multiply their current households by that growth 
     /// factor, record it, then add that to their household.
     fn phase_pop_growth(&mut self) {
-        let factuals = &self.factuals;
+        //let factuals = &self.factuals;
         self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
             pop.growth_phase();
         });

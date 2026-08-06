@@ -91,18 +91,24 @@ oversaturated.
 **Preferred:** tier sat, common sat, basic sat, luxury sat  
 **Avoid:** ratio, tier ratio, tier fill, average satisfaction (say **tier sat**)
 
-**Meaning:** Average desire sat across a tier, optionally after boosts:
+**Meaning:** **Sum** of desire success rates across a tier, optionally after boosts
+(not an average). One full desire contributes `1.0`; three fully met desires →
+`3.0`. Boosts add success-rate mass in the same units.
 
 ```text
-tier_sat = ( Σ (satisfaction / amount) + boost ) / desire_count
+tier_sat = Sum(satisfaction / amount) + boost
 ```
 
-- Empty non-basic tier: treat as fully satisfied (`1.0`) when evaluating “no unmet needs.”
+- Empty tier: treat as fully satisfied (`1.0`) when recording / evaluating “no unmet needs.”
 - **Basic:** no satisfaction boosts.
-- **Common / luxury:** may exceed `1.0` after boosts (no hard cap on recorded tier sat).
+- **Common / luxury:** no hard cap on recorded tier sat (can exceed desire count after boosts).
+- **Mood / sentiment:** may normalize by desire count (`sum / count`) when a 0–1-ish
+  completeness is needed; that average is **not** what `records.tier_sat` stores.
+- **Growth / other:** `tier_avg_satisfaction` is a separate average helper; do not
+  confuse it with recorded tier sat.
 
 **Code:** `Pop::records.tier_sat[tier]` after `update_sentiments` (boosted for
-common/luxury); helpers `tier_avg_satisfaction`, `tier_sat_with_boost`.
+common/luxury); helpers `tier_satisfaction`, `tier_sat_with_boost`.
 Wealth: `Pop::records.wealth_amv` (AMV of on-hand property).
 Satisfaction units total: `Pop::records.satisfaction_units_total`.
 

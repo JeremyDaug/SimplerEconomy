@@ -103,6 +103,12 @@ Short reminders (details in `STYLE.md`):
   `#[cfg(test)]` modules named `*_should`.
 - Match the file you edit; no drive-by refactors; no vault edits unless asked.
 
+## Documentation
+
+- Comments use **ASCII only** (common keyboard characters): prefer `Sum` over
+  summation glyphs, `->` over arrow characters, plain `-` over en/em dashes.
+- Leave commenting to User.
+
 ### Code review log
 
 Open review findings live in repo-root `reviewlog.md`. **Whenever a code review
