@@ -28,9 +28,9 @@ pub struct Household {
     // sex breakdown (female fraction)
     /// Female fraction among adults (`0.0` all male, `1.0` all female).
     pub adult_mf: f64,
-    /// Female fraction among elders.
+    /// Female fraction among elders (`0.0` all male, `1.0` all female)..
     pub elder_mf: f64,
-    /// Female fraction among children.
+    /// Female fraction among children (`0.0` all male, `1.0` all female)..
     pub child_mf: f64,
 
     /// Adult labor rate per person per day.
@@ -79,6 +79,7 @@ impl Household {
         household.adult = adult;
         household.elder = elder;
         household.child = child;
+        household.debug_assert_member_sizes_valid();
         household
     }
 
@@ -87,7 +88,48 @@ impl Household {
         household.adult_mf = adult_mf;
         household.elder_mf = elder_mf;
         household.child_mf = child_mf;
+        household.debug_assert_sex_ratios_valid();
         household
+    }
+
+    /// Debug-only: each `*_mf` female fraction is finite and in `0.0..=1.0`.
+    #[inline]
+    fn debug_assert_sex_ratios_valid(&self) {
+        debug_assert!(
+            sex_ratio_in_unit(self.adult_mf),
+            "adult_mf must be finite and in 0.0..=1.0, got {}",
+            self.adult_mf
+        );
+        debug_assert!(
+            sex_ratio_in_unit(self.elder_mf),
+            "elder_mf must be finite and in 0.0..=1.0, got {}",
+            self.elder_mf
+        );
+        debug_assert!(
+            sex_ratio_in_unit(self.child_mf),
+            "child_mf must be finite and in 0.0..=1.0, got {}",
+            self.child_mf
+        );
+    }
+
+    /// Debug-only: average adult / elder / child sizes are finite and >= 0.
+    #[inline]
+    fn debug_assert_member_sizes_valid(&self) {
+        debug_assert!(
+            nonneg_finite(self.adult),
+            "adult average must be finite and >= 0, got {}",
+            self.adult
+        );
+        debug_assert!(
+            nonneg_finite(self.elder),
+            "elder average must be finite and >= 0, got {}",
+            self.elder
+        );
+        debug_assert!(
+            nonneg_finite(self.child),
+            "child average must be finite and >= 0, got {}",
+            self.child
+        );
     }
 
     pub fn with_labor(adult_labor: f64, elder_labor: f64, child_labor: f64) -> Self {
@@ -151,12 +193,11 @@ impl Household {
     /// plus any modifiers (desires, institutions, events, stored effects, etc.) already
     /// folded in by the caller. This method does not apply a second modifier pass.
     ///
-    /// Flow (all rates taken from the start-of-turn snapshot):
+    /// Flow (start-of-turn composition is non-negative by invariant):
     /// 1. Live births from adult women, reduced by infant mortality; newborns 50/50 sex.
-    /// 2. Maternal deaths remove adult women (fraction of live births).
-    /// 3. Age-band deaths: for each sex, rate = `total + sex_specific` (stacked), floored at 0.
-    /// 4. Aging: children / 20 -> adults, adults / 40 -> elders (sex preserved into the next band).
-    /// 5. `count = (total_adults + total_elders) / partnership_rate` when adults+elders remain;
+    /// 2. Age-band deaths (rate = total + sex, stacked), then maternal deaths on remaining women.
+    /// 3. Aging from **survivors** (children/20, adults/40) so bands cannot go negative.
+    /// 4. `count = (total_adults + total_elders) / partnership_rate` when adults+elders remain;
     ///    averages and female fractions are rebuilt from end-of-turn totals.
     ///
     /// Labor rates are not modified. Empty / dead groups zero out composition and count.
@@ -165,92 +206,70 @@ impl Household {
             self.count >= 1.0,
             "Household must have 1 or more households at the start."
         );
-
         debug_assert!(
             rates.partnership_rate > 0.0 && rates.partnership_rate.is_finite(),
             "partnership_rate must be finite and > 0, got {}",
             rates.partnership_rate
         );
-        debug_assert!(
-            self.adult_mf.is_finite()
-                && self.elder_mf.is_finite()
-                && self.child_mf.is_finite(),
-            "sex fractions must be finite"
-        );
+        self.debug_assert_sex_ratios_valid();
+        self.debug_assert_member_sizes_valid();
 
         // --- Start-of-turn totals by sex (female fraction) -------------------
-        let adult_f_frac = self.adult_mf.clamp(0.0, 1.0);
-        let elder_f_frac = self.elder_mf.clamp(0.0, 1.0);
-        let child_f_frac = self.child_mf.clamp(0.0, 1.0);
+        let start_adults = self.total_adults();
+        let start_elders = self.total_elders();
+        let start_children = self.total_children();
 
-        let start_adults = self.total_adults().max(0.0);
-        let start_elders = self.total_elders().max(0.0);
-        let start_children = self.total_children().max(0.0);
-
-        let start_adults_f = start_adults * adult_f_frac;
+        let start_adults_f = start_adults * self.adult_mf;
         let start_adults_m = start_adults - start_adults_f;
-        let start_elders_f = start_elders * elder_f_frac;
+        let start_elders_f = start_elders * self.elder_mf;
         let start_elders_m = start_elders - start_elders_f;
-        let start_children_f = start_children * child_f_frac;
+        let start_children_f = start_children * self.child_mf;
         let start_children_m = start_children - start_children_f;
 
-        // --- Clamped scalar rates -------------------------------------------
+        // --- Rate floors (modifiers may push stored rates negative) ----------
         let birth_per_woman = rates.birth_per_woman.max(0.0);
         let infant_mortality = rates.infant_mortality.clamp(0.0, 1.0);
         let maternal_mortality = rates.maternal_mortality.max(0.0);
 
-        // --- 1. Births and maternal mortality -------------------------------
-        // Live infants after infant mortality; maternal risk on those live births.
+        // --- 1. Births ------------------------------------------------------
         let live_births = start_adults_f * birth_per_woman * (1.0 - infant_mortality);
-        let maternal_deaths = (live_births * maternal_mortality).min(start_adults_f);
         let births_m = live_births * 0.5;
         let births_f = live_births - births_m;
 
-        // --- 2. Age-band deaths (total + sex-specific, stacked) --------------
-        let (child_death_m, child_death_f) = sex_band_deaths(
-            start_children_m,
-            start_children_f,
-            rates.child_mortality,
-        );
-        let (adult_death_m, adult_death_f) = sex_band_deaths(
-            start_adults_m,
-            start_adults_f,
-            rates.adult_mortality,
-        );
-        let (elder_death_m, elder_death_f) = sex_band_deaths(
-            start_elders_m,
-            start_elders_f,
-            rates.elder_mortality,
-        );
+        // --- 2. Deaths, then maternal on remaining adult women --------------
+        let (child_death_m, child_death_f) =
+            sex_band_deaths(start_children_m, start_children_f, rates.child_mortality);
+        let (adult_death_m, adult_death_f) =
+            sex_band_deaths(start_adults_m, start_adults_f, rates.adult_mortality);
+        let (elder_death_m, elder_death_f) =
+            sex_band_deaths(start_elders_m, start_elders_f, rates.elder_mortality);
 
-        // --- 3. Aging flows (fraction of stage per year) --------------------
-        let child_aging_m = start_children_m / CHILDHOOD_YEARS;
-        let child_aging_f = start_children_f / CHILDHOOD_YEARS;
-        let adult_aging_m = start_adults_m / ADULTHOOD_YEARS;
-        let adult_aging_f = start_adults_f / ADULTHOOD_YEARS;
+        let remain_children_m = start_children_m - child_death_m;
+        let remain_children_f = start_children_f - child_death_f;
+        let remain_adults_m = start_adults_m - adult_death_m;
+        let mut remain_adults_f = start_adults_f - adult_death_f;
+        let remain_elders_m = start_elders_m - elder_death_m;
+        let remain_elders_f = start_elders_f - elder_death_f;
 
-        // --- 4. Apply simultaneous flows ------------------------------------
-        let mut end_children_m =
-            start_children_m + births_m - child_death_m - child_aging_m;
-        let mut end_children_f =
-            start_children_f + births_f - child_death_f - child_aging_f;
+        let maternal_deaths = (live_births * maternal_mortality).min(remain_adults_f);
+        remain_adults_f -= maternal_deaths;
 
-        let mut end_adults_m =
-            start_adults_m + child_aging_m - adult_death_m - adult_aging_m;
-        let mut end_adults_f = start_adults_f + child_aging_f
-            - adult_death_f
-            - maternal_deaths
-            - adult_aging_f;
+        // --- 3. Aging from survivors (keeps end bands non-negative) ---------
+        let child_aging_m = remain_children_m / CHILDHOOD_YEARS;
+        let child_aging_f = remain_children_f / CHILDHOOD_YEARS;
+        let adult_aging_m = remain_adults_m / ADULTHOOD_YEARS;
+        let adult_aging_f = remain_adults_f / ADULTHOOD_YEARS;
 
-        let mut end_elders_m = start_elders_m + adult_aging_m - elder_death_m;
-        let mut end_elders_f = start_elders_f + adult_aging_f - elder_death_f;
+        let end_children_m = remain_children_m + births_m - child_aging_m;
+        let end_children_f = remain_children_f + births_f - child_aging_f;
+        let end_adults_m = remain_adults_m + child_aging_m - adult_aging_m;
+        let end_adults_f = remain_adults_f + child_aging_f - adult_aging_f;
+        let end_elders_m = remain_elders_m + adult_aging_m;
+        let end_elders_f = remain_elders_f + adult_aging_f;
 
-        end_children_m = end_children_m.max(0.0);
-        end_children_f = end_children_f.max(0.0);
-        end_adults_m = end_adults_m.max(0.0);
-        end_adults_f = end_adults_f.max(0.0);
-        end_elders_m = end_elders_m.max(0.0);
-        end_elders_f = end_elders_f.max(0.0);
+        debug_assert!(nonneg_finite(end_children_m) && nonneg_finite(end_children_f));
+        debug_assert!(nonneg_finite(end_adults_m) && nonneg_finite(end_adults_f));
+        debug_assert!(nonneg_finite(end_elders_m) && nonneg_finite(end_elders_f));
 
         let end_adults = end_adults_m + end_adults_f;
         let end_elders = end_elders_m + end_elders_f;
@@ -266,15 +285,17 @@ impl Household {
             return;
         }
 
-        // --- 5. Fold into count via partnership (adults + elders target) ----
+        // --- 4. Fold into count via partnership (adults + elders target) ----
         let partners = end_adults + end_elders;
-        let partnership = rates.partnership_rate.max(f64::EPSILON);
         if partners > 0.0 {
-            self.count = partners / partnership;
+            self.count = partners / rates.partnership_rate;
         } else {
-            // Children only: keep a positive count from previous average size so
-            // averages stay well-defined until adults reappear or the pop dies.
-            let old_size = self.household_size().max(0.1);
+            // Children only: keep a positive count from previous average size.
+            let old_size = self.household_size();
+            debug_assert!(
+                old_size > 0.0,
+                "children-only fold requires positive prior household_size"
+            );
             self.count = end_total / old_size;
         }
 
@@ -291,24 +312,40 @@ impl Household {
         self.adult_mf = female_fraction(end_adults_f, end_adults);
         self.elder_mf = female_fraction(end_elders_f, end_elders);
         self.child_mf = female_fraction(end_children_f, end_children);
+
+        self.debug_assert_member_sizes_valid();
+        self.debug_assert_sex_ratios_valid();
     }
 }
 
+/// True when `v` is a valid female-fraction sex ratio: finite and in `0.0..=1.0`.
+#[inline]
+fn sex_ratio_in_unit(v: f64) -> bool {
+    v.is_finite() && (0.0..=1.0).contains(&v)
+}
+
+/// True when `v` is finite and >= 0.
+#[inline]
+fn nonneg_finite(v: f64) -> bool {
+    v.is_finite() && v >= 0.0
+}
+
 /// Deaths for one age band: each sex uses stacked `total + sex` rate (floored at 0).
-/// Rate above 1.0 wipes that sex in the band.
+/// Rate above 1.0 wipes that sex in the band. Callers pass non-negative headcounts.
 fn sex_band_deaths(males: f64, females: f64, rates: (f64, f64, f64)) -> (f64, f64) {
+    debug_assert!(nonneg_finite(males) && nonneg_finite(females));
     let (total, male_r, female_r) = rates;
     let m_rate = (total + male_r).max(0.0);
     let f_rate = (total + female_r).max(0.0);
-    let death_m = (males * m_rate).min(males.max(0.0));
-    let death_f = (females * f_rate).min(females.max(0.0));
+    let death_m = (males * m_rate).min(males);
+    let death_f = (females * f_rate).min(females);
     (death_m, death_f)
 }
 
 /// Female fraction from female headcount and band total; `0.5` if the band is empty.
 fn female_fraction(females: f64, total: f64) -> f64 {
     if total > 0.0 {
-        (females / total).clamp(0.0, 1.0)
+        females / total
     } else {
         0.5
     }
@@ -373,13 +410,22 @@ mod household_new_update_should {
     }
 
     #[test]
-    fn zero_count_is_noop() {
+    #[should_panic(expected = "Household must have 1 or more households")]
+    fn update_requires_count_at_least_one() {
         let mut h = Household::with_count(0.0);
-        h.adult = 2.0;
-        let rates = DemographicRates::baseline();
-        h.update(&rates);
-        assert_eq!(h.count, 0.0);
-        assert_eq!(h.adult, 2.0);
+        h.update(&DemographicRates::baseline());
+    }
+
+    #[test]
+    #[should_panic(expected = "adult_mf must be finite and in 0.0..=1.0")]
+    fn sex_ratio_outside_unit_is_rejected() {
+        let _ = Household::with_sex_breakdown(1.5, 0.5, 0.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "adult average must be finite and >= 0")]
+    fn negative_member_size_is_rejected() {
+        let _ = Household::with_members(-1.0, 0.5, 2.5);
     }
 
     #[test]
