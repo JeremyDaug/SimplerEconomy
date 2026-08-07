@@ -1,397 +1,531 @@
-/// # Demographic Rates
-/// 
-/// The Demographic rates which modify the Household and simulate group and household 
-/// growth dynamics. 
-/// 
-/// Values between demographic rates and effects that modify these rates are added together
-/// directly. 
-/// 
-/// We do allow negative values, but clamp all of them to more appropriate minimums when calculating.
-/// Birth and Mortality rates cap at 0%, except elders who cap at 0.00001% (near immortality).
-/// Labor efficiency can be a negative value, though the sum result of labor values should never get
-/// too low.
-/// 
-/// Negative Labor Rates should are allowed for Children and Elders, representing 
-/// additional care needed to support them, Adults should never have negative labor 
-/// rates. Also, the Sum of Labor across a pop should also never be negative.
-/// 
-/// When calculating age categories, we assume a turn is equal to 1 year, adulthood 
-/// occurs at 20, and elderhood occurs at 60 for nice round numbers.
-/// 
-/// Since Elders and children can have labor efficiency values, child labor and 
-/// retirement age is included second hand. Reducing `child_eff` is the same as reducing 
-/// child labor. Reducing 'elder_eff' is the same as reducing the retirement age.
-/// 
-/// Culture and research should never go below 0.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DemographicRates {
-    // Birth and Death Rates
-    /// Births Per Woman (adults * 0.5)
-    /// Adds children to population.
-    /// 
-    /// Effect cap of 0.0%
-    pub births_per_woman: f64,
-    /// Infant mortality rate.
-    /// Reduces Birthrate.
-    /// Effect cap of 0.0%
-    pub infant_mortality: f64,
-    /// Maternal mortality rate. Chance of a woman dying in childbirth.
-    /// Effect cap of 0.0%
-    pub maternal_mortality: f64,
-    /// Child Mortality Rate, chance a child dies each turn.
-    /// Effect cap of 0.0%
-    pub child_mortality: f64,
-    /// Adult Mortality Rate, chance an adult dies each turn.
-    /// Effect cap of 0.0%
-    pub adult_mortality: f64,
-    /// Elder Mortality Rate, chance an elder dies each turn.
-    /// Effect cap of 0.000001%
-    /// Allowing 0% minimum would require a mechanism to alter 'retirement' age.
-    pub elder_mortality: f64,
-
-    // labor efficiencies.
-    /// Adult labor efficiency. (Turn Time * adult_eff = available time)
-    pub adult_eff: f64,
-    /// Elder labor efficiency. (Turn Time * elder_eff = available time)
-    pub elder_eff: f64,
-    /// Child labor efficiency. (Turn Time * child_eff = available time)
-    pub child_eff: f64,
-
-    // baseline household culture and research rates.
-    /// Culture produced per household.
-    pub culture: f64,
-    /// Research produced per household.
-    pub research: f64,
-
-    // TODO: Consider breaking Culture and Research into category rates, not just household.
-    // TODO: Consider adding Gender Balance in each group also.
-}
-
-impl DemographicRates {
-    /// # Baseline Demographic Rates
-    /// 
-    /// This is the 'default' values that all pops should have game start,
-    /// assuming no modifiers from other demographic factors.
-    /// 
-    /// Assuming no penalties or changes to the rates, a household should stabilize
-    /// around 2.0 adults, 2.5 children, and 0.5 elders.
-    /// 
-    /// We should also have a growth rate of about 2.0% per turn.
-    pub fn baseline() -> Self {
-        Self {
-            births_per_woman: 0.167,
-            infant_mortality: 0.2,
-            maternal_mortality: 0.015,
-            child_mortality: 0.025,
-            adult_mortality: 0.018,
-            elder_mortality: 0.08,
-            adult_eff: 1.0,
-            elder_eff: 0.5,
-            child_eff: 0.3,
-            culture: 1.0,
-            research: 1.0,
-        }
-    }
-
-    /// # Add Demographic Rates
-    /// 
-    /// Adds two sets of demographic rates together. 
-    /// 
-    /// Remember, rates are uncappped in storage, capped in
-    pub fn add(&self, other: &Self) -> Self {
-        Self {
-            births_per_woman: self.births_per_woman + other.births_per_woman,
-            infant_mortality: self.infant_mortality + other.infant_mortality,
-            maternal_mortality: self.maternal_mortality + other.maternal_mortality,
-            child_mortality: self.child_mortality + other.child_mortality,
-            adult_mortality: self.adult_mortality + other.adult_mortality,
-            elder_mortality: self.elder_mortality + other.elder_mortality,
-            adult_eff: self.adult_eff + other.adult_eff,
-            elder_eff: self.elder_eff + other.elder_eff,
-            child_eff: self.child_eff + other.child_eff,
-            culture: self.culture + other.culture,
-            research: self.research + other.research,
-        }
-    }
-
-    // clamp values
-    pub const BIRTHS_MINIMUM: f64 = 0.0;
-    pub const INFANT_MORTALITY_MINIMUM: f64 = 0.0;
-    pub const MATERNAL_MORTALITY_MINIMUM: f64 = 0.0;
-    pub const CHILD_MORTALITY_MINIMUM: f64 = 0.0;
-    pub const ADULT_MORTALITY_MINIMUM: f64 = 0.0;
-    pub const ELDER_MORTALITY_MINIMUM: f64 = 0.0;
-    pub const CULTURE_MINIMUM: f64 = 0.0;
-    pub const RESEARCH_MINIMUM: f64 = 0.0;
-    pub const ADULT_EFF_MINIMUM: f64 = 0.0;
-
-    // clamp helper functions
-    #[inline]
-    pub fn clamp_births(&self) -> f64 {
-        self.births_per_woman.max(Self::BIRTHS_MINIMUM)
-    }
-
-    #[inline]
-    pub fn clamp_infant_mortality(&self) -> f64 {
-        self.infant_mortality.max(Self::INFANT_MORTALITY_MINIMUM)
-    }
-
-    #[inline]
-    pub fn clamp_maternal_mortality(&self) -> f64 {
-        self.maternal_mortality.max(Self::MATERNAL_MORTALITY_MINIMUM)
-    }
-
-    #[inline]
-    pub fn clamp_child_mortality(&self) -> f64 {
-        self.child_mortality.max(Self::CHILD_MORTALITY_MINIMUM)
-    }
-
-    #[inline]
-    pub fn clamp_adult_mortality(&self) -> f64 {
-        self.adult_mortality.max(Self::ADULT_MORTALITY_MINIMUM)
-    }
-
-    #[inline]
-    pub fn clamp_elder_mortality(&self) -> f64 {
-        self.elder_mortality.max(Self::ELDER_MORTALITY_MINIMUM)
-    }
-}
+use crate::game::util::lerp;
 
 /// # Household
-/// 
-/// This is a household, includes current demographic rates (updated as needed), total 
-/// household count, and the age category breakdown.
-/// 
-/// Each turn is treated as a year (calculations are direct multiplications and additions).
-/// 
-/// Adulthood starts at 20, Elderhood starts at 60.
-/// 
-/// `Household::count` should always be >= 1.0 excluding immediately after growth phase.
-/// If it reaches below 1.0 during the growth phase, the household 'dies' and is removed 
-/// immediately thereafter.
-/// 
-/// TODO: Consider renaming to something more appropriate, maybe just `Households`.
+///
+/// Storage for a pop's household block: household count, per-household average
+/// members (adult / elder / child), female fraction in each age band, and labor
+/// rates per person-day in each band.
+///
+/// ## Assumptions
+///
+/// Age ranges are fixed for round numbers: childhood 20 years, adulthood 40 years.
+/// Each game turn is one year.
+///
+/// Sex fields (`*_mf`) are **female fractions** in `0.0..=1.0`
+/// (`0.0` = all male, `1.0` = all female). Birth math uses adult women =
+/// `total_adults * adult_mf`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Household {
-    /// The Demographic rates of the household. Updated as needed.
-    pub rates: DemographicRates,
-    /// The total number of households. Fractional values allowed.
-    /// Total members = count * household_size()
+    /// Count of households in the pop; fractional values are allowed and carry over.
     pub count: f64,
 
-    // Household Breakdown
-    /// Number of adults in a household (average).
-    pub adults: f64,
-    /// Number of elders in a household (average).
-    pub elders: f64,
-    /// Number of children in a household (average).
-    pub children: f64,
+    // members (per-household averages)
+    /// Average number of adults in a household.
+    pub adult: f64,
+    /// Average number of elders in a household.
+    pub elder: f64,
+    /// Average number of children in a household.
+    pub child: f64,
+
+    // sex breakdown (female fraction)
+    /// Female fraction among adults (`0.0` all male, `1.0` all female).
+    pub adult_mf: f64,
+    /// Female fraction among elders (`0.0` all male, `1.0` all female)..
+    pub elder_mf: f64,
+    /// Female fraction among children (`0.0` all male, `1.0` all female)..
+    pub child_mf: f64,
+
+    /// Adult labor rate per person per day.
+    pub adult_labor: f64,
+    /// Elder labor rate per person per day.
+    pub elder_labor: f64,
+    /// Child labor rate per person per day.
+    pub child_labor: f64,
+
+    /// The Current Partnership rate of the households (household Adults + children).
+    pub partnership_rate: f64,
 }
 
+/// Years spent in childhood before aging into adulthood.
+const CHILDHOOD_YEARS: f64 = 20.0;
+/// Years spent in adulthood before aging into elderhood.
+const ADULTHOOD_YEARS: f64 = 40.0;
+/// The default ratio of females to males in births (1.0 all female).
+const CHILD_SEX_RATIO: f64 = 0.5;
+/// The rate partnership moves closer to the targeted partnership rate.
+const PARTNERSHIP_TREND: f64 = 0.13;
 
 impl Household {
     /// # New
     /// 
-    /// New's up a household with the inputted count, baseline DemographicRates,
-    /// and default household (2.0 Adults, 0.5 Elders, 2.5 Children).
-    pub fn new(count: f64) -> Self {
-        Self {
-            count,
-            rates: DemographicRates::baseline(),
-            adults: 2.0,
-            elders: 0.5,
-            children: 2.5
+    /// Creates a new household with default values. 
+    /// 
+    /// 1 Household of 2 adults, 2.5 Children, 0.5 elders. All 50% male/female.
+    /// Adult labor is 1.0, elder labor is 0.7, and child labor is 0.3.
+    pub fn new() -> Self {
+        Household {
+            count: 1.0,
+            adult: 2.0,
+            elder: 0.5,
+            child: 2.5,
+            adult_mf: 0.5,
+            elder_mf: 0.5,
+            child_mf: 0.5,
+            adult_labor: 1.0,
+            elder_labor: 0.7,
+            child_labor: 0.3,
+            partnership_rate: 2.5,
         }
     }
 
-    /// # With Household
-    /// 
-    /// Fluent household setter. This can increase the total member count of the 
-    /// Household.
-    /// 
-    /// Meant to be used immediately after newing a household up.
-    pub fn with_household(mut self, adults: f64, elders: f64, children: f64) -> Self {
-        self.adults = adults;
-        self.elders = elders;
-        self.children = children;
-        self
+    pub fn with_count(count: f64) -> Self {
+        let mut household = Household::new();
+        household.count = count;
+        household
     }
 
-    /// # With Demographic Rates
-    /// 
-    /// Sets the demographic rates for the household fluently.
-    pub fn with_demographic_rates(mut self, demographic_rates: DemographicRates) -> Self {
-        self.rates = demographic_rates;
-        self
+    pub fn with_members(adult: f64, elder: f64, child: f64) -> Self {
+        let mut household = Household::new();
+        household.adult = adult;
+        household.elder = elder;
+        household.child = child;
+        household.partnership_rate = adult + elder;
+        household.debug_assert_member_sizes_valid();
+        household
     }
 
-    /// # Household Weighted Average
-    /// 
-    /// Returns the weighted average household member values, (adult, elder, children).
-    pub fn household_weighted_average(&self, other: Self) -> (f64, f64, f64) {
-        let total_members = self.total_population() + other.total_population();
-        if total_members == 0.0 {
-            return (0.0, 0.0, 0.0);
-        }
-        (
-            (self.adults * self.count + other.adults * other.count) / total_members,
-            (self.elders * self.count + other.elders * other.count) / total_members,
-            (self.children * self.count + other.children * other.count) / total_members
-        )
+    pub fn with_sex_breakdown(adult_mf: f64, elder_mf: f64, child_mf: f64) -> Self {
+        let mut household = Household::new();
+        household.adult_mf = adult_mf;
+        household.elder_mf = elder_mf;
+        household.child_mf = child_mf;
+        household.debug_assert_sex_ratios_valid();
+        household
     }
 
-    /// # Combine Households
-    /// 
-    /// Given two households, combine them. Should have the same number of members. Household
-    /// weights are combined as a weighted average.
-    /// 
-    /// Keeps the demographic rates of the first household.
-    pub fn combine_households(&self, other: &Self) -> Self {
-        let (adults, elders, children) = self.household_weighted_average(other.clone());
-        Self {
-            count: self.count + other.count,
-            rates: self.rates, // or combine if needed
-            adults,
-            elders,
-            children
-        }
+    /// Debug-only: each `*_mf` female fraction is finite and in `0.0..=1.0`.
+    #[inline]
+    fn debug_assert_sex_ratios_valid(&self) {
+        debug_assert!(
+            sex_ratio_in_unit(self.adult_mf),
+            "adult_mf must be finite and in 0.0..=1.0, got {}",
+            self.adult_mf
+        );
+        debug_assert!(
+            sex_ratio_in_unit(self.elder_mf),
+            "elder_mf must be finite and in 0.0..=1.0, got {}",
+            self.elder_mf
+        );
+        debug_assert!(
+            sex_ratio_in_unit(self.child_mf),
+            "child_mf must be finite and in 0.0..=1.0, got {}",
+            self.child_mf
+        );
     }
 
-    /// # Household Size
-    /// 
-    /// Gets the size of a singular household, adults + elders + children.
-    pub fn household_size(&self) -> f64 {
-        self.adults + self.elders + self.children
+    /// Debug-only: average adult / elder / child sizes are finite and >= 0.
+    #[inline]
+    fn debug_assert_member_sizes_valid(&self) {
+        debug_assert!(
+            nonneg_finite(self.adult),
+            "adult average must be finite and >= 0, got {}",
+            self.adult
+        );
+        debug_assert!(
+            nonneg_finite(self.elder),
+            "elder average must be finite and >= 0, got {}",
+            self.elder
+        );
+        debug_assert!(
+            nonneg_finite(self.child),
+            "child average must be finite and >= 0, got {}",
+            self.child
+        );
     }
 
-    /// # Members
-    /// 
-    /// Gets the members of the household. This is the size of the household
-    /// times the count of households.
-    pub fn total_population(&self) -> f64 {
-        self.count * self.household_size()
-    }
-
-    /// # Household Labor
-    /// 
-    /// Gets the total labor of the household produced in a turn.
-    pub fn household_labor(&self) -> f64 {
-        self.adults * self.rates.adult_eff +
-        self.elders * self.rates.elder_eff +
-        self.children * self.rates.child_eff
-    }
-
-    /// # Total Labor
-    /// 
-    /// Gets the total labor of all households produced in a turn.
-    pub fn total_labor(&self) -> f64 {
-        self.household_labor() * self.count
+    pub fn with_labor(adult_labor: f64, elder_labor: f64, child_labor: f64) -> Self {
+        let mut household = Household::new();
+        household.adult_labor = adult_labor;
+        household.elder_labor = elder_labor;
+        household.child_labor = child_labor;
+        household
     }
 
     /// # Total Adults
     /// 
-    /// The number of adults in this household.
+    /// Returns the total number of adults in the household.
     pub fn total_adults(&self) -> f64 {
-        self.count * self.adults
+        self.count * self.adult
     }
 
     /// # Total Elders
     /// 
-    /// The number of elders in this household.
+    /// Returns the total numbers of elders in the household.
     pub fn total_elders(&self) -> f64 {
-        self.count * self.elders
+        self.count * self.elder
     }
 
     /// # Total Children
     /// 
-    /// The number of children in this household.
+    /// Returns the total numbers of children in the household.
     pub fn total_children(&self) -> f64 {
-        self.count * self.children
+        self.count * self.child
+    }
+
+    /// # Total Count
+    ///
+    /// Returns the total number of people in the household group.
+    /// `self.count * self.household_size()`.
+    pub fn total_count(&self) -> f64 {
+        self.count * self.household_size()
+    }
+
+    /// # Total Labor
+    ///
+    /// Total labor from all people in all households this turn.
+    pub fn total_labor(&self) -> f64 {
+        self.total_adults() * self.adult_labor
+            + self.total_children() * self.child_labor
+            + self.total_elders() * self.elder_labor
+    }
+
+    /// # Household Size
+    ///
+    /// Average people per household (adult + elder + child averages).
+    pub fn household_size(&self) -> f64 {
+        self.adult + self.elder + self.child
     }
 
     /// # Update
+    ///
+    /// Advance this household group by one turn (one year) under `rates`.
+    ///
+    /// `rates` is the **final** rate bundle for this tick: baseline demographic rates
+    /// plus any modifiers (desires, institutions, events, stored effects, etc.) already
+    /// folded in by the caller. This method does not apply a second modifier pass.
     /// 
-    /// Updates the household based on the current demographic rates and other factors.
-    /// 
-    /// TODO: Consider removing Demographic rates from Household and passing it in here instead.
-    pub fn update(&mut self) {
-        if self.count <= 0.0 { 
-            return;
-        }
-        
-        // current totals
-        let mut total_adults = self.total_adults();
-        let mut total_elders = self.total_elders();
-        let mut total_children = self.total_children();
+    /// All rates are allowed to be negative, but negative values go to zero. 
+    /// Some rates are capped at 1.0 to ensure no funny overflow occurs, infant 
+    /// mortality, 
+    ///
+    /// Flow (start-of-turn composition is non-negative by invariant):
+    /// 1. Live births from adult women, reduced by infant mortality; newborns 50/50 sex.
+    /// 2. Age-band deaths (rate = total + sex, stacked), then maternal deaths on remaining women.
+    /// 3. Aging from **survivors** (children/20, adults/40) so bands cannot go negative.
+    /// 4. `count = (total_adults + total_elders) / partnership_rate` when adults+elders remain;
+    ///    averages and female fractions are rebuilt from end-of-turn totals.
+    ///
+    /// Labor rates are not modified. Empty / dead groups zero out composition and count.
+    pub fn update(&mut self, rates: &DemographicRates) {
+        debug_assert!(
+            self.count >= 1.0,
+            "Household must have 1 or more households at the start."
+        );
+        debug_assert!(
+            rates.partnership_rate > 0.0 && rates.partnership_rate.is_finite(),
+            "partnership_rate must be finite and > 0, got {}",
+            rates.partnership_rate
+        );
+        self.debug_assert_sex_ratios_valid();
+        self.debug_assert_member_sizes_valid();
 
-        // 1. Birth and Maternal Mortality
-        let women = total_adults * 0.5;
-        let births = women * self.rates.births_per_woman 
-            * (1.0 - self.rates.infant_mortality);
-        let maternal_deaths = births * self.rates.maternal_mortality;
+        // --- Start-of-turn totals by sex (female fraction) -------------------
+        let curr_adults = self.total_adults();
+        let curr_elders = self.total_elders();
+        let curr_children = self.total_children();
+        let curr_partnership = self.partnership_rate;
 
-        // 2. Cagetory Deaths
-        let child_deaths = total_children * self.rates.child_mortality;
-        let adult_deaths = total_adults * self.rates.adult_mortality;
-        let elder_deaths = total_elders * self.rates.elder_mortality;
+        let curr_adults_f = curr_adults * self.adult_mf;
+        let curr_adults_m = curr_adults - curr_adults_f;
+        let curr_elders_f = curr_elders * self.elder_mf;
+        let curr_elders_m = curr_elders - curr_elders_f;
+        let curr_children_f = curr_children * self.child_mf;
+        let curr_children_m = curr_children - curr_children_f;
 
-        // 3. Age Flows
-        let child_aging = total_children / 20.0;
-        let adult_aging = total_adults / 40.0;
+        // --- Rate floors (modifiers may push stored rates negative) ----------
+        let birth_per_woman = rates.birth_per_woman.max(0.0);
+        let infant_mortality = rates.infant_mortality.clamp(0.0, 1.0);
+        let maternal_mortality = rates.maternal_mortality.clamp(0.0, 1.0); 
 
-        // 4. Apply results
-        total_children += births - child_deaths - child_aging;
-        total_adults += child_aging - adult_deaths - adult_aging;
-        total_elders += adult_aging - elder_deaths;
+        // --- 1. Births ------------------------------------------------------
+        let live_births = curr_adults_f * birth_per_woman * (1.0 - infant_mortality);
+        let births_m = live_births * CHILD_SEX_RATIO;
+        let births_f = live_births - births_m;
 
-        // prevent negatives (may replace with debug_asserts)
-        total_children = f64::max(0.0, total_children);
-        total_adults = f64::max(0.0, total_adults);
-        total_elders = f64::max(0.0, total_elders);
+        // --- 2. Deaths, then maternal on remaining adult women --------------
+        let (child_death_m, child_death_f) =
+            sex_band_deaths(curr_children_m, curr_children_f, rates.child_mortality);
+        let (adult_death_m, adult_death_f) =
+            sex_band_deaths(curr_adults_m, curr_adults_f, rates.adult_mortality);
+        let (elder_death_m, elder_death_f) =
+            sex_band_deaths(curr_elders_m, curr_elders_f, rates.elder_mortality);
 
-        let new_total = total_adults + total_children + total_elders;
-        if new_total <= 0.0 { 
-            // everyone died
+        let remain_children_m = curr_children_m - child_death_m; 
+        let remain_children_f = curr_children_f - child_death_f;
+        let remain_adults_m = curr_adults_m - adult_death_m;
+        let mut remain_adults_f = curr_adults_f - adult_death_f;
+        let remain_elders_m = curr_elders_m - elder_death_m;
+        let remain_elders_f = curr_elders_f - elder_death_f;
+
+        let maternal_deaths = (live_births * maternal_mortality).min(remain_adults_f);
+        remain_adults_f -= maternal_deaths;
+
+        // --- 3. Aging from survivors (keeps end bands non-negative) ---------
+        let child_aging_m = remain_children_m / CHILDHOOD_YEARS;
+        let child_aging_f = remain_children_f / CHILDHOOD_YEARS;
+        let adult_aging_m = remain_adults_m / ADULTHOOD_YEARS;
+        let adult_aging_f = remain_adults_f / ADULTHOOD_YEARS;
+
+        let end_children_m = remain_children_m + births_m - child_aging_m;
+        let end_children_f = remain_children_f + births_f - child_aging_f;
+        let end_adults_m = remain_adults_m + child_aging_m - adult_aging_m;
+        let end_adults_f = remain_adults_f + child_aging_f - adult_aging_f;
+        let end_elders_m = remain_elders_m + adult_aging_m;
+        let end_elders_f = remain_elders_f + adult_aging_f;
+
+        debug_assert!(nonneg_finite(end_children_m) && nonneg_finite(end_children_f));
+        debug_assert!(nonneg_finite(end_adults_m) && nonneg_finite(end_adults_f));
+        debug_assert!(nonneg_finite(end_elders_m) && nonneg_finite(end_elders_f));
+
+        let end_adults = end_adults_m + end_adults_f;
+        let end_elders = end_elders_m + end_elders_f;
+        let end_children = end_children_m + end_children_f;
+        let end_total = end_adults + end_elders + end_children;
+
+        if end_total <= 0.0 {
             self.count = 0.0;
-            self.adults = 0.0;
-            self.elders = 0.0;
-            self.children = 0.0;
+            self.adult = 0.0;
+            self.elder = 0.0;
+            self.child = 0.0;
+            // leave sex / labor fields as-is for inspection of the last living shape
             return;
         }
 
-        // convert back to average household.
-        let old_size = self.household_size();
-        self.count = new_total / old_size;
-        
-        self.adults = total_adults / new_total;
-        self.elders = total_elders / new_total;
-        self.children = total_children / new_total;
-        
+        // 4. Tug household parntership factor and size to be closer to the parntership rate given.
+        let new_partnership = lerp(curr_partnership, rates.partnership_rate, PARTNERSHIP_TREND);
+        let partners = end_adults + end_elders;
+        if partners > 0.0 {
+            self.count = partners / new_partnership;
+        } else {
+            // Children only: keep a positive count from previous average size.
+            let old_size = self.household_size();
+            debug_assert!(
+                old_size > 0.0,
+                "children-only fold requires positive prior household_size"
+            );
+            self.count = end_total / old_size;
+        }
+
+        debug_assert!(
+            self.count > 0.0 && self.count.is_finite(),
+            "household count must be finite and > 0 after update, got {}",
+            self.count
+        );
+
+        self.adult = end_adults / self.count;
+        self.elder = end_elders / self.count;
+        self.child = end_children / self.count;
+
+        self.adult_mf = female_fraction(end_adults_f, end_adults);
+        self.elder_mf = female_fraction(end_elders_f, end_elders);
+        self.child_mf = female_fraction(end_children_f, end_children);
+
+        self.debug_assert_member_sizes_valid();
+        self.debug_assert_sex_ratios_valid();
     }
 }
 
-impl Default for Household {
-    /// # Default
-    /// 
-    /// Defaults to 1.0 household,
-    /// demographic rates equal to baseline,
-    /// 2.0 adults, 0.5 elders, and 2.5 children.
-    fn default() -> Self {
-        Self { 
-            count: 1.0,
-            rates: DemographicRates::baseline(),
-            adults: 2.0,
-            elders: 0.5,
-            children: 2.5,
+/// True when `v` is a valid female-fraction sex ratio: finite and in `0.0..=1.0`.
+#[inline]
+fn sex_ratio_in_unit(v: f64) -> bool {
+    v.is_finite() && (0.0..=1.0).contains(&v)
+}
+
+/// True when `v` is finite and >= 0.
+#[inline]
+fn nonneg_finite(v: f64) -> bool {
+    v.is_finite() && v >= 0.0
+}
+
+/// Deaths for one age band: each sex uses stacked `total + sex` rate (floored at 0).
+/// Rate above 1.0 wipes that sex in the band. Callers pass non-negative headcounts.
+fn sex_band_deaths(males: f64, females: f64, rates: (f64, f64, f64)) -> (f64, f64) {
+    debug_assert!(nonneg_finite(males) && nonneg_finite(females));
+    let (total, male_r, female_r) = rates;
+    let m_rate = (total + male_r).max(0.0);
+    let f_rate = (total + female_r).max(0.0);
+    let death_m = (males * m_rate).min(males);
+    let death_f = (females * f_rate).min(females);
+    (death_m, death_f)
+}
+
+/// Female fraction from female headcount and band total; `0.5` if the band is empty.
+fn female_fraction(females: f64, total: f64) -> f64 {
+    let result = females / total;
+    debug_assert!(0.0 <= result && result <= 1.0, "Female Fraction somehow left bounds!");
+    result
+}
+
+/// # Demographic Rates
+///
+/// Birth, mortality, and household-formation parameters for [`Household::update`].
+/// Values may be stored uncapped from modifiers; [`Household::update`] clamps
+/// infant mortality to `0..=1` and floors other rates at 0 where needed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DemographicRates {
+    /// Live-birth attempts per adult woman per year (before infant mortality).
+    /// TODO: Separate this value to distinquish between 'children born' and 'women who gave birth' to account for multichild births.
+    pub birth_per_woman: f64,
+    /// Fraction of births that die in infancy (`0.2` => 20% die, 80% become children).
+    pub infant_mortality: f64,
+    /// Adult women who die per live birth (maternal mortality).
+    pub maternal_mortality: f64,
+
+    /// Child death chance per year: `(total, male, female)`. Effective rate per sex
+    /// is `total + sex` (stacked).
+    pub child_mortality: (f64, f64, f64),
+    /// Adult death chance per year: `(total, male, female)`, stacked as above.
+    pub adult_mortality: (f64, f64, f64),
+    /// Elder death chance per year: `(total, male, female)`, stacked as above.
+    pub elder_mortality: (f64, f64, f64),
+
+    /// Preferred adults+elders per household. After flows,
+    /// `count = (total_adults + total_elders) / partnership_rate`.
+    ///
+    /// TODO: Change name to something more appropriate.
+    pub partnership_rate: f64,
+}
+
+impl DemographicRates {
+    /// # Baseline
+    ///
+    /// Rough starting rates aimed near ~2 adults, ~2.5 children, ~0.5 elders
+    /// and positive growth when sex balance is even. Partnership target is
+    /// adults+elders = 2.5 (2.0 + 0.5).
+    pub fn baseline() -> Self {
+        Self {
+            birth_per_woman: 0.167,
+            infant_mortality: 0.20,
+            maternal_mortality: 0.015,
+            child_mortality: (0.025, 0.0, 0.0),
+            adult_mortality: (0.018, 0.0, 0.0),
+            elder_mortality: (0.08, 0.0, 0.0),
+            partnership_rate: 2.5,
         }
     }
 }
 
-/// # House Member
-/// 
-/// A helper enum to select between members of a household
-pub enum HouseMember {
-    Adult,
-    Child,
-    Elder
+#[cfg(test)]
+mod household_new_update_should {
+    use super::*;
+
+    fn assert_finite_household(h: &Household) {
+        assert!(h.count.is_finite());
+        assert!(h.adult.is_finite() && h.elder.is_finite() && h.child.is_finite());
+        assert!(h.adult_mf.is_finite() && h.elder_mf.is_finite() && h.child_mf.is_finite());
+    }
+
+    #[test]
+    #[should_panic(expected = "Household must have 1 or more households")]
+    fn update_requires_count_at_least_one() {
+        let mut h = Household::with_count(0.0);
+        h.update(&DemographicRates::baseline());
+    }
+
+    #[test]
+    #[should_panic(expected = "adult_mf must be finite and in 0.0..=1.0")]
+    fn sex_ratio_outside_unit_is_rejected() {
+        let _ = Household::with_sex_breakdown(1.5, 0.5, 0.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "adult average must be finite and >= 0")]
+    fn negative_member_size_is_rejected() {
+        let _ = Household::with_members(-1.0, 0.5, 2.5);
+    }
+
+    #[test]
+    fn baseline_keeps_positive_population_and_partnership_count() {
+        let mut h = Household::with_count(10.0);
+        let rates = DemographicRates::baseline();
+        let before = h.total_count();
+        h.update(&rates);
+        assert_finite_household(&h);
+        assert!(h.count > 0.0);
+        assert!(h.total_count() > 0.0);
+        // Partnership: adults+elders averages should sum to partnership_rate.
+        let partners_per_house = h.adult + h.elder;
+        assert!(
+            (partners_per_house - rates.partnership_rate).abs() < 1e-9,
+            "adult+elder average {partners_per_house} should equal partnership_rate"
+        );
+        // Not a wipe.
+        assert!(h.total_count() > before * 0.5);
+    }
+
+    #[test]
+    fn sex_specific_mortality_shifts_female_fraction() {
+        let mut h = Household::with_count(10.0);
+        // Even start.
+        h.adult_mf = 0.5;
+        h.child_mf = 0.5;
+        h.elder_mf = 0.5;
+        let mut rates = DemographicRates::baseline();
+        // Heavy extra female adult mortality, no extra male.
+        rates.adult_mortality = (0.0, 0.0, 0.5);
+        rates.birth_per_woman = 0.0;
+        rates.maternal_mortality = 0.0;
+        h.update(&rates);
+        assert!(
+            h.adult_mf < 0.5,
+            "female-heavy adult mortality should lower adult female fraction, got {}",
+            h.adult_mf
+        );
+    }
+
+    #[test]
+    fn everyone_dead_zeros_composition() {
+        // Simultaneous flows still age survivors into the next band, so a full wipe
+        // needs no younger band to feed adults/elders (no children, no adults).
+        let mut h = Household::with_count(5.0);
+        h.adult = 0.0;
+        h.child = 0.0;
+        h.elder = 1.0;
+        let rates = DemographicRates {
+            birth_per_woman: 0.0,
+            infant_mortality: 0.0,
+            maternal_mortality: 0.0,
+            child_mortality: (0.0, 0.0, 0.0),
+            adult_mortality: (0.0, 0.0, 0.0),
+            elder_mortality: (2.0, 0.0, 0.0),
+            partnership_rate: 2.5,
+        };
+        h.update(&rates);
+        assert_eq!(h.count, 0.0);
+        assert_eq!(h.adult, 0.0);
+        assert_eq!(h.elder, 0.0);
+        assert_eq!(h.child, 0.0);
+    }
+
+    #[test]
+    fn newborns_are_split_evenly_when_starting_childless() {
+        let mut h = Household::with_count(10.0);
+        h.child = 0.0;
+        h.child_mf = 0.0; // will be replaced by births
+        let mut rates = DemographicRates::baseline();
+        rates.child_mortality = (0.0, 0.0, 0.0);
+        // No aging out of empty children; suppress other noise.
+        rates.adult_mortality = (0.0, 0.0, 0.0);
+        rates.elder_mortality = (0.0, 0.0, 0.0);
+        rates.maternal_mortality = 0.0;
+        rates.infant_mortality = 0.0;
+        rates.birth_per_woman = 1.0; // one birth per woman
+        h.update(&rates);
+        assert!(h.child > 0.0);
+        assert!(
+            (h.child_mf - 0.5).abs() < 1e-9,
+            "newborns should be 50/50, child_mf={}",
+            h.child_mf
+        );
+    }
 }
