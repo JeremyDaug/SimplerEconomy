@@ -32,3 +32,4 @@ pub mod religion;
 pub mod effects;
 pub mod sentiment;
 pub mod util;
+pub mod household_new;
