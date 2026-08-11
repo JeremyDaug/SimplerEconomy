@@ -82,6 +82,9 @@ impl PlayState {
     /// Add turn start resources. Like time and environmental resources.
     /// Goes through 
     fn phase_start_of_day(&mut self) {
+        // environmental refresh, create new plants, animals, and regenerating natural features
+        // plot updating and and environmental factor disbursment.
+        // Pop time Generation
         todo!("1. Start-of-day resources (time, environment regen, market day resets, …)")
     }
 
@@ -107,29 +110,27 @@ impl PlayState {
     /// Institutions do not rewrite household/desires directly; they push effects
     /// (and later demographic mods). Non-demo household overlays (D1) stay deferred.
     fn phase_player_bonuses_and_demographic_updates(&mut self) {
-        {
-            let markets = &self.map_data.markets;
-            let factuals = &self.factuals;
-            let Actors {
-                pops,
-                firms,
-                institutions,
-            } = &mut self.actors;
+        let markets = &self.map_data.markets;
+        let factuals = &self.factuals;
+        let Actors {
+            pops,
+            firms,
+            institutions,
+        } = &mut self.actors;
 
-            // 1. Institutions → firms / pops.
-            for institution in institutions.values() {
-                institution.apply_passive_effects(pops, firms, markets);
-            }
+        // 1. Institutions → firms / pops.
+        for institution in institutions.values() {
+            institution.apply_passive_effects(pops, firms, markets);
+        }
 
-            // 2. Firms → pops.
-            for firm in firms.values() {
-                firm.apply_passive_bonuses(pops);
-            }
+        // 2. Firms → pops.
+        for firm in firms.values() {
+            firm.apply_passive_bonuses(pops);
+        }
 
-            // 3. Pops: update desires from demographics if needed, resync desires.
-            for pop in pops.values_mut() {
-                pop.update_desires(factuals);
-            }
+        // 3. Pops: update desires from demographics if needed, resync desires.
+        for pop in pops.values_mut() {
+            pop.update_desires(factuals);
         }
 
         // 4. Orchestrator clears shared flags after all pops have read them.

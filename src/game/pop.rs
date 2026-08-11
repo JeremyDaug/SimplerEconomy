@@ -3,17 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor,
-    config::pop_constants,
-    desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
-    factuals::Factuals,
-    good::GoodTag,
-    household::DemographicRates,
-    market::MarketHistory,
-    marketorder::MarketOrder,
-    scalingfactor::ScalingFactor,
-    sentiment::{Sentiment, SentimentKind, SentimentMod},
-    util::lerp,
+    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::DemographicRates, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -100,8 +90,12 @@ pub struct Pop {
 
 impl Pop {
     /// Emigration / mobility pressure for this pop (mood × size × mobility, …).
-    pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals) {
+    pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals, _region: &Market) {
         let _ = (self, factuals);
+        // Get cultural and environmental effects that modify migratory pressure.
+        // get mood effects on migratory pressure.
+        // Modify by the current demographics of the pop.
+        // return result
         todo!("Pop calculate migratory pressure")
     }
 

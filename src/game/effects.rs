@@ -12,6 +12,7 @@
 //! `Growth` arm still bridges into [`ProcessEffect`] / [`EffectKind`].
 
 use crate::game::sentiment::SentimentKind;
+use crate::game::household::HouseholdTarget;
 
 // ---------------------------------------------------------------------------
 // Master catalog
@@ -25,11 +26,11 @@ use crate::game::sentiment::SentimentKind;
 pub enum EffectKind {
     // --- Population rates ---
     /// Additive birth-rate delta (e.g. `0.01` = +1%/turn).
+    /// Applies to Birth-Per-Woman.
     BirthRate(f64),
-    /// Additive mortality-rate delta.
-    MortalityRate(f64),
-    /// Combined growth shortcut (birth − mortality style single knob).
-    Growth(f64),
+    /// Additive mortality-rate delta. Applies to the demographic group
+    /// specified in the [`HouseholdTarget`](crate::game::household::HouseholdTarget).
+    MortalityRate(HouseholdTarget, f64),
 
     // --- Soft power / state ---
     Research(f64),
@@ -39,9 +40,6 @@ pub enum EffectKind {
     Legitimacy(f64),
 
     // --- Household structure / passive rates (demographic) ---
-    Adults(f64),
-    Elders(f64),
-    Children(f64),
     AdultEfficiency(f64),
     ElderEfficiency(f64),
     ChildEfficiency(f64),

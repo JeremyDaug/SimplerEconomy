@@ -1,4 +1,5 @@
 use crate::game::util::lerp;
+use bitflags::*;
 
 /// # Household
 ///
@@ -460,6 +461,33 @@ impl DemographicRates {
             ),
             partnership_rate: self.partnership_rate + other.partnership_rate,
         }
+    }
+}
+
+bitflags! {
+    /// Compact flags for age/sex subgroups of a household as well as maternal and
+    /// infant mortality rates.
+    /// Combinable so an effect, desire, or filter can target
+    /// “adult females”, “all children”, “elders of either sex”, etc.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct HouseholdTarget: u8 {
+        const CHILD  = 0b0000_0001;
+        const ADULT  = 0b0000_0010;
+        const ELDER  = 0b0000_0100;
+
+        const MALE   = 0b0001_0000;
+        const FEMALE = 0b0010_0000;
+
+        const MATERNAL = 0b0100_0000;
+        const INFANTS = 0b1000_0000;
+
+        // Convenience composites
+        const ANY_AGE = Self::CHILD.bits() | Self::ADULT.bits() | Self::ELDER.bits();
+        const NOT_CHILD = Self::ADULT.bits() | Self::ELDER.bits();
+        const NOT_ADULT = Self::CHILD.bits() | Self::ELDER.bits();
+        const NOT_ELDER = Self::CHILD.bits() | Self::ADULT.bits();
+        const ANY_SEX = Self::MALE.bits() | Self::FEMALE.bits();
+        const ANY     = Self::ANY_AGE.bits() | Self::ANY_SEX.bits();
     }
 }
 
