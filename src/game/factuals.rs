@@ -1,12 +1,7 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    culture::Culture,
-    desire::{DemoDesire, Desire, DesireSource},
-    good::Good,
-    process::Process,
-    religion::Religion,
-    species::Species,
+    culture::Culture, desire::{DemoDesire, Desire, DesireSource}, good::Good, household::DemographicRates, pop::DemoRow, process::Process, religion::Religion, species::Species,
 };
 
 /// # Factuals
@@ -100,9 +95,9 @@ impl Factuals {
 
     /// # Clear Household Changed Flags
     ///
-    /// After every pop has run [`crate::game::pop::Pop::demographic_update`], clear
+    /// After every pop has run [`crate::game::pop::Pop::update_desires`], clear
     /// the shared demographic `household_changed` flags so the next day does not
-    /// rebuild households from a stale signal.
+    /// rebuild households again.
     pub fn clear_household_changed_flags(&mut self) {
         for species in self.species.values_mut() {
             species.household_changed = false;
@@ -153,6 +148,54 @@ impl Factuals {
     pub(crate) fn find_good(&self, id: usize) -> &Good {
         self.goods.get(&id)
             .unwrap_or_else(|| panic!("Good {id} missing from factuals."))
+    }
+    
+    /// # Get Demographic Rates
+    ///
+    /// Resolve structural demographic rates for a pop's demographic ids:
+    /// `baseline + species_demo_eff + culture_demo_eff + religion_demo_eff`
+    /// (culture/religion id `0` means none and is skipped). Class is not folded in yet.
+    ///
+    /// ## Policy: recompute every call (no cache)
+    ///
+    /// Rates are **not** stored on the pop and are **not** memoized here. Each caller
+    /// (typically once per pop per growth phase) recomputes from the current factual
+    /// deltas. That keeps results always fresh under parallel `&Factuals` reads
+    /// (e.g. rayon growth) without locks or invalidation.
+    ///
+    /// Cost is a few map lookups and a small `DemographicRates::add` chain. Unique
+    /// demographic combos are usually far fewer than pop count; the same combo may
+    /// be recomputed many times in one day when many pops share it.
+    ///
+    /// ## If this becomes too slow (large pop counts)
+    ///
+    /// Prefer a **day-fill cache of living combos only** (not the full species x
+    /// culture x class x religion product):
+    /// - Key: demographic ids only (not job, not household composition).
+    /// - Sequential phase: ensure cache entries for every live key (or scan pops once).
+    /// - Growth: `&self` lookup only (no interior mutability on the hot path).
+    /// - Invalidate when any `*_demo_eff` / baseline changes.
+    ///
+    /// Lazy fill under parallel growth is also possible (`RwLock`/`DashMap`) but is
+    /// more complex than day-fill for this turn loop. See
+    /// `docs/proposals/household-population-refactor-primer.md`.
+    pub(crate) fn get_demographic_rates(&self, demographics: DemoRow) -> DemographicRates {
+        // Intentional: no cache. See doc above if profiling shows this hot.
+        let mut rates = DemographicRates::baseline();
+        if let Some(species) = self.species.get(&demographics.species) {
+            rates = rates.add(&species.species_demo_eff);
+        }
+        if demographics.culture != 0 {
+            if let Some(culture) = self.cultures.get(&demographics.culture) {
+                rates = rates.add(&culture.culture_demo_eff);
+            }
+        }
+        if demographics.religion != 0 {
+            if let Some(religion) = self.religion.get(&demographics.religion) {
+                rates = rates.add(&religion.religion_demo_eff);
+            }
+        }
+        rates
     }
 }
 

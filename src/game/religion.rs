@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::HouseholdDef};
+use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::DemographicRates};
 
 /// # Religion
-/// 
+///
 /// The religion of a pop. Defines additional common and luxury needs as well as
 /// secondary benefits and influence the player can develop.
-/// 
+///
 /// Religion is maleable to the player it's attached to, similar to Culture.
 #[derive(Debug, Clone)]
 pub struct Religion {
@@ -18,36 +18,28 @@ pub struct Religion {
     /// state, it is set to 0.
     pub state: usize,
     /// Demographic desires keyed by `DemoDesire.id` for O(1) lookup.
-    /// 
+    ///
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
-    /// The universal effects of Culture on a people with this culture.
+    /// The Unirversal effects on people who follow this religion.
     /// 
-    /// This is for effects that are not contingent on other factors like desires.
-    /// For example, Flat birth/mortality rates, per household culture/research 
-    /// generation, household size or efficiency changes, and so on.
-    pub culture_effects: Vec<DemographicEffect>,
-    /// The consolidated effects on a household. These are updated when 
-    /// `culture_effects` changes and intended to be added to the other demographics 
-    /// to define a pop's household.
-    pub culture_household_modifiers: HouseholdDef,
-    /// A helper flag to mark when a culture has changed, and so pop_households should
-    /// also be updated. 
+    /// This is for effects that are not contingent on other factors, like desires.
+    /// For example, Birthrate/Moratlity modifiers, satifsaciton boosts, 
+    /// research/culture effects, labor efficiency, etc.
+    pub religion_effects: Vec<DemographicEffect>,
+    /// A Religion's Demograhpic Effects on followers. 
     /// 
-    /// TODO: This and the effects of applying a household change should be smoother.
-    /// Instead of snapping into place, it should apply in smooth phases to keep massive
-    /// population swings from occurring. The current mechanism to keep things more 
-    /// smooth is from the data design level. Only allowing small changes to apply with 
-    /// each change and forcing those changes to be spread out over time.
-    /// The ideal desire would be to have th transitionary effect take place over a few
-    /// turns and possibly requiring population growth/shrink to make up the changes
-    /// appropriately. That latter part is likely too complicated for our needs.
+    /// This is added to previous effects, and so defaults to 0.
+    pub religion_demo_eff: DemographicRates,
+    /// When true, pops should refresh effective demographic rates this turn.
+    ///
+    /// TODO: Smoother multi-turn application of large rate swings if needed.
     pub household_changed: bool,
 }
 
 impl Religion {
     /// # New
-    /// 
+    ///
     /// Creates a religion with the given id and name.
     /// State defaults to 0 (no state). Desires start empty.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
@@ -56,8 +48,8 @@ impl Religion {
             name: name.into(),
             state: 0,
             desires: HashMap::new(),
-            culture_effects: vec![],
-            culture_household_modifiers: HouseholdDef::zero(),
+            religion_effects: vec![],
+            religion_demo_eff: DemographicRates::zero(),
             household_changed: false,
         }
     }

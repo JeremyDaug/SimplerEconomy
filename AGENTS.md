@@ -18,6 +18,9 @@ when they conflict.
 In-repo high-level notes also live in `README.md` and `TODO.md`. Those are
 secondary to the Obsidian design vault for intent and direction.
 
+**Session catch-up for agents:** [`docs/agent-handoff.md`](./docs/agent-handoff.md)
+(refresh when major work lands so the next instance can pick up quickly).
+
 ### Design vocabulary (in-repo)
 
 **Canonical naming for design talk and comments:**
@@ -107,7 +110,7 @@ Short reminders (details in `STYLE.md`):
 
 - Comments use **ASCII only** (common keyboard characters): prefer `Sum` over
   summation glyphs, `->` over arrow characters, plain `-` over en/em dashes.
-- Leave commenting to User.
+- Leave commenting to User, only add, do not edit or replace. Notify user instead.
 
 ### Code review log
 

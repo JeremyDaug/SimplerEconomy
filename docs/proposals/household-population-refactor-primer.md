@@ -1,12 +1,12 @@
-# Primer: Household / population demographics refactor (next work)
+# Primer: Household / population demographics
 
-**Audience:** agents (and humans) continuing the author's next task.  
-**Status:** planned; first-draft sketch exists outside the repo.  
-**TODO entry:** `TODO.md` -> Refactors -> Household / population change helpers  
+**Audience:** agents (and humans) working on pops, growth, and demographics.  
+**Status:** core model is **in-repo and wired**; tuning, caching, and some call-site docs still lag.  
+**TODO entry:** `TODO.md` -> Refactors / household items as listed there  
 **Background chat:** https://grok.com/share/c2hhcmQtMw_e2b20412-fa4e-4d6e-ad1e-29cf133c819e  
-**First draft (author desktop, not in repo):** `/home/jeremy/Desktop/household_demographics.rs`  
+**Historical sketch (desktop, optional):** `/home/jeremy/Desktop/household_demographics.rs`
 
-Vault: EconCiv `Pops.md` (Household + Alternative Household sections). The **rates-driven composition** path is what we are implementing next, even if older vault notes also describe a simpler static def model.
+Vault: EconCiv `Pops.md` (Household sections). Prefer **this primer + current code** when vault notes still describe a static `HouseholdDef` recipe.
 
 Comments and docs: **ASCII only** (`Sum`, `->`, plain `-`).
 
@@ -14,163 +14,100 @@ Comments and docs: **ASCII only** (`Sum`, `->`, plain `-`).
 
 ## One-sentence goal
 
-Stop treating household shape as a static member recipe you edit directly. Instead, store **per-household average** adults/children/elders plus a **household count**, and drive change each turn through a **`DemographicRates`** bundle (births and age-specific mortality). Rates flow people between buckets; averages and count update as a result.
+Store **per-household averages** (adult / child / elder) plus a **household count**, and evolve them each year via a **`DemographicRates`** bundle (births and age-band mortality). Rates are **not** stored on each pop; they are resolved **centrally** (via factuals) and passed into growth when needed.
 
 ---
 
-## Target model (author plan)
+## Current model (landed)
 
-### Types to end up with
+### `Household` (`src/game/household.rs`)
 
-1. **`DemographicRates`** (new)  
-   Demographic process parameters (typically per year / per turn). Not the household body itself.
+Living composition for a pop's households:
 
-   Planned fields (names may match or track the draft):
+| Field | Meaning |
+|-------|---------|
+| `count` | Number of households (fractional OK) |
+| `adult`, `child`, `elder` | **Averages per household**, not pop-wide totals |
+| `adult_mf`, `child_mf`, `elder_mf` | Female fractions in `0.0..=1.0` |
+| `adult_labor`, `child_labor`, `elder_labor` | Labor per person-day in each band |
+| `partnership_rate` | **Current** adults+elders target used for folding count (lerps toward rate target over turns) |
 
-   | Rate | Role |
-   |------|------|
-   | Birth rate (`births_per_woman` in draft) | Live births drive (per adult woman per turn) |
-   | Miscarriage rate | Fraction of pregnancies that fail (draft has field; wiring into flows may still need care) |
-   | Maternal mortality | Adult-woman deaths tied to live births |
-   | Child mortality | Annual (per-turn) death rate for children |
-   | Adult mortality | Annual death rate for adults (non-maternal) |
-   | Elder mortality | Annual death rate for elders |
+Helpers: `total_adults` / `total_children` / `total_elders` / `total_count` / `household_size` / `total_labor`.
 
-2. **`Household`** (consolidated; **`HouseholdDef` goes away** as a separate concept)  
-   One pop's household block:
+Invariants (debug): member averages `>= 0`; sex fractions in unit interval; `update` expects living `count >= 1` at entry.
 
-   | Field | Meaning |
-   |-------|---------|
-   | `count` | Number of households this pop represents |
-   | `adults`, `children`, `elders` | **Averages per household**, not pop-wide totals |
+### `DemographicRates` (same module)
 
-   Derived:
+Process parameters for one growth tick (1 turn = 1 year):
 
-   - `household_size` = adults + children + elders (average people per household)
-   - `total_population` = count * household_size
-   - `total_adults` = count * adults (same pattern for children/elders)
+| Field | Role |
+|-------|------|
+| `birth_per_woman` | Live-birth attempts per adult woman per year (before infant mortality) |
+| `infant_mortality` | Fraction of births that die in infancy (`0..=1` when applied) |
+| `maternal_mortality` | Adult-women deaths per live birth |
+| `child_mortality` / `adult_mortality` / `elder_mortality` | `(total, male, female)` stacked per sex |
+| `partnership_rate` | **Target** adults+elders per household (live value lives on `Household`) |
 
-### What we stop doing
+Helpers: `baseline()`, `zero()`, `add(&self, other)`.
 
-- Defining growth mainly as "set adults/children/elders on a def and multiply by count."
-- Manually nudging member slots as the primary way demographics change.
-- Keeping parallel `HouseholdDef` (template) + `Household` / `DemoRow.household` that drift apart.
+`Household::update(&rates)` applies births, deaths, aging (childhood 20y, adulthood 40y), sex-aware flows, partnership lerp, then rewrites averages and `count`.
 
-### What we start doing
+### Where rates live (important)
 
-- Species / culture / religion (and later institutions) contribute **rates** (and maybe labor/culture/research side stats if still needed), not raw "add 0.5 children to the def."
-- Each growth/demography tick: apply rates to the **current** average composition + count:
-  - births add children (after miscarriage / live-birth accounting as designed)
-  - mortality removes from the right age band
-  - aging moves children -> adults -> elders over stage lengths
-  - recompute averages and/or fold net headcount into `count` so the pop stays consistent
-- Shock events (famine, plague, war) can spike rates or directly wound totals; the structure then **evolves** under rates instead of snapping to a new fixed recipe.
+| Place | Holds rates? |
+|-------|----------------|
+| `DemoRow` / `Pop.demographics` | **No** -- only `household` + species/culture/class/religion ids |
+| Species / culture / religion | **Yes** -- delta bundles: `species_demo_eff`, `culture_demo_eff`, `religion_demo_eff` |
+| `Factuals::get_demographic_rates(demo_row)` | **Resolve** baseline + those deltas for a pop's demographics (**recompute every call**; no cache today) |
+| `Pop::growth_phase(&factuals)` | Fetches rates from factuals, stacks same-day desire/stored mods, calls `household.update` |
 
-### Design properties the author wants
+Do **not** put a full `DemographicRates` on every pop. Resolve centrally each growth call so parallel `&Factuals` stays lock-free. If recompute-per-pop shows up in profiles at huge scale, prefer a **day-fill cache of unique demographic id keys only** (not full cartesian product); see docs on `get_demographic_rates`.
 
-- **Smooth transitions:** change birth/death rates and composition drifts over turns instead of jumping total pop when a culture edit rewrites a static size.
-- **Radical shocks still possible:** temporary rate spikes or direct losses reshape the average household over following turns.
-- **Averages + count:** mental model is "typical household shape" times "how many households," not one giant pile of people with no structure.
-- **Growth rate derivable** from current composition + rates (draft: `growth_rate`), not only from comparing state before/after.
+Same-day mods (basic-sat mortality pressure, desire Birthrate/Mortality, stored `PopEffect` growth arms) are built in `Pop::same_day_growth_rate_mods` and **added onto** the factuals rates for that growth call only.
 
----
-
-## First draft sketch (desktop file)
-
-Path: `/home/jeremy/Desktop/household_demographics.rs`
-
-Treat as **author intent / prototype**, not production code. Integrate into `src/game/` with project style (`STYLE.md`, tests, factuals wiring). Do not assume it is compile-ready against the game crate.
-
-Summary of the sketch:
+### `DemoRow` (`pop_property.rs`)
 
 ```text
-DemographicRates {
-  births_per_woman, miscarriage_rate, maternal_mortality,
-  child_mortality, adult_mortality, elder_mortality
+DemoRow {
+  household: Household,
+  species, culture, class, religion  // ids; 0 = none for culture/religion
 }
-
-Household {
-  count,           // number of households
-  adults, children, elders  // per-household averages
-}
-
-Household::update(&mut self, rates)  // one turn, dt = 1 year in the draft
-  - work in totals (count * averages)
-  - live_births from women ~= total_adults * 0.5 * births_per_woman
-  - deaths by band + maternal deaths from births
-  - aging: children/20, adults/40 per year
-  - apply flows, floor at 0
-  - fold new total pop into count using previous average size
-  - rewrite averages from new totals / count
 ```
 
-Notes when porting:
-
-- Draft assumes **1 turn = 1 year**. Confirm against game turn length if that ever differs.
-- `miscarriage_rate` is on the struct in the draft; live_births currently uses `births_per_woman` only. Decide whether births are pre- or post-miscarriage when wiring for real.
-- Adult sex split is a flat `0.5` in the draft.
-- Stage lengths: childhood 20 years, adulthood ~40 years (elderhood open-ended via elder mortality).
-- Folding rule: **preserve previous average household size** into `count = new_total_pop / old_size`, then recompute averages. That is intentional draft policy; change only with author approval.
-- Labor efficiency, passive research/culture, and desire scaling currently live on old `HouseholdDef` / pop paths. They need a new home (on `Household`, separate modifiers, or rates-adjacent stats) when consolidating.
+Count is `household.count` (also `DemoRow::count()`). Totals go through household helpers.
 
 ---
 
-## Current code (what you are replacing)
+## Day / growth flow
 
-| Today | Role |
-|-------|------|
-| `HouseholdDef` | Static adults/children/elders + single birth_rate/mortality_rate + labor eff + passive rates |
-| `Household { def, count }` | Wrapper helpers; underused by pop path |
-| `DemoRow { count, household: HouseholdDef, ... }` | Pop demographics; count = households |
-| `Pop::growth_phase` | Multiplies `count` by net rate from household birth/mortality + desire/stored effects |
-| `rebuild_household_from_demographics` | Sums demographic `*_household_modifiers: HouseholdDef` into a new def **without** evolving composition via rates |
+1. **Demographic phase (playstate):** currently resyncs desires via `update_desires`; does not snap household composition from modifiers.
+2. **Growth phase:** `pop.growth_phase(factuals)`:
+   - skip if `household.count < 1`
+   - `rates = factuals.get_demographic_rates(demographics) + same_day_growth_rate_mods()`
+   - `household.update(&rates)`
+   - `previous_growth = new_count - old_count`
+3. Sentiments / record keeping / decay remain separate phases.
 
-Pain today: editing static size without careful count math **jumps total population**. Species/culture/religion TODOs already ask for smoother household change.
-
-After refactor, demographic modifiers should push **`DemographicRates`** (and any remaining non-rate household stats), and the daily/seasonal update should run something like `Household::update`.
+`HouseholdDef` is **gone**. Do not reintroduce it.
 
 ---
 
-## Integration points (when implementing in-repo)
+## Historical note (desktop draft)
 
-Likely touch list:
-
-| Area | Work |
-|------|------|
-| `src/game/household.rs` | Replace/consolidate types; port draft + tests |
-| `src/game/pop_property.rs` | `DemoRow` holds consolidated `Household` (or equivalent) |
-| `src/game/pop.rs` | `growth_phase` / demographic update use rates + `update`; desire scaling still sees totals via helpers |
-| `species` / `culture` / `religion` | Modifiers become rates (or rates + small side stats); `household_changed` meaning may become "rates dirty" |
-| `effects.rs` | Birthrate/Mortality effects may map into rate deltas rather than flat count multipliers |
-| `factuals` / institution D1 | Later: same rates pipeline; no ad-hoc pop rewrites |
-| `docs/design-vocabulary.md` | Update household / growth terms when names stick |
-
-Suggested test focus:
-
-- Baseline rates roughly stable near default averages (~2 / 2.5 / 0.5) if that is still the tune target
-- Rate shock moves composition over several turns without NaNs or negative buckets
-- Total pop 0 / count 0 death path
-- Totals identity: `count * adults == total_adults` after `update`
-- Desire/growth call sites still get coherent `total_population` / labor
+Early sketch at `/home/jeremy/Desktop/household_demographics.rs` and older vault "static def" language informed the design. Production code has since added sex fractions, labor fields, partnership lerp, infant/maternal split, and factuals-centric rate resolution. Prefer **`src/game/household.rs` + this primer** over the desktop file when they disagree.
 
 ---
 
-## In scope vs out of scope
+## What is still open
 
-**In scope for this refactor**
-
-- Consolidate `Household` + `HouseholdDef` into one household representation (averages + count).
-- Introduce `DemographicRates` and a per-turn (or growth-phase) apply step.
-- Rewire pop growth / demographic rebuild to the new model.
-- Helpers for totals, size, growth_rate, safe floors.
-- Tests for the math and pop integration.
-
-**Out of scope unless author expands**
-
-- Full market day / migration / UI.
-- Microsimulation of named individuals.
-- Re-opening "only static birth_rate + mortality_rate on a fixed recipe" as the long-term design.
-- Perfect historical demography calibration (tune later; draft rates are rough).
+| Item | Notes |
+|------|--------|
+| Rate cache in factuals | **Deferred.** Policy is recompute per pop/day. Day-fill living demographic keys only if profiling demands it. |
+| `DemographicEffect` list mapping | Species/culture still have effect vecs; folding every arm into rates is incomplete. |
+| Research / culture passive generation | Not on `DemographicRates`; was on old def -- place TBD. |
+| Stale call-site comments | Some still mention `Pop::demographic_update` or count-multiplier growth (see playstate, firm, institution, pop docs). |
+| Desire growth scaling | Same-day mods map old "net rate on count" style knobs into rate fields; retune if growth feels too strong/weak. |
+| Institution D1 household overlays | Still deferred; same rates pipeline, no ad-hoc pop rewrites. |
 
 ---
 
@@ -178,31 +115,33 @@ Suggested test focus:
 
 | Prefer | Meaning |
 |--------|---------|
-| household count | `Household.count` -- number of households |
-| average adults/children/elders | per-household means, not pop totals |
-| total population / total adults | count * average |
-| demographic rates | the `DemographicRates` bundle |
-| apply rates / household update | one step of flows (births, deaths, aging) |
-| avoid "HouseholdDef" | legacy name; do not reintroduce without reason |
+| household count | `Household.count` |
+| average adult/child/elder | per-household means (`adult` / `child` / `elder`) |
+| total population / total adults | `count * average` via helpers |
+| demographic rates | `DemographicRates` bundle |
+| effective rates for a pop | `Factuals::get_demographic_rates(demo_row)` (+ same-day mods in growth only) |
+| apply rates / household update | `Household::update` |
+| avoid `HouseholdDef` | removed legacy name |
+| avoid storing rates on `DemoRow` | rates are central / resolved, not per-pop fields |
 
-Related design vocab file still documents the **old** household def language until updated.
+Also see `docs/design-vocabulary.md` for broader design terms.
 
 ---
 
-## Policy defaults (ask if unclear)
+## Policy defaults
 
-1. **Folding:** draft keeps previous average household size and absorbs growth into `count`. Keep that unless told otherwise.
-2. **Desire/stored growth effects:** today they adjust a net multiplier on count. Map them onto rate deltas or a post-pass count tweak deliberately; do not double-apply.
-3. **Vault contradiction:** older "Alternative Household Decision" text preferred the simple model; **author's current plan is the rates model** + desktop draft. Prefer this primer + draft over that outdated decision line.
-4. **Do not edit the Obsidian vault** unless explicitly asked.
+1. **Composition:** demographic id changes update **rates** (via species/culture/religion deltas), not a one-shot rewrite of averages.
+2. **Partnership:** target on `DemographicRates`; live value on `Household`, pulled toward target each `update`.
+3. **Dead pops:** `count < 1` before growth skips `update`; full wipe inside `update` can set count/composition to 0 for cleanup.
+4. **Vault:** older "we rejected the rates model" lines are superseded; rates model is current.
+5. **Do not edit the Obsidian vault** unless explicitly asked.
 
 ---
 
 ## Agent checklist
 
-1. Read this primer and `/home/jeremy/Desktop/household_demographics.rs`.
-2. Skim current `household.rs`, `DemoRow`, `Pop::growth_phase`, `rebuild_household_from_demographics`.
-3. Propose a thin PR-sized port: types + `update` + tests, then pop wiring -- or follow author if they already started.
+1. Read this primer and `src/game/household.rs`.
+2. For growth: use `Factuals::get_demographic_rates` + `Household::update`; do not reattach rates onto `DemoRow`.
+3. For demographic deltas: edit `*_demo_eff` on species/culture/religion, then resolve through factuals.
 4. Match `STYLE.md` / `AGENTS.md`; `cargo test --lib`.
-5. Update design vocabulary when public names stabilize.
-6. Leave institution D1 and full turn polish for later unless asked.
+5. Leave institution D1, market day, and full turn polish unless asked.

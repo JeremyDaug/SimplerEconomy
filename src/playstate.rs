@@ -101,8 +101,7 @@ impl PlayState {
     /// Order:
     /// 1. Institutions push passive effects onto firms / pops.
     /// 2. Firms push passive bonuses onto pops.
-    /// 3. Each pop runs [`Pop::demographic_update`] (household rebuild if flagged,
-    ///    then `update_desires`).
+    /// 3. Each pop runs [`Pop::update_desires`].
     /// 4. Clear shared demographic `household_changed` flags on factuals.
     ///
     /// Institutions do not rewrite household/desires directly; they push effects
@@ -127,9 +126,9 @@ impl PlayState {
                 firm.apply_passive_bonuses(pops);
             }
 
-            // 3. Pops: rebuild household from demographics if needed, resync desires.
+            // 3. Pops: update desires from demographics if needed, resync desires.
             for pop in pops.values_mut() {
-                pop.demographic_update(factuals);
+                pop.update_desires(factuals);
             }
         }
 
@@ -160,16 +159,21 @@ impl PlayState {
     }
 
     /// # Phase Pop Growth
-    /// 
-    /// Population growth occurs here. 
-    /// 
-    /// This is fairly straight forward. Each pop in the system looks at it's growth 
-    /// factors and sums them. They multiply their current households by that growth 
-    /// factor, record it, then add that to their household.
+    ///
+    /// Population growth occurs here.
+    ///
+    /// Each pop resolves structural demographic rates from factuals (recomputed per
+    /// pop; not a prebuilt combo table), stacks same-day mods, and runs
+    /// `Household::update`. Parallel over pops with shared `&Factuals` is safe
+    /// because rate resolution is pure recompute today.
+    ///
+    /// If rate resolution ever dominates at huge pop counts, day-fill a cache of
+    /// unique demographic keys on factuals before this phase (see
+    /// `Factuals::get_demographic_rates`); keep growth as a read of that table.
     fn phase_pop_growth(&mut self) {
-        //let factuals = &self.factuals;
+        let factuals = &self.factuals;
         self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
-            pop.growth_phase();
+            pop.growth_phase(factuals);
         });
     }
 

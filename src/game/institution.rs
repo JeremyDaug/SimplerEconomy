@@ -166,7 +166,7 @@ impl Institution {
     ///
     /// Push this institution's passive [`InstitutionEffect`]s onto firms and pops
     /// for the day. Called from the player-bonuses / demographic phase **before**
-    /// [`Pop::demographic_update`](crate::game::pop::Pop::demographic_update).
+    /// [`Pop::update_desires`](crate::game::pop::Pop::update_desires).
     ///
     /// **Order / reach (v0):**
     /// - [`EffectScope::Members`]: workforce pops of firms in `firm_ids`.
@@ -259,7 +259,7 @@ mod institution_tests {
     use crate::game::{
         effects::EffectScope,
         firm::Firm,
-        household::HouseholdDef,
+        household::{DemographicRates, Household},
         market::Market,
         pop::{DemoRow, Pop, PopEffect, PopRecords},
         sentiment::Sentiment,
@@ -274,8 +274,7 @@ mod institution_tests {
             desires: vec![vec![]; 3],
             working_desires: vec![],
             demographics: DemoRow {
-                count: 10.0,
-                household: HouseholdDef::default(),
+                household: Household::new(),
                 species: 0,
                 culture: 0,
                 class: 0,

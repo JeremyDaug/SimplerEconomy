@@ -91,7 +91,7 @@ impl Firm {
     ///
     /// Push firm-level bonuses onto related pops (workforce, owners, …) during the
     /// player-bonuses / demographic phase, **after** institutions and **before**
-    /// [`Pop::demographic_update`](crate::game::pop::Pop::demographic_update).
+    /// [`Pop::update_desires`](crate::game::pop::Pop::update_desires).
     ///
     /// v0: no firm bonus catalog yet — signature and call site only so later work
     /// can attach effects without rewiring the turn.

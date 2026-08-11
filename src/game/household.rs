@@ -403,14 +403,62 @@ impl DemographicRates {
     /// and positive growth when sex balance is even. Partnership target is
     /// adults+elders = 2.5 (2.0 + 0.5).
     pub fn baseline() -> Self {
+        let maternal_mortality = 0.01;
+        let birth_per_woman = 0.30;
         Self {
-            birth_per_woman: 0.167,
-            infant_mortality: 0.20,
-            maternal_mortality: 0.015,
+            birth_per_woman,
+            infant_mortality: 0.10,
+            maternal_mortality,
             child_mortality: (0.025, 0.0, 0.0),
-            adult_mortality: (0.018, 0.0, 0.0),
-            elder_mortality: (0.08, 0.0, 0.0),
+            adult_mortality: (0.013, maternal_mortality * birth_per_woman, 0.0),
+            elder_mortality: (0.09, 0.0, 0.0),
             partnership_rate: 2.5,
+        }
+    }
+
+    /// # Zero
+    ///
+    /// All-zero delta (safe to add onto baseline or other rate bundles).
+    /// Partnership target is 0 so additive mods do not shift household size
+    /// unless the mod sets a non-zero partnership delta.
+    pub fn zero() -> Self {
+        Self {
+            birth_per_woman: 0.0,
+            infant_mortality: 0.0,
+            maternal_mortality: 0.0,
+            child_mortality: (0.0, 0.0, 0.0),
+            adult_mortality: (0.0, 0.0, 0.0),
+            elder_mortality: (0.0, 0.0, 0.0),
+            partnership_rate: 0.0,
+        }
+    }
+
+    /// # Add
+    ///
+    /// Field-wise sum of two rate bundles (including mortality triples and
+    /// partnership target). Used to stack baseline + species + culture + religion
+    /// + same-day modifiers.
+    pub fn add(&self, other: &Self) -> Self {
+        Self {
+            birth_per_woman: self.birth_per_woman + other.birth_per_woman,
+            infant_mortality: self.infant_mortality + other.infant_mortality,
+            maternal_mortality: self.maternal_mortality + other.maternal_mortality,
+            child_mortality: (
+                self.child_mortality.0 + other.child_mortality.0,
+                self.child_mortality.1 + other.child_mortality.1,
+                self.child_mortality.2 + other.child_mortality.2,
+            ),
+            adult_mortality: (
+                self.adult_mortality.0 + other.adult_mortality.0,
+                self.adult_mortality.1 + other.adult_mortality.1,
+                self.adult_mortality.2 + other.adult_mortality.2,
+            ),
+            elder_mortality: (
+                self.elder_mortality.0 + other.elder_mortality.0,
+                self.elder_mortality.1 + other.elder_mortality.1,
+                self.elder_mortality.2 + other.elder_mortality.2,
+            ),
+            partnership_rate: self.partnership_rate + other.partnership_rate,
         }
     }
 }

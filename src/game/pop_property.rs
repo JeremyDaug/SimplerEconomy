@@ -4,20 +4,14 @@ use bevy::utils::default;
 use circular_buffer::CircularBuffer;
 
 use crate::game::config::pop_constants;
-use crate::game::household::HouseholdDef;
+use crate::game::household::Household;
 use crate::game::util::lerp;
 
 /// Demographic breakdown of a pop (one row for now).
 #[derive(Debug, Clone, Copy)]
 pub struct DemoRow {
-    /// Number of households (floating point for growth storage).
-    ///
-    /// Living pops always have `count ≥ 1.0`. After growth, if count would be
-    /// `< 1.0` it is snapped to `0.0` (destroyed / pending cleanup). There is no
-    /// stable living pop with `0 < count < 1`.
-    pub count: f64,
-    /// Household definition: baseline plus demographic modifiers.
-    pub household: HouseholdDef,
+    /// Living household block (count, average composition, sex, labor, partnership).
+    pub household: Household,
     /// Species ID; currently should always be 0 (default human).
     pub species: usize,
     /// Culture ID; 0 means none.
@@ -31,23 +25,27 @@ pub struct DemoRow {
 impl DemoRow {
     /// Household size × count.
     pub fn total_population(&self) -> f64 {
-        self.count * self.household.size()
+        self.household.total_count()
     }
 
     pub fn adult_pop(&self) -> f64 {
-        self.count * self.household.adults
+        self.household.total_adults()
     }
 
     pub fn elder_pop(&self) -> f64 {
-        self.count * self.household.elders
+        self.household.total_elders()
     }
 
     pub fn children_pop(&self) -> f64 {
-        self.count * self.household.children
+        self.household.total_children()
     }
 
     pub fn labor(&self) -> f64 {
-        self.count * self.household.labor()
+        self.household.total_labor()
+    }
+    
+    pub(crate) fn count(&self) -> f64 {
+        self.household.count
     }
 }
 

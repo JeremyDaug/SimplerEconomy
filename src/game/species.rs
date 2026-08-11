@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::HouseholdDef};
+use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::DemographicRates};
 
 /// # Species
-/// 
+///
 /// The species of a pop. Defines the basic needs required for life, and may later
-/// include environment-dependent needs and household baseline modifiers.
-/// 
+/// include environment-dependent needs and demographic rate modifiers.
+///
 /// By default this is human; additional species types may be added later.
 #[derive(Debug, Clone)]
 pub struct Species {
@@ -18,36 +18,29 @@ pub struct Species {
     /// state, it is set to 0.
     pub state: usize,
     /// Demographic desires keyed by `DemoDesire.id` for O(1) lookup.
-    /// 
+    ///
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
-    /// The universal effects of species on a people with this species.
+    /// The Universal Effects on people with this species.
     /// 
     /// This is for effects that are not contingent on other factors like desires.
-    /// For example, Flat birth/mortality rates, per household species/research 
-    /// generation, household size or efficiency changes, and so on.
+    /// For example, Flat Birth/Moratlity Effects, Research or Culture bonuses,
+    /// labor Efficiency changes, and so on.
     pub species_effects: Vec<DemographicEffect>,
-    /// The consolidated effects on a household. These are updated when 
-    /// `species_effects` changes and intended to be added to the other demographics 
-    /// to define a pop's household.
-    pub species_household_modifiers: HouseholdDef,
-    /// A helper flag to mark when a species has changed, and so pop_households should
-    /// also be updated. 
+    /// A species Demographic Rates, which act as a default rate for a population in
+    /// general. 
     /// 
-    /// TODO: This and the effects of applying a household change should be smoother.
-    /// Instead of snapping into place, it should apply in smooth phases to keep massive
-    /// population swings from occurring. The current mechanism to keep things more 
-    /// smooth is from the data design level. Only allowing small changes to apply with 
-    /// each change and forcing those changes to be spread out over time.
-    /// The ideal desire would be to have th transitionary effect take place over a few
-    /// turns and possibly requiring population growth/shrink to make up the changes
-    /// appropriately. That latter part is likely too complicated for our needs.
+    /// Currently, the baseline is set by `DemographicRates::baseline()`
+    pub species_demo_eff: DemographicRates,
+    /// When true, pops should refresh effective demographic rates this turn.
+    ///
+    /// TODO: Smoother multi-turn application of large rate swings if needed.
     pub household_changed: bool,
 }
 
 impl Species {
     /// # New
-    /// 
+    ///
     /// Creates a species with the given id and name.
     /// State defaults to 0 (no state). Desires start empty.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
@@ -57,7 +50,7 @@ impl Species {
             state: 0,
             desires: HashMap::new(),
             species_effects: vec![],
-            species_household_modifiers: HouseholdDef::zero(),
+            species_demo_eff: DemographicRates::zero(),
             household_changed: false,
         }
     }

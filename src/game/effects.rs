@@ -242,7 +242,8 @@ impl From<PopEffect> for EffectKind {
 // ---------------------------------------------------------------------------
 
 /// Structural modifiers from species/culture/religion (and similar).
-/// Consolidated into [`crate::game::household::HouseholdDef`] modifiers.
+/// Intended to fold into [`crate::game::household::DemographicRates`] (and labor
+/// fields on [`crate::game::household::Household`]); mapping is still evolving.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DemographicEffect {
     Adults(f64),

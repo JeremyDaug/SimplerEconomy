@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::HouseholdDef};
+use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::DemographicRates};
 
 /// # Culture
 /// 
@@ -27,10 +27,8 @@ pub struct Culture {
     /// For example, Flat birth/mortality rates, per household culture/research 
     /// generation, household size or efficiency changes, and so on.
     pub culture_effects: Vec<DemographicEffect>,
-    /// The consolidated effects on a household. These are updated when 
-    /// `culture_effects` changes and intended to be added to the other demographics 
-    /// to define a pop's household.
-    pub culture_household_modifiers: HouseholdDef,
+    /// The Demogarphic effects on a species. Is added to the baseline of a pop's species.
+    pub culture_demo_eff: DemographicRates,
     /// A helper flag to mark when a culture has changed, and so pop_households should
     /// also be updated. 
     /// 
@@ -57,7 +55,7 @@ impl Culture {
             state: 0,
             desires: HashMap::new(),
             culture_effects: vec![],
-            culture_household_modifiers: HouseholdDef::zero(),
+            culture_demo_eff: DemographicRates::zero(),
             household_changed: false,
         }
     }

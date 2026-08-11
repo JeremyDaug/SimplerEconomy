@@ -273,7 +273,7 @@ desire, labor, and sentiment.
 
 **Meaning:** Composition and baseline rates (adults/children/elders, birth/mortality,
 passive culture/research).  
-**Code:** `HouseholdDef`
+**Code:** `Household`, `DemographicRates` (`household.rs`)
 
 ### Institution
 **Preferred:** institution  
