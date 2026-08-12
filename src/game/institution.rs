@@ -228,8 +228,8 @@ impl Institution {
             InstitutionEffect::BirthRate { rate, .. } => {
                 pop.stored_effects.push(PopEffect::Birthrate(rate));
             }
-            InstitutionEffect::MortalityRate { rate, .. } => {
-                pop.stored_effects.push(PopEffect::Mortality(rate));
+            InstitutionEffect::MortalityRate { target, rate, .. } => {
+                pop.stored_effects.push(PopEffect::Mortality(target, rate));
             }
         }
     }
@@ -259,7 +259,7 @@ mod institution_tests {
     use crate::game::{
         effects::EffectScope,
         firm::Firm,
-        household::{DemographicRates, Household},
+        household::{Household, HouseholdTarget},
         market::Market,
         pop::{DemoRow, Pop, PopEffect, PopRecords},
         sentiment::Sentiment,
@@ -362,7 +362,7 @@ mod institution_tests {
 
         assert_eq!(
             pops[&pop_id].stored_effects,
-            vec![PopEffect::Mortality(0.01)]
+            vec![PopEffect::Mortality(HouseholdTarget::ADULT, 0.01)]
         );
     }
 }

@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
+use crate::game::household::HouseholdTarget;
 
 pub use crate::game::effects::ProcessEffect;
 
@@ -308,8 +309,12 @@ impl Process {
                             InputEffect::Throughput(v) => throughput_mult += v,
                             InputEffect::Input(v) => input_mult -= v,
                             InputEffect::Output(v) => output_mult += v,
-                            InputEffect::ExtraOutput(_, _) |
-                            InputEffect::Growth(_) => assert!(false, "Factors cannot include extra output or growth effects."),
+                            InputEffect::ExtraOutput(_, _)
+                            | InputEffect::BirthRate(_)
+                            | InputEffect::MortalityRate(_, _) => assert!(
+                                false,
+                                "Factors cannot include extra output or birth/mortality effects."
+                            ),
                         }
                     }
                 }
@@ -358,8 +363,9 @@ impl Process {
                         InputEffect::Throughput(v) => throughput_bonus += v,
                         InputEffect::Input(v) => input_bonus -= v,
                         InputEffect::Output(v) => output_bonus += v,
-                        InputEffect::ExtraOutput(..) |
-                        InputEffect::Growth(_) => other_bonuses.push(effect),
+                        InputEffect::ExtraOutput(..)
+                        | InputEffect::BirthRate(_)
+                        | InputEffect::MortalityRate(_, _) => other_bonuses.push(effect),
                     }
                 }
             } // if not available, skip, optional goods don't matter.
@@ -441,8 +447,13 @@ impl Process {
                             *result.changes.entry(*good_id)
                                 .or_insert(0.0) += amt * shortest;
                         }
-                        InputEffect::Growth(v) => {
-                            result.effects.push(ProcessEffect::Growth(v * shortest));
+                        InputEffect::BirthRate(v) => {
+                            result.effects.push(ProcessEffect::BirthRate(v * shortest));
+                        }
+                        InputEffect::MortalityRate(target, v) => {
+                            result
+                                .effects
+                                .push(ProcessEffect::MortalityRate(*target, *v * shortest));
                         }
                         _ => {}
                     }
@@ -463,13 +474,16 @@ impl Process {
 
         // finish with process level bonuses.
         for effect in &self.effects {
-            let scaled_effect = match effect {
+            let scaled_effect = match *effect {
                 ProcessEffect::Research(v) => ProcessEffect::Research(v * shortest),
                 ProcessEffect::Culture(v) => ProcessEffect::Culture(v * shortest),
                 ProcessEffect::Faith(v) => ProcessEffect::Faith(v * shortest),
                 ProcessEffect::Authority(v) => ProcessEffect::Authority(v * shortest),
                 ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * shortest),
-                ProcessEffect::Growth(v) => ProcessEffect::Growth(v * shortest),
+                ProcessEffect::BirthRate(v) => ProcessEffect::BirthRate(v * shortest),
+                ProcessEffect::MortalityRate(target, v) => {
+                    ProcessEffect::MortalityRate(target, v * shortest)
+                }
             };
             result.effects.push(scaled_effect);
         }
@@ -620,8 +634,10 @@ pub enum InputEffect {
     /// An additional output added to the process on top of all others, when this is
     /// included in the process.
     ExtraOutput(usize, f64),
-    /// Additinoal Birth or mortality rate of workers attached to this process.
-    Growth(f64),
+    /// Additional birth-per-woman rate for workers attached to this process.
+    BirthRate(f64),
+    /// Additional mortality rate for workers, targeted by household subgroup.
+    MortalityRate(HouseholdTarget, f64),
 }
 
 /// # Process Output
@@ -1101,7 +1117,7 @@ mod processes {
                 .with_input(make_optional_input(CONSUMED_GOOD, 1.0, false, 
                     InputType::Destroyed, vec![InputEffect::ExtraOutput(DECAY_OUTPUT, 1.0)]))
                 .with_input(make_optional_input(FACTOR_GOOD, 1.0, false, 
-                    InputType::Destroyed, vec![InputEffect::Growth(0.5)]))
+                    InputType::Destroyed, vec![InputEffect::BirthRate(0.5)]))
                 .with_effect(ProcessEffect::Research(100.0));
 
             let mut available = HashMap::new();
@@ -1123,7 +1139,7 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0);
             assert_eq!(result.effects.len(), 2);
             assert!(result.effects.contains(&ProcessEffect::Research(10000.0)));
-            assert!(result.effects.contains(&ProcessEffect::Growth(50.0)));
+            assert!(result.effects.contains(&ProcessEffect::BirthRate(50.0)));
         }
 
         #[test]

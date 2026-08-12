@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::DemographicRates, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -686,7 +686,6 @@ impl Pop {
         }
 
         // Lastly, apply any additional stored effects as needed.
-        // TODO: update these to take into account the much greater variety of possible PopEffects.
         let mut kept = Vec::with_capacity(self.stored_effects.len());
         for effect in self.stored_effects.drain(..) {
             match effect {
@@ -694,9 +693,9 @@ impl Pop {
                     debug_assert!(v.is_finite(), "Stored birthrate must be finite.");
                     mods.birth_per_woman += v;
                 }
-                PopEffect::Mortality(v) => {
+                PopEffect::Mortality(target, v) => {
                     debug_assert!(v.is_finite(), "Stored mortality must be finite.");
-                    mods.adult_mortality.0 += v;
+                    mods.apply_mortality(target, v);
                 }
                 other => kept.push(other),
             }
@@ -718,8 +717,13 @@ impl Pop {
                 match effect {
                     DesireEffect::Birthrate(v, true) => mods.birth_per_woman += v * sat,
                     DesireEffect::Birthrate(v, false) => mods.birth_per_woman -= v * lack,
-                    DesireEffect::Mortality(v, true) => mods.adult_mortality.0 += v * sat,
-                    DesireEffect::Mortality(v, false) => mods.adult_mortality.0 += v * lack,
+                    DesireEffect::Mortality(target, v, true) => {
+                        mods.apply_mortality(*target, v * sat);
+                    }
+                    DesireEffect::Mortality(target, v, false) => {
+                        // Malus: lack of sat raises mortality on the targeted group.
+                        mods.apply_mortality(*target, v * lack);
+                    }
                     DesireEffect::BonusGood(_, _, _)
                     | DesireEffect::Satisfaction(_, _)
                     | DesireEffect::SentimentFlat(_, _, _)
@@ -836,7 +840,10 @@ impl Pop {
                     sentiment_effects.push(effect);
                 },
                 PopEffect::Birthrate(..) | PopEffect::Mortality(..) => {
-                    debug_assert!(false, "PopEffect::Birthrate and PopEffect::Mortality should have been applied in growth_phase, not update_sentiments.");
+                    debug_assert!(
+                        false,
+                        "PopEffect::Birthrate and PopEffect::Mortality should have been applied in growth_phase, not update_sentiments."
+                    );
                 },
                 other => kept.push(other),
             }
@@ -871,7 +878,7 @@ impl Pop {
                 for effect in &desire.effect {
                     match *effect {
                         DesireEffect::Birthrate(_, _)
-                        | DesireEffect::Mortality(_, _)
+                        | DesireEffect::Mortality(_, _, _)
                         | DesireEffect::BonusGood(_, _, _)
                         | DesireEffect::Satisfaction(_, _) => {}
                         DesireEffect::SentimentFlat(kind, _, _) => {
@@ -1214,7 +1221,7 @@ mod pop {
         desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
         factuals::Factuals,
         good::Good,
-        household::{DemographicRates, Household},
+        household::{DemographicRates, Household, HouseholdTarget},
         market::MarketHistory,
         pop::{DemoRow, Pop, PopEffect, PopPRow, PopRecords},
         scalingfactor::ScalingFactor,
@@ -1834,7 +1841,8 @@ mod pop {
             let mut pop = make_pop();
             let factuals = make_default_factuals();
             pop.stored_effects.push(PopEffect::Birthrate(0.01));
-            pop.stored_effects.push(PopEffect::Mortality(0.005));
+            pop.stored_effects
+                .push(PopEffect::Mortality(HouseholdTarget::ADULT, 0.005));
             pop.stored_effects.push(PopEffect::BonusGood {
                 good: 100,
                 amount: 1.0,

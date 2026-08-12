@@ -462,14 +462,78 @@ impl DemographicRates {
             partnership_rate: self.partnership_rate + other.partnership_rate,
         }
     }
+
+    /// # Apply Mortality
+    ///
+    /// Add `rate` into the mortality fields selected by `target`.
+    ///
+    /// Mapping:
+    /// - `INFANTS` -> `infant_mortality`
+    /// - `MATERNAL` -> `maternal_mortality`
+    /// - Age bits (`CHILD` / `ADULT` / `ELDER`) -> that band's mortality triple
+    /// - Sex bits on an age band: neither or both -> total component (`.0`);
+    ///   only `MALE` -> male (`.1`); only `FEMALE` -> female (`.2`)
+    /// - No age bits and no infant/maternal bits -> all three age bands
+    /// - Infant and/or maternal only (no age bits) -> does not touch age bands
+    pub fn apply_mortality(&mut self, target: HouseholdTarget, rate: f64) {
+        debug_assert!(rate.is_finite(), "mortality rate delta must be finite");
+
+        if target.contains(HouseholdTarget::INFANTS) {
+            self.infant_mortality += rate;
+        }
+        if target.contains(HouseholdTarget::MATERNAL) {
+            self.maternal_mortality += rate;
+        }
+
+        let has_age = target.intersects(HouseholdTarget::ANY_AGE);
+        let has_special =
+            target.intersects(HouseholdTarget::INFANTS | HouseholdTarget::MATERNAL);
+        // Pure infant/maternal: leave age-band triples alone.
+        // Otherwise (any age bit, or neither age nor special) apply to ages.
+        let apply_ages = has_age || !has_special;
+        if !apply_ages {
+            return;
+        }
+
+        let ages = if has_age {
+            target & HouseholdTarget::ANY_AGE
+        } else {
+            HouseholdTarget::ANY_AGE
+        };
+
+        if ages.contains(HouseholdTarget::CHILD) {
+            apply_sex_band_mortality(&mut self.child_mortality, target, rate);
+        }
+        if ages.contains(HouseholdTarget::ADULT) {
+            apply_sex_band_mortality(&mut self.adult_mortality, target, rate);
+        }
+        if ages.contains(HouseholdTarget::ELDER) {
+            apply_sex_band_mortality(&mut self.elder_mortality, target, rate);
+        }
+    }
+}
+
+/// Route a mortality delta into a `(total, male, female)` triple from sex flags.
+fn apply_sex_band_mortality(
+    band: &mut (f64, f64, f64),
+    target: HouseholdTarget,
+    rate: f64,
+) {
+    let male = target.contains(HouseholdTarget::MALE);
+    let female = target.contains(HouseholdTarget::FEMALE);
+    match (male, female) {
+        (false, false) | (true, true) => band.0 += rate,
+        (true, false) => band.1 += rate,
+        (false, true) => band.2 += rate,
+    }
 }
 
 bitflags! {
     /// Compact flags for age/sex subgroups of a household as well as maternal and
     /// infant mortality rates.
     /// Combinable so an effect, desire, or filter can target
-    /// “adult females”, “all children”, “elders of either sex”, etc.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// "adult females", "all children", "elders of either sex", etc.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct HouseholdTarget: u8 {
         const CHILD  = 0b0000_0001;
         const ADULT  = 0b0000_0010;
@@ -603,5 +667,48 @@ mod household_new_update_should {
             "newborns should be 50/50, child_mf={}",
             h.child_mf
         );
+    }
+}
+
+#[cfg(test)]
+mod apply_mortality_should {
+    use super::*;
+
+    #[test]
+    fn infants_and_maternal_only_touch_special_fields() {
+        let mut rates = DemographicRates::zero();
+        rates.apply_mortality(HouseholdTarget::INFANTS, 0.1);
+        rates.apply_mortality(HouseholdTarget::MATERNAL, 0.05);
+        assert!((rates.infant_mortality - 0.1).abs() < 1e-12);
+        assert!((rates.maternal_mortality - 0.05).abs() < 1e-12);
+        assert_eq!(rates.child_mortality, (0.0, 0.0, 0.0));
+        assert_eq!(rates.adult_mortality, (0.0, 0.0, 0.0));
+        assert_eq!(rates.elder_mortality, (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn adult_female_hits_adult_female_component() {
+        let mut rates = DemographicRates::zero();
+        rates.apply_mortality(HouseholdTarget::ADULT | HouseholdTarget::FEMALE, 0.2);
+        assert_eq!(rates.adult_mortality, (0.0, 0.0, 0.2));
+        assert_eq!(rates.child_mortality, (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn no_age_bits_apply_to_all_age_bands_total() {
+        let mut rates = DemographicRates::zero();
+        rates.apply_mortality(HouseholdTarget::empty(), 0.03);
+        assert_eq!(rates.child_mortality, (0.03, 0.0, 0.0));
+        assert_eq!(rates.adult_mortality, (0.03, 0.0, 0.0));
+        assert_eq!(rates.elder_mortality, (0.03, 0.0, 0.0));
+    }
+
+    #[test]
+    fn male_only_without_age_hits_all_bands_male() {
+        let mut rates = DemographicRates::zero();
+        rates.apply_mortality(HouseholdTarget::MALE, 0.04);
+        assert_eq!(rates.child_mortality, (0.0, 0.04, 0.0));
+        assert_eq!(rates.adult_mortality, (0.0, 0.04, 0.0));
+        assert_eq!(rates.elder_mortality, (0.0, 0.04, 0.0));
     }
 }

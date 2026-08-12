@@ -222,21 +222,25 @@ impl PlayState {
     fn phase_pop_migration(&mut self) {
         let factuals = &self.factuals;
 
-        // 1. Per-pop emigration pressure and per-firm hiring pressure (independent; MT).
-        let pops = &mut self.actors.pops;
-        let firms = &mut self.actors.firms;
-        rayon::join(
-            || {
-                pops.par_iter_mut().for_each(|(_, pop)| {
-                    pop.calculate_migratory_pressure(factuals);
-                });
-            },
-            || {
-                firms.par_iter_mut().for_each(|(_, firm)| {
-                    firm.calculate_hiring_pressure(factuals);
-                });
-            },
-        );
+        // 1. Per-pop emigration pressure (needs market region) and per-firm hiring pressure.
+        // Pop half walks markets so each pop gets its region; firm half stays MT.
+        {
+            let pops = &mut self.actors.pops;
+            let markets = &self.map_data.markets;
+            for market in markets.values() {
+                for &pop_id in &market.pops {
+                    if let Some(pop) = pops.get_mut(&pop_id) {
+                        pop.calculate_migratory_pressure(factuals, market);
+                    }
+                }
+            }
+        }
+        {
+            let firms = &mut self.actors.firms;
+            firms.par_iter_mut().for_each(|(_, firm)| {
+                firm.calculate_hiring_pressure(factuals);
+            });
+        }
 
         // 2. Sum pressures onto each market region (markets independent; MT).
         let actors = &self.actors;

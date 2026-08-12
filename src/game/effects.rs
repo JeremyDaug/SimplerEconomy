@@ -9,7 +9,7 @@
 //!
 //! Process **recipe** modifiers ([`InputEffect`](crate::game::process::InputEffect))
 //! stay on `process` for now: they change production math, not actor state. Their
-//! `Growth` arm still bridges into [`ProcessEffect`] / [`EffectKind`].
+//! birth / mortality arms bridge into [`ProcessEffect`] / [`EffectKind`].
 
 use crate::game::sentiment::SentimentKind;
 use crate::game::household::HouseholdTarget;
@@ -90,8 +90,9 @@ pub enum EffectScope {
 /// (scales with lack of satisfaction).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DesireEffect {
-    /// Growth via mortality pressure when unmet (or bonus when the bool says so).
-    Mortality(f64, bool),
+    /// Mortality pressure on the targeted household subgroup when unmet
+    /// (or bonus path when the bool says so).
+    Mortality(HouseholdTarget, f64, bool),
     /// Growth via birth when met (or malus path when the bool says so).
     Birthrate(f64, bool),
     /// Extra goods granted from satisfaction path.
@@ -116,7 +117,7 @@ impl DesireEffect {
     /// Catalog kind (ignores bonus/malus; use [`Self::is_bonus`] for that).
     pub fn to_kind(self) -> EffectKind {
         match self {
-            DesireEffect::Mortality(v, _) => EffectKind::MortalityRate(v),
+            DesireEffect::Mortality(target, v, _) => EffectKind::MortalityRate(target, v),
             DesireEffect::Birthrate(v, _) => EffectKind::BirthRate(v),
             DesireEffect::BonusGood(good, amount, _) => EffectKind::BonusGood { good, amount },
             DesireEffect::Satisfaction(amount, _) => EffectKind::Satisfaction(amount),
@@ -132,7 +133,7 @@ impl DesireEffect {
     /// True if this effect scales with satisfaction (bonus), false if with lack (malus).
     pub fn is_bonus(self) -> bool {
         match self {
-            DesireEffect::Mortality(_, b)
+            DesireEffect::Mortality(_, _, b)
             | DesireEffect::Birthrate(_, b)
             | DesireEffect::BonusGood(_, _, b)
             | DesireEffect::Satisfaction(_, b)
@@ -148,7 +149,7 @@ impl DesireEffect {
         let sat = sat01.clamp(0.0, 1.0);
         let lack = 1.0 - sat;
         let rate = match self {
-            DesireEffect::Mortality(v, _) | DesireEffect::Birthrate(v, _) => v,
+            DesireEffect::Mortality(_, v, _) | DesireEffect::Birthrate(v, _) => v,
             DesireEffect::BonusGood(_, amount, _) => amount,
             DesireEffect::Satisfaction(amount, _) => amount,
             DesireEffect::SentimentFlat(_, amount, _) => amount,
@@ -189,7 +190,8 @@ impl DesireEffect {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopEffect {
     Birthrate(f64),
-    Mortality(f64),
+    /// Mortality delta for the targeted household subgroup.
+    Mortality(HouseholdTarget, f64),
     /// Extra satisfaction units for a **non-basic** desire tier (`tier` 1 = common,
     /// 2 = luxury). Applied early in update_sentiments. Common clamps to one
     /// full level; luxury may oversat. `amount` is already scaled.
@@ -206,7 +208,7 @@ impl PopEffect {
     pub fn to_kind(self) -> EffectKind {
         match self {
             PopEffect::Birthrate(v) => EffectKind::BirthRate(v),
-            PopEffect::Mortality(v) => EffectKind::MortalityRate(v),
+            PopEffect::Mortality(target, v) => EffectKind::MortalityRate(target, v),
             PopEffect::Satisfaction { amount, .. } => EffectKind::Satisfaction(amount),
             PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
             PopEffect::SentimentFlat { kind, delta } => {
@@ -244,15 +246,12 @@ impl From<PopEffect> for EffectKind {
 /// fields on [`crate::game::household::Household`]); mapping is still evolving.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DemographicEffect {
-    Adults(f64),
-    Elders(f64),
-    Children(f64),
     /// Discourage large positive values; adults already have 1.0 baseline efficiency.
     AdultEfficiency(f64),
     ElderEfficiency(f64),
     ChildEfficiency(f64),
     BirthRate(f64),
-    MortalityRate(f64),
+    MortalityRate(HouseholdTarget, f64),
     ResearchRate(f64),
     CultureRate(f64),
 }
@@ -260,14 +259,11 @@ pub enum DemographicEffect {
 impl DemographicEffect {
     pub fn to_kind(self) -> EffectKind {
         match self {
-            DemographicEffect::Adults(v) => EffectKind::Adults(v),
-            DemographicEffect::Elders(v) => EffectKind::Elders(v),
-            DemographicEffect::Children(v) => EffectKind::Children(v),
             DemographicEffect::AdultEfficiency(v) => EffectKind::AdultEfficiency(v),
             DemographicEffect::ElderEfficiency(v) => EffectKind::ElderEfficiency(v),
             DemographicEffect::ChildEfficiency(v) => EffectKind::ChildEfficiency(v),
             DemographicEffect::BirthRate(v) => EffectKind::BirthRate(v),
-            DemographicEffect::MortalityRate(v) => EffectKind::MortalityRate(v),
+            DemographicEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
             DemographicEffect::ResearchRate(v) => EffectKind::HouseholdResearchRate(v),
             DemographicEffect::CultureRate(v) => EffectKind::HouseholdCultureRate(v),
         }
@@ -288,7 +284,11 @@ impl From<DemographicEffect> for EffectKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InstitutionEffect {
     BirthRate { rate: f64, scope: EffectScope },
-    MortalityRate { rate: f64, scope: EffectScope },
+    MortalityRate {
+        target: HouseholdTarget,
+        rate: f64,
+        scope: EffectScope,
+    },
 }
 
 impl InstitutionEffect {
@@ -299,8 +299,18 @@ impl InstitutionEffect {
         }
     }
 
+    /// Member mortality on adults (legacy default; matches prior adult-only push).
     pub fn member_mortality(rate: f64) -> Self {
         Self::MortalityRate {
+            target: HouseholdTarget::ADULT,
+            rate,
+            scope: EffectScope::Members,
+        }
+    }
+
+    pub fn member_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
+        Self::MortalityRate {
+            target,
             rate,
             scope: EffectScope::Members,
         }
@@ -313,8 +323,18 @@ impl InstitutionEffect {
         }
     }
 
+    /// Realm mortality on adults (legacy default; matches prior adult-only push).
     pub fn realm_mortality(rate: f64) -> Self {
         Self::MortalityRate {
+            target: HouseholdTarget::ADULT,
+            rate,
+            scope: EffectScope::OwnerRealm,
+        }
+    }
+
+    pub fn realm_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
+        Self::MortalityRate {
+            target,
             rate,
             scope: EffectScope::OwnerRealm,
         }
@@ -323,7 +343,9 @@ impl InstitutionEffect {
     pub fn to_kind(self) -> EffectKind {
         match self {
             InstitutionEffect::BirthRate { rate, .. } => EffectKind::BirthRate(rate),
-            InstitutionEffect::MortalityRate { rate, .. } => EffectKind::MortalityRate(rate),
+            InstitutionEffect::MortalityRate { target, rate, .. } => {
+                EffectKind::MortalityRate(target, rate)
+            }
         }
     }
 
@@ -352,8 +374,10 @@ pub enum ProcessEffect {
     Authority(f64),
     /// Legitimacy → territory owner.
     Legitimacy(f64),
-    /// Birth/mortality of worker populace (does not scale with iterations the same way).
-    Growth(f64),
+    /// Birth-per-woman delta on worker populace (scaling vs iterations is site-defined).
+    BirthRate(f64),
+    /// Mortality delta on worker populace for the targeted subgroup.
+    MortalityRate(HouseholdTarget, f64),
 }
 
 impl ProcessEffect {
@@ -364,7 +388,8 @@ impl ProcessEffect {
             ProcessEffect::Faith(v) => EffectKind::Faith(v),
             ProcessEffect::Authority(v) => EffectKind::Authority(v),
             ProcessEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
-            ProcessEffect::Growth(v) => EffectKind::Growth(v),
+            ProcessEffect::BirthRate(v) => EffectKind::BirthRate(v),
+            ProcessEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
         }
     }
 
@@ -376,7 +401,10 @@ impl ProcessEffect {
             ProcessEffect::Faith(v) => ProcessEffect::Faith(v * multiplier),
             ProcessEffect::Authority(v) => ProcessEffect::Authority(v * multiplier),
             ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * multiplier),
-            ProcessEffect::Growth(v) => ProcessEffect::Growth(v * multiplier),
+            ProcessEffect::BirthRate(v) => ProcessEffect::BirthRate(v * multiplier),
+            ProcessEffect::MortalityRate(target, v) => {
+                ProcessEffect::MortalityRate(target, v * multiplier)
+            }
         }
     }
 
@@ -397,9 +425,13 @@ impl ProcessEffect {
             (ProcessEffect::Legitimacy(v1), ProcessEffect::Legitimacy(v2)) => {
                 Some(ProcessEffect::Legitimacy(v1 + v2))
             }
-            (ProcessEffect::Growth(v1), ProcessEffect::Growth(v2)) => {
-                Some(ProcessEffect::Growth(v1 + v2))
+            (ProcessEffect::BirthRate(v1), ProcessEffect::BirthRate(v2)) => {
+                Some(ProcessEffect::BirthRate(v1 + v2))
             }
+            (
+                ProcessEffect::MortalityRate(t1, v1),
+                ProcessEffect::MortalityRate(t2, v2),
+            ) if t1 == t2 => Some(ProcessEffect::MortalityRate(*t1, v1 + v2)),
             _ => None,
         }
     }
