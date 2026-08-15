@@ -61,6 +61,9 @@ pub struct PopPRow {
 
     /// Shopping target after shopping (bulk planning).
     /// Goods that cannot trade should stay 0.0.
+    /// 
+    /// Ideally should be equal to saved + reserved after shopping, but not a hard 
+    /// requirement.
     pub shop_target: f64,
 
     /// Wish-to-preserve between days (hoarding target). Not a hard fence on consume.
@@ -130,6 +133,8 @@ impl PopPRow {
 /// Pop day-end / process-satisfaction records, including living-standard history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopRecords {
+    
+
     /// Tier satisfactions [basic, common, luxury] after satisfaction boosts.
     /// Measured as a percentage of success of each desire summed together. 
     /// 
@@ -138,10 +143,6 @@ pub struct PopRecords {
     /// 
     /// Filled in by the pop itself.
     pub tier_sat: [f64; 3],
-    /// AMV of on-hand property: `sum(quantity*price)` (missing prices => 1.0).
-    /// 
-    /// Filled in by the pop.
-    pub wealth_amv: f64,
     /// `sum(desire.satisfaction)` across all tiers.
     pub satisfaction_units_total: f64,
     /// Living Standard value today. 
@@ -162,18 +163,73 @@ pub struct PopRecords {
     /// The history of the pop's standard of living. Covers `HISTORY_MAX` (currently
     /// 16 turns).
     pub sol_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
+
+    // --- Census ---
+    /// Household count today. Written in record_keeping.
+    pub pop_size: f64,
+    /// Household-count history, same length as sol_history.
+    pub pop_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
+    /// Households in minus households out today. Written in the migration phase.
+    pub net_migration: f64,
+    /// Household-count change from growth_phase (new - old). Not migration.
+    /// Should never be >= current household count.
+    pub previous_growth: f64,
+    /// Labor available today (`Household::total_labor`).
+    pub labor: f64,
+
+    // --- Balance sheet ---
+    /// AMV of on-hand property: `sum(quantity*price)` (missing prices => 1.0).
+    /// 
+    /// Filled in by the pop.
+    pub wealth_amv: f64,
+    /// Spendable / mobile wealth: `Sum(quantity * price * salability)`.
+    /// Skips Untradeable goods. Per-household series goes in wealth_history.
+    pub liquid_wealth: f64,
+    /// Liquid wealth per household, same ring length as sol_history.
+    pub wealth_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
+    /// AMV of goods consumed and used today (last look before decay).
+    pub consumption_amv: f64,
+    /// AMV gained from wages today. 0.0 until market day pays.
+    pub income_amv: f64,
+    /// AMV of stock sitting against PopPRow.saved.
+    pub saved_amv: f64,
+    /// Shop success: AMV on-hand vs shop_target, typically 0.0..=1.0.
+    pub shop_fill: f64,
+
+    // --- Planning variables (rewritten in record_keeping, read next market day) ---
+    /// Target share of liquid wealth to hold. Drives PopPRow.saved.
+    pub savings_ratio: f64,
+    /// Personal interest rate. Higher => consume now, demand more return to save/invest.
+    pub time_preference: f64,
+    /// Fear/greed planning knob in -1.0..=1.0. Not SentimentKind::Fear.
+    /// Nudged from sentiment + SOL trend; lerped so one day cannot flip hoarding.
+    pub risk_appetite: f64,
 }
 
 impl Default for PopRecords {
     fn default() -> Self {
         Self {
             tier_sat: [1.0, 1.0, 1.0],
-            wealth_amv: 0.0,
             satisfaction_units_total: 0.0,
             living_standard: 1.0,
             sol_avg: 1.0,
             trend: 0.0,
             sol_history: CircularBuffer::new(),
+            pop_size: 0.0,
+            pop_history: CircularBuffer::new(),
+            net_migration: 0.0,
+            previous_growth: 0.0,
+            labor: 0.0,
+            wealth_amv: 0.0,
+            liquid_wealth: 0.0,
+            wealth_history: CircularBuffer::new(),
+            consumption_amv: 0.0,
+            income_amv: 0.0,
+            saved_amv: 0.0,
+            shop_fill: 1.0,
+            savings_ratio: pop_constants::DEFAULT_SAVINGS_RATIO,
+            time_preference: pop_constants::DEFAULT_TIME_PREFERENCE,
+            risk_appetite: pop_constants::DEFAULT_RISK_APPETITE,
         }
     }
 }
@@ -216,5 +272,63 @@ impl PopRecords {
         self.trend = self.living_standard - prev_avg;
         // push the current living standard to the history.
         self.sol_history.push_back(self.living_standard);
+    }
+
+    /// Push today's pop_size onto pop_history.
+    pub fn push_pop_history(&mut self) {
+        self.pop_history.push_back(self.pop_size);
+    }
+
+    /// Push liquid wealth per household onto wealth_history.
+    /// `0.0` when pop_size is 0.
+    pub fn push_wealth_history(&mut self) {
+        let per_household = if self.pop_size > 0.0 {
+            self.liquid_wealth / self.pop_size
+        } else {
+            0.0
+        };
+        self.wealth_history.push_back(per_household);
+    }
+}
+
+#[cfg(test)]
+mod pop_records_should {
+    use super::*;
+
+    #[test]
+    fn default_sets_planning_knobs_and_empty_rings() {
+        let records = PopRecords::default();
+        assert_eq!(records.savings_ratio, pop_constants::DEFAULT_SAVINGS_RATIO);
+        assert_eq!(records.time_preference, pop_constants::DEFAULT_TIME_PREFERENCE);
+        assert_eq!(records.risk_appetite, pop_constants::DEFAULT_RISK_APPETITE);
+        assert_eq!(records.shop_fill, 1.0);
+        assert_eq!(records.previous_growth, 0.0);
+        assert_eq!(records.pop_history.len(), 0);
+        assert_eq!(records.wealth_history.len(), 0);
+        assert_eq!(records.sol_history.len(), 0);
+    }
+
+    #[test]
+    fn push_pop_history_appends_pop_size() {
+        let mut records = PopRecords::default();
+        records.pop_size = 12.0;
+        records.push_pop_history();
+        assert_eq!(records.pop_history.len(), 1);
+        assert_eq!(records.pop_history[0], 12.0);
+    }
+
+    #[test]
+    fn push_wealth_history_stores_per_household_liquid() {
+        let mut records = PopRecords::default();
+        records.liquid_wealth = 20.0;
+        records.pop_size = 10.0;
+        records.push_wealth_history();
+        assert_eq!(records.wealth_history.len(), 1);
+        assert!((records.wealth_history[0] - 2.0).abs() < 1e-12);
+
+        records.pop_size = 0.0;
+        records.push_wealth_history();
+        assert_eq!(records.wealth_history.len(), 2);
+        assert_eq!(records.wealth_history[1], 0.0);
     }
 }

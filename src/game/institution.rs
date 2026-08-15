@@ -281,7 +281,6 @@ mod institution_tests {
                 religion: 0,
             },
             current_orders: vec![],
-            previous_growth: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),

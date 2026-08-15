@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use crate::game::actors::Actors;
 use crate::game::factuals::Factuals;
 use crate::game::mapdata::MapData;
+use crate::game::market::MarketHistory;
 use crate::game::players::Players;
 
 /// # Play State
@@ -301,8 +302,10 @@ impl PlayState {
                     .for_each(|(_, market)| market.record_keeping(factuals));
             });
             s.spawn(|_| {
+                // Stub: pops have no market_id yet; real wiring walks each market's history.
+                let history = MarketHistory::new();
                 pops.par_iter_mut()
-                    .for_each(|(_, pop)| pop.record_keeping(factuals));
+                    .for_each(|(_, pop)| pop.record_keeping(factuals, &history));
             });
             s.spawn(|_| {
                 firms

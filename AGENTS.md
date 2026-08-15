@@ -4,6 +4,11 @@ Rust economic / civilization simulator. Current work lives on branches like
 `EconCiv-Rework-Branch`. Prefer the rework design over older incomplete models
 when they conflict.
 
+## Conversation and Tone
+
+Conversational, less clipped sentences, more verbose. Make it feel natural, like talking 
+to another person.
+
 ## Goals
 
 - Simulate a **simplified economy**: goods, processes, markets, firms, and pops.

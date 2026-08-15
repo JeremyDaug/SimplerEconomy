@@ -7,8 +7,15 @@
 /// Living-standard score history, trend, and related mood knobs.
 pub mod pop_constants {
     // History Length
-    /// Compile-time max ring slots for [`crate::game::pop_property::PopRecords::sol_history`].
+    /// Compile-time max ring slots for PopRecords histories (SOL, pop size, liquid wealth).
     pub const HISTORY_MAX: usize = 16;
+
+    /// Default share of liquid wealth the pop tries to hold as savings.
+    pub const DEFAULT_SAVINGS_RATIO: f64 = 0.20;
+    /// Default required return (personal interest rate). Higher = more impatient.
+    pub const DEFAULT_TIME_PREFERENCE: f64 = 0.05;
+    /// Neutral risk appetite (fear/greed). Range intended: -1.0 (fear) ..= 1.0 (greed).
+    pub const DEFAULT_RISK_APPETITE: f64 = 0.0;
 
     // Living Standard Constants
     /// EMA blend for rolling average (higher = more weight on today).

@@ -110,6 +110,7 @@ tier_sat = Sum(satisfaction / amount) + boost
 **Code:** `Pop::records.tier_sat[tier]` after `update_sentiments` (boosted for
 common/luxury); helpers `tier_satisfaction`, `tier_sat_with_boost`.
 Wealth: `Pop::records.wealth_amv` (AMV of on-hand property).
+Liquid wealth: `Pop::records.liquid_wealth` (AMV times salability, tradeable only).
 Satisfaction units total: `Pop::records.satisfaction_units_total`.
 
 ### Standard of Living
@@ -212,6 +213,34 @@ Savings does not fence reserves or consumption.
 
 **Meaning:** Goods that have been used to satisfy desires and have been moved into the consumed category.
 **Code:** `Pop::consume`, `satisfy_one_desire`
+
+### Liquid wealth
+**Preferred:** liquid wealth, mobile wealth
+
+**Meaning:** Spendable stock: `Sum(quantity * price * salability)` for tradeable goods.
+Missing prices and salability default to `1.0`. Untradeable goods are skipped.
+**Code:** `PopRecords::liquid_wealth`, `Pop::property_liquid_wealth`
+
+### Savings ratio
+**Preferred:** savings ratio
+
+**Meaning:** Target share of liquid wealth a pop tries to hold between days.
+Drives `PopPRow.saved` during record keeping / planning.
+**Code:** `PopRecords::savings_ratio`
+
+### Time preference
+**Preferred:** time preference
+
+**Meaning:** The pop's personal interest rate. Higher means consume now and demand
+a larger return to save or invest.
+**Code:** `PopRecords::time_preference`
+
+### Risk appetite
+**Preferred:** risk appetite, fear/greed (planning)
+
+**Meaning:** Slow planning knob in `-1.0..=1.0` (fear to greed). Not the Fear
+sentiment axis. Nudged from sentiment and SOL trend.
+**Code:** `PopRecords::risk_appetite`
 
 ### Used
 **Preferred:** Used

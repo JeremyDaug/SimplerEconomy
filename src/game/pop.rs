@@ -66,13 +66,6 @@ pub struct Pop {
     /// Assimilation/migration handles changing between groups.
     pub demographics: DemoRow,
 
-    /// The amount of growth (or decline if negative) in the population since yesterday.
-    /// Used for various success tracking and scaling of things between days.
-    /// 
-    /// Should never be larger than or equal to `self.demographics.count()`.
-    /// (Negative pops aren't real, they can't hurt you.)
-    pub previous_growth: f64,
-
     /// Same-day deferred effects (environment, events, process spillover, …).
     /// Growth arms → [`Self::growth_phase`]; 
     /// mood/sentiment/satisfaction → [`Self::update_sentiments`]; 
@@ -83,7 +76,8 @@ pub struct Pop {
     /// Updated in [`Self::update_sentiments`]; blendable into firms, markets, etc.
     pub sentiment: Sentiment,
 
-    /// End-of-pass snapshot from [`Self::update_sentiments`] (tier sat, wealth, …).
+    /// End-of-day records including SOL Wealth, as well as setting loose financial 
+    /// plans and targets. 
     pub records: PopRecords,
 
 }
@@ -201,7 +195,8 @@ impl Pop {
         self.add_missing_demographic_desires(factuals, &existing_desires);
 
         // --- 3. Scale shopping / need targets with population growth ---
-        let growth_f = self.demographics.count() / (self.demographics.count() - self.previous_growth);
+        let growth_f = self.demographics.count()
+            / (self.demographics.count() - self.records.previous_growth);
         debug_assert!(growth_f.is_finite(), "population count - previous growth reached 0. Something has gone wrong.");
         for (_, prop) in self.property.iter_mut() {
             if prop.shop_target > 0.0 {
@@ -660,7 +655,7 @@ impl Pop {
         rates = rates.add(&self.same_day_growth_rate_mods());
 
         self.demographics.household.update(&rates);
-        self.previous_growth = self.demographics.household.count - old_count;
+        self.records.previous_growth = self.demographics.household.count - old_count;
     }
 
     /// Same-day rate deltas from desire satisfaction and stored growth effects.
@@ -1072,18 +1067,78 @@ impl Pop {
         let mut total = 0.0;
         for (good_id, row) in &self.property {
             debug_assert!(row.quantity.is_finite(), "Property quantity must be finite.");
-            let price = market_history.prices.get(good_id).copied().unwrap_or(1.0);
+            let price = market_history.price(*good_id);
             debug_assert!(price.is_finite(), "Market price must be finite.");
             total += row.quantity * price;
         }
         total
     }
 
-    /// End-of-day bookkeeping for this pop (satisfaction stats, property notes, …).
-    /// Only external input is factuals.
-    pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
+    /// Spendable wealth: `Sum(qty * price * salability)` for tradeable goods.
+    /// Missing prices and salability default to `1.0`.
+    pub fn property_liquid_wealth(&self, market_history: &MarketHistory, factuals: &Factuals) -> f64 {
+        let mut total = 0.0;
+        for (good_id, row) in &self.property {
+            debug_assert!(row.quantity.is_finite(), "Property quantity must be finite.");
+            let good = factuals.find_good(*good_id);
+            if good.tags.contains(&GoodTag::Untradeable) {
+                continue;
+            }
+            let price = market_history.price(*good_id);
+            let salability = market_history.salability(*good_id);
+            debug_assert!(price.is_finite(), "Market price must be finite.");
+            debug_assert!(salability.is_finite(), "Market salability must be finite.");
+            total += row.quantity * price * salability;
+        }
+        total
+    }
+
+    /// AMV of stock covered by the savings wish: `Sum(min(saved, quantity).max(0) * price)`.
+    /// Wish above on-hand does not count. Missing prices default to `1.0`.
+    pub fn property_saved_wealth_amv(&self, market_history: &MarketHistory) -> f64 {
+        let mut total = 0.0;
+        for (good_id, row) in &self.property {
+            debug_assert!(row.quantity.is_finite(), "Property quantity must be finite.");
+            debug_assert!(row.saved.is_finite(), "Saved target must be finite.");
+            let covered = row.saved.min(row.quantity).max(0.0);
+            if covered == 0.0 {
+                continue;
+            }
+            let price = market_history.price(*good_id);
+            debug_assert!(price.is_finite(), "Market price must be finite.");
+            total += covered * price;
+        }
+        total
+    }
+
+    /// # Record Keeping
+    /// 
+    /// Record Keeping goes through the pop's work today and records the details for the
+    /// day.
+    /// 
+    /// This also includes doing some reworking of the pop's financial planning and 
+    /// targets.
+    /// 
+    /// This is not meant to clean up dead pops (Household.size < 1.0). That is for 
+    /// the market and firm to ultimately handle.
+    pub fn record_keeping(
+        &mut self,
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) {
+        let _ = (self, factuals, market_history);
         todo!("Pop record keeping")
+    }
+
+    /// # Extract State Resources
+    /// 
+    /// Extracts from a pop the 'state' resources (primarily culture and research), 
+    /// clearing any unused desires and special effects currently remaining on the 
+    /// pop, and returning it to the caller.
+    /// 
+    /// Where those resources go is not up to the pop.
+    pub fn extract_state_resources(&mut self, _factuals: &Factuals) {
+        todo!()
     }
 
     /// # Decay Goods
@@ -1220,7 +1275,7 @@ mod pop {
     use crate::game::{
         desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
         factuals::Factuals,
-        good::Good,
+        good::{Good, GoodTag},
         household::{DemographicRates, Household, HouseholdTarget},
         market::MarketHistory,
         pop::{DemoRow, Pop, PopEffect, PopPRow, PopRecords},
@@ -1247,7 +1302,6 @@ mod pop {
                 religion: 0,
             },
             current_orders: vec![],
-            previous_growth: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
@@ -1551,7 +1605,7 @@ mod pop {
             pop.desires[0].push(desire);
 
             pop.demographics.household.count += 10.0; // double households
-            pop.previous_growth += 10.0; // include growth change.
+            pop.records.previous_growth += 10.0; // include growth change.
             pop.update_desires(&factuals);
 
             // new amount = 2.0 * 20 = 40; satisfaction scales 10 * (40/20) = 20
@@ -1722,7 +1776,7 @@ mod pop {
                     .with_culture(Culture::new(1, "Test").with_desire(demo.clone()));
                 let mut pop = make_pop();
                 pop.demographics.culture = 1;
-                pop.previous_growth = previous_growth;
+                pop.records.previous_growth = previous_growth;
                 let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
                 pop.desires[0].push(desire);
                 pop.property.insert(100, PopPRow::new(0.0).with_target(20.0).with_desire_need(10.0));
@@ -1819,7 +1873,7 @@ mod pop {
             pop.growth_phase(&factuals);
             assert!(pop.demographics.household.count.is_finite());
             assert!(pop.demographics.household.count > 0.0);
-            assert!((pop.previous_growth - (pop.demographics.household.count - old_count)).abs() < 1e-12);
+            assert!((pop.records.previous_growth - (pop.demographics.household.count - old_count)).abs() < 1e-12);
         }
 
         #[test]
@@ -1830,10 +1884,10 @@ mod pop {
             pop.demographics.household.adult = 0.0;
             pop.demographics.household.elder = 0.0;
             pop.demographics.household.child = 0.0;
-            pop.previous_growth = 1.0;
+            pop.records.previous_growth = 1.0;
             pop.growth_phase(&factuals);
             assert_eq!(pop.demographics.household.count, 0.0);
-            assert_eq!(pop.previous_growth, 1.0); // unchanged
+            assert_eq!(pop.records.previous_growth, 1.0); // unchanged
         }
 
         #[test]
@@ -1978,7 +2032,7 @@ mod pop {
             pop.desires[0].push(desire);
 
             pop.demographics.household.count = 20.0;
-            pop.previous_growth = 10.0;
+            pop.records.previous_growth = 10.0;
 
             pop.update_desires(&factuals);
 
@@ -2299,6 +2353,91 @@ mod pop {
             assert!((Pop::common_sat_mood_weight(0.5) - 0.5).abs() < 1e-9);
             assert!((Pop::common_sat_mood_weight(1.0) - 1.0).abs() < 1e-9);
             assert!((Pop::common_sat_mood_weight(1.2) - 1.1).abs() < 1e-9);
+        }
+    }
+
+    mod property_liquid_wealth_should {
+        use super::*;
+
+        #[test]
+        fn uses_price_and_salability() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(101, PopPRow::new(5.0));
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            history.prices.insert(101, 4.0);
+            history.salability.insert(100, 0.5);
+            history.salability.insert(101, 0.25);
+            let factuals = make_default_factuals();
+            // 10*2*0.5 + 5*4*0.25 = 10 + 5 = 15
+            let liquid = pop.property_liquid_wealth(&history, &factuals);
+            assert!((liquid - 15.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn skips_untradeable() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(101, PopPRow::new(5.0));
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&101).unwrap().tags.insert(GoodTag::Untradeable);
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            history.prices.insert(101, 4.0);
+            history.salability.insert(100, 0.5);
+            history.salability.insert(101, 1.0);
+            // only 100: 10*2*0.5 = 10
+            let liquid = pop.property_liquid_wealth(&history, &factuals);
+            assert!((liquid - 10.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn missing_price_and_salability_default_to_one() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0));
+            let history = MarketHistory::new();
+            let factuals = make_default_factuals();
+            // 10 * 1.0 * 1.0 = 10
+            let liquid = pop.property_liquid_wealth(&history, &factuals);
+            assert!((liquid - 10.0).abs() < 1e-9);
+        }
+    }
+
+    mod property_saved_wealth_amv_should {
+        use super::*;
+
+        #[test]
+        fn uses_covered_saved_times_price() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0).with_saved(6.0));
+            pop.property.insert(101, PopPRow::new(5.0).with_saved(5.0));
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            history.prices.insert(101, 4.0);
+            // 6*2 + 5*4 = 32
+            let saved = pop.property_saved_wealth_amv(&history);
+            assert!((saved - 32.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn wish_above_quantity_only_counts_on_hand() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(4.0).with_saved(10.0));
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 3.0);
+            // min(10, 4) * 3 = 12
+            let saved = pop.property_saved_wealth_amv(&history);
+            assert!((saved - 12.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn missing_price_defaults_to_one() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(8.0).with_saved(5.0));
+            let history = MarketHistory::new();
+            let saved = pop.property_saved_wealth_amv(&history);
+            assert!((saved - 5.0).abs() < 1e-9);
         }
     }
 

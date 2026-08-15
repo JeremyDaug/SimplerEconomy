@@ -49,15 +49,28 @@ impl Market {
 /// 
 /// A saved record of minimal data for passing around.
 pub struct MarketHistory {
-    /// The last known prices of the good in AMV.
+    /// Last known AMV price per good.
     pub prices: HashMap<usize, f64>,
+    /// Last known salability per good, typically in 0.0..=1.0.
+    pub salability: HashMap<usize, f64>,
 }
 
 impl MarketHistory {
     pub(crate) fn new() -> Self {
         Self { 
-            prices: HashMap::new(), 
+            prices: HashMap::new(),
+            salability: HashMap::new(),
         }
+    }
+
+    /// Price for `good_id`, or 1.0 if missing.
+    pub fn price(&self, good_id: usize) -> f64 {
+        self.prices.get(&good_id).copied().unwrap_or(1.0)
+    }
+
+    /// Salability for `good_id`, or 1.0 if missing.
+    pub fn salability(&self, good_id: usize) -> f64 {
+        self.salability.get(&good_id).copied().unwrap_or(1.0)
     }
 }
 
