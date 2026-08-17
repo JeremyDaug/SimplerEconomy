@@ -1367,6 +1367,8 @@ mod pop {
             class: None,
             decay_rate: 1.0,
             decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 1.0,
             tags: HashSet::new(),
             categories: vec![],
         }
@@ -2450,6 +2452,8 @@ mod pop {
                 class: None,
                 decay_rate,
                 decay_result,
+                mass: 1.0,
+                volume: 1.0,
                 tags: HashSet::new(),
                 categories: vec![],
             }

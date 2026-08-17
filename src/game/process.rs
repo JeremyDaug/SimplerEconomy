@@ -719,6 +719,8 @@ mod processes {
             tags: Default::default(),
             decay_rate: 0.0,
             decay_result,
+            mass: 1.0,
+            volume: 1.0,
             categories: vec![],
             // add any other fields your Good actually has
         }

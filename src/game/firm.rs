@@ -384,6 +384,8 @@ mod firm {
             tags: Default::default(),
             decay_rate: 0.0,
             decay_result,
+            mass: 1.0,
+            volume: 1.0,
             categories: vec![],
             // add any other fields your Good actually has
         }
@@ -832,6 +834,8 @@ mod firm {
                 id: 100,
                 name: "Wood".into(),
                 class: None,
+                mass: 1.0,
+                volume: 1.0,
                 decay_rate: 0.25,
                 decay_result: HashMap::from([(130, 0.5)]), // 50% becomes sawdust
                 tags: Default::default(),

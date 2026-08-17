@@ -32,6 +32,13 @@ pub struct Good {
     /// or decay into nothing.
     pub decay_result: HashMap<usize, f64>,
 
+    /// The mass(kg) of the object, used as part of transportation, storage, and friction
+    /// cost calculations.
+    pub mass: f64,
+    /// The volume (m^3) needed to store the object, used as part of transportation, 
+    /// storage, and friction cost calculations.
+    pub volume: f64,
+
     /// Tags which modify how the good is treated in markets.
     pub tags: HashSet<GoodTag>,
 
@@ -43,6 +50,17 @@ pub struct Good {
 impl Good {
     pub fn is_buyable(&self) -> bool {
         !self.tags.iter().contains(&GoodTag::Untradeable)
+    }
+
+    /// # Bulk
+    /// 
+    /// Calculates the bulk of an item.
+    /// Equal to mass + 400 * Volume.
+    /// 
+    /// This is meant to be scaled up or down to match friction scaling and so
+    /// it may be added here later.
+    pub fn bulk(&self) -> f64 {
+        self.mass + self.volume * 400.0
     }
 }
 
