@@ -188,7 +188,7 @@ If two paths touch the same goods for the same desire (e.g. **reserve** vs
 ### Property and savings
 
 - `quantity` is physical stock.
-- `saved` is a **wish / target**, not a hard fence on consumption or reservation
+- `save_target` is a **soft target**, not a hard fence on consumption or reservation
   unless a future design explicitly reintroduces that.
 - `reserved` is a **same-day earmark**; cleared at day start for pops.
 - `used` / `consumed` are end-of-day decay inputs; document move-back and 100%

@@ -67,7 +67,7 @@ pub struct PopPRow {
     pub shop_target: f64,
 
     /// Wish-to-preserve between days (hoarding target). Not a hard fence on consume.
-    pub saved: f64,
+    pub save_target: f64,
 
     /// Earmarked for today's use; does not remove from quantity. Reset day-start.
     pub reserved: f64,
@@ -97,8 +97,9 @@ impl PopPRow {
         self
     }
 
-    pub fn with_saved(mut self, saved: f64) -> Self {
-        self.saved = saved;
+    /// Sets the between-days save target. Not on-hand savings.
+    pub fn with_save_target(mut self, save_target: f64) -> Self {
+        self.save_target = save_target;
         self
     }
 
@@ -125,6 +126,15 @@ impl PopPRow {
     /// `quantity - reserved` (unclaimed stock).
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
+    }
+
+    /// # Saved
+    ///
+    /// Actual saved units: `quantity - reserved` (floored at 0).
+    /// Consume draws quantity and reserved together, so this stays valid after consume.
+    /// Does not use `save_target`.
+    pub fn saved(&self) -> f64 {
+        (self.quantity - self.reserved).max(0.0)
     }
 }
 
@@ -330,5 +340,22 @@ mod pop_records_should {
         records.push_wealth_history();
         assert_eq!(records.wealth_history.len(), 2);
         assert_eq!(records.wealth_history[1], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod pop_p_row_saved_should {
+    use super::*;
+
+    #[test]
+    fn is_quantity_minus_reserved() {
+        let row = PopPRow::new(10.0).with_reserve(4.0).with_save_target(99.0);
+        assert_eq!(row.saved(), 6.0);
+    }
+
+    #[test]
+    fn floors_at_zero_when_reserved_exceeds_quantity() {
+        let row = PopPRow::new(3.0).with_reserve(5.0);
+        assert_eq!(row.saved(), 0.0);
     }
 }

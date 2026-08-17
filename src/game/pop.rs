@@ -1061,6 +1061,8 @@ impl Pop {
         }
     }
 
+    /// # Property Wealth AMV
+    /// 
     /// AMV of on-hand property: `Sum(quantity * price)`.
     /// Missing prices default to `1.0` (same convention as order costing).
     pub fn property_wealth_amv(&self, market_history: &MarketHistory) -> f64 {
@@ -1074,6 +1076,8 @@ impl Pop {
         total
     }
 
+    /// # Property Liquid Wealth
+    /// 
     /// Spendable wealth: `Sum(qty * price * salability)` for tradeable goods.
     /// Missing prices and salability default to `1.0`.
     pub fn property_liquid_wealth(&self, market_history: &MarketHistory, factuals: &Factuals) -> f64 {
@@ -1093,20 +1097,21 @@ impl Pop {
         total
     }
 
-    /// AMV of stock covered by the savings wish: `Sum(min(saved, quantity).max(0) * price)`.
-    /// Wish above on-hand does not count. Missing prices default to `1.0`.
+    /// # Property Saved Wealth
+    ///
+    /// AMV of actual saved units: `Sum(saved() * price)`.
+    /// Missing prices default to `1.0`.
     pub fn property_saved_wealth_amv(&self, market_history: &MarketHistory) -> f64 {
         let mut total = 0.0;
         for (good_id, row) in &self.property {
-            debug_assert!(row.quantity.is_finite(), "Property quantity must be finite.");
-            debug_assert!(row.saved.is_finite(), "Saved target must be finite.");
-            let covered = row.saved.min(row.quantity).max(0.0);
-            if covered == 0.0 {
+            let qty = row.saved();
+            debug_assert!(qty.is_finite(), "Saved units must be finite.");
+            if qty == 0.0 {
                 continue;
             }
             let price = market_history.price(*good_id);
             debug_assert!(price.is_finite(), "Market price must be finite.");
-            total += covered * price;
+            total += qty * price;
         }
         total
     }
@@ -2147,12 +2152,12 @@ mod pop {
                 10.0,
             ));
             // All 10 units are also marked saved; consumption reserve still claims them.
-            pop.property.insert(100, PopPRow::new(10.0).with_saved(10.0));
+            pop.property.insert(100, PopPRow::new(10.0).with_save_target(10.0));
 
             pop.initial_reservations_and_update_satisfaction();
 
             assert_eq!(pop.property[&100].reserved, 10.0);
-            assert_eq!(pop.property[&100].saved, 10.0);
+            assert_eq!(pop.property[&100].save_target, 10.0);
             assert_eq!(pop.property[&100].quantity, 10.0);
         }
     }
@@ -2408,33 +2413,22 @@ mod pop {
         use super::*;
 
         #[test]
-        fn uses_covered_saved_times_price() {
+        fn uses_quantity_minus_reserved_times_price() {
             let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(10.0).with_saved(6.0));
-            pop.property.insert(101, PopPRow::new(5.0).with_saved(5.0));
+            pop.property.insert(100, PopPRow::new(10.0).with_reserve(4.0).with_save_target(99.0));
+            pop.property.insert(101, PopPRow::new(5.0).with_reserve(0.0).with_save_target(1.0));
             let mut history = make_default_market_history();
             history.prices.insert(100, 2.0);
             history.prices.insert(101, 4.0);
-            // 6*2 + 5*4 = 32
+            // (10-4)*2 + (5-0)*4 = 12 + 20 = 32
             let saved = pop.property_saved_wealth_amv(&history);
             assert!((saved - 32.0).abs() < 1e-9);
         }
 
         #[test]
-        fn wish_above_quantity_only_counts_on_hand() {
-            let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(4.0).with_saved(10.0));
-            let mut history = make_default_market_history();
-            history.prices.insert(100, 3.0);
-            // min(10, 4) * 3 = 12
-            let saved = pop.property_saved_wealth_amv(&history);
-            assert!((saved - 12.0).abs() < 1e-9);
-        }
-
-        #[test]
         fn missing_price_defaults_to_one() {
             let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(8.0).with_saved(5.0));
+            pop.property.insert(100, PopPRow::new(8.0).with_reserve(3.0));
             let history = MarketHistory::new();
             let saved = pop.property_saved_wealth_amv(&history);
             assert!((saved - 5.0).abs() < 1e-9);
@@ -2550,7 +2544,7 @@ mod pop {
             let mut pop = make_pop();
             pop.property.insert(
                 100,
-                PopPRow::new(10.0).with_saved(10.0),
+                PopPRow::new(10.0).with_save_target(10.0),
             );
 
             let mut factuals = Factuals::new();
@@ -2563,7 +2557,7 @@ mod pop {
 
             assert_eq!(pop.property[&100].quantity, 5.0);
             // saved is a wish target; shortfall remains for mood / planning.
-            assert_eq!(pop.property[&100].saved, 10.0);
+            assert_eq!(pop.property[&100].save_target, 10.0);
         }
 
         #[test]

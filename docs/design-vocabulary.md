@@ -221,11 +221,28 @@ Savings does not fence reserves or consumption.
 Missing prices and salability default to `1.0`. Untradeable goods are skipped.
 **Code:** `PopRecords::liquid_wealth`, `Pop::property_liquid_wealth`
 
+### Save target
+**Preferred:** save target
+
+**Meaning:** Soft between-days target on a property row. Not a hard fence and not
+on-hand savings. After shopping, `shop_target` should be `reserved + save_target`.
+After consume, `shop_target` should be `consumed + used + save_target`.
+**Avoid:** wish (too emotive for a planning target)
+**Code:** `PopPRow::save_target`
+
+### Saved (derived units)
+**Preferred:** saved, saved units
+
+**Meaning:** Actual units held for between days: `quantity - reserved`.
+Consume draws quantity and reserved together, so the same formula holds after consume.
+**Not** `save_target`.
+**Code:** `PopPRow::saved`, `Pop::property_saved_wealth_amv`
+
 ### Savings ratio
 **Preferred:** savings ratio
 
 **Meaning:** Target share of liquid wealth a pop tries to hold between days.
-Drives `PopPRow.saved` during record keeping / planning.
+Drives `PopPRow.save_target` during record keeping / planning.
 **Code:** `PopRecords::savings_ratio`
 
 ### Time preference
