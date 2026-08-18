@@ -1131,8 +1131,396 @@ impl Pop {
         factuals: &Factuals,
         market_history: &MarketHistory,
     ) {
-        let _ = (self, factuals, market_history);
-        todo!("Pop record keeping")
+        // Snapshot today's results before any target rewrite.
+        self.records.pop_size = self.demographics.household.count;
+        self.records.labor = self.demographics.household.total_labor();
+        self.records.push_pop_history();
+
+        self.records.liquid_wealth = self.property_liquid_wealth(market_history, factuals);
+        self.records.saved_amv = self.property_saved_wealth_amv(market_history);
+        self.records.consumption_amv = self.property_consumption_amv(market_history);
+        self.records.shop_fill = self.compute_shop_fill(market_history);
+        self.records.push_wealth_history();
+
+        self.update_planning();
+        self.rewrite_shop_and_save_targets(factuals, market_history);
+    }
+
+    /// AMV of goods consumed and used today. Missing prices default to `1.0`.
+    pub fn property_consumption_amv(&self, market_history: &MarketHistory) -> f64 {
+        let mut total = 0.0;
+        for (good_id, row) in &self.property {
+            let qty = row.consumed + row.used;
+            debug_assert!(qty.is_finite(), "Consumed/used units must be finite.");
+            if qty == 0.0 {
+                continue;
+            }
+            let price = market_history.price(*good_id);
+            debug_assert!(price.is_finite(), "Market price must be finite.");
+            total += qty * price;
+        }
+        total
+    }
+
+    /// Shop success vs the still-current (pre-rewrite) `shop_target`.
+    /// Reconstructs post-shop stock as `qty + consumed + used`. Extra of one
+    /// good does not cover a miss on another. Empty wants -> 1.0.
+    fn compute_shop_fill(&self, market_history: &MarketHistory) -> f64 {
+        let mut filled = 0.0;
+        let mut wanted = 0.0;
+        for (good_id, row) in &self.property {
+            if row.shop_target <= 0.0 {
+                continue;
+            }
+            let price = market_history.price(*good_id);
+            debug_assert!(price.is_finite(), "Market price must be finite.");
+            let had = (row.quantity + row.consumed + row.used).max(0.0);
+            wanted += row.shop_target * price;
+            filled += had.min(row.shop_target) * price;
+        }
+        if wanted <= 0.0 {
+            1.0
+        } else {
+            (filled / wanted).clamp(0.0, 1.0)
+        }
+    }
+
+    /// # Update Planning
+    ///
+    /// Lerp `risk_appetite`, `savings_ratio` (days of buffer), and
+    /// `time_preference` toward sentiment / SOL targets. Does not spend them.
+    fn update_planning(&mut self) {
+        let hope = self.sentiment.hope();
+        let happiness = self.sentiment.happiness();
+        let fear = self.sentiment.fear();
+        let anger = self.sentiment.anger();
+        let contentment = self.sentiment.contentment();
+
+        let mood = hope * pop_constants::RISK_HOPE_WEIGHT
+            + happiness * pop_constants::RISK_HAPPINESS_WEIGHT
+            - fear * pop_constants::RISK_FEAR_WEIGHT
+            - anger * pop_constants::RISK_ANGER_WEIGHT;
+        let sol = self.records.living_standard.max(0.5);
+        let trend_pull = (self.records.trend / sol).clamp(-1.0, 1.0);
+        let target_risk = (mood
+            + pop_constants::RISK_TREND_WEIGHT * trend_pull
+            - pop_constants::RISK_CONTENTMENT_WEIGHT * contentment)
+            .clamp(
+                pop_constants::RISK_APPETITE_MIN,
+                pop_constants::RISK_APPETITE_MAX,
+            );
+        self.records.risk_appetite = lerp(
+            self.records.risk_appetite,
+            target_risk,
+            pop_constants::PLANNING_LERP_RATE,
+        )
+        .clamp(
+            pop_constants::RISK_APPETITE_MIN,
+            pop_constants::RISK_APPETITE_MAX,
+        );
+
+        let basic01 = if self.desires[0].is_empty() {
+            1.0
+        } else {
+            self.records.tier_sat[0] / self.desires[0].len() as f64
+        }
+        .clamp(0.0, 1.0);
+        let unmet_basic = 1.0 - basic01;
+
+        let mut target_savings = pop_constants::DEFAULT_SAVINGS_RATIO
+            - pop_constants::SAVINGS_RISK_WEIGHT * self.records.risk_appetite
+            + pop_constants::SAVINGS_FEAR_WEIGHT * fear
+            + pop_constants::SAVINGS_UNMET_BASIC_WEIGHT * unmet_basic;
+        if self.records.trend < 0.0 {
+            let fall = (-self.records.trend / sol).min(1.0);
+            target_savings += pop_constants::SAVINGS_FALL_SOL_WEIGHT * fall;
+        }
+        target_savings = target_savings.clamp(
+            pop_constants::SAVINGS_RATIO_MIN,
+            pop_constants::SAVINGS_RATIO_MAX,
+        );
+        self.records.savings_ratio = lerp(
+            self.records.savings_ratio,
+            target_savings,
+            pop_constants::PLANNING_LERP_RATE,
+        )
+        .clamp(
+            pop_constants::SAVINGS_RATIO_MIN,
+            pop_constants::SAVINGS_RATIO_MAX,
+        );
+
+        let target_tp = (pop_constants::DEFAULT_TIME_PREFERENCE
+            + pop_constants::TIME_PREFERENCE_ANGER_WEIGHT * anger
+            + pop_constants::TIME_PREFERENCE_UNMET_BASIC_WEIGHT * unmet_basic
+            - pop_constants::TIME_PREFERENCE_CONTENTMENT_WEIGHT * contentment)
+            .clamp(
+                pop_constants::TIME_PREFERENCE_MIN,
+                pop_constants::TIME_PREFERENCE_MAX,
+            );
+        self.records.time_preference = lerp(
+            self.records.time_preference,
+            target_tp,
+            pop_constants::PLANNING_LERP_RATE,
+        )
+        .clamp(
+            pop_constants::TIME_PREFERENCE_MIN,
+            pop_constants::TIME_PREFERENCE_MAX,
+        );
+    }
+
+    /// Growth factor used to inflate the savings pile (`count / old_count`).
+    /// `1.0` when not growing or when the prior count is not usable.
+    fn savings_growth_buffer(&self) -> f64 {
+        let count = self.demographics.household.count;
+        let old = count - self.records.previous_growth;
+        if old <= 0.0 || !old.is_finite() || !count.is_finite() {
+            return 1.0;
+        }
+        let growth_f = count / old;
+        if !growth_f.is_finite() || growth_f <= 1.0 {
+            1.0
+        } else {
+            1.0 + (growth_f - 1.0) * pop_constants::SAVINGS_GROWTH_BUFFER_WEIGHT
+        }
+    }
+
+    /// Units still wanted per target good: unsatisfied sat / efficiency, on
+    /// every target that can contribute. Does not walk a full extra level.
+    fn unsatisfied_target_units(desires: &[Desire]) -> HashMap<usize, f64> {
+        let mut need = HashMap::new();
+        for desire in desires {
+            let needed_sat = (desire.amount - desire.satisfaction).max(0.0);
+            if needed_sat <= 0.0 {
+                continue;
+            }
+            for target in &desire.target {
+                debug_assert!(
+                    target.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                if target.efficiency <= 0.0 {
+                    continue;
+                }
+                let want_sat = needed_sat.min(desire.amount * target.cap);
+                if want_sat <= 0.0 {
+                    continue;
+                }
+                *need.entry(target.good).or_insert(0.0) += want_sat / target.efficiency;
+            }
+        }
+        need
+    }
+
+    /// Cheapest AMV that would satisfy each desire once (basic+common basket).
+    fn living_need_amv(desires: &[Desire], market_history: &MarketHistory) -> f64 {
+        let mut total = 0.0;
+        for desire in desires {
+            if desire.amount <= 0.0 {
+                continue;
+            }
+            let mut best: Option<f64> = None;
+            for target in &desire.target {
+                debug_assert!(
+                    target.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                if target.efficiency <= 0.0 {
+                    continue;
+                }
+                let cost = (desire.amount / target.efficiency) * market_history.price(target.good);
+                best = Some(match best {
+                    Some(prev) => prev.min(cost),
+                    None => cost,
+                });
+            }
+            if let Some(cost) = best {
+                total += cost;
+            }
+        }
+        total
+    }
+
+    /// AMV weights for parking the non-substitutable part of the buffer on
+    /// basic+common target goods (full live desire, not the unsatisfied gap).
+    fn specific_buffer_weights(
+        desires: &[Desire],
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) -> HashMap<usize, f64> {
+        let mut weights = HashMap::new();
+        for desire in desires {
+            if desire.amount <= 0.0 {
+                continue;
+            }
+            for target in &desire.target {
+                debug_assert!(
+                    target.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                if target.efficiency <= 0.0 {
+                    continue;
+                }
+                if !Self::good_is_tradeable(factuals, target.good) {
+                    continue;
+                }
+                let price = market_history.price(target.good);
+                if price <= 0.0 {
+                    continue;
+                }
+                let amv = (desire.amount / target.efficiency) * price;
+                *weights.entry(target.good).or_insert(0.0) += amv;
+            }
+        }
+        weights
+    }
+
+    fn good_is_tradeable(factuals: &Factuals, good_id: usize) -> bool {
+        !factuals.find_good(good_id).tags.contains(&GoodTag::Untradeable)
+    }
+
+    /// Share of the savings pile that may be held as liquid AMV. Falls with Fear.
+    fn savings_substitutability(&self) -> f64 {
+        let fear = self.sentiment.fear().clamp(0.0, 1.0);
+        lerp(
+            pop_constants::SAVINGS_SUBSTITUTABILITY_CALM,
+            pop_constants::SAVINGS_SUBSTITUTABILITY_FEAR,
+            fear,
+        )
+        .clamp(0.0, 1.0)
+    }
+
+    /// # Rewrite Shop and Save Targets
+    ///
+    /// **Consume need** is the live-use side of `shop_target`:
+    /// `max(unsatisfied target units, consumed + used)`.
+    /// Savings is `savings_ratio` days of the cheapest basic+common basket.
+    /// Fear lowers substitutability: more of the pile is parked on those
+    /// specific goods; the rest goes salability-first as liquid AMV.
+    fn rewrite_shop_and_save_targets(
+        &mut self,
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) {
+        let need_by_tier = [
+            Self::unsatisfied_target_units(&self.desires[0]),
+            Self::unsatisfied_target_units(&self.desires[1]),
+            Self::unsatisfied_target_units(&self.desires[2]),
+        ];
+
+        let mut total_need: HashMap<usize, f64> = HashMap::new();
+        for tier in &need_by_tier {
+            for (&good_id, &qty) in tier {
+                *total_need.entry(good_id).or_insert(0.0) += qty;
+            }
+        }
+
+        let mut goods: HashSet<usize> = self.property.keys().copied().collect();
+        goods.extend(total_need.keys().copied());
+
+        let mut consume_need: HashMap<usize, f64> = HashMap::new();
+        for &good_id in &goods {
+            let need = total_need.get(&good_id).copied().unwrap_or(0.0);
+            let used = self
+                .property
+                .get(&good_id)
+                .map(|row| row.consumed + row.used)
+                .unwrap_or(0.0);
+            consume_need.insert(good_id, need.max(used));
+        }
+
+        let daily_need_amv = Self::living_need_amv(&self.desires[0], market_history)
+            + Self::living_need_amv(&self.desires[1], market_history);
+        let target_saved_amv =
+            (self.records.savings_ratio * daily_need_amv * self.savings_growth_buffer()).max(0.0);
+
+        let substitutability = self.savings_substitutability();
+        let liquid_amv = target_saved_amv * substitutability;
+        let mut specific_amv = target_saved_amv - liquid_amv;
+
+        let mut save_units: HashMap<usize, f64> = HashMap::new();
+        let specific_weights = {
+            let mut weights = Self::specific_buffer_weights(
+                &self.desires[0],
+                factuals,
+                market_history,
+            );
+            for (good_id, weight) in Self::specific_buffer_weights(
+                &self.desires[1],
+                factuals,
+                market_history,
+            ) {
+                *weights.entry(good_id).or_insert(0.0) += weight;
+            }
+            weights
+        };
+        let specific_total: f64 = specific_weights.values().sum();
+        if specific_total > 0.0 && specific_amv > 0.0 {
+            for (&good_id, &weight) in &specific_weights {
+                let price = market_history.price(good_id);
+                if price <= 0.0 {
+                    continue;
+                }
+                let amv = specific_amv * (weight / specific_total);
+                *save_units.entry(good_id).or_insert(0.0) += amv / price;
+            }
+            specific_amv = 0.0;
+        } else {
+            // No specific goods to park on; fold back into liquid AMV.
+        }
+        let mut remaining_liquid = liquid_amv + specific_amv;
+
+        let mut candidates: Vec<(usize, f64, f64, f64)> = Vec::new();
+        for &good_id in &goods {
+            if !Self::good_is_tradeable(factuals, good_id) {
+                continue;
+            }
+            let price = market_history.price(good_id);
+            if price <= 0.0 {
+                continue;
+            }
+            let day_qty = self
+                .property
+                .get(&good_id)
+                .map(|row| row.quantity + row.consumed + row.used)
+                .unwrap_or(0.0);
+            candidates.push((
+                good_id,
+                market_history.salability(good_id),
+                day_qty,
+                price,
+            ));
+        }
+        candidates.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        for (good_id, _sal, _day_qty, price) in candidates {
+            if remaining_liquid <= 0.0 {
+                break;
+            }
+            *save_units.entry(good_id).or_insert(0.0) += remaining_liquid / price;
+            remaining_liquid = 0.0;
+        }
+
+        for row in self.property.values_mut() {
+            row.desire_needs = 0.0;
+            row.save_target = 0.0;
+            row.shop_target = 0.0;
+        }
+        for &good_id in &goods {
+            let need = total_need.get(&good_id).copied().unwrap_or(0.0);
+            let restock = consume_need.get(&good_id).copied().unwrap_or(0.0);
+            let save = save_units.get(&good_id).copied().unwrap_or(0.0);
+            let tradeable = Self::good_is_tradeable(factuals, good_id);
+            let row = self.property.entry(good_id).or_insert_with(|| PopPRow::new(0.0));
+            row.desire_needs = need;
+            if tradeable {
+                row.save_target = save;
+                row.shop_target = restock + save;
+            }
+        }
     }
 
     /// # Extract State Resources
@@ -1282,6 +1670,7 @@ mod pop {
         factuals::Factuals,
         good::{Good, GoodTag},
         household::{DemographicRates, Household, HouseholdTarget},
+        config::pop_constants,
         market::MarketHistory,
         pop::{DemoRow, Pop, PopEffect, PopPRow, PopRecords},
         scalingfactor::ScalingFactor,
@@ -2434,6 +2823,389 @@ mod pop {
             let history = MarketHistory::new();
             let saved = pop.property_saved_wealth_amv(&history);
             assert!((saved - 5.0).abs() < 1e-9);
+        }
+    }
+
+    mod record_keeping_should {
+        use super::*;
+
+        #[test]
+        fn records_census_and_consumption_amv() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(2.0).with_consumed(4.0).with_used(1.0),
+            );
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            let factuals = make_default_factuals();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert_eq!(pop.records.pop_size, 10.0);
+            // 10 households * (2*1.0 + 2.5*0.3 + 0.5*0.7) = 31
+            assert!((pop.records.labor - 31.0).abs() < 1e-12);
+            assert_eq!(pop.records.pop_history.len(), 1);
+            assert_eq!(pop.records.pop_history[0], 10.0);
+            // (4 consumed + 1 used) * 2 = 10
+            assert!((pop.records.consumption_amv - 10.0).abs() < 1e-12);
+            assert_eq!(pop.records.wealth_history.len(), 1);
+        }
+
+        #[test]
+        fn shop_fill_is_one_when_no_shop_targets() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(5.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert_eq!(pop.records.shop_fill, 1.0);
+        }
+
+        #[test]
+        fn shop_fill_uses_reconstructed_had_not_leftover_qty() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(2.0).with_consumed(8.0).with_target(10.0),
+            );
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.records.shop_fill - 1.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn shop_fill_does_not_let_extra_of_one_good_cover_another() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_consumed(4.0).with_target(10.0),
+            );
+            pop.property.insert(
+                101,
+                PopPRow::new(20.0).with_target(5.0),
+            );
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            // min(4,10)*1 + min(20,5)*1 = 4 + 5 = 9; want 15
+            assert!((pop.records.shop_fill - 9.0 / 15.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn desire_need_not_yesterdays_consumed_amount() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_consumed(4.0).with_target(10.0),
+            );
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
+            assert!(pop.property[&100].shop_target >= 10.0);
+        }
+
+        #[test]
+        fn luxury_hybrid_lifts_shop_target_to_consumed() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 30.0;
+            pop.desires[2].push(desire);
+            pop.property.insert(
+                300,
+                PopPRow::new(0.0).with_consumed(30.0),
+            );
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            // Already satisfied; do not add another full luxury level.
+            assert_eq!(pop.property[&300].desire_needs, 0.0);
+            assert!(pop.property[&300].shop_target >= 30.0);
+        }
+
+        #[test]
+        fn parks_savings_on_higher_salability_good() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(2.0).with_consumed(8.0));
+            pop.property.insert(500, PopPRow::new(50.0));
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.3);
+            history.salability.insert(500, 1.0);
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.property[&500].save_target > pop.property[&100].save_target);
+            assert_eq!(pop.property[&100].save_target, 0.0);
+            assert!((pop.property[&100].shop_target - pop.property[&100].desire_needs).abs() < 1e-12);
+            assert!((pop.property[&500].shop_target - pop.property[&500].save_target).abs() < 1e-12);
+            assert!(pop.property[&500].save_target > 0.0);
+        }
+
+        #[test]
+        fn untradeable_gets_need_but_zero_shop_and_save() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(4.0).with_consumed(4.0));
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
+            assert_eq!(pop.property[&100].shop_target, 0.0);
+            assert_eq!(pop.property[&100].save_target, 0.0);
+        }
+
+        #[test]
+        fn growing_pop_inflates_savings_pile() {
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            let mut stable = make_pop();
+            stable.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            stable.property.insert(100, PopPRow::new(10.0));
+            stable.records.previous_growth = 0.0;
+            stable.record_keeping(&factuals, &history);
+
+            let mut growing = make_pop();
+            growing.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            growing.property.insert(100, PopPRow::new(10.0));
+            growing.records.previous_growth = 5.0; // count 10 / old 5 = 2x
+            growing.record_keeping(&factuals, &history);
+
+            assert!(growing.property[&100].save_target > stable.property[&100].save_target);
+        }
+
+        #[test]
+        fn planning_values_lerp_and_stay_in_range() {
+            let mut pop = make_pop();
+            pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+            pop.records.tier_sat = [0.0, 1.0, 1.0];
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.records.living_standard = 2.0;
+            pop.records.trend = -4.0;
+            let start_risk = pop.records.risk_appetite;
+            let start_save = pop.records.savings_ratio;
+            let start_tp = pop.records.time_preference;
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.records.risk_appetite < start_risk);
+            assert!(pop.records.savings_ratio > start_save);
+            assert!(pop.records.time_preference > start_tp);
+            assert!(pop.records.risk_appetite >= pop_constants::RISK_APPETITE_MIN);
+            assert!(pop.records.risk_appetite <= pop_constants::RISK_APPETITE_MAX);
+            assert!(pop.records.savings_ratio >= pop_constants::SAVINGS_RATIO_MIN);
+            assert!(pop.records.savings_ratio <= pop_constants::SAVINGS_RATIO_MAX);
+            assert!(pop.records.time_preference >= pop_constants::TIME_PREFERENCE_MIN);
+            assert!(pop.records.time_preference <= pop_constants::TIME_PREFERENCE_MAX);
+            // One day must not slam risk to the floor.
+            assert!(pop.records.risk_appetite > pop_constants::RISK_APPETITE_MIN + 0.2);
+        }
+
+        #[test]
+        fn contentment_lowers_risk_appetite() {
+            let mut pop = make_pop();
+            // Default sentiment is full contentment.
+            let start = pop.records.risk_appetite;
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.records.risk_appetite < start);
+        }
+
+        #[test]
+        fn does_not_push_sol_history_or_touch_owned_fields() {
+            let mut pop = make_pop();
+            pop.records.tier_sat = [2.0, 3.0, 4.0];
+            pop.records.wealth_amv = 99.0;
+            pop.records.income_amv = 7.0;
+            pop.records.net_migration = -3.0;
+            pop.records.previous_growth = 1.5;
+            pop.records.sol_history.push_back(1.25);
+            let sol_len = pop.records.sol_history.len();
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert_eq!(pop.records.tier_sat, [2.0, 3.0, 4.0]);
+            assert_eq!(pop.records.wealth_amv, 99.0);
+            assert_eq!(pop.records.income_amv, 7.0);
+            assert_eq!(pop.records.net_migration, -3.0);
+            assert_eq!(pop.records.previous_growth, 1.5);
+            assert_eq!(pop.records.sol_history.len(), sol_len);
+            assert_eq!(pop.records.sol_history[0], 1.25);
+        }
+
+        #[test]
+        fn shop_target_is_consume_need_plus_save() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            let row = &pop.property[&100];
+            assert!((row.shop_target - (row.desire_needs + row.save_target)).abs() < 1e-12);
+        }
+
+        #[test]
+        fn unsatisfied_need_is_added_to_every_target() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.target.push(DesireTarget::new(101, DesireTargetType::Consume, 2.0));
+            pop.desires[0].push(desire);
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            // 10 sat / 1.0 eff and 10 sat / 2.0 eff; both sources listed.
+            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
+            assert!((pop.property[&101].desire_needs - 5.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn satisfied_desire_does_not_add_another_level() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 10.0;
+            pop.desires[0].push(desire);
+            pop.property.insert(100, PopPRow::new(0.0).with_consumed(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert_eq!(pop.property[&100].desire_needs, 0.0);
+            assert!(pop.property[&100].shop_target >= 10.0);
+        }
+
+        #[test]
+        fn fear_parks_buffer_on_needed_goods_not_just_liquid() {
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.3);
+            history.salability.insert(500, 1.0);
+
+            let mut calm = make_pop();
+            calm.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            calm.property.insert(100, PopPRow::new(2.0).with_consumed(8.0));
+            calm.property.insert(500, PopPRow::new(50.0));
+            calm.record_keeping(&factuals, &history);
+
+            let mut afraid = make_pop();
+            afraid.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+            afraid.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            afraid.property.insert(100, PopPRow::new(2.0).with_consumed(8.0));
+            afraid.property.insert(500, PopPRow::new(50.0));
+            afraid.record_keeping(&factuals, &history);
+
+            assert!(calm.property[&500].save_target > calm.property[&100].save_target);
+            assert!(afraid.property[&100].save_target > afraid.property[&500].save_target);
+        }
+
+        #[test]
+        fn hope_raises_risk_appetite_more_than_happiness() {
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            let mut hopeful = make_pop();
+            hopeful.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
+            hopeful.record_keeping(&factuals, &history);
+
+            let mut happy = make_pop();
+            happy.sentiment = Sentiment::from_parts(1.0, 0.0, 0.0, 0.0, 0.0);
+            happy.record_keeping(&factuals, &history);
+
+            assert!(hopeful.records.risk_appetite > happy.records.risk_appetite);
+        }
+
+        #[test]
+        fn fear_lowers_risk_appetite_more_than_anger() {
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            let mut afraid = make_pop();
+            afraid.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+            afraid.record_keeping(&factuals, &history);
+
+            let mut angry = make_pop();
+            angry.sentiment = Sentiment::from_parts(0.0, 0.0, 1.0, 0.0, 0.0);
+            angry.record_keeping(&factuals, &history);
+
+            assert!(afraid.records.risk_appetite < angry.records.risk_appetite);
         }
     }
 

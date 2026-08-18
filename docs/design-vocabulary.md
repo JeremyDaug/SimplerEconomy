@@ -53,6 +53,8 @@ before luxury.
 **Preferred:** desire target, target; **bucket** when multiple substitutes  
 
 **Meaning:** A good that can fulfill a desire, with efficiency, cap, consume vs use.  
+**Efficiency** must be **positive** (`> 0`). Zero is a worthless target; negatives
+are not accepted (no malus-via-efficiency).  
 **Code:** `DesireTarget`, `Desire::target`
 
 ---
@@ -226,7 +228,8 @@ Missing prices and salability default to `1.0`. Untradeable goods are skipped.
 
 **Meaning:** Soft between-days target on a property row. Not a hard fence and not
 on-hand savings. After shopping, `shop_target` should be `reserved + save_target`.
-After consume, `shop_target` should be `consumed + used + save_target`.
+After record keeping, `shop_target` is **consume need + save target**
+for tradeable goods.
 **Avoid:** wish (too emotive for a planning target)
 **Code:** `PopPRow::save_target`
 
@@ -238,11 +241,30 @@ Consume draws quantity and reserved together, so the same formula holds after co
 **Not** `save_target`.
 **Code:** `PopPRow::saved`, `Pop::property_saved_wealth_amv`
 
-### Savings ratio
-**Preferred:** savings ratio
+### Consume need
+**Preferred:** consume need  
+**Avoid:** consume-half (internal draft jargon)
 
-**Meaning:** Target share of liquid wealth a pop tries to hold between days.
-Drives `PopPRow.save_target` during record keeping / planning.
+**Meaning:** Units of a good planned for tomorrow's consume/use, **before**
+savings. Hybrid of remaining unsatisfied desire units and what was actually
+consumed/used today:
+
+```text
+consume_need = max(unsatisfied target units, consumed + used)
+```
+
+Shop target for a tradeable good is `consume_need + save_target`.
+
+**Code:** local map in `Pop::rewrite_shop_and_save_targets`
+
+### Savings ratio
+**Preferred:** savings ratio, days of buffer
+
+**Meaning:** Target **days of the cheapest basic+common basket** to hold
+overnight (`1.0` = one extra day's living cost). Not a share of leftover
+liquid wealth. Fear scales **substitutability**: a calm pop may hold that
+AMV in highly salable goods; a fearful pop wants more of it as the specific
+basket goods.
 **Code:** `PopRecords::savings_ratio`
 
 ### Time preference
@@ -255,8 +277,9 @@ a larger return to save or invest.
 ### Risk appetite
 **Preferred:** risk appetite, fear/greed (planning)
 
-**Meaning:** Slow planning knob in `-1.0..=1.0` (fear to greed). Not the Fear
-sentiment axis. Nudged from sentiment and SOL trend.
+**Meaning:** Slow planning variable in `-1.0..=1.0` (fear to greed). Not the Fear
+sentiment axis. Nudged from weighted sentiment (hope > happiness, fear > anger)
+and SOL trend.
 **Code:** `PopRecords::risk_appetite`
 
 ### Used

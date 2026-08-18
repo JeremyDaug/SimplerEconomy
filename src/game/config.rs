@@ -1,21 +1,65 @@
-//! Gameplay tunables — one place for simulation knobs.
+//! Gameplay tunables — one place for simulation constants.
 //!
 //! Treat this as a constants catalog for now. Do not re-hardcode the same
 //! numbers in systems; import from here. Later this can grow into load/mod
 //! overrides without changing call sites that already read these values.
 
-/// Living-standard score history, trend, and related mood knobs.
+/// Living-standard score history, trend, and related mood rates.
 pub mod pop_constants {
     // History Length
     /// Compile-time max ring slots for PopRecords histories (SOL, pop size, liquid wealth).
     pub const HISTORY_MAX: usize = 16;
 
-    /// Default share of liquid wealth the pop tries to hold as savings.
+    /// Default days of basic+common consume-need to hold as a buffer (1.0 = 1 day).
     pub const DEFAULT_SAVINGS_RATIO: f64 = 0.20;
     /// Default required return (personal interest rate). Higher = more impatient.
     pub const DEFAULT_TIME_PREFERENCE: f64 = 0.05;
     /// Neutral risk appetite (fear/greed). Range intended: -1.0 (fear) ..= 1.0 (greed).
     pub const DEFAULT_RISK_APPETITE: f64 = 0.0;
+
+    /// Daily lerp toward planning-variable targets (1.0 = snap).
+    pub const PLANNING_LERP_RATE: f64 = 0.15;
+
+    pub const RISK_APPETITE_MIN: f64 = -1.0;
+    pub const RISK_APPETITE_MAX: f64 = 1.0;
+    /// Hope raises risk appetite (more than happiness).
+    pub const RISK_HOPE_WEIGHT: f64 = 1.0;
+    /// Happiness raises risk appetite less than hope.
+    pub const RISK_HAPPINESS_WEIGHT: f64 = 0.40;
+    /// Fear lowers risk appetite (more than anger).
+    pub const RISK_FEAR_WEIGHT: f64 = 1.0;
+    /// Anger lowers risk appetite less than fear.
+    pub const RISK_ANGER_WEIGHT: f64 = 0.45;
+    /// How hard SOL trend pulls risk appetite (falling SOL -> more caution).
+    pub const RISK_TREND_WEIGHT: f64 = 0.25;
+    /// Contentment lowers risk appetite (keep what we have).
+    pub const RISK_CONTENTMENT_WEIGHT: f64 = 0.50;
+
+    /// Days-of-buffer clamp. 5.0 = five extra days of basic+common need.
+    pub const SAVINGS_RATIO_MIN: f64 = 0.0;
+    pub const SAVINGS_RATIO_MAX: f64 = 5.0;
+    /// Greed (positive risk) lowers days of buffer; fear-side risk raises them.
+    pub const SAVINGS_RISK_WEIGHT: f64 = 0.10;
+    /// Extra days of buffer from the Fear sentiment axis.
+    pub const SAVINGS_FEAR_WEIGHT: f64 = 0.05;
+    /// Extra days of buffer from unmet basic tier sat (0 at full basic, 1 at none).
+    pub const SAVINGS_UNMET_BASIC_WEIGHT: f64 = 0.10;
+    /// Extra days of buffer from a falling living-standard trend.
+    pub const SAVINGS_FALL_SOL_WEIGHT: f64 = 0.15;
+    /// How much household growth inflates the savings pile (1.0 = full growth_f).
+    pub const SAVINGS_GROWTH_BUFFER_WEIGHT: f64 = 1.0;
+    /// At fear 0, this share of the buffer may be highly salable AMV instead of
+    /// the specific goods in the basic+common basket. 1.0 = fully substitutable.
+    pub const SAVINGS_SUBSTITUTABILITY_CALM: f64 = 1.0;
+    /// At fear 1, this share may still be liquid AMV. 0.0 = insist on the goods.
+    pub const SAVINGS_SUBSTITUTABILITY_FEAR: f64 = 0.0;
+
+    pub const TIME_PREFERENCE_MIN: f64 = 0.0;
+    pub const TIME_PREFERENCE_MAX: f64 = 1.0;
+    pub const TIME_PREFERENCE_ANGER_WEIGHT: f64 = 0.03;
+    pub const TIME_PREFERENCE_UNMET_BASIC_WEIGHT: f64 = 0.04;
+    /// Contentment lowers time preference (more patient).
+    pub const TIME_PREFERENCE_CONTENTMENT_WEIGHT: f64 = 0.02;
 
     // Living Standard Constants
     /// EMA blend for rolling average (higher = more weight on today).

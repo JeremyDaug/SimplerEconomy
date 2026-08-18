@@ -43,11 +43,25 @@ impl Market {
         let _ = (self, actors, factuals);
         todo!("Market sum migratory pressure (positive / negative / net, migrant pool)")
     }
+
+    /// # History
+    ///
+    /// Snapshot of current AMVs for pop record keeping and sentiment wealth.
+    /// Salability is not stored on [`MarketGood`] yet, so it stays empty
+    /// (readers default missing salability to 1.0).
+    pub fn history(&self) -> MarketHistory {
+        let mut history = MarketHistory::new();
+        for (&good_id, good) in &self.goods {
+            history.prices.insert(good_id, good.amv);
+        }
+        history
+    }
 }
 
 /// # Market History
 /// 
 /// A saved record of minimal data for passing around.
+#[derive(Debug, Clone, Default)]
 pub struct MarketHistory {
     /// Last known AMV price per good.
     pub prices: HashMap<usize, f64>,

@@ -211,7 +211,7 @@ pub struct PopRecords {
     pub savings_ratio: f64,
     /// Personal interest rate. Higher => consume now, demand more return to save/invest.
     pub time_preference: f64,
-    /// Fear/greed planning knob in -1.0..=1.0. Not SentimentKind::Fear.
+    /// Fear/greed planning variable in -1.0..=1.0. Not SentimentKind::Fear.
     /// Nudged from sentiment + SOL trend; lerped so one day cannot flip hoarding.
     pub risk_appetite: f64,
 }
@@ -306,7 +306,7 @@ mod pop_records_should {
     use super::*;
 
     #[test]
-    fn default_sets_planning_knobs_and_empty_rings() {
+    fn default_sets_planning_values_and_empty_rings() {
         let records = PopRecords::default();
         assert_eq!(records.savings_ratio, pop_constants::DEFAULT_SAVINGS_RATIO);
         assert_eq!(records.time_preference, pop_constants::DEFAULT_TIME_PREFERENCE);

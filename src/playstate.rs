@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use rayon::prelude::*;
 
 use crate::game::actors::Actors;
 use crate::game::factuals::Factuals;
 use crate::game::mapdata::MapData;
-use crate::game::market::MarketHistory;
+use crate::game::market::{Market, MarketHistory};
 use crate::game::players::Players;
 
 /// # Play State
@@ -66,6 +68,8 @@ impl PlayState {
         self.phase_pop_consumption();
         // 9. Pop Growth/Decline.
         self.phase_pop_growth();
+        // 9b. Record tier sat / SOL / sentiment after consume+growth, before migration.
+        self.phase_update_sentiments();
         // 10.Pop migration.
         self.phase_pop_migration();
         // 11.Record Keeping.
@@ -179,6 +183,31 @@ impl PlayState {
         });
     }
 
+    /// # Phase Update Sentiments
+    ///
+    /// After consume and growth, before migration. Walks each market so pops
+    /// get that market's price snapshot (`Market::history`).
+    fn phase_update_sentiments(&mut self) {
+        let histories = Self::pop_market_histories(&self.map_data.markets);
+        let empty = MarketHistory::new();
+        self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
+            let history = histories.get(id).unwrap_or(&empty);
+            pop.update_sentiments(history);
+        });
+    }
+
+    /// Snapshot each market's history and map it onto member pop ids.
+    fn pop_market_histories(markets: &HashMap<usize, Market>) -> HashMap<usize, MarketHistory> {
+        let mut out = HashMap::new();
+        for market in markets.values() {
+            let history = market.history();
+            for &pop_id in &market.pops {
+                out.insert(pop_id, history.clone());
+            }
+        }
+        out
+    }
+
     /// # Phase Pop Migration
     /// 
     /// This covers and deals with the movement of pops.
@@ -286,6 +315,9 @@ impl PlayState {
     /// do not need each other and can run in parallel.
     fn phase_record_keeping(&mut self) {
         // TODO: Consider folding the actors into a singular thread and having the actor struct do the delegation. Shouldn't make a real difference, but just a thought.
+        // Snapshot prices before market record keeping mutates the live goods.
+        let histories = Self::pop_market_histories(&self.map_data.markets);
+        let empty = MarketHistory::new();
         let factuals = &self.factuals;
         let markets = &mut self.map_data.markets;
         let pops = &mut self.actors.pops;
@@ -302,10 +334,10 @@ impl PlayState {
                     .for_each(|(_, market)| market.record_keeping(factuals));
             });
             s.spawn(|_| {
-                // Stub: pops have no market_id yet; real wiring walks each market's history.
-                let history = MarketHistory::new();
-                pops.par_iter_mut()
-                    .for_each(|(_, pop)| pop.record_keeping(factuals, &history));
+                pops.par_iter_mut().for_each(|(id, pop)| {
+                    let history = histories.get(id).unwrap_or(&empty);
+                    pop.record_keeping(factuals, history);
+                });
             });
             s.spawn(|_| {
                 firms
