@@ -16,27 +16,40 @@ When reviewing commits, a branch, a PR, or local changes:
 
 ---
 
-**Last updated:** 2026-08-18 — local review of pop record-keeping / planning / turn wiring.  
-**Open items:** 1 bug, 5 suggestions, 2 nits.
-
-Full write-up: `/tmp/grok-1000/grok-review-72fee57c.md`  
-Summary: `/tmp/grok-1000/grok-review-summary-72fee57c.md`
+**Last updated:** 2026-08-18 — closed the 2026-08-18 record-keeping review items.  
+**Open items:** 0 bugs, 0 suggestions, 0 nits.
 
 ---
 
 ## Open bugs
 
-- `src/game/pop.rs:1433` — `savings_growth_buffer` already grows the save pile, then next-morning `update_desires` multiplies the whole `shop_target` (consume need + that grown save) by the same `growth_f` and does not scale `save_target`. Growing pop save slice is `growth_f^2`; `shop = consume need + save` does not survive day-start. Fix: one owner for the scale. Test `record_keeping` then `update_desires`.
+(none)
 
 ## Open suggestions
 
-- `src/game/pop.rs:1503` — Liquid leftover parks on the most salable tradeable already in `goods`, including non-desire goods. `create_orders` only walks desire targets, so that buy may never be requested. Fix: emit surplus-funded buys, or park only on goods orders already know.
-- `src/game/pop.rs:1140` — `saved_amv` uses `quantity - reserved`. Luxury consume can drive `reserved` negative, so leftover AMV is overstated. Fix: floor reserved at 0, or snapshot leftover `quantity`.
-- `src/game/pop.rs:1330` — `living_need_amv` takes cheapest target with no Untradeable skip and no `cap`. `specific_buffer_weights` skips untradeable but still sums every substitute's full-desire AMV. Fix: cheapest feasible tradeable cover; weight the fear pile from that same basket.
-- `src/game/pop.rs:1275` — `savings_growth_buffer` uses current `count` minus `previous_growth`. After migration is live, that is post-migration size. Dormant while migration leaves are `todo!()`. Fix: use post-growth pre-migration count.
-- `src/playstate.rs:205` — `pop_market_histories` clones the price map once per member pop, twice per turn. Fix: one history per market (or `Arc`) and map pop id to market id.
+(none)
 
 ## Open nits
 
-- `src/game/pop.rs:1377` — `good_is_tradeable` reimplements `Good::is_buyable()`. Call `find_good(...).is_buyable()`.
-- `src/game/desire.rs:467` — `debug_assert!(eff > 0.0)` on `DesireTarget::new` has no rustdoc. STYLE.md wants the constraint documented on the constructor.
+(none)
+
+## Closed / deferred (2026-08-18)
+
+- **Fixed** `pop.rs` growing-pop double scale — record keeping owns next-day shop/save
+  (consume-need scaled by post-growth pre-migration `growth_f`; save buffer inflates
+  only). `update_desires` no longer multiplies property targets. Morning demo-definition
+  demand shifts roll in at the next rewrite.
+- **Fixed** `create_orders` — planned shop shortfalls on non-desire goods (parked
+  savings) are requested after the desire shop pass and before opportunistic extra buys.
+- **Fixed** `satisfy_one_desire` / `PopPRow::saved` — reserved floors at 0; leftover
+  AMV is leftover quantity.
+- **Fixed** `living_need_amv` / `specific_buffer_weights` — shared cheapest tradeable
+  cover (skip untradeable, respect `cap`).
+- **Fixed** growth buffer uses `count - net_migration` as post-growth size.
+- **Fixed** `playstate.rs` — `MarketLookups` is one history per market plus pop-to-market.
+- **Fixed** `good_is_tradeable` now `Good::is_buyable()`; `DesireTarget::new` documents
+  positive efficiency.
+- **Deferred** luxury consume leveling — extra luxury passes can empty the leftover
+  pile; cap/pace later. See `TODO.md`.
+- **Deferred** `Pop.market_id` — membership currently lives on `Market.pops` and
+  `MarketLookups.pop_to_market`. Revisit when migration leaves write.

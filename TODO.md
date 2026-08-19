@@ -17,11 +17,11 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
     - [ ] Apply Events
   - [ ] Phase Player Actions
     - [ ] Read thorugh Player actions and apply.
-  - [ ] Phase Player Bonuses and Demographic Updates
-    - [ ] Apply to Institutions
+  - [x] Phase Player Bonuses and Demographic Updates
+    - [x] Apply to Institutions
     - [ ] Apply to Regions/Markets
     - [ ] Apply to Firms
-    - [ ] Apply to Pops
+    - [x] Apply to Pops
   - [ ] Phase Intramarket Day
     - [ ] Market Day
       - [ ] Gather Player / State Orders (In priority buckets)
@@ -57,7 +57,7 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
     - [ ] Inter-market personal migration
   - [X] Phase Record Keeping - Wired, but not complete.
     - [ ] Market Record Keeping
-    - [ ] Pop Record Keeping
+    - [x] Pop Record Keeping
     - [ ] Firm Record Keeping
     - [ ] Institution Record Keeping
     - [ ] State Record Keeping
@@ -99,6 +99,8 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
 
 - [ ] Sentiment Tuning
 - [ ] Standard of Living Tuning
+- [ ] Luxury consume leveling  
+  Luxury currently loops until stock runs out (`Pop::consume`). Later: cap or pace extra luxury passes so one desire does not eat the whole leftover pile and so reserved/consume stay aligned across the luxury ladder. Separate from 'bads' / ejection.
 
 ---
 
@@ -106,3 +108,5 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
 
 - [ ] Household / population change helpers  
   From [this conversation](https://grok.com/share/c2hhcmQtMw_e2b20412-fa4e-4d6e-ad1e-29cf133c819e): simpler household size edits, less hassle when defs change, addresses household total-pop jumps.
+- [ ] Store market id on `Pop`  
+  Pops do not wander except during migration. A `market_id` field (updated when they move) would replace the evening `pop_to_market` map. Defer until migration leaves write.

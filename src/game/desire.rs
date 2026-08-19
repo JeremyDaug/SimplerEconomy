@@ -463,6 +463,7 @@ pub struct DesireTarget {
 }
 
 impl DesireTarget {
+    /// Creates a target. Efficiency must be positive (`> 0`).
     pub fn new(good: usize, desire_type: DesireTargetType, eff: f64) -> Self {
         debug_assert!(eff > 0.0, "Desire target efficiency must be positive");
         Self {

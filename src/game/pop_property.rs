@@ -134,7 +134,7 @@ impl PopPRow {
     /// Consume draws quantity and reserved together, so this stays valid after consume.
     /// Does not use `save_target`.
     pub fn saved(&self) -> f64 {
-        (self.quantity - self.reserved).max(0.0)
+        (self.quantity - self.reserved.max(0.0)).max(0.0)
     }
 }
 

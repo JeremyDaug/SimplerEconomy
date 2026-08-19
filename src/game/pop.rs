@@ -194,18 +194,10 @@ impl Pop {
         // --- 2. Add new desires present on demographics but not yet on the pop ---
         self.add_missing_demographic_desires(factuals, &existing_desires);
 
-        // --- 3. Scale shopping / need targets with population growth ---
-        let growth_f = self.demographics.count()
-            / (self.demographics.count() - self.records.previous_growth);
-        debug_assert!(growth_f.is_finite(), "population count - previous growth reached 0. Something has gone wrong.");
-        for (_, prop) in self.property.iter_mut() {
-            if prop.shop_target > 0.0 {
-                prop.shop_target *= growth_f;
-            }
-            if prop.desire_needs > 0.0 {
-                prop.desire_needs *= growth_f;
-            }
-        }
+        // Shop / save / desire_needs are next-day targets from record_keeping
+        // (already post-growth). Morning does not apply previous_growth again.
+        // Demographic definition changes that shift demand scale are left to
+        // the next rewrite so they roll in gently.
 
         // --- 4. Sort each tier and bake priority to index ---
         for tier in self.desires.iter_mut() {
@@ -393,7 +385,9 @@ impl Pop {
                         .unwrap_or(&1.0);
                     let purchase_target = self.property.get(&target.good).unwrap().shop_target 
                         - self.property.get(&target.good).unwrap().quantity;
-                    debug_assert!(purchase_target >= 0.0, "Purchase target should not be negative.");
+                    if purchase_target <= 0.0 {
+                        continue;
+                    }
                     let cost = purchase_target * good_price;
 
                     // create order for full amount
@@ -401,6 +395,35 @@ impl Pop {
                         Actor::Pop(self.id), target.good, purchase_target));
                     remaining_budget -= cost;
                 }
+            }
+        }
+
+        // Planned shop shortfalls that are not desire targets (parked savings).
+        // Part of the shop plan, so it is filled before opportunistic extra buys.
+        if remaining_budget > 0.0 {
+            let mut extras: Vec<(usize, f64, f64)> = Vec::new();
+            for (&good_id, row) in &self.property {
+                if seen.contains(&good_id) || row.shop_target <= 0.0 {
+                    continue;
+                }
+                if !factuals.find_good(good_id).is_buyable() {
+                    continue;
+                }
+                let purchase = row.shop_target - row.quantity;
+                if purchase <= 0.0 {
+                    continue;
+                }
+                extras.push((good_id, purchase, market_history.price(good_id)));
+            }
+            extras.sort_by_key(|(id, _, _)| *id);
+            for (good_id, purchase, price) in extras {
+                if remaining_budget <= 0.0 {
+                    break;
+                }
+                orders.push(MarketOrder::request_order(
+                    Actor::Pop(self.id), good_id, purchase));
+                remaining_budget -= purchase * price;
+                seen.insert(good_id);
             }
         }
 
@@ -592,7 +615,8 @@ impl Pop {
 
                 // remove from quantity and reserve.
                 row.quantity -= take;
-                row.reserved -= take;
+                row.reserved = (row.reserved - take).max(0.0);
+                debug_assert!(row.reserved >= 0.0, "Reserved must not be negative");
                 match target.desire_type {
                     DesireTargetType::Consume => {
                         // shift to consumed.
@@ -1268,16 +1292,25 @@ impl Pop {
         );
     }
 
-    /// Growth factor used to inflate the savings pile (`count / old_count`).
-    /// `1.0` when not growing or when the prior count is not usable.
+    /// Post-growth / pre-migration size over the pre-growth size.
+    /// `count - net_migration` is the size after growth_phase; `previous_growth`
+    /// is the delta from that phase.
+    fn planning_growth_factor(&self) -> f64 {
+        let grown = self.demographics.count() - self.records.net_migration;
+        let old = grown - self.records.previous_growth;
+        let growth_f = grown / old;
+        debug_assert!(
+            growth_f.is_finite() && growth_f > 0.0,
+            "planning growth factor must be finite and positive"
+        );
+        growth_f
+    }
+
+    /// Inflates the savings pile with household growth. Does not shrink on
+    /// decline (a smaller pop keeps the buffer to ride out the downturn).
     fn savings_growth_buffer(&self) -> f64 {
-        let count = self.demographics.household.count;
-        let old = count - self.records.previous_growth;
-        if old <= 0.0 || !old.is_finite() || !count.is_finite() {
-            return 1.0;
-        }
-        let growth_f = count / old;
-        if !growth_f.is_finite() || growth_f <= 1.0 {
+        let growth_f = self.planning_growth_factor();
+        if growth_f <= 1.0 {
             1.0
         } else {
             1.0 + (growth_f - 1.0) * pop_constants::SAVINGS_GROWTH_BUFFER_WEIGHT
@@ -1298,9 +1331,6 @@ impl Pop {
                     target.efficiency > 0.0,
                     "Desire target efficiency must be positive"
                 );
-                if target.efficiency <= 0.0 {
-                    continue;
-                }
                 let want_sat = needed_sat.min(desire.amount * target.cap);
                 if want_sat <= 0.0 {
                     continue;
@@ -1311,37 +1341,72 @@ impl Pop {
         need
     }
 
+    /// Cheapest market cover for one desire: tradeable, price > 0, respect cap.
+    /// Cheapest sat-cost first (high-priority is consume/reserve order, not costing).
+    /// Uncoverable remainder (untradeable-only or cap-starved) is dropped.
+    fn cheapest_tradeable_cover(
+        desire: &Desire,
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) -> Vec<(usize, f64)> {
+        let mut opts: Vec<&DesireTarget> = desire
+            .target
+            .iter()
+            .filter(|t| {
+                debug_assert!(
+                    t.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                factuals.find_good(t.good).is_buyable()
+                    && market_history.price(t.good) > 0.0
+            })
+            .collect();
+        opts.sort_by(|a, b| {
+            let ca = market_history.price(a.good) / a.efficiency;
+            let cb = market_history.price(b.good) / b.efficiency;
+            ca.partial_cmp(&cb)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.good.cmp(&b.good))
+        });
+
+        let mut remaining = desire.amount;
+        let mut cover = Vec::new();
+        for t in opts {
+            if remaining <= 0.0 {
+                break;
+            }
+            let sat = remaining.min(desire.amount * t.cap);
+            if sat <= 0.0 {
+                continue;
+            }
+            let qty = sat / t.efficiency;
+            cover.push((t.good, qty * market_history.price(t.good)));
+            remaining -= sat;
+        }
+        cover
+    }
+
     /// Cheapest AMV that would satisfy each desire once (basic+common basket).
-    fn living_need_amv(desires: &[Desire], market_history: &MarketHistory) -> f64 {
+    /// Skips untradeable targets and respects `cap`.
+    fn living_need_amv(
+        desires: &[Desire],
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) -> f64 {
         let mut total = 0.0;
         for desire in desires {
             if desire.amount <= 0.0 {
                 continue;
             }
-            let mut best: Option<f64> = None;
-            for target in &desire.target {
-                debug_assert!(
-                    target.efficiency > 0.0,
-                    "Desire target efficiency must be positive"
-                );
-                if target.efficiency <= 0.0 {
-                    continue;
-                }
-                let cost = (desire.amount / target.efficiency) * market_history.price(target.good);
-                best = Some(match best {
-                    Some(prev) => prev.min(cost),
-                    None => cost,
-                });
-            }
-            if let Some(cost) = best {
-                total += cost;
+            for (_, amv) in Self::cheapest_tradeable_cover(desire, factuals, market_history) {
+                total += amv;
             }
         }
         total
     }
 
     /// AMV weights for parking the non-substitutable part of the buffer on
-    /// basic+common target goods (full live desire, not the unsatisfied gap).
+    /// the same cheapest tradeable cover used by `living_need_amv`.
     fn specific_buffer_weights(
         desires: &[Desire],
         factuals: &Factuals,
@@ -1352,30 +1417,11 @@ impl Pop {
             if desire.amount <= 0.0 {
                 continue;
             }
-            for target in &desire.target {
-                debug_assert!(
-                    target.efficiency > 0.0,
-                    "Desire target efficiency must be positive"
-                );
-                if target.efficiency <= 0.0 {
-                    continue;
-                }
-                if !Self::good_is_tradeable(factuals, target.good) {
-                    continue;
-                }
-                let price = market_history.price(target.good);
-                if price <= 0.0 {
-                    continue;
-                }
-                let amv = (desire.amount / target.efficiency) * price;
-                *weights.entry(target.good).or_insert(0.0) += amv;
+            for (good_id, amv) in Self::cheapest_tradeable_cover(desire, factuals, market_history) {
+                *weights.entry(good_id).or_insert(0.0) += amv;
             }
         }
         weights
-    }
-
-    fn good_is_tradeable(factuals: &Factuals, good_id: usize) -> bool {
-        !factuals.find_good(good_id).tags.contains(&GoodTag::Untradeable)
     }
 
     /// Share of the savings pile that may be held as liquid AMV. Falls with Fear.
@@ -1428,8 +1474,9 @@ impl Pop {
             consume_need.insert(good_id, need.max(used));
         }
 
-        let daily_need_amv = Self::living_need_amv(&self.desires[0], market_history)
-            + Self::living_need_amv(&self.desires[1], market_history);
+        let daily_need_amv = Self::living_need_amv(&self.desires[0], factuals, market_history)
+            + Self::living_need_amv(&self.desires[1], factuals, market_history);
+        let consume_scale = self.planning_growth_factor();
         let target_saved_amv =
             (self.records.savings_ratio * daily_need_amv * self.savings_growth_buffer()).max(0.0);
 
@@ -1471,7 +1518,7 @@ impl Pop {
 
         let mut candidates: Vec<(usize, f64, f64, f64)> = Vec::new();
         for &good_id in &goods {
-            if !Self::good_is_tradeable(factuals, good_id) {
+            if !factuals.find_good(good_id).is_buyable() {
                 continue;
             }
             let price = market_history.price(good_id);
@@ -1513,12 +1560,12 @@ impl Pop {
             let need = total_need.get(&good_id).copied().unwrap_or(0.0);
             let restock = consume_need.get(&good_id).copied().unwrap_or(0.0);
             let save = save_units.get(&good_id).copied().unwrap_or(0.0);
-            let tradeable = Self::good_is_tradeable(factuals, good_id);
+            let tradeable = factuals.find_good(good_id).is_buyable();
             let row = self.property.entry(good_id).or_insert_with(|| PopPRow::new(0.0));
-            row.desire_needs = need;
+            row.desire_needs = need * consume_scale;
             if tradeable {
                 row.save_target = save;
-                row.shop_target = restock + save;
+                row.shop_target = restock * consume_scale + save;
             }
         }
     }
@@ -1942,6 +1989,28 @@ mod pop {
         }
 
         #[test]
+        fn requests_parked_non_desire_shop_shortfall_before_extra_desires() {
+            let pop = make_pop();
+            let mut pop = add_pop_desires(pop);
+            pop.desires[1].clear();
+            pop.desires[2].clear();
+            pop.desires[0].truncate(1);
+            pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
+            pop.property.insert(500, PopPRow::new(0.0).with_target(8.0));
+            pop.property.insert(201, PopPRow::new(30.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals);
+            assert_eq!(orders.len(), 2);
+            assert_eq!(orders[0].target, 100);
+            assert_eq!(orders[0].target_amount, 10.0);
+            assert_eq!(orders[1].target, 500);
+            assert_eq!(orders[1].target_amount, 8.0);
+        }
+
+        #[test]
         fn deal_with_leftover_budget_mixed_passes() {
             let pop = make_pop();
             let pop = add_pop_desires(pop);
@@ -2163,9 +2232,9 @@ mod pop {
         }
 
         #[test]
-        fn scales_property_targets_with_previous_growth_positive_zero_and_negative() {
-            // growth_f = count / (count - previous_growth)
-            // count fixed at 10 for all three cases.
+        fn does_not_rescale_shop_targets_for_previous_growth() {
+            // Next-day shop/save come from record_keeping. Morning leaves them
+            // alone so yesterday's growth is not applied twice.
             fn run(previous_growth: f64) -> (f64, f64) {
                 let demo = household_demo(1, 1.0, 0, 0);
                 let factuals = Factuals::new()
@@ -2176,7 +2245,6 @@ mod pop {
                 let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
                 pop.desires[0].push(desire);
                 pop.property.insert(100, PopPRow::new(0.0).with_target(20.0).with_desire_need(10.0));
-                // Zero targets should stay zero (not scaled).
                 pop.property.insert(101, PopPRow::new(0.0).with_target(0.0).with_desire_need(0.0));
 
                 pop.update_desires(&factuals);
@@ -2186,20 +2254,11 @@ mod pop {
                 )
             }
 
-            // positive: 10 / (10 - 5) = 2.0 → 20*2=40, 10*2=20
-            let (shop_pos, need_pos) = run(5.0);
-            assert!((shop_pos - 40.0).abs() < 1e-9);
-            assert!((need_pos - 20.0).abs() < 1e-9);
-
-            // zero: factor 1.0
-            let (shop_zero, need_zero) = run(0.0);
-            assert!((shop_zero - 20.0).abs() < 1e-9);
-            assert!((need_zero - 10.0).abs() < 1e-9);
-
-            // negative: 10 / (10 + 10) = 0.5 → 10 and 5
-            let (shop_neg, need_neg) = run(-10.0);
-            assert!((shop_neg - 10.0).abs() < 1e-9);
-            assert!((need_neg - 5.0).abs() < 1e-9);
+            for growth in [5.0, 0.0, -10.0] {
+                let (shop, need) = run(growth);
+                assert!((shop - 20.0).abs() < 1e-9);
+                assert!((need - 10.0).abs() < 1e-9);
+            }
         }
 
         #[test]
@@ -2817,6 +2876,16 @@ mod pop {
         }
 
         #[test]
+        fn floors_negative_reserved_so_saved_is_leftover_qty() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_reserve(-20.0));
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 2.0);
+            let saved = pop.property_saved_wealth_amv(&history);
+            assert!((saved - 0.0).abs() < 1e-9);
+        }
+
+        #[test]
         fn missing_price_defaults_to_one() {
             let mut pop = make_pop();
             pop.property.insert(100, PopPRow::new(8.0).with_reserve(3.0));
@@ -3014,6 +3083,197 @@ mod pop {
             growing.record_keeping(&factuals, &history);
 
             assert!(growing.property[&100].save_target > stable.property[&100].save_target);
+        }
+
+        #[test]
+        fn record_keeping_then_update_desires_does_not_double_scale_save() {
+            use crate::game::{culture::Culture, desire::DemoDesire};
+
+            let demo = DemoDesire::new(1)
+                .with_amount(1.0)
+                .with_tier(0)
+                .with_scalar(ScalingFactor::Household(1.0))
+                .with_good(DesireTarget::new(100, DesireTargetType::Consume, 1.0));
+            let mut factuals = make_default_factuals();
+            factuals.cultures.insert(1, Culture::new(1, "Test").with_desire(demo.clone()));
+
+            let mut pop = make_pop();
+            pop.demographics.culture = 1;
+            pop.records.previous_growth = 5.0;
+            let desire = demo.create_desire(&pop, DesireSource::Culture(1, 1));
+            pop.desires[0].push(desire);
+            pop.property.insert(100, PopPRow::new(10.0));
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+            let save_rk = pop.property[&100].save_target;
+            let shop_rk = pop.property[&100].shop_target;
+            let need_rk = pop.property[&100].desire_needs;
+
+            pop.update_desires(&factuals);
+
+            let row = &pop.property[&100];
+            assert!((row.save_target - save_rk).abs() < 1e-12);
+            assert!((row.shop_target - shop_rk).abs() < 1e-12);
+            assert!((row.desire_needs - need_rk).abs() < 1e-12);
+            assert!((row.shop_target - (row.desire_needs + row.save_target)).abs() < 1e-12);
+            // consume-need half is scaled by growth_f = 2
+            assert!((need_rk - 20.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn shrinking_scales_consume_need_but_keeps_save_pile() {
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            let mut stable = make_pop();
+            stable.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                15.0,
+            ));
+            stable.property.insert(100, PopPRow::new(15.0));
+            stable.record_keeping(&factuals, &history);
+
+            let mut shrinking = make_pop();
+            shrinking.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                15.0,
+            ));
+            shrinking.property.insert(100, PopPRow::new(15.0));
+            shrinking.records.previous_growth = -5.0; // grown 10 / old 15
+            shrinking.record_keeping(&factuals, &history);
+
+            assert!((shrinking.property[&100].desire_needs - 10.0).abs() < 1e-12);
+            assert!(
+                (shrinking.property[&100].save_target - stable.property[&100].save_target).abs()
+                    < 1e-12
+            );
+        }
+
+        #[test]
+        fn growth_factor_uses_post_growth_pre_migration_count() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.demographics.household.count = 9.0;
+            pop.records.previous_growth = 2.0;
+            pop.records.net_migration = -3.0;
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            // grown = 9 - (-3) = 12; old = 10; consume scale 1.2
+            assert!((pop.property[&100].desire_needs - 12.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn living_need_skips_untradeable_cheapest_target() {
+            fn save_amv(pop: &Pop, history: &MarketHistory) -> f64 {
+                pop.property
+                    .iter()
+                    .map(|(id, row)| row.save_target * history.price(*id))
+                    .sum()
+            }
+
+            let mut both = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.target.push(DesireTarget::new(101, DesireTargetType::Consume, 1.0));
+            both.desires[0].push(desire);
+            both.property.insert(100, PopPRow::new(0.0));
+            both.property.insert(101, PopPRow::new(0.0));
+
+            let mut tradeable_only = make_pop();
+            tradeable_only.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(101, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            tradeable_only.property.insert(101, PopPRow::new(0.0));
+
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 0.1);
+            history.prices.insert(101, 2.0);
+
+            both.record_keeping(&factuals, &history);
+            tradeable_only.record_keeping(&factuals, &history);
+
+            assert!((save_amv(&both, &history) - save_amv(&tradeable_only, &history)).abs() < 1e-9);
+        }
+
+        #[test]
+        fn living_need_respects_target_cap() {
+            fn save_amv(pop: &Pop, history: &MarketHistory) -> f64 {
+                pop.property
+                    .iter()
+                    .map(|(id, row)| row.save_target * history.price(*id))
+                    .sum()
+            }
+
+            let mut capped = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0).with_cap(0.5),
+                10.0,
+            );
+            desire.target.push(DesireTarget::new(101, DesireTargetType::Consume, 1.0));
+            capped.desires[0].push(desire);
+            capped.property.insert(100, PopPRow::new(0.0));
+            capped.property.insert(101, PopPRow::new(0.0));
+
+            let mut cheap_full = make_pop();
+            cheap_full.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            cheap_full.property.insert(100, PopPRow::new(0.0));
+
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.prices.insert(100, 1.0);
+            history.prices.insert(101, 10.0);
+
+            capped.record_keeping(&factuals, &history);
+            cheap_full.record_keeping(&factuals, &history);
+
+            let ratio = save_amv(&capped, &history) / save_amv(&cheap_full, &history);
+            // cover 5*1 + 5*10 = 55 vs full cheap 10
+            assert!((ratio - 5.5).abs() < 1e-9);
+        }
+
+        #[test]
+        fn specific_buffer_uses_one_cover_not_every_substitute() {
+            let mut pop = make_pop();
+            pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.target.push(DesireTarget::new(101, DesireTargetType::Consume, 1.0));
+            pop.desires[0].push(desire);
+            pop.property.insert(100, PopPRow::new(0.0));
+            pop.property.insert(101, PopPRow::new(0.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.property[&100].save_target > 0.0);
+            assert_eq!(pop.property[&101].save_target, 0.0);
         }
 
         #[test]
@@ -3424,6 +3684,24 @@ mod pop {
             assert_eq!(pop.desires[1][1].satisfaction, 10.0);
             assert_eq!(pop.desires[2][0].satisfaction, 100.0);
             assert_eq!(pop.desires[2][1].satisfaction, 90.0);
+        }
+
+        #[test]
+        fn luxury_oversat_does_not_drive_reserved_negative() {
+            let mut pop = make_pop();
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(300, PopPRow::new(30.0).with_reserve(10.0));
+
+            pop.consume();
+
+            assert_eq!(pop.property[&300].quantity, 0.0);
+            assert_eq!(pop.property[&300].reserved, 0.0);
+            assert_eq!(pop.property[&300].consumed, 30.0);
+            assert_eq!(pop.property[&300].saved(), 0.0);
         }
     }
 

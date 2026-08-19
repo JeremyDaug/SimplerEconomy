@@ -4,7 +4,7 @@
 **Handoff date:** 2026-08-18  
 **Purpose:** Catch a new agent/session up on recent work and direction. Prefer this plus `AGENTS.md`, `STYLE.md`, `TODO.md`, `reviewlog.md`, and `docs/design-vocabulary.md` over inventing process from scratch.
 
-**Build (as of this wrap-up):** `cargo test --lib` was green (159 tests) after pop record-keeping and the review pass. Record-keeping / wiring / review-log edits are committed on this branch.
+**Build (as of this wrap-up):** `cargo test --lib` green (**169** tests) after closing the 2026-08-18 review-log items and thinning growth-factor NaN fallbacks to `debug_assert`.
 
 ```bash
 cargo check --lib
@@ -47,9 +47,9 @@ In-repo navigation:
 
 ---
 
-## 3. What landed this session (2026-08-18)
+## 3. What is true now (2026-08-18)
 
-### Pop `record_keeping` (main thrust)
+### Pop economic day (closed through record keeping)
 
 `Pop::record_keeping` is implemented and tested (`mod record_keeping_should`). End-of-day snapshot **then** rewrite of next-day shop/save targets. Does **not** clean dead pops, does **not** call `update_sentiments`, does **not** decay.
 
@@ -65,22 +65,38 @@ In-repo navigation:
 - Risk mood is **weighted**: hope > happiness raising appetite; fear > anger lowering it. Contentment also lowers risk appetite. Falling SOL raises savings. Unmet basic raises savings (configurable). Caps: savings `0..=5` days, time preference `0..=1`.
 - Constants live in `src/game/config.rs` → `pop_constants`.
 
-**Shop / save rewrite:**
+**Shop / save rewrite (record keeping owns tomorrow's plan):**
 
-- **Consume need** = `max(unsatisfied target units, consumed + used)`. That is the live-use side of shop, not "consume-half".
-- `shop_target` (tradeable) = consume need + `save_target`. Untradeable: shop/save stay `0`; `desire_needs` still recorded.
-- Unsatisfied units: `(amount - satisfaction).max(0)` added onto **every** target (`sat / efficiency`). Does **not** walk another full level. `DesireTarget.efficiency` must be **positive** (`debug_assert`; zero/negative not accepted).
-- **Savings ratio** = days of buffer (`1.0` = one extra day of the cheapest basic+common basket AMV), grown by today's household growth.
-- Fear scales **substitutability**: calm may hold the pile as highly salable AMV; afraid parks more of it on the actual basket goods (`SAVINGS_SUBSTITUTABILITY_CALM` / `_FEAR`).
+- **Consume need** = `max(unsatisfied target units, consumed + used)`.
+- Consume need and `desire_needs` are written already scaled by `planning_growth_factor()` (post-growth, pre-migration: `(count - net_migration) / (that - previous_growth)`).
+- `shop_target` (tradeable) = scaled consume need + `save_target`. Untradeable: shop/save stay `0`; `desire_needs` still recorded (also scaled).
+- **Morning `update_desires` does not multiply shop/save.** It still resyncs desire amounts from demographics. A mid-day definition change that shifts demand scale is allowed to roll in at the next rewrite (gentle first-day miss is accepted).
+- Unsatisfied units: `(amount - satisfaction).max(0)` added onto **every** target (`sat / efficiency`). Does **not** walk a full extra level.
+- **Savings ratio** = days of the cheapest **tradeable** basic+common cover (skip untradeable, respect `cap`). Shared helper: `cheapest_tradeable_cover`. Fear parking uses that same basket (substitutes do not each claim a full desire).
+- The save pile **inflates** with household growth and **does not shrink** on decline.
+- Fear scales **substitutability**: calm may hold the pile as highly salable AMV; afraid parks more of it on the actual basket goods.
 
-One write pass over property (`entry`); no repeated `ensure_property_row`.
+`planning_growth_factor` divides and `debug_assert`s a finite positive result. Do **not** add runtime `is_finite` fallbacks around it. `savings_growth_buffer` still has `growth_f <= 1.0 -> 1.0`; that is the no-shrink rule, not a NaN guard.
+
+### `create_orders`
+
+1. Desire-order planned shop shortfalls (`shop_target - quantity`).
+2. Remaining planned shop shortfalls that are not desire targets (parked savings / gold).
+3. One opportunistic extra pass over desire goods that were not in the plan.
+
+Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/extra buys. There is no infinite luxury shopping loop; luxury looping is only in `consume`.
+
+### Consume / reserved
+
+`satisfy_one_desire` floors `reserved` at 0. `PopPRow::saved()` treats negative reserved as 0 (`quantity - reserved.max(0)`). Reserved must never go negative. Extra luxury consume may still empty leftover stock; that is allowed. Pacing extra luxury passes is **deferred** (`TODO.md`).
 
 ### Turn wiring
 
+- `phase_player_bonuses_and_demographic_updates` is wired: institutions `apply_passive_effects`, firms `apply_passive_bonuses` (stub body), pops `update_desires`.
 - `phase_update_sentiments` runs **after growth, before migration**.
-- Pops get `Market::history()` (AMV snapshot from `MarketGood.amv`). Salability is not on `MarketGood` yet (readers default missing to `1.0`).
+- `PlayState.market_lookups` (`MarketLookups`): one `MarketHistory` per market plus `pop_id -> market_id`. Rebuilt at sentiments and again at record keeping (membership may change once migration writes). Pops not in any market get an empty history.
+- Salability is not on `MarketGood` yet (readers default missing to `1.0`).
 - Histories are snapshotted **before** the record-keeping rayon scope so pops do not fight market mutation.
-- Pops not in any market get an empty history.
 
 ### Language
 
@@ -98,9 +114,12 @@ One write pass over property (`entry`); no repeated `ensure_property_row`.
 | **Rates on pop** | Do **not** re-add `DemoRow.rates` without user direction |
 | **Rate resolution** | `Factuals::get_demographic_rates`; recompute-per-call is intentional |
 | **Job vs demographics** | Jobs multiply pops; rate keys are demographic ids only (unless rates later depend on job) |
-| **Target efficiency** | Always **positive**. Zero is worthless; negatives not supported. Assert, do not treat 0 as a valid skip-path. |
-| **Savings ratio** | **Days of buffer**, not a share of leftover liquid wealth |
+| **Target efficiency** | Always **positive**. Zero is worthless; negatives not supported. `debug_assert` only; do not also `continue` on `<= 0` |
+| **Shop / save owner** | Record keeping writes next-day shop/save (post-growth). Morning does not re-scale them for `previous_growth` |
+| **Savings ratio** | **Days of buffer**, not a share of leftover liquid wealth. Save pile does not shrink on decline |
 | **Consume need** | Live-use restock, then + save. Not "consume-half" |
+| **Reserved** | Never negative. Extra luxury consume eats unreserved stock |
+| **NaN / inf** | `debug_assert` if it must never happen. Do not sprinkle runtime `is_finite` fallbacks on the hot path |
 | **Vocabulary** | Prefer `docs/design-vocabulary.md` over chat shorthand |
 | **Comments** | ASCII only; **add, do not edit or replace** existing comments unless asked |
 | **Knob** | Player-facing only |
@@ -116,6 +135,7 @@ One write pass over property (`entry`); no repeated `ensure_property_row`.
 ### Nearby leftovers (do not start unless asked)
 
 - Firm / institution / market / state `record_keeping` bodies still `todo!()`
+- Firm `apply_passive_bonuses` is a stub; region/market bonus apply is unchecked
 - `run_production` exists + tests; **not** wired into the production phase
 - `Pop::start_day` exists; day-start phase still stub (TODO: "Completed not Connected")
 - Migration orchestrator exists; leaves are `todo!()` (wants live sentiment + liquid wealth)
@@ -123,19 +143,22 @@ One write pass over property (`entry`); no repeated `ensure_property_row`.
 - MarketGood has no salability field yet
 - `income_amv` is not zeroed at day start (harmless until market pays)
 - Optional later: day-fill rate cache if `get_demographic_rates` shows up at huge pop counts
+- Optional later: `Pop.market_id` (update on migrate) instead of rebuilding `pop_to_market`
+- Optional later: pace luxury consume so one desire does not empty leftover stock (see `TODO.md`)
 
 ### Comments still stale (fix only if the user asks)
 
+- `Pop::update_desires` rustdoc still lists step 3 as scaling `shop_target` / `desire_needs` for growth (that block is gone)
 - `PopRecords.savings_ratio` field still says "share of liquid wealth"
 - `decay_goods` still calls `saved` a wish target in one place
 - Original short `record_keeping` docblock was left as-is
 - Playstate / firm / institution docs may still mention `Pop::demographic_update`
 - `TODO.md` household-helper bullet lags the landed rates model
-- Vault `Pops.md` household section still has a REWORK banner
+- Vault `Pops.md` household section still has a REWORK banner; morning step 3.5 still says resize shopping targets (record keeping owns that now)
 
 ### Review log
 
-Local review 2026-08-18 re-opened items in `reviewlog.md`. Highest: growing-pop `shop_target` is scaled twice (`savings_growth_buffer` then morning `update_desires`). Full notes: `/tmp/grok-1000/grok-review-72fee57c.md`.
+Open review debt is empty. 2026-08-18 items are closed in `reviewlog.md` (owner A, reserved floor, cheapest cover, MarketLookups, `create_orders` planned-shop pass). Luxury leveling and `Pop.market_id` are deferred.
 
 ---
 
@@ -143,11 +166,13 @@ Local review 2026-08-18 re-opened items in `reviewlog.md`. Highest: growing-pop 
 
 | Concern | Location |
 |---------|----------|
-| Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets` |
+| Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets`, `planning_growth_factor` |
+| Cheapest tradeable basket | `src/game/pop.rs` → `cheapest_tradeable_cover` |
+| Orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |
 | Pop records / property rows | `src/game/pop_property.rs` |
 | Planning tunables | `src/game/config.rs` → `pop_constants` |
-| Market price snapshot | `src/game/market.rs` → `Market::history` |
-| Turn order / wires | `src/playstate.rs` → `advance_turn`, `phase_update_sentiments`, `phase_record_keeping` |
+| Market price snapshot | `src/game/market.rs` → `Market::history`, `MarketLookups` |
+| Turn order / wires | `src/playstate.rs` → `advance_turn`, `phase_update_sentiments`, `phase_record_keeping`, `rebuild_market_lookups` |
 | Household / rates math | `src/game/household.rs` |
 | Rate resolve | `src/game/factuals.rs` → `get_demographic_rates` |
 | Sentiment | `src/game/sentiment.rs`, `Pop::update_sentiments` |
@@ -168,4 +193,4 @@ Local review 2026-08-18 re-opened items in `reviewlog.md`. Highest: growing-pop 
 
 ## 8. One-line status
 
-**Pop economic day is closed through record keeping: sentiments wired, consume need + days-of-buffer savings (fear-scaled substitutability), efficiency must be positive. Household growth is rates-driven. Intramarket day is the open frontier.**
+**Pop economic day is closed through record keeping: next-day shop/save written there (not re-scaled in the morning), cheapest tradeable cover, reserved never negative, MarketLookups for evening phases. Review log is empty. Intramarket day is the open frontier.**

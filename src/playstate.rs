@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use rayon::prelude::*;
 
 use crate::game::actors::Actors;
 use crate::game::factuals::Factuals;
 use crate::game::mapdata::MapData;
-use crate::game::market::{Market, MarketHistory};
+use crate::game::market::{MarketHistory, MarketLookups};
 use crate::game::players::Players;
 
 /// # Play State
@@ -25,6 +23,9 @@ pub struct PlayState {
     // Optional: turn metadata, game clock, etc.
     pub turn: u64,
     pub is_paused: bool,
+    /// Per-market AMV snapshots and pop-to-market ids for this turn.
+    /// Rebuild after prices change or pops move; borrow during pop phases.
+    pub market_lookups: MarketLookups,
     // ... any other global flags
 }
 
@@ -188,24 +189,18 @@ impl PlayState {
     /// After consume and growth, before migration. Walks each market so pops
     /// get that market's price snapshot (`Market::history`).
     fn phase_update_sentiments(&mut self) {
-        let histories = Self::pop_market_histories(&self.map_data.markets);
+        self.rebuild_market_lookups();
         let empty = MarketHistory::new();
+        let lookups = &self.market_lookups;
         self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
-            let history = histories.get(id).unwrap_or(&empty);
+            let history = lookups.history_for_pop(*id, &empty);
             pop.update_sentiments(history);
         });
     }
 
-    /// Snapshot each market's history and map it onto member pop ids.
-    fn pop_market_histories(markets: &HashMap<usize, Market>) -> HashMap<usize, MarketHistory> {
-        let mut out = HashMap::new();
-        for market in markets.values() {
-            let history = market.history();
-            for &pop_id in &market.pops {
-                out.insert(pop_id, history.clone());
-            }
-        }
-        out
+    /// One history per market and pop-id -> market-id. Prices are day-static.
+    fn rebuild_market_lookups(&mut self) {
+        self.market_lookups = MarketLookups::from_markets(&self.map_data.markets);
     }
 
     /// # Phase Pop Migration
@@ -316,9 +311,11 @@ impl PlayState {
     fn phase_record_keeping(&mut self) {
         // TODO: Consider folding the actors into a singular thread and having the actor struct do the delegation. Shouldn't make a real difference, but just a thought.
         // Snapshot prices before market record keeping mutates the live goods.
-        let histories = Self::pop_market_histories(&self.map_data.markets);
+        // Rebuild so membership is current if migration moved pops; AMVs are day-static.
+        self.rebuild_market_lookups();
         let empty = MarketHistory::new();
         let factuals = &self.factuals;
+        let lookups = &self.market_lookups;
         let markets = &mut self.map_data.markets;
         let pops = &mut self.actors.pops;
         let firms = &mut self.actors.firms;
@@ -335,7 +332,7 @@ impl PlayState {
             });
             s.spawn(|_| {
                 pops.par_iter_mut().for_each(|(id, pop)| {
-                    let history = histories.get(id).unwrap_or(&empty);
+                    let history = lookups.history_for_pop(*id, &empty);
                     pop.record_keeping(factuals, history);
                 });
             });
@@ -397,6 +394,7 @@ fn setup_play_state(mut commands: Commands) {
         players: todo!(),
         turn: todo!(),
         is_paused: todo!(),
+        market_lookups: MarketLookups::new(),
     };
     // Load factuals, generate map, init population/players...
     commands.insert_resource(play_state);

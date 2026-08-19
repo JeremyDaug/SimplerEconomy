@@ -69,6 +69,48 @@ pub struct MarketHistory {
     pub salability: HashMap<usize, f64>,
 }
 
+/// Per-market AMV snapshots plus pop-to-market membership.
+/// Histories are day-static; rebuild membership after pops move.
+#[derive(Debug, Clone, Default)]
+pub struct MarketLookups {
+    pub histories: HashMap<usize, MarketHistory>,
+    pub pop_to_market: HashMap<usize, usize>,
+}
+
+impl MarketLookups {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One history per market, and each member pop id mapped to that market id.
+    pub fn from_markets(markets: &HashMap<usize, Market>) -> Self {
+        let mut histories = HashMap::new();
+        let mut pop_to_market = HashMap::new();
+        for market in markets.values() {
+            histories.insert(market.id, market.history());
+            for &pop_id in &market.pops {
+                pop_to_market.insert(pop_id, market.id);
+            }
+        }
+        Self {
+            histories,
+            pop_to_market,
+        }
+    }
+
+    /// History for `pop_id`'s market, or `empty` if the pop is in none.
+    pub fn history_for_pop<'a>(
+        &'a self,
+        pop_id: usize,
+        empty: &'a MarketHistory,
+    ) -> &'a MarketHistory {
+        self.pop_to_market
+            .get(&pop_id)
+            .and_then(|mid| self.histories.get(mid))
+            .unwrap_or(empty)
+    }
+}
+
 impl MarketHistory {
     pub(crate) fn new() -> Self {
         Self { 
@@ -131,5 +173,32 @@ impl MarketGood {
             imported: 0.0,
             stock: 0.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod market_lookups_should {
+    use super::*;
+
+    #[test]
+    fn snapshots_one_history_per_market_and_maps_pops() {
+        let mut market = Market {
+            id: 7,
+            pops: HashSet::from([10, 11]),
+            firms: HashSet::new(),
+            institution_ids: HashSet::new(),
+            goods: HashMap::new(),
+        };
+        market.goods.insert(5, MarketGood { amv: 3.0, ..MarketGood::default() });
+        let mut markets = HashMap::new();
+        markets.insert(7, market);
+
+        let lookups = MarketLookups::from_markets(&markets);
+        let empty = MarketHistory::new();
+
+        assert_eq!(lookups.histories.len(), 1);
+        assert_eq!(lookups.history_for_pop(10, &empty).price(5), 3.0);
+        assert_eq!(lookups.history_for_pop(11, &empty).price(5), 3.0);
+        assert_eq!(lookups.history_for_pop(99, &empty).price(5), 1.0);
     }
 }
