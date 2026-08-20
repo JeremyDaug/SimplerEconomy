@@ -11,6 +11,8 @@
 //! stay on `process` for now: they change production math, not actor state. Their
 //! birth / mortality arms bridge into [`ProcessEffect`] / [`EffectKind`].
 
+use std::vec;
+
 use crate::game::sentiment::SentimentKind;
 use crate::game::household::HouseholdTarget;
 
@@ -227,6 +229,36 @@ impl DesireEffect {
     pub fn is_bonus_good(self) -> bool {
         matches!(self, DesireEffect::BonusGood(..))
     }
+    
+    /// # Scale By
+    /// 
+    /// Scales our Desire Effect by a given scalar, returning the new version.
+    pub(crate) fn scale_by(&self, effect_scale: f64) -> Self {
+        match self {
+            DesireEffect::Mortality(household_target, v, b) => 
+                DesireEffect::Mortality(*household_target, v*effect_scale, *b),
+            DesireEffect::Birthrate(v, b) => 
+                DesireEffect::Birthrate(v*effect_scale, *b),
+            DesireEffect::BonusGood(g, v, b) => 
+                DesireEffect::BonusGood(*g, v*effect_scale, *b),
+            DesireEffect::Satisfaction(v, b) => 
+                DesireEffect::Satisfaction(v*effect_scale, *b),
+            DesireEffect::SentimentFlat(sentiment_kind, v, b) => 
+                DesireEffect::SentimentFlat(*sentiment_kind, v*effect_scale, *b),
+            DesireEffect::SentimentRelative(sentiment_kind, v, b) => 
+                DesireEffect::SentimentRelative(*sentiment_kind, v*effect_scale, *b),
+            DesireEffect::Culture(v, b) => 
+                DesireEffect::Culture(v*effect_scale, *b),
+            DesireEffect::Research(v, b) => 
+                DesireEffect::Research(v*effect_scale, *b),
+            DesireEffect::Faith(v, b) => 
+                DesireEffect::Faith(v*effect_scale, *b),
+            DesireEffect::Authority(v, b) => 
+                DesireEffect::Authority(v*effect_scale, *b),
+            DesireEffect::Legitimacy(v, b) => 
+                DesireEffect::Authority(v*effect_scale, *b),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,8 +367,10 @@ pub enum DemographicEffect {
     BirthRate(f64),
     MortalityRate(HouseholdTarget, f64),
     /// Passive research per household. Harvested at extract.
+    /// TODO, expand to include rates for each part of the household.
     ResearchRate(f64),
     /// Passive culture per household. Harvested at extract.
+    /// TODO, expand to include rates for each part of the household.
     CultureRate(f64),
 }
 

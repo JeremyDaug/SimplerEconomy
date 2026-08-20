@@ -1,4 +1,8 @@
 
+use std::debug_assert;
+
+use itertools::Itertools;
+
 use crate::game::{pop::Pop, scalingfactor::ScalingFactor};
 
 pub use crate::game::effects::DesireEffect;
@@ -28,6 +32,8 @@ pub struct PlatonicDesire {
     /// Bounded between [0.0, 1.0), decay likely shouldn't go above 0.8 or so.
     pub decay: f64,
     /// What category(s) of goods should go into this desire.
+    /// 
+    /// Currently not in use.
     pub categories: Vec<String>,
     /// What class(es) of goods should go into this desire.
     pub classes: Vec<usize>,
@@ -129,7 +135,37 @@ impl PlatonicDesire {
             scalar: self.scalar,
             decay: self.decay,
             tier,
+            category: "".into(),
             priority: 1,
+        }
+    }
+
+    /// # Derive Demographic Desire
+    pub fn derive_demographic_desire(&self, id: usize, tier: usize, amount: f64,
+        desire_targets: Vec<usize>, priority: isize) -> DemoDesire {
+        debug_assert!(self.tiers.contains(&tier),
+            "Tier must be a valid tier for the Platonic Desire.");
+        // This is gross, rework this if possible.
+        let first_desire = self.bucket.iter()
+            .filter(|x| desire_targets.contains(&x.good))
+            .map(|x| x.clone())
+            .collect_vec();
+        let effect_scale = self.effect_rate.calculate(amount);
+        let effects = self.effects.iter()
+            .map(|x| {
+                x.scale_by(effect_scale)
+            }).collect_vec();
+        DemoDesire {
+            id,
+            platonic_id: self.id,
+            bucket: first_desire,
+            effects,
+            amount,
+            scalar: self.scalar,
+            decay: self.decay,
+            tier,
+            category: "".into(),
+            priority,
         }
     }
 }
@@ -176,6 +212,8 @@ pub struct DemoDesire {
     pub decay: f64,
     /// The Desire Tier for the pop.
     pub tier: usize,
+    /// The category the desire is restricting itself to.
+    pub category: String,
     /// The Priority of the desire in Demographic Tier it's in. Used for organization 
     /// both here and when consolidating into the pop at the end.
     pub priority: isize,
@@ -195,6 +233,7 @@ impl DemoDesire {
             scalar: ScalingFactor::Household(1.0),
             decay: 0.0,
             tier: 1,
+            category: "".into(),
             priority: 1,
         }
     }
@@ -280,6 +319,32 @@ impl DemoDesire {
             effect: self.effects.clone(),
             scalar: self.scalar,
             decay: self.decay,
+        }
+    }
+
+    /// # Derive Desire
+    /// 
+    /// Given the current demographic desire, create a desire for a pop and adjust it 
+    /// to them apropriately.
+    /// 
+    /// The amount on the output should be scaled to match the pop, and the effect
+    /// should scale apropriately as well to ensure it outputs the correct amount as a
+    /// percent of total success (satisfaction / amount)
+    /// 
+    /// Does not set the satisfaction.
+    pub fn derive_desire(&self, source: DesireSource, pop: &Pop) -> Desire {\
+        // amount per unit times that number in the pop.
+        let amount = self.amount * pop.get_scaling_factor(self.scalar);
+        Desire {
+            source,
+            priority: self.priority,
+            target: self.bucket.clone(),
+            amount,
+            satisfaction: 0.0,
+            category: ,
+            effect: todo!(),
+            scalar: todo!(),
+            decay: todo!(),
         }
     }
 }

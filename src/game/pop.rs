@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -1564,39 +1564,6 @@ impl Pop {
         }
     }
 
-    /// # Extract State Resources
-    /// 
-    /// Extracts from a pop the special resources (primarily culture and research), 
-    /// clearing any unused desires and special effects currently remaining on the 
-    /// pop, and returning it to the caller.
-    /// 
-    /// Meant to be called after [`Self::update_sentiments`], but before migration.
-    /// 
-    /// The resources produced here 
-    /// 
-    /// Where those resources go is not up to the pop.
-    pub fn extract_special_resources(&mut self, _factuals: &Factuals) -> PlayerResources {
-        // sanity check that working desires is empty.
-        debug_assert!(
-            self.working_desires.is_empty(),
-            "working_desires must be empty by this point, {} remain.",
-            self.working_desires.len()
-        );
-
-        let mut result = PlayerResources::new();
-        // get passive benefits from demographics
-        result += self.demographic_resource_generation();
-        // get SOL/Wealth, SOL Trend, and Mood special resources
-        // get bonus resources from desires effects.
-        // get bonus resources from stored effects.
-        result
-    }
-
-    fn demographic_resource_generation(&self) -> PlayerResources {
-        let mut result = PlayerResources::new();
-        result
-    }
-
     /// # Decay Goods
     ///
     /// Called at the very end of the day (Pop Day §10). Only external input is
@@ -1722,6 +1689,97 @@ impl Pop {
             "No ether stored effects should exist at this point."
         );
     }
+}
+
+// Extract Special resources block
+impl Pop {
+    /// # Extract State Resources
+    /// 
+    /// Extracts from a pop the special resources (primarily culture and research), 
+    /// clearing any unused desires and special effects currently remaining on the 
+    /// pop, and returning it to the caller.
+    /// 
+    /// Meant to be called after [`Self::update_sentiments`], but before migration.
+    /// 
+    /// The resources produced here 
+    /// 
+    /// Where those resources go is not up to the pop.
+    pub fn extract_special_resources(&mut self, factuals: &Factuals) -> PlayerResources {
+        // sanity check that working desires is empty.
+        debug_assert!(
+            self.working_desires.is_empty(),
+            "working_desires must be empty by this point, {} remain.",
+            self.working_desires.len()
+        );
+
+        let mut result = PlayerResources::new();
+        // get passive benefits from demographics
+        result += self.demographic_resource_generation(factuals);
+        // get SOL/Wealth, SOL Trend, and Mood special resources
+        // get bonus resources from desires effects.
+        // get bonus resources from stored effects.
+        result += self.drain_stored_special_resources();
+        result
+    }
+
+    /// Drains resources stored on the pop itself. Bonuses here are automatically 
+    /// scaled, so just add them.
+    fn drain_stored_special_resources(&mut self) -> PlayerResources {
+        let mut out = PlayerResources::new();
+        let mut kept = vec![];
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::Authority(b) => out.authority += b,
+                PopEffect::Culture(b) => out.culture += b,
+                PopEffect::Faith(b) => out.faith += b,
+                PopEffect::Legitimacy(b) => out.legitimacy += b,
+                PopEffect::Research(b) => out.research += b,
+                other => kept.push(other)
+                // todo, check that effects that should've been consumed are consumed.
+            }
+        }
+        self.stored_effects = kept;
+
+        out
+    }
+
+    /// Gets the resources generated passively by the demographics of the pop.
+    fn demographic_resource_generation(&self, factuals: &Factuals) -> PlayerResources {
+        let mut result = PlayerResources::new();
+
+        // get species (always exists)
+        Self::demo_special_resources(&mut result, 
+            &factuals.find_species(self.demographics.species).species_effects,
+            self.demographics.household.count);
+        // check and get culture
+        if self.demographics.culture != 0 {
+            Self::demo_special_resources(&mut result, 
+            &factuals.find_culture(self.demographics.culture).culture_effects,
+            self.demographics.household.count);
+            // todo handle class here.
+        }
+        // check and get religion
+        if self.demographics.religion != 0 {
+            Self::demo_special_resources(&mut result, 
+            &factuals.find_culture(self.demographics.culture).culture_effects,
+            self.demographics.household.count);
+        }
+        result
+    }
+
+    /// Helper which extracts the resources from a demographic's effects.
+    fn demo_special_resources(out: &mut PlayerResources,
+    demo_effects: &[DemographicEffect],
+    households: f64) {
+        for effect in demo_effects.iter() {
+            match effect {
+                DemographicEffect::CultureRate(rate) => out.culture += rate * households,
+                DemographicEffect::ResearchRate(rate) => out.research += rate * households,
+                _ => {}
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]
