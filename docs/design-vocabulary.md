@@ -361,6 +361,13 @@ passive culture/research).
 
 **Meaning:** A state is the required aspects of a player, existing even when operated by a human player. State and Player should be treated as mostly synonymous. A State is the mechanisms of control and management, while the Player is the controller and decision making of the state.
 
+### Player resources
+**Preferred:** player resources  
+**Avoid:** special resources (except the pop method name), state resources (faith/culture routing is the caller's job)
+
+**Meaning:** Non-good stocks the player spends and accumulates: **culture**, **research**, **legitimacy**, **authority**, **faith**. Daily yield is harvested from pops; the pool lives on the player (`State`). Negatives are allowed and apply increasing penalties; there is no zero floor. Culture and research do not decay; faith, legitimacy, and authority decay after spend (rest-value-like).  
+**Code:** `PlayerResources` (`player_resources.rs`), `State.resources`; desire/pop arms harvested in `Pop::extract_special_resources` (still stub)
+
 ---
 
 ## Quick ban list (chat drift)

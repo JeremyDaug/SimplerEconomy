@@ -10,6 +10,7 @@ use crate::game::{factuals::Factuals, state::State};
 pub struct Players {
     pub players: HashMap<usize, State>
 }
+
 impl Players {
     pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
         todo!()

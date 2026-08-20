@@ -143,8 +143,6 @@ impl PopPRow {
 /// Pop day-end / process-satisfaction records, including living-standard history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopRecords {
-    
-
     /// Tier satisfactions [basic, common, luxury] after satisfaction boosts.
     /// Measured as a percentage of success of each desire summed together. 
     /// 

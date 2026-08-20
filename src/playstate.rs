@@ -71,6 +71,8 @@ impl PlayState {
         self.phase_pop_growth();
         // 9b. Record tier sat / SOL / sentiment after consume+growth, before migration.
         self.phase_update_sentiments();
+        // 9c. Harvest culture / research / legitimacy / etc. from pops.
+        self.phase_extract_special_resources();
         // 10.Pop migration.
         self.phase_pop_migration();
         // 11.Record Keeping.
@@ -195,6 +197,18 @@ impl PlayState {
         self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
             let history = lookups.history_for_pop(*id, &empty);
             pop.update_sentiments(history);
+        });
+    }
+
+    /// After sentiments, before migration. Pops are independent.
+    ///
+    /// TODO: Route each yield to the owning state's player-resource pool.
+    /// Pop-count vs pop-size scaling belongs here, not on the pop
+    /// (1M size-1 pops vs 1 size-1M pop).
+    fn phase_extract_special_resources(&mut self) {
+        let factuals = &self.factuals;
+        self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
+            let _yielded = pop.extract_special_resources(factuals);
         });
     }
 

@@ -100,3 +100,35 @@ pub mod pop_constants {
     /// Sentiment share gain scale when living standard is falling (usually > rise).
     pub const SENTIMENT_FALL_GAIN: f64 = 0.05;
 }
+
+/// Daily player-resource yields from pops (culture, research, legitimacy, …).
+/// Values are placeholders; retune after extract is in play.
+pub mod player_resource_constants {
+    /// Culture per 1.0 common **tier sat** mass, times `log10(1 + pop)`.
+    pub const COMMON_CULTURE_RATE: f64 = 1.0;
+    /// Weaker, unclamped luxury ladder (same pop scale).
+    pub const LUXURY_CULTURE_RATE: f64 = 0.35;
+
+    /// Legitimacy from the first common desire (scaled by average desire sat).
+    /// Further desires add [`EXTRA_DESIRE_LEGITIMACY`] each, so extra wants are
+    /// a weak legitimacy source.
+    pub const FIRST_DESIRE_LEGITIMACY: f64 = 1.0;
+    /// Legitimacy added per common desire after the first.
+    pub const EXTRA_DESIRE_LEGITIMACY: f64 = 0.1;
+    /// Luxury legitimacy per 1.0 luxury tier-sat mass (unclamped).
+    pub const LUXURY_LEGITIMACY_RATE: f64 = 0.40;
+    /// Average sat below this (less than half) reduces legitimacy and can go
+    /// negative together with anger, fear, and a falling SOL trend.
+    pub const LOW_SAT_LEGITIMACY_THRESHOLD: f64 = 0.5;
+
+    /// Mood shares (0-1) added into the legitimacy signed term, then * potential.
+    /// Anger hurts more than fear; happiness/hope help, a bit weaker.
+    pub const ANGER_LEGITIMACY_RATE: f64 = 0.40;
+    pub const FEAR_LEGITIMACY_RATE: f64 = 0.22;
+    pub const HAPPINESS_LEGITIMACY_RATE: f64 = 0.18;
+    pub const HOPE_LEGITIMACY_RATE: f64 = 0.12;
+    /// Rising SOL trend coefficient (people praise the rise).
+    pub const TREND_LEGITIMACY_RISE: f64 = 0.03;
+    /// Falling SOL trend coefficient (people hate the fall more than they praise a rise).
+    pub const TREND_LEGITIMACY_FALL: f64 = 0.05;
+}

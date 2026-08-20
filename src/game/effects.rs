@@ -88,6 +88,12 @@ pub enum EffectScope {
 ///
 /// The `bool` is **true = bonus** (scales with satisfaction), **false = malus**
 /// (scales with lack of satisfaction).
+///
+/// Player-resource arms (culture, research, faith, authority, legitimacy) are
+/// harvested in [`crate::game::pop::Pop::extract_special_resources`]. Common
+/// sat is clamped to `[0, 1]` at harvest; luxury sat is unclamped so extra
+/// levels scale. A catch-all `PlayerResource` arm (id + amount + bonus) will
+/// likely be added later if more non-good stocks appear.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DesireEffect {
     /// Mortality pressure on the targeted household subgroup when unmet
@@ -111,6 +117,16 @@ pub enum DesireEffect {
     /// Relative scale of one sentiment axis, then renormalize.
     /// Applied in [`crate::game::pop::Pop::update_sentiments`].
     SentimentRelative(SentimentKind, f64, bool),
+    /// Culture points for the owning player.
+    Culture(f64, bool),
+    /// Research points for the owning player.
+    Research(f64, bool),
+    /// Faith for the owning player (decays on the pool).
+    Faith(f64, bool),
+    /// Authority for the owning player.
+    Authority(f64, bool),
+    /// Legitimacy for the owning player (may be negative).
+    Legitimacy(f64, bool),
 }
 
 impl DesireEffect {
@@ -127,6 +143,11 @@ impl DesireEffect {
             DesireEffect::SentimentRelative(kind, relative, _) => {
                 EffectKind::SentimentRelative { kind, relative }
             }
+            DesireEffect::Culture(v, _) => EffectKind::Culture(v),
+            DesireEffect::Research(v, _) => EffectKind::Research(v),
+            DesireEffect::Faith(v, _) => EffectKind::Faith(v),
+            DesireEffect::Authority(v, _) => EffectKind::Authority(v),
+            DesireEffect::Legitimacy(v, _) => EffectKind::Legitimacy(v),
         }
     }
 
@@ -138,7 +159,12 @@ impl DesireEffect {
             | DesireEffect::BonusGood(_, _, b)
             | DesireEffect::Satisfaction(_, b)
             | DesireEffect::SentimentFlat(_, _, b)
-            | DesireEffect::SentimentRelative(_, _, b) => b,
+            | DesireEffect::SentimentRelative(_, _, b)
+            | DesireEffect::Culture(_, b)
+            | DesireEffect::Research(_, b)
+            | DesireEffect::Faith(_, b)
+            | DesireEffect::Authority(_, b)
+            | DesireEffect::Legitimacy(_, b) => b,
         }
     }
 
@@ -146,20 +172,47 @@ impl DesireEffect {
     ///
     /// Bonus → `+rate * sat`; malus → `-rate * (1 - sat)`.
     pub fn signed_strength(self, sat01: f64) -> f64 {
-        let sat = sat01.clamp(0.0, 1.0);
-        let lack = 1.0 - sat;
+        self.signed_strength_raw(sat01.clamp(0.0, 1.0))
+    }
+
+    /// Like [`Self::signed_strength`], but `sat` is not clamped to 1.
+    ///
+    /// Floor at 0. Malus uses `max(0, 1 - sat)` so luxury oversat does not
+    /// invert the malus. Use this for luxury player-resource harvest; keep
+    /// [`Self::signed_strength`] for growth / sentiment / common.
+    pub fn signed_strength_raw(self, sat: f64) -> f64 {
+        debug_assert!(sat.is_finite(), "satisfaction must be finite");
+        let sat = sat.max(0.0);
+        let lack = (1.0 - sat).max(0.0);
         let rate = match self {
             DesireEffect::Mortality(_, v, _) | DesireEffect::Birthrate(v, _) => v,
             DesireEffect::BonusGood(_, amount, _) => amount,
             DesireEffect::Satisfaction(amount, _) => amount,
             DesireEffect::SentimentFlat(_, amount, _) => amount,
             DesireEffect::SentimentRelative(_, relative, _) => relative,
+            DesireEffect::Culture(v, _)
+            | DesireEffect::Research(v, _)
+            | DesireEffect::Faith(v, _)
+            | DesireEffect::Authority(v, _)
+            | DesireEffect::Legitimacy(v, _) => v,
         };
         if self.is_bonus() {
             rate * sat
         } else {
             -rate * lack
         }
+    }
+
+    /// True for culture / research / faith / authority / legitimacy arms.
+    pub fn is_player_resource(self) -> bool {
+        matches!(
+            self,
+            DesireEffect::Culture(..)
+                | DesireEffect::Research(..)
+                | DesireEffect::Faith(..)
+                | DesireEffect::Authority(..)
+                | DesireEffect::Legitimacy(..)
+        )
     }
 
     /// Growth arms left for growth phase.
@@ -187,6 +240,8 @@ impl DesireEffect {
 ///   [`crate::game::pop::Pop::growth_phase`] (applied and removed there).
 /// - Satisfaction boosts + mood/sentiment → [`crate::game::pop::Pop::update_sentiments`].
 /// - [`PopEffect::BonusGood`] → [`crate::game::pop::Pop::decay_goods`].
+/// - Player-resource arms (already scaled) →
+///   [`crate::game::pop::Pop::extract_special_resources`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopEffect {
     Birthrate(f64),
@@ -202,6 +257,16 @@ pub enum PopEffect {
     SentimentFlat { kind: SentimentKind, delta: f64 },
     /// Relative scale of one axis, then renormalize.
     SentimentRelative { kind: SentimentKind, relative: f64 },
+    /// Culture points already scaled; harvested at extract.
+    Culture(f64),
+    /// Research points already scaled; harvested at extract.
+    Research(f64),
+    /// Faith already scaled; harvested at extract.
+    Faith(f64),
+    /// Authority already scaled; harvested at extract.
+    Authority(f64),
+    /// Legitimacy already scaled; harvested at extract.
+    Legitimacy(f64),
 }
 
 impl PopEffect {
@@ -217,6 +282,11 @@ impl PopEffect {
             PopEffect::SentimentRelative { kind, relative } => {
                 EffectKind::SentimentRelative { kind, relative }
             }
+            PopEffect::Culture(v) => EffectKind::Culture(v),
+            PopEffect::Research(v) => EffectKind::Research(v),
+            PopEffect::Faith(v) => EffectKind::Faith(v),
+            PopEffect::Authority(v) => EffectKind::Authority(v),
+            PopEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
         }
     }
 
@@ -228,6 +298,18 @@ impl PopEffect {
     /// Goods paid out at decay.
     pub fn is_bonus_good(self) -> bool {
         matches!(self, PopEffect::BonusGood { .. })
+    }
+
+    /// True for culture / research / faith / authority / legitimacy arms.
+    pub fn is_player_resource(self) -> bool {
+        matches!(
+            self,
+            PopEffect::Culture(_)
+                | PopEffect::Research(_)
+                | PopEffect::Faith(_)
+                | PopEffect::Authority(_)
+                | PopEffect::Legitimacy(_)
+        )
     }
 }
 
@@ -252,7 +334,9 @@ pub enum DemographicEffect {
     ChildEfficiency(f64),
     BirthRate(f64),
     MortalityRate(HouseholdTarget, f64),
+    /// Passive research per household. Harvested at extract.
     ResearchRate(f64),
+    /// Passive culture per household. Harvested at extract.
     CultureRate(f64),
 }
 
