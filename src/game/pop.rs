@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -743,10 +743,7 @@ impl Pop {
                         // Malus: lack of sat raises mortality on the targeted group.
                         mods.apply_mortality(*target, v * lack);
                     }
-                    DesireEffect::BonusGood(_, _, _)
-                    | DesireEffect::Satisfaction(_, _)
-                    | DesireEffect::SentimentFlat(_, _, _)
-                    | DesireEffect::SentimentRelative(_, _, _) => {}
+                    _ => {}
                 }
             }
         }
@@ -896,10 +893,6 @@ impl Pop {
                 let sat01 = desire.tiers_satisfied().clamp(0.0, 1.0);
                 for effect in &desire.effect {
                     match *effect {
-                        DesireEffect::Birthrate(_, _)
-                        | DesireEffect::Mortality(_, _, _)
-                        | DesireEffect::BonusGood(_, _, _)
-                        | DesireEffect::Satisfaction(_, _) => {}
                         DesireEffect::SentimentFlat(kind, _, _) => {
                             let delta = effect.signed_strength(sat01);
                             if delta != 0.0 {
@@ -912,6 +905,7 @@ impl Pop {
                                 mods.push(SentimentMod::Relative { kind, relative });
                             }
                         }
+                        _ => {}
                     }
                 }
             }
@@ -1572,13 +1566,35 @@ impl Pop {
 
     /// # Extract State Resources
     /// 
-    /// Extracts from a pop the 'state' resources (primarily culture and research), 
+    /// Extracts from a pop the special resources (primarily culture and research), 
     /// clearing any unused desires and special effects currently remaining on the 
     /// pop, and returning it to the caller.
     /// 
+    /// Meant to be called after [`Self::update_sentiments`], but before migration.
+    /// 
+    /// The resources produced here 
+    /// 
     /// Where those resources go is not up to the pop.
-    pub fn extract_state_resources(&mut self, _factuals: &Factuals) {
-        todo!()
+    pub fn extract_special_resources(&mut self, _factuals: &Factuals) -> PlayerResources {
+        // sanity check that working desires is empty.
+        debug_assert!(
+            self.working_desires.is_empty(),
+            "working_desires must be empty by this point, {} remain.",
+            self.working_desires.len()
+        );
+
+        let mut result = PlayerResources::new();
+        // get passive benefits from demographics
+        result += self.demographic_resource_generation();
+        // get SOL/Wealth, SOL Trend, and Mood special resources
+        // get bonus resources from desires effects.
+        // get bonus resources from stored effects.
+        result
+    }
+
+    fn demographic_resource_generation(&self) -> PlayerResources {
+        let mut result = PlayerResources::new();
+        result
     }
 
     /// # Decay Goods
