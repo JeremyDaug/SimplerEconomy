@@ -332,19 +332,37 @@ impl DemoDesire {
     /// percent of total success (satisfaction / amount)
     /// 
     /// Does not set the satisfaction.
-    pub fn derive_desire(&self, source: DesireSource, pop: &Pop) -> Desire {\
+    ///
+    /// Additive effects (culture, research, faith, authority, legitimacy, bonus goods)
+    /// are multiplied by the same pop scale as amount. Birth, mortality, sentiment,
+    /// and satisfaction arms are left as demo rates / percents.
+    pub fn derive_desire(&self, source: DesireSource, pop: &Pop) -> Desire {
         // amount per unit times that number in the pop.
-        let amount = self.amount * pop.get_scaling_factor(self.scalar);
+        let scale = pop.get_scaling_factor(self.scalar);
+        let amount = self.amount * scale;
+        // Additive arms (player resources, bonus goods) are per-scalar on the demo
+        // and must grow with household/adult/etc. count. Rate and percent arms stay.
+        let effect = self
+            .effects
+            .iter()
+            .map(|e| {
+                if e.is_additive() {
+                    e.scale_by(scale)
+                } else {
+                    *e
+                }
+            })
+            .collect();
         Desire {
-            source,
+            source: source.with_demo_desire_id(self.id),
             priority: self.priority,
             target: self.bucket.clone(),
             amount,
             satisfaction: 0.0,
-            category: ,
-            effect: todo!(),
-            scalar: todo!(),
-            decay: todo!(),
+            category: None,
+            effect,
+            scalar: self.scalar,
+            decay: self.decay,
         }
     }
 }
@@ -433,6 +451,8 @@ pub struct Desire {
     pub satisfaction: f64,
 
     /// Desires should have a category of good they are restricted to expanding into.
+    /// 
+    /// Not Currently Used.
     pub category: Option<String>,
 
     /// The effects (typically one or none) which are generated when a desire is either

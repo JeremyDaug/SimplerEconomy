@@ -104,7 +104,7 @@ pub mod pop_constants {
 /// Daily player-resource yields from pops (culture, research, legitimacy, …).
 /// Values are placeholders; retune after extract is in play.
 pub mod player_resource_constants {
-    /// Culture per 1.0 common **tier sat** mass, times `log10(1 + pop)`.
+    /// Culture per 1.0 common **tier sat** satisfied, per pop.
     pub const COMMON_CULTURE_RATE: f64 = 1.0;
     /// Weaker, unclamped luxury ladder (same pop scale).
     pub const LUXURY_CULTURE_RATE: f64 = 0.35;
@@ -112,14 +112,15 @@ pub mod player_resource_constants {
     /// Legitimacy from the first common desire (scaled by average desire sat).
     /// Further desires add [`EXTRA_DESIRE_LEGITIMACY`] each, so extra wants are
     /// a weak legitimacy source.
-    pub const FIRST_DESIRE_LEGITIMACY: f64 = 1.0;
+    pub const FIRST_DESIRE_LEGITIMACY: f64 = 0.5;
     /// Legitimacy added per common desire after the first.
     pub const EXTRA_DESIRE_LEGITIMACY: f64 = 0.1;
     /// Luxury legitimacy per 1.0 luxury tier-sat mass (unclamped).
     pub const LUXURY_LEGITIMACY_RATE: f64 = 0.40;
-    /// Average sat below this (less than half) reduces legitimacy and can go
-    /// negative together with anger, fear, and a falling SOL trend.
-    pub const LOW_SAT_LEGITIMACY_THRESHOLD: f64 = 0.5;
+    /// Legitimacy Potential Modifier for Moods.
+    pub const MOOD_POTENTIAL_MODIFIER: f64 = 0.75;
+    /// Legitimacy Potential Modifier for Trends.
+    pub const TREND_POTENTIAL_MODIFIER: f64 = 0.5;
 
     /// Mood shares (0-1) added into the legitimacy signed term, then * potential.
     /// Anger hurts more than fear; happiness/hope help, a bit weaker.

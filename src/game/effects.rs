@@ -229,6 +229,12 @@ impl DesireEffect {
     pub fn is_bonus_good(self) -> bool {
         matches!(self, DesireEffect::BonusGood(..))
     }
+
+    /// Additive yields that grow with pop size (player resources and bonus goods).
+    /// Rates (birth/mortality) and percent-like arms (sentiment, satisfaction) do not.
+    pub fn is_additive(self) -> bool {
+        self.is_player_resource() || self.is_bonus_good()
+    }
     
     /// # Scale By
     /// 
@@ -256,7 +262,7 @@ impl DesireEffect {
             DesireEffect::Authority(v, b) => 
                 DesireEffect::Authority(v*effect_scale, *b),
             DesireEffect::Legitimacy(v, b) => 
-                DesireEffect::Authority(v*effect_scale, *b),
+                DesireEffect::Legitimacy(v*effect_scale, *b),
         }
     }
 }

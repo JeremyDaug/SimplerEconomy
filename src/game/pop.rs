@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::pop_constants, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::{player_resource_constants, pop_constants}, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -1716,10 +1716,143 @@ impl Pop {
         // get passive benefits from demographics
         result += self.demographic_resource_generation(factuals);
         // get SOL/Wealth, SOL Trend, and Mood special resources
+        result += self.wealth_and_mood_resources();
         // get bonus resources from desires effects.
+        result += self.resources_from_desires();
         // get bonus resources from stored effects.
         result += self.drain_stored_special_resources();
         result
+    }
+
+    /// # Wealth and Mood Resources
+    /// 
+    /// Takes SOL/Wealth, SOL Trend, and current mood and grants (or penalizes)
+    /// special resources.
+    /// 
+    /// Currently, this only effects Legitimacy, and Culture.
+    /// Expanding this to Research is likely, Authority is not.
+    fn wealth_and_mood_resources(&self) -> PlayerResources {
+        use player_resource_constants as k;
+        let mut out = PlayerResources::new();
+
+        // Culture from living well: tier sat *sum* (empty tier is 0, not mood's 1.0).
+        // Scales with total population here, downscaled by players total subject 
+        // population.
+        // TODO: Weight adults/elders above children. Equal members for now.
+        // wealth_amv is recorded but not a yield yet (SOL sat is the culture source).
+        let people = self.demographics.total_population();
+        if people > 0.0 {
+            out.culture += self.common_living_well_mass() * k::COMMON_CULTURE_RATE * people;
+            if !self.desires[2].is_empty() {
+                out.culture += self.records.tier_sat[2].max(0.0)
+                    * k::LUXURY_CULTURE_RATE
+                    * people;
+            }
+        }
+        // then get legitimacy bonuses.
+        out.legitimacy += self.legitimacy_from_sol_and_mood() * people.max(0.0);
+        out
+    }
+
+    /// Common culture mass from recorded (boosted) tier sat.
+    /// Empty common -> 0. Oversat is unclamped (culture has no cap).
+    fn common_living_well_mass(&self) -> f64 {
+        if self.desires[1].is_empty() {
+            0.0
+        } else {
+            self.records.tier_sat[1].max(0.0)
+        }
+    }
+
+    /// Legitimacy from SOL and Moods
+    /// 
+    /// Gives legitimacy from the SOL and Mood of the pop.
+    /// 
+    /// SOL:
+    /// Potential gain scales with number of desires total.
+    /// The legitimacy gained scales with the average satisfaction (uncapped).
+    /// 
+    /// Mood:
+    /// Anger and Fear reduce Legitimacy (anger more than fear).
+    /// Happiness and Hope Increase Legimitacy (Happiness more than Hope).
+    /// 
+    /// Trend:
+    /// In the Deadzone, no effects.
+    /// If above or below, it reduces legitimacy (negative trend stronger than positive).
+    /// 
+    /// TODO:
+    /// Come back to ALL numbers to calibrate and balance things out.
+    /// Consider adding a counterbalancing force like Potential or Political Will or 
+    /// something that acts to create pressure on the player to adapt and help their people.
+    fn legitimacy_from_sol_and_mood(&self) -> f64 {
+        use player_resource_constants as k;
+        
+        // Get total satisfaction, skipping empty desire tiers.
+        let total_sat: f64 = (0..3)
+            .filter(|&tier| !self.desires[tier].is_empty())
+            .map(|tier| self.records.tier_sat[tier])
+            .sum();
+        // get how many desires in total we have
+        let n: usize = self.desires.iter().map(|t| t.len()).sum();
+
+        // calculate max potential legitimacy we can gain from number of desires.
+        let potential = if n == 0 {
+            0.0
+        } else {
+            k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * (n as f64)
+        };
+        // get the average satisfaction (unclamped above, floored at 0).
+        // Low SOL does not produce negative sat-legitimacy; mood covers that.
+        let avg = if n == 0 {
+            0.0
+        } else {
+            (total_sat / n as f64).max(0.0)
+        };
+        // Get the legitimacy based on satisfaction.
+        // TODO, if needed, allow for negative legitimacy.
+        let sat_legitimacy = potential * avg;
+
+        let mood = (self.sentiment.happiness() * k::HAPPINESS_LEGITIMACY_RATE
+            + self.sentiment.hope() * k::HOPE_LEGITIMACY_RATE
+            - self.sentiment.anger() * k::ANGER_LEGITIMACY_RATE
+            - self.sentiment.fear() * k::FEAR_LEGITIMACY_RATE) 
+            * potential * k::MOOD_POTENTIAL_MODIFIER;
+
+        let trend = self.records.trend;
+        let trend_term = if trend.abs() < pop_constants::SENTIMENT_TREND_DEADBAND {
+            0.0
+        } else if trend > 0.0 {
+            trend * k::TREND_LEGITIMACY_RISE * potential * k::TREND_POTENTIAL_MODIFIER
+        } else {
+            trend * k::TREND_LEGITIMACY_FALL * potential * k::TREND_POTENTIAL_MODIFIER
+        };
+
+        sat_legitimacy + mood + trend_term
+    }
+
+    /// # Resources from Desires
+    /// 
+    /// Goes through the desires of a pop, collecting bonus special resources produced 
+    /// by their desires.
+    fn resources_from_desires(&self) -> PlayerResources {
+        let mut out = PlayerResources::new();
+        for (tier, desires) in self.desires.iter().enumerate() {
+            for desire in desires {
+                // get satisfaciton, capping basic and common at 1.0.
+                let sat = if tier == 2 {
+                    desire.tiers_satisfied().max(0.0)
+                } else {
+                    desire.tiers_satisfied().clamp(0.0, 1.0)
+                };
+                // Effect magnitudes are already pop-scaled: sat 1.0 = the written
+                // yield. Luxury sat > 1 scales the bonus up. Malus uses lack
+                // (1 - sat, floored at 0) so oversat does not invert.
+                for effect in &desire.effect {
+                    out.add_desire_effect(*effect, sat);
+                }
+            }
+        }
+        out
     }
 
     /// Drains resources stored on the pop itself. Bonuses here are automatically 
@@ -1734,8 +1867,17 @@ impl Pop {
                 PopEffect::Faith(b) => out.faith += b,
                 PopEffect::Legitimacy(b) => out.legitimacy += b,
                 PopEffect::Research(b) => out.research += b,
-                other => kept.push(other)
-                // todo, check that effects that should've been consumed are consumed.
+                PopEffect::BonusGood { .. } => kept.push(effect),
+                PopEffect::Birthrate(_)
+                | PopEffect::Mortality(_, _)
+                | PopEffect::Satisfaction { .. }
+                | PopEffect::SentimentFlat { .. }
+                | PopEffect::SentimentRelative { .. } => {
+                    debug_assert!(
+                        false,
+                        "growth/sentiment stored effects must be gone before extract, got {effect:?}"
+                    );
+                }
             }
         }
         self.stored_effects = kept;
@@ -4088,6 +4230,243 @@ mod pop {
             assert_eq!(test_pop.property[&USED_GOOD].reserved, 10.0);
             assert_eq!(test_pop.property[&USED_GOOD].consumed, 0.0);
             assert_eq!(test_pop.property[&USED_GOOD].used, 0.0);
+        }
+    }
+
+    mod extract_special_resources_should {
+        use super::*;
+        use crate::game::{
+            config::player_resource_constants as k,
+            effects::DemographicEffect,
+            species::Species,
+        };
+
+        fn extract_factuals() -> Factuals {
+            Factuals::new().with_species(Species::new(0, "Human"))
+        }
+
+        fn one_common(pop: &mut Pop) {
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                1.0,
+            ));
+        }
+
+        #[test]
+        fn empty_desires_yield_no_living_well_culture_or_legitimacy() {
+            let mut pop = make_pop();
+            pop.records.tier_sat = [1.0, 1.0, 1.0];
+            let bag = pop.extract_special_resources(&extract_factuals());
+            assert_eq!(bag.culture, 0.0);
+            assert_eq!(bag.legitimacy, 0.0);
+        }
+
+        #[test]
+        fn common_culture_uses_uncapped_tier_sat_times_people() {
+            let mut pop = make_pop();
+            one_common(&mut pop);
+            pop.desires[1].push(make_desire(
+                1,
+                DesireTarget::new(201, DesireTargetType::Consume, 1.0),
+                1.0,
+            ));
+            pop.records.tier_sat = [0.0, 2.4, 0.0];
+            let people = pop.demographics.total_population();
+            let bag = pop.extract_special_resources(&extract_factuals());
+            let expected = 2.4 * k::COMMON_CULTURE_RATE * people;
+            assert!((bag.culture - expected).abs() < 1e-12);
+        }
+
+        #[test]
+        fn luxury_culture_is_uncapped() {
+            let mut pop = make_pop();
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                1.0,
+            ));
+            pop.records.tier_sat = [0.0, 0.0, 5.0];
+            let people = pop.demographics.total_population();
+            let bag = pop.extract_special_resources(&extract_factuals());
+            let expected = 5.0 * k::LUXURY_CULTURE_RATE * people;
+            assert!((bag.culture - expected).abs() < 1e-12);
+        }
+
+        #[test]
+        fn low_sol_does_not_produce_negative_sat_legitimacy() {
+            let mut pop = make_pop();
+            one_common(&mut pop);
+            pop.records.tier_sat = [0.0, 0.0, 0.0];
+            pop.records.trend = 0.0;
+            let bag = pop.extract_special_resources(&extract_factuals());
+            assert!(
+                bag.legitimacy >= 0.0,
+                "low SOL sat term should not go negative, got {}",
+                bag.legitimacy
+            );
+        }
+
+        #[test]
+        fn oversat_raises_uncapped_legitimacy_average() {
+            let mut pop = make_pop();
+            one_common(&mut pop);
+            pop.records.tier_sat = [0.0, 2.0, 0.0];
+            pop.records.trend = 0.0;
+            let people = pop.demographics.total_population();
+            let n = 1.0;
+            let potential = k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * n;
+            let expected = potential * 2.0 * people;
+            let bag = pop.extract_special_resources(&extract_factuals());
+            assert!((bag.legitimacy - expected).abs() < 1e-12);
+        }
+
+        #[test]
+        fn extra_desires_raise_legitimacy_potential() {
+            let mut one = make_pop();
+            one_common(&mut one);
+            one.records.tier_sat = [0.0, 1.0, 0.0];
+            one.records.trend = 0.0;
+
+            let mut three = make_pop();
+            for id in 0..3 {
+                three.desires[1].push(make_desire(
+                    id,
+                    DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                    1.0,
+                ));
+            }
+            three.records.tier_sat = [0.0, 3.0, 0.0];
+            three.records.trend = 0.0;
+
+            let a = one.extract_special_resources(&extract_factuals());
+            let b = three.extract_special_resources(&extract_factuals());
+            assert!(b.legitimacy > a.legitimacy);
+        }
+
+        #[test]
+        fn anger_reduces_legitimacy() {
+            let mut calm = make_pop();
+            one_common(&mut calm);
+            calm.records.tier_sat = [0.0, 1.0, 0.0];
+            calm.records.trend = 0.0;
+
+            let mut angry = make_pop();
+            one_common(&mut angry);
+            angry.records.tier_sat = [0.0, 1.0, 0.0];
+            angry.records.trend = 0.0;
+            angry.sentiment = Sentiment::from_parts(0.0, 0.0, 1.0, 0.0, 0.0);
+
+            let a = calm.extract_special_resources(&extract_factuals());
+            let b = angry.extract_special_resources(&extract_factuals());
+            assert!(b.legitimacy < a.legitimacy);
+        }
+
+        #[test]
+        fn falling_trend_reduces_legitimacy() {
+            let mut stable = make_pop();
+            one_common(&mut stable);
+            stable.records.tier_sat = [0.0, 1.0, 0.0];
+            stable.records.trend = 0.0;
+
+            let mut falling = make_pop();
+            one_common(&mut falling);
+            falling.records.tier_sat = [0.0, 1.0, 0.0];
+            falling.records.trend = -1.0;
+
+            let a = stable.extract_special_resources(&extract_factuals());
+            let b = falling.extract_special_resources(&extract_factuals());
+            assert!(b.legitimacy < a.legitimacy);
+        }
+
+        #[test]
+        fn larger_pop_yields_linearly_more_culture() {
+            let mut small = make_pop();
+            one_common(&mut small);
+            small.records.tier_sat = [0.0, 1.0, 0.0];
+            small.records.trend = 0.0;
+
+            let mut big = make_pop();
+            big.demographics.household.count = 20.0;
+            one_common(&mut big);
+            big.records.tier_sat = [0.0, 1.0, 0.0];
+            big.records.trend = 0.0;
+
+            let a = small.extract_special_resources(&extract_factuals());
+            let b = big.extract_special_resources(&extract_factuals());
+            assert!((b.culture / a.culture - 2.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn desire_culture_effect_uses_sat_without_extra_pop_scale() {
+            let mut pop = make_pop();
+            pop.records.tier_sat = [0.0, 0.0, 0.0];
+            pop.records.trend = 0.0;
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 20.0; // 2.0 luxury sat
+            desire.effect.push(DesireEffect::Culture(4.0, true));
+            pop.desires[2].push(desire);
+            let bag = pop.extract_special_resources(&extract_factuals());
+            // Living-well luxury culture is 0 (tier_sat[2] = 0). Effect: 4.0 * 2.0 sat.
+            assert!((bag.culture - 8.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn desire_malus_does_not_invert_on_luxury_oversat() {
+            let mut pop = make_pop();
+            pop.records.tier_sat = [0.0, 0.0, 0.0];
+            pop.records.trend = 0.0;
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            desire.satisfaction = 20.0;
+            desire.effect.push(DesireEffect::Legitimacy(3.0, false));
+            pop.desires[2].push(desire);
+            let bag = pop.extract_special_resources(&extract_factuals());
+            // Malus lack floors at 0 when sat >= 1. Living-well legitimacy is 0 avg.
+            assert_eq!(bag.legitimacy, 0.0);
+        }
+
+        #[test]
+        fn drains_stored_player_resources_and_keeps_bonus_goods() {
+            let mut pop = make_pop();
+            pop.records.tier_sat = [0.0, 0.0, 0.0];
+            pop.stored_effects.push(PopEffect::Culture(2.5));
+            pop.stored_effects.push(PopEffect::Research(1.25));
+            pop.stored_effects.push(PopEffect::BonusGood {
+                good: 300,
+                amount: 9.0,
+            });
+            let bag = pop.extract_special_resources(&extract_factuals());
+            assert!((bag.culture - 2.5).abs() < 1e-12);
+            assert!((bag.research - 1.25).abs() < 1e-12);
+            assert_eq!(pop.stored_effects.len(), 1);
+            assert!(matches!(
+                pop.stored_effects[0],
+                PopEffect::BonusGood {
+                    good: 300,
+                    amount: 9.0
+                }
+            ));
+        }
+
+        #[test]
+        fn passive_species_culture_rate_scales_with_households() {
+            let mut species = Species::new(0, "Human");
+            species
+                .species_effects
+                .push(DemographicEffect::CultureRate(0.5));
+            let factuals = Factuals::new().with_species(species);
+            let mut pop = make_pop();
+            pop.records.tier_sat = [0.0, 0.0, 0.0];
+            let bag = pop.extract_special_resources(&factuals);
+            assert!((bag.culture - 0.5 * pop.demographics.household.count).abs() < 1e-12);
         }
     }
 }
