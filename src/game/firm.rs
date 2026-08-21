@@ -369,7 +369,9 @@ pub struct FirmPRow {
 
 #[cfg(test)]
 mod firm {
-    use crate::game::factuals::Factuals;
+    use bevy::utils::default;
+
+use crate::game::factuals::Factuals;
     use crate::game::good::Good; // if you need Good defs
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};

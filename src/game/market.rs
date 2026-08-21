@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use bevy::utils::default;
+
 use crate::game::{actors::Actors, factuals::Factuals};
 
 /// # Market
@@ -142,11 +144,28 @@ impl MarketHistory {
 /// firm for production purposes. It does not currently distinguish between the two.
 #[derive(Debug, Clone)]
 pub struct MarketGood {
+    // Valuation data. Key features of exchange data.
     /// The current Abstract Market Value, an estimation of it's market value.
     pub amv: f64,
+    /// The current salability of the good. Must be bound between [0.0 and 1.0].
+    /// 
+    /// Low Salability means it's hard to sell and generally illiquid.
+    /// High Salability means its easy to sell, generally liquid.
+    /// 
+    /// Salability factors:
+    /// - Salability is pushed up or down relative to the history of being accepted or 
+    /// rejected.
+    /// - The total Volume Moved and Velocity of trades of the good. 
+    /// - External effects (Culture, Institutions, State action, etc)
+    /// - Safety of Value (how often does it lose value and how much does it lose).
+    /// 
+    /// Possible Additional Factors:
+    /// - Price Impact, 
+    pub salability: f64,
 
-    // placeholder for AMV records.
+    // placeholder for AMV Historical records.
 
+    // Physical data. End-of-Day-Stock = Stock + imported + production - Consumption.
     /// How many were made today.
     pub production: f64,
     /// How many were consumed today.
@@ -155,23 +174,65 @@ pub struct MarketGood {
     pub imported: f64,
     /// How many of this good already existed in the market from yesterday.
     pub stock: f64,
-    
-    /* placeholder for exchange data. This data should include both how many times 
-    it was exchanged, and how many were exchanged overall and at what 'concrete' prices 
-    they were exchanged for.*/
+
+    // Market Data. What was actually shown to the market fully.
+    /// How many units of the good were offered in sale. The Sum of all Sell and Offer 
+    /// orders.
+    pub supply: f64,
+    /// How many unique sellers there were.
+    pub suppliers: f64,
+    /// How many units of the good were requested in sale. The Sum of all Buy and 
+    /// Request orders.
+    pub demand: f64,
+    /// How many unique buyers their were.
+    pub buyers: f64,
+    /// How many units changed hands (were bought and sold) today.
+    /// Does **NOT** include imports and exports, only local movement.
+    /// Total Volume = volume + |imported|
+    /// Volume = Purchased + Sold
+    pub volume: f64,
+
+    // Deal Records. When Buyer and Seller are matched, what happened.
+    /// How many units of the good were sought out in all deals.
+    pub requests: f64,
+    /// How many requested goods were successfully purchased.
+    pub purchased: f64,
+    /// How many units of the good were offered as payment in all deals.
+    pub tender: f64,
+    /// How many units of the good were actually accepted as payment in all deals.
+    pub payment: f64,
+    /// The average price the good traded for.
+    /// Average Price = (average_price * purchased + deal's price * deals purchase amount) 
+    ///     / (purchased + deals purchase amount).
+    /// Alternatively may be updated at days end instead.
+    pub average_price: f64,
 }
 
 impl MarketGood {
     /// # Default
     /// 
-    /// Gets the default market good, AMV defaults to 1.0.
+    /// Gets the default market good, AMV defaults to 1.0,
+    /// average price defaults to 1.0, and salability defaults to 0.6.
+    /// 
+    /// All others default to 0.0.
     pub fn default() -> Self {
         Self {
             amv: 1.0,
+            salability: 0.6,
+            average_price: 1.0,
             production: 0.0,
             consumption: 0.0,
             imported: 0.0,
             stock: 0.0,
+            supply: 0.0,
+            suppliers: 0.0,
+            demand: 0.0,
+            buyers: 0.0,
+            volume: 0.0,
+            requests: 0.0,
+            purchased: 0.0,
+            tender: 0.0,
+            payment: 0.0,
         }
     }
 }
