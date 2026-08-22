@@ -1,10 +1,10 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Handoff date:** 2026-08-18  
+**Handoff date:** 2026-08-22  
 **Purpose:** Catch a new agent/session up on recent work and direction. Prefer this plus `AGENTS.md`, `STYLE.md`, `TODO.md`, `reviewlog.md`, and `docs/design-vocabulary.md` over inventing process from scratch.
 
-**Build (as of this wrap-up):** `cargo test --lib` green (**169** tests) after closing the 2026-08-18 review-log items and thinning growth-factor NaN fallbacks to `debug_assert`.
+**Build (as of this wrap-up):** `cargo test --lib` green (**217** tests).
 
 ```bash
 cargo check --lib
@@ -28,8 +28,8 @@ In-repo navigation:
 |------|------|
 | `AGENTS.md` | Rules, vault paths, code map, build |
 | `STYLE.md` | Builders, tests `*_should`, f64, docs tone |
-| `docs/design-vocabulary.md` | **Canonical names** (tier sat, desire sat, consume need, …) |
-| `docs/proposals/` | Focused design notes (household, institutions) |
+| `docs/design-vocabulary.md` | **Canonical names** (tier sat, desire sat, consume need, **order priority**, …) |
+| `docs/proposals/` | Focused design notes (household, institutions, **market-order-priority**) |
 | `TODO.md` | Working turn-pipeline checklist |
 | `reviewlog.md` | Open review debt only |
 
@@ -39,69 +39,88 @@ In-repo navigation:
 
 ## 2. Big picture direction
 
-1. **Pop day logic first** — desires, consume, growth, sentiment, record keeping, decay — implemented largely on `Pop`, then wired into `PlayState::advance_turn` as phases mature.
+1. **Pop day logic** — desires, consume, growth, sentiment, record keeping, decay — implemented largely on `Pop`, wired into `PlayState::advance_turn` as phases mature.
 2. **Factuals vs game state** — definitions (goods, species, culture, religion, processes) vs live map/markets/actors/prices.
-3. **Turn shell** — `advance_turn` lists many phases; several are orchestrator-wired with stub leaves; **intramarket day is the next real system**.
+3. **Turn shell** — `advance_turn` lists many phases; several are orchestrator-wired with stub leaves. **Intramarket day is the active system:** order priority and matching exist; deals / settlement / PlayState wiring do not.
 4. **Household** — averages + count evolved by `DemographicRates`. Rates are **not** stored on each pop; resolve via factuals when growth needs them. Do not reopen that model.
 5. **Scale expectation** — potentially thousands to millions of pops (split by demographics and job). Prefer designs that scale with **unique demographic combos**, not full cartesian precompute.
 
 ---
 
-## 3. What is true now (2026-08-18)
+## 3. What is true now (2026-08-22)
 
-### Pop economic day (closed through record keeping)
+### MarketGood
 
-`Pop::record_keeping` is implemented and tested (`mod record_keeping_should`). End-of-day snapshot **then** rewrite of next-day shop/save targets. Does **not** clean dead pops, does **not** call `update_sentiments`, does **not** decay.
+`MarketGood` has a real `Default` (AMV `1.0`, salability `0.6`, average price `1.0`, rest `0`) plus `new()` / `with_*` / `set_*`.
 
-**Snapshot (using still-current `shop_target`):**
+Setter invariants (`src/game/market.rs`, tunables in `config::market_constants`):
 
-- Census: `pop_size`, `labor`, `pop_history`
-- Balance: leftover `liquid_wealth`, `saved_amv`, `consumption_amv` (`consumed + used`), `shop_fill`
-- `shop_fill` reconstructs post-shop stock as `qty + consumed + used`; extra of one good does not cover a miss on another; empty wants -> `1.0`
-- Leaves alone: `tier_sat`, SOL / `wealth_amv`, `income_amv`, `net_migration`, `previous_growth`
+- **AMV / average_price:** never `0`. Values with `|x| < AMV_MIN_ABS` (`0.00001`) bounce past 0 from the previous sign (positive -> slightly negative, and vice versa).
+- **Salability:** clamp to `0.0..=1.0`.
+- **Non-negative** (`debug_assert`): production, consumption, stock, supply, suppliers, demand, buyers, volume, requests, purchased, tender, payment.
+- **Imported** may be negative (exports).
 
-**`update_planning`** (not "knobs"): lerps `risk_appetite`, `savings_ratio`, `time_preference` at `PLANNING_LERP_RATE` (0.15).
+Fields are still `pub`; day logic should go through setters. `Market::history()` still snapshots **AMV only**; salability on `MarketGood` is not copied into `MarketHistory` yet (readers still default missing salability to `1.0`).
 
-- Risk mood is **weighted**: hope > happiness raising appetite; fear > anger lowering it. Contentment also lowers risk appetite. Falling SOL raises savings. Unmet basic raises savings (configurable). Caps: savings `0..=5` days, time preference `0..=1`.
-- Constants live in `src/game/config.rs` → `pop_constants`.
+### Order priority
 
-**Shop / save rewrite (record keeping owns tomorrow's plan):**
+Full note: `docs/proposals/market-order-priority.md`. Vocabulary: **order priority**.
 
-- **Consume need** = `max(unsatisfied target units, consumed + used)`.
-- Consume need and `desire_needs` are written already scaled by `planning_growth_factor()` (post-growth, pre-migration: `(count - net_migration) / (that - previous_growth)`).
-- `shop_target` (tradeable) = scaled consume need + `save_target`. Untradeable: shop/save stay `0`; `desire_needs` still recorded (also scaled).
-- **Morning `update_desires` does not multiply shop/save.** It still resyncs desire amounts from demographics. A mid-day definition change that shifts demand scale is allowed to roll in at the next rewrite (gentle first-day miss is accepted).
-- Unsatisfied units: `(amount - satisfaction).max(0)` added onto **every** target (`sat / efficiency`). Does **not** walk a full extra level.
-- **Savings ratio** = days of the cheapest **tradeable** basic+common cover (skip untradeable, respect `cap`). Shared helper: `cheapest_tradeable_cover`. Fear parking uses that same basket (substitutes do not each claim a full desire).
-- The save pile **inflates** with household growth and **does not shrink** on decline.
-- Fear scales **substitutability**: calm may hold the pile as highly salable AMV; afraid parks more of it on the actual basket goods.
+`MarketOrder.priority` is used **two ways**:
 
-`planning_growth_factor` divides and `debug_assert`s a finite positive result. Do **not** add runtime `is_finite` fallbacks around it. `savings_growth_buffer` still has `growth_f <= 1.0 -> 1.0`; that is the no-shrink rule, not a NaN guard.
+| Side | Meaning | Direction |
+|------|---------|-----------|
+| Buy / request | FCFS sort key | **Lower goes first.** RNG only among equal values. |
+| Sell / offer | Selection **weight** | **Higher is more likely.** |
 
-### `create_orders`
+Buy-side bands (pops `[4, 5)`, firms `[2, 3)`) are `debug_assert`ed only on **buys**. Sells only need `priority > 0`. `assert_priority_for_origin` is `cfg(debug_assertions)` (release stub).
 
-1. Desire-order planned shop shortfalls (`shop_target - quantity`).
-2. Remaining planned shop shortfalls that are not desire targets (parked savings / gold).
-3. One opportunistic extra pass over desire goods that were not in the plan.
+Buy-side named slots live in `config::market_priority` (`StateMarketSlot`, `MarketSlot::priority` for institutions `1` / `3` / `5`). There is **no** state-among-pops slot. State firm inserts sit at `band_end - STATE_FIRM_SLOT_MARGIN` (`2.49`, `2.99`). Firm rank helpers lerp toward those slots and never reach them.
 
-Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/extra buys. There is no infinite luxury shopping loop; luxury looping is only in `consume`.
+Wealth rank for pop buys: **per household**, **total AMV** (`wealth_amv / household count`), not liquid. `unit_rank = 1 - wealth / max_wealth` (richest -> `0` -> band start). `wealth_unit_rank` / `pop_priority_from_wealth` exist; the **market** must stamp `[4, 5)` when it receives orders. `Pop::create_orders` still writes `POP_START` (`4.0`) as an unranked placeholder. Offers are not generated yet.
 
-### Consume / reserved
+Sell-side compose (stamp on create, then mutate after fills):
 
-`satisfy_one_desire` floors `reserved` at 0. `PopPRow::saved()` treats negative reserved as 0 (`quantity - reserved.max(0)`). Reserved must never go negative. Extra luxury consume may still empty leftover stock; that is allowed. Pacing extra luxury passes is **deferred** (`TODO.md`).
+```text
+compose_sell_priority(actor_band, supply, successful_sells)
+  = 1 / max(actor_band, SELL_ACTOR_PRIORITY_FLOOR)
+    + sqrt(supply)
+    + SELL_SUCCESS_BONUS * fills
+```
+
+Floor is `0.01` (so `STATE_FIRST` `0.0` is defined). Success bonus is `0.25`, added with `MarketOrder::add_sell_success_bonus` after a fill (flat, not recomputed as a product). Marketing adds later.
+
+### Matching (`Market::match_orders`)
+
+One pass, **does not mutate** the books. Caller owns remove / restamp / reinsert.
+
+- `buys` sorted by buy priority (lowest first). `sells` sorted by target good id.
+- Only the **front** buy-priority group is considered (shuffled). Later groups wait for the next call so they cannot jump the queue.
+- At most **one** `matched` pair (weighted sell of that good). Coincidence: if both orders have `Some` counter-offer and the goods match, that sell's weight is doubled **for this pick only** (`SELL_COINCIDENCE_WEIGHT = 2.0`). Request/offer with no counters do not get it.
+- Self-trade skipped. No other-origin seller of that good -> `unmatched_buys` (may be **several** in the front group). Caller restamps/drops those while the one deal runs.
+- Matchable leftovers in the same group stay in the book (not failed).
+- Empty buy book -> empty batch (`is_empty()`).
+- RNG: `rand` `0.9`, `&mut impl Rng`.
+
+Return: `OrderMatchBatch { matched: Option<OrderMatch>, unmatched_buys: Vec<usize> }`.
+
+**Not built:** deal execution, inventory transfer, AMV drift, `MarketGood` volume/purchased/tender updates, `next_shopping_trip`, PlayState intramarket phase, CLI play shell.
+
+### Pop economic day (still closed through record keeping)
+
+Unchanged from 2026-08-18 in substance. `Pop::record_keeping` snapshots then rewrites next-day shop/save. Morning `update_desires` does **not** multiply shop/save. Consume need, days-of-buffer savings, reserved never negative, `create_orders` three passes (desire shop, parked non-desire shop, opportunistic extra). `extract_special_resources` first pass exists; playstate harvests but does **not** route yield into the owning state's pool.
 
 ### Turn wiring
 
-- `phase_player_bonuses_and_demographic_updates` is wired: institutions `apply_passive_effects`, firms `apply_passive_bonuses` (stub body), pops `update_desires`.
-- `phase_update_sentiments` runs **after growth, before migration**.
-- `PlayState.market_lookups` (`MarketLookups`): one `MarketHistory` per market plus `pop_id -> market_id`. Rebuilt at sentiments and again at record keeping (membership may change once migration writes). Pops not in any market get an empty history.
-- Salability is not on `MarketGood` yet (readers default missing to `1.0`).
-- Histories are snapshotted **before** the record-keeping rayon scope so pops do not fight market mutation.
+- `phase_intra_market_day` is still `todo!()`. Matcher is a lib function, not wired.
+- Sentiments after growth, before migration; `MarketLookups` rebuilt at sentiments and record keeping.
+- `extract_special_resources` phase is wired (yield discarded).
 
 ### Language
 
-- Do **not** use **knob** / **lever** in code, comments, or design talk except player-facing UI. Prefer **planning variable**, **tunable**, **constant**.
+- Do **not** use **knob** / **lever** except player-facing UI. Prefer **planning variable**, **tunable**, **constant**.
 - Prefer **consume need** over consume-half.
+- **Order priority** vs **desire priority** — never say bare "priority" in design talk.
 
 ---
 
@@ -120,6 +139,9 @@ Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/ex
 | **Consume need** | Live-use restock, then + save. Not "consume-half" |
 | **Reserved** | Never negative. Extra luxury consume eats unreserved stock |
 | **NaN / inf** | `debug_assert` if it must never happen. Do not sprinkle runtime `is_finite` fallbacks on the hot path |
+| **Buy order priority** | Lower number first. RNG among ties only. |
+| **Sell order priority** | Higher number = more weight. Compose then flat-add; do not invert at match time. |
+| **Matching** | One success per pass, front group only. Multiple hopeless buys OK. Do not batch several deals. |
 | **Vocabulary** | Prefer `docs/design-vocabulary.md` over chat shorthand |
 | **Comments** | ASCII only; **add, do not edit or replace** existing comments unless asked |
 | **Knob** | Player-facing only |
@@ -130,7 +152,10 @@ Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/ex
 
 ### Natural next system
 
-- **Intramarket day** — pops can `create_orders`; matching / trading / wages / AMV updates are not built. `next_shopping_trip` is still `todo!()`. This is the next closed economic loop.
+- **Deal / settlement** — matcher returns indices only. Next closed loop: move goods between actors, apply AMV/salability rules, update `MarketGood` deal stats, `add_sell_success_bonus`, shrink/remove orders, maybe restamp unmatched buys. Then a caller loop around `match_orders`.
+- **Stamp pop wealth ranks** when a market receives orders (`wealth_amv / household count` vs market max).
+- **Offer generation** — pops still only emit requests.
+- CLI / example driver to play a tiny matching+deal loop (user intent; no CLI exists; `main.rs` is the Bevy hex stub).
 
 ### Nearby leftovers (do not start unless asked)
 
@@ -140,11 +165,13 @@ Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/ex
 - `Pop::start_day` exists; day-start phase still stub (TODO: "Completed not Connected")
 - Migration orchestrator exists; leaves are `todo!()` (wants live sentiment + liquid wealth)
 - Class demographics unimplemented (vault: park this)
-- MarketGood has no salability field yet
+- `Market::history()` does not copy `MarketGood.salability`
 - `income_amv` is not zeroed at day start (harmless until market pays)
+- Player-resource yield not routed onto `State.resources`
 - Optional later: day-fill rate cache if `get_demographic_rates` shows up at huge pop counts
 - Optional later: `Pop.market_id` (update on migrate) instead of rebuilding `pop_to_market`
 - Optional later: pace luxury consume so one desire does not empty leftover stock (see `TODO.md`)
+- Optional later: marketing add on sell weight; recompute `sqrt(supply)` after partial fill; merchant vs producer firm flag; subordinated-firm priority; state purchase buckets
 
 ### Comments still stale (fix only if the user asks)
 
@@ -154,11 +181,13 @@ Pass 2 is part of the shop **plan**, so it runs before leftover-budget luxury/ex
 - Original short `record_keeping` docblock was left as-is
 - Playstate / firm / institution docs may still mention `Pop::demographic_update`
 - `TODO.md` household-helper bullet lags the landed rates model
+- `Market::history` rustdoc still says salability is not on `MarketGood`
 - Vault `Pops.md` household section still has a REWORK banner; morning step 3.5 still says resize shopping targets (record keeping owns that now)
+- `compose_sell_priority` formula comments in the proposal may lag live `SELL_*` constants — prefer the constants
 
 ### Review log
 
-Open review debt is empty. 2026-08-18 items are closed in `reviewlog.md` (owner A, reserved floor, cheapest cover, MarketLookups, `create_orders` planned-shop pass). Luxury leveling and `Pop.market_id` are deferred.
+Open review debt is empty. Last close-out was 2026-08-18. This market slice has not had a `/review` pass.
 
 ---
 
@@ -168,7 +197,12 @@ Open review debt is empty. 2026-08-18 items are closed in `reviewlog.md` (owner 
 |---------|----------|
 | Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets`, `planning_growth_factor` |
 | Cheapest tradeable basket | `src/game/pop.rs` → `cheapest_tradeable_cover` |
-| Orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |
+| Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |
+| Order type + buy/sell priority helpers | `src/game/marketorder.rs` |
+| Matching | `src/game/market.rs` → `Market::match_orders`, `OrderMatchBatch` |
+| MarketGood setters / AMV bounce | `src/game/market.rs` → `MarketGood` |
+| Order-priority tunables | `src/game/config.rs` → `market_priority`, `market_constants` |
+| Priority design (deferred too) | `docs/proposals/market-order-priority.md` |
 | Pop records / property rows | `src/game/pop_property.rs` |
 | Planning tunables | `src/game/config.rs` → `pop_constants` |
 | Market price snapshot | `src/game/market.rs` → `Market::history`, `MarketLookups` |
@@ -183,14 +217,14 @@ Open review debt is empty. 2026-08-18 items are closed in `reviewlog.md` (owner 
 
 ## 7. Suggested first steps for a new agent
 
-1. Read `AGENTS.md` + this handoff + `docs/design-vocabulary.md`.
+1. Read `AGENTS.md` + this handoff + `docs/design-vocabulary.md` + `docs/proposals/market-order-priority.md`.
 2. `cargo test --lib`.
-3. Skim `TODO.md` for turn-phase priority. Next system is **intramarket day**, not a third household model and not class/graphics.
+3. Next closed loop is **deal/settlement** around `match_orders`, not a third household model and not class/graphics. A tiny CLI/example can wait until a deal function exists.
 4. Match `STYLE.md` on any edits; update `reviewlog.md` when doing reviews.
-5. Prefer vault **EconCiv** notes for design intent when code and notes disagree — **call out conflicts** rather than silent invention.
+5. Prefer vault **EconCiv** notes for design intent when code and notes disagree — **call out conflicts** rather than silent invention. Vault `Turns.md` sequential shopping walk vs collect-and-match: **match** is the live model.
 
 ---
 
 ## 8. One-line status
 
-**Pop economic day is closed through record keeping: next-day shop/save written there (not re-scaled in the morning), cheapest tradeable cover, reserved never negative, MarketLookups for evening phases. Review log is empty. Intramarket day is the open frontier.**
+**Pop economic day is closed through record keeping. Market orders have dual-use priority; `Market::match_orders` returns one front-group deal plus any hopeless buys. No settlement, no intramarket PlayState wire, no CLI. Next: execute a deal from a match.**

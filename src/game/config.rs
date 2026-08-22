@@ -133,3 +133,78 @@ pub mod player_resource_constants {
     /// Falling SOL trend coefficient (people hate the fall more than they praise a rise).
     pub const TREND_LEGITIMACY_FALL: f64 = 0.05;
 }
+
+/// Market valuation and trade tunables.
+pub mod market_constants {
+    /// Smallest allowed |AMV| and |average_price|.
+    ///
+    /// Zero is never stored. A setter that would land inside `(-AMV_MIN_ABS,
+    /// AMV_MIN_ABS)` bounces that far past 0 from the previous sign
+    /// (positive -> slightly negative, negative -> slightly positive).
+    pub const AMV_MIN_ABS: f64 = 0.00001;
+}
+
+/// Named intramarket order-priority slots.
+///
+/// Lower values go first. Bands are half-open `[start, end)`. Equal values are
+/// later broken at random by the matcher. See
+/// `docs/proposals/market-order-priority.md`.
+pub mod market_priority {
+    /// Institution slot before all firms.
+    pub const INSTITUTION_BEFORE_FIRMS: f64 = 1.0;
+    /// Institution slot after both firm bands and before pops.
+    pub const INSTITUTION_BETWEEN_FIRMS_AND_POPS: f64 = 3.0;
+    /// Institution slot after the pop band.
+    pub const INSTITUTION_AFTER_POPS: f64 = 5.0;
+
+    /// Merchant / trader firm band start (inclusive).
+    pub const FIRM_MERCHANT_START: f64 = 2.0;
+    /// Merchant / trader firm band end (exclusive).
+    pub const FIRM_MERCHANT_END: f64 = 2.5;
+    /// Producer firm band start (inclusive).
+    pub const FIRM_PRODUCER_START: f64 = 2.5;
+    /// Producer firm band end (exclusive).
+    pub const FIRM_PRODUCER_END: f64 = 3.0;
+
+    /// Default merchant priority when the firm is not wealth-ranked.
+    pub const FIRM_MERCHANT: f64 = FIRM_MERCHANT_START;
+    /// Default producer priority when the firm is not wealth-ranked.
+    pub const FIRM_PRODUCER: f64 = FIRM_PRODUCER_START;
+
+    /// How far before a firm-band exclusive end the matching state slot sits.
+    /// Ranked firms lerp toward this value and never reach it.
+    pub const STATE_FIRM_SLOT_MARGIN: f64 = 0.01;
+
+    /// Pop band start (inclusive). Unranked pop orders sit here until the
+    /// market stamps a wealth rank.
+    pub const POP_START: f64 = 4.0;
+    /// Pop band end (exclusive).
+    pub const POP_END: f64 = 5.0;
+
+    /// State / player: before everyone.
+    pub const STATE_FIRST: f64 = 0.0;
+    /// State / player: after institution-before-firms, before merchants.
+    pub const STATE_BEFORE_FIRMS: f64 = 1.5;
+    /// State / player: after ranked merchants (`FIRM_MERCHANT_END - margin`).
+    pub const STATE_AFTER_MERCHANTS: f64 = FIRM_MERCHANT_END - STATE_FIRM_SLOT_MARGIN;
+    /// State / player: after ranked producers (`FIRM_PRODUCER_END - margin`).
+    pub const STATE_AFTER_PRODUCERS: f64 = FIRM_PRODUCER_END - STATE_FIRM_SLOT_MARGIN;
+    /// State / player: after institution-between, before pops.
+    pub const STATE_AFTER_FIRMS: f64 = 3.1;
+    /// State / player: after institution-after-pops.
+    pub const STATE_LAST: f64 = 5.1;
+
+    /// Floor on actor-band priority when composing sell weight as `1 / p`.
+    /// [`STATE_FIRST`] is `0.0`; without a floor that term is undefined.
+    /// `1 / 0.5 = 2`, matching "priority 0.5 -> 2x weight" as the cap for
+    /// the earliest slots.
+    pub const SELL_ACTOR_PRIORITY_FLOOR: f64 = 0.01;
+
+    /// Flat add to a sell order's priority after each successful fill.
+    /// Small so repeat sales do not explode into a rich-get-richer spiral.
+    pub const SELL_SUCCESS_BONUS: f64 = 0.25;
+
+    /// This-pick-only multiplier when buy and sell name the same counter-offer
+    /// good. Does not change stored priority. Both sides must be `Some`.
+    pub const SELL_COINCIDENCE_WEIGHT: f64 = 2.0;
+}

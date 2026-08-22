@@ -361,6 +361,14 @@ passive culture/research).
 
 **Meaning:** A state is the required aspects of a player, existing even when operated by a human player. State and Player should be treated as mostly synonymous. A State is the mechanisms of control and management, while the Player is the controller and decision making of the state.
 
+### Order priority
+**Preferred:** order priority, market priority  
+**Avoid:** priority alone (conflicts with **desire priority**), purchase order (ambiguous with `MarketOrder`)
+
+**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SELL_SUCCESS_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
+**Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
+**Deferred detail:** `docs/proposals/market-order-priority.md`
+
 ### Player resources
 **Preferred:** player resources  
 **Avoid:** special resources (except the pop method name), state resources (faith/culture routing is the caller's job)
@@ -379,6 +387,7 @@ passive culture/research).
 | satisfaction rate | **desire sat** or **satisfaction units** (pick one) |
 | mood (for the struct) | **sentiment** |
 | level (for desire tier) | **tier** (basic/common/luxury) |
+| priority (alone) | **order priority** or **desire priority** (pick one) |
 
 ---
 
@@ -388,6 +397,7 @@ passive culture/research).
 |-----|------|
 | EconCiv vault (`Pops.md`, `Desires.md`, …) | Long-form design intent |
 | `docs/proposals/institution-draft.md` | Institutions v0 |
+| `docs/proposals/market-order-priority.md` | Order priority numbers vs deferred ranking / matching |
 | `STYLE.md` | Code style |
 | `AGENTS.md` | Agent rules + vault paths |
 | `TODO.md` | Working focus list |

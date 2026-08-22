@@ -369,9 +369,7 @@ pub struct FirmPRow {
 
 #[cfg(test)]
 mod firm {
-    use bevy::utils::default;
-
-use crate::game::factuals::Factuals;
+    use crate::game::factuals::Factuals;
     use crate::game::good::Good; // if you need Good defs
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
@@ -404,13 +402,7 @@ use crate::game::factuals::Factuals;
     fn make_market_with_amvs(amvs: &[(usize, f64)]) -> Market {
         let mut goods = HashMap::new();
         for &(id, amv) in amvs {
-            goods.insert(id, MarketGood {
-                amv,
-                production: 0.0,
-                consumption: 0.0,
-                imported: 0.0,
-                stock: 0.0,
-            });
+            goods.insert(id, MarketGood::new().with_amv(amv));
         }
         Market {
             id: 42,

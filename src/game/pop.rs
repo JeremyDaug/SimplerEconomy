@@ -3,7 +3,7 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::{player_resource_constants, pop_constants}, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::{market_priority, player_resource_constants, pop_constants}, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -392,7 +392,8 @@ impl Pop {
 
                     // create order for full amount
                     orders.push(MarketOrder::request_order(
-                        Actor::Pop(self.id), target.good, purchase_target));
+                        Actor::Pop(self.id), target.good, purchase_target,
+                        market_priority::POP_START));
                     remaining_budget -= cost;
                 }
             }
@@ -421,7 +422,8 @@ impl Pop {
                     break;
                 }
                 orders.push(MarketOrder::request_order(
-                    Actor::Pop(self.id), good_id, purchase));
+                    Actor::Pop(self.id), good_id, purchase,
+                    market_priority::POP_START));
                 remaining_budget -= purchase * price;
                 seen.insert(good_id);
             }
@@ -462,7 +464,8 @@ impl Pop {
 
                         // create order for full amount
                         orders.push(MarketOrder::request_order(
-                            Actor::Pop(self.id), target.good, purchase_target));
+                            Actor::Pop(self.id), target.good, purchase_target,
+                            market_priority::POP_START));
                         remaining_budget -= cost;
                     }
                 }
@@ -2049,7 +2052,7 @@ mod pop {
     }
 
     mod create_orders_should {
-        use crate::game::{factuals::Factuals, good::GoodTag, market::MarketHistory};
+        use crate::game::{config::market_priority, factuals::Factuals, good::GoodTag, market::MarketHistory};
 
         use super::*;
 
@@ -2069,6 +2072,7 @@ mod pop {
             assert_eq!(orders.len(), 1); 
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
+            assert_eq!(orders[0].priority, market_priority::POP_START);
         }
 
         #[test]

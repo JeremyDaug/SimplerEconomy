@@ -28,6 +28,10 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
       - [ ] Gather Institution/Firm Orders
       - [ ] Gather Pop Orders
       - [ ] Prioritize orders, match buyers and sellers, and get them trading.
+        - [x] Order priority field, named slots, sell-weight compose.
+        - [x] `Market::match_orders` (one success, multiple front-group failures).
+        - [ ] Deal / settlement (move goods, AMV, `MarketGood` stats, restamp).
+        - [ ] Stamp pop wealth ranks on receive; pop offer orders; PlayState wire.
       - [ ] Be sure to record general results of trades after they are complete.
   - [ ] Phase Intermarket Day
     - [ ] Recalculate travel routes between markets.

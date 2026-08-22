@@ -8,6 +8,7 @@ itertools = "0.14.0"
 ordered-float = "5.2.0"
 circular-buffer = "1.2.0"
 rayon = "1.10"
+rand = "0.9"
 # remove dynamic Linking for release.
 bevy = { version = "0.18.1", features = [
     "dynamic_linking",

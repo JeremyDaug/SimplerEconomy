@@ -82,6 +82,22 @@ pub enum MarketSlot {
     Custom(u8),
 }
 
+impl MarketSlot {
+    /// Numeric order priority for this slot. Lower goes first.
+    ///
+    /// [`MarketSlot::Custom`] has no mapping yet and uses the between-firms-and-pops
+    /// value as a placeholder.
+    pub fn priority(self) -> f64 {
+        use crate::game::config::market_priority as p;
+        match self {
+            Self::BeforeFirms => p::INSTITUTION_BEFORE_FIRMS,
+            Self::BetweenFirmsAndPops => p::INSTITUTION_BETWEEN_FIRMS_AND_POPS,
+            Self::AfterPops => p::INSTITUTION_AFTER_POPS,
+            Self::Custom(_) => p::INSTITUTION_BETWEEN_FIRMS_AND_POPS,
+        }
+    }
+}
+
 impl Institution {
     /// Creates an institution with the given id and name.
     ///
@@ -288,6 +304,21 @@ mod institution_tests {
     }
 
     #[test]
+    fn market_slots_map_to_named_priorities() {
+        use crate::game::config::market_priority as p;
+        assert_eq!(MarketSlot::BeforeFirms.priority(), p::INSTITUTION_BEFORE_FIRMS);
+        assert_eq!(
+            MarketSlot::BetweenFirmsAndPops.priority(),
+            p::INSTITUTION_BETWEEN_FIRMS_AND_POPS
+        );
+        assert_eq!(MarketSlot::AfterPops.priority(), p::INSTITUTION_AFTER_POPS);
+        assert_eq!(
+            MarketSlot::Custom(3).priority(),
+            p::INSTITUTION_BETWEEN_FIRMS_AND_POPS
+        );
+    }
+
+    #[test]
     fn new_defaults_and_fluent_builders() {
         let inst = Institution::new(1, "Admiralty")
             .with_owner(Some(10))
@@ -309,6 +340,10 @@ mod institution_tests {
         assert_eq!(inst.level, 2);
         assert_eq!(inst.loyalty, 0.75);
         assert_eq!(inst.market_slot, MarketSlot::BetweenFirmsAndPops);
+        assert_eq!(
+            inst.market_slot.priority(),
+            crate::game::config::market_priority::INSTITUTION_BETWEEN_FIRMS_AND_POPS
+        );
         assert_eq!(inst.effects.len(), 1);
         assert_eq!(inst.effects[0].scope(), EffectScope::OwnerRealm);
     }
