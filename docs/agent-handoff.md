@@ -49,6 +49,12 @@ In-repo navigation:
 
 ## 3. What is true now (2026-08-22)
 
+### FirmPRow / `run_production`
+
+`FirmPRow` is the per-good firm ledger: stock (`quantity`, `reserve`, `rolling_average`), planning (`purchase_target`, `sell_target`, `use_target`, `stock_target`, `reserve_target`), exchange (`average_cost`, `average_price`, `bought`/`bought_amv`, `sold`/`sold_amv`, `amv_target`), production (`used`, `consumed`, `produced`). `new()` / `Default` / `with_*`. Helpers: `available()`, `sellable()`, `bought_unit_amv()`, `sold_unit_amv()`.
+
+`Firm::run_production` stamps `produced` / `consumed` / `used` on those rows and returns `Vec<ProcessEffect>` (no `ProductionReport`). Destroyed and Consumed inputs both go to `consumed`; Consumed decay products go to `produced` on the result good; capital goes to `used` only; factors are untouched. Output `average_cost` blends this run's input AMV (split by each output's share of produced AMV). Used capital is **not** in that blend yet. Later: capital cost / maintenance / amortization so tools wear and are not indestructible; not v0. `reserve` is a stockpile guarantee: `sync_reserve` sets `min(quantity, reserve_target)` after quantity changes. `sellable` = `quantity - max(reserve, reserve_target)`. `decay_goods` returns `used` then decays on-hand stock. `clear_day_flows` zeros produced/consumed/bought/sold (and AMV totals) and is meant for day start so totals stay visible overnight. Production still not wired into the playstate phase.
+
 ### MarketGood
 
 `MarketGood` has a real `Default` (AMV `1.0`, salability `0.6`, average price `1.0`, rest `0`) plus `new()` / `with_*` / `set_*`.
@@ -188,6 +194,7 @@ Unchanged from 2026-08-18 in substance. `Pop::record_keeping` snapshots then rew
 - Optional later: `Pop.market_id` (update on migrate) instead of rebuilding `pop_to_market`
 - Optional later: pace luxury consume so one desire does not empty leftover stock (see `TODO.md`)
 - Optional later: marketing add on sell weight; recompute `sqrt(supply)` after partial fill; merchant vs producer firm flag; subordinated-firm priority; state purchase buckets
+- Optional later: capital cost / maintenance / amortization into output `average_cost` (used capital currently returns whole; tools should wear)
 
 ### Comments still stale (fix only if the user asks)
 
@@ -211,6 +218,7 @@ Open review debt is empty. Last close-out was 2026-08-18. This market slice has 
 
 | Concern | Location |
 |---------|----------|
+| Firm property + production flows | `src/game/firm.rs` → `FirmPRow`, `Firm::run_production`, `decay_goods`, `clear_day_flows` |
 | Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets`, `planning_growth_factor` |
 | Cheapest tradeable basket | `src/game/pop.rs` → `cheapest_tradeable_cover` |
 | Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |

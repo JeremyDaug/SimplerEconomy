@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
+use bevy::ui::State;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
 use crate::game::actor::Actor;
 use crate::game::config::{market_constants, market_priority};
+use crate::game::firm::Firm;
 use crate::game::marketorder::MarketOrder;
+use crate::game::pop::Pop;
 use crate::game::{actors::Actors, factuals::Factuals};
 
 /// One buy/sell pair from [`Market::match_orders`].
@@ -173,6 +176,23 @@ impl Market {
     pub fn sum_migratory_pressure(&mut self, actors: &Actors, factuals: &Factuals) {
         let _ = (self, actors, factuals);
         todo!("Market sum migratory pressure (positive / negative / net, migrant pool)")
+    }
+
+    /// # Run Market Day
+    /// 
+    /// Runs the market's day with 3 primary steps.
+    /// 
+    /// 1. Collect orders, go through each actor (Pop, Firm, Institution, State) and 
+    /// have them create their market orders for the day. Sorting into purchase and selling orders.
+    /// 2. Match Loop
+    ///   1. Find a match between buyers and sellers as well as unsuccessful buyers/sellers.
+    /// 3. 
+    pub fn run_market_day(&mut self, factuals: &Factuals, 
+        pops: &mut Vec<Pop>,
+        firms: &mut Vec<Firm>, 
+        // placeholder note possibly for later including institutions and states.
+    ) {
+        
     }
 
     /// # Match Orders

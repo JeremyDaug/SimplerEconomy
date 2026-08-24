@@ -71,4 +71,7 @@ impl Workforce {
 pub enum WorkforceContractType {
     /// Hourly wage, Pop is paid for unit
     Wage,
+    /// Paid in profits, the value attached being the percent of AMV profits they take
+    /// daily.
+    Owner(f64),
 }

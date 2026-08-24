@@ -7,6 +7,7 @@ use crate::game::{
     contract::Contract,
     factuals::Factuals,
     firmorganization::FirmOrganization,
+    good::GoodTag,
     market::Market,
     pop::Pop,
     process::ProcessEffect,
@@ -107,11 +108,72 @@ impl Firm {
         todo!("Firm record keeping")
     }
 
-    /// End-of-day good decay for this firm (stock, used capital, byproducts).
-    /// Only external input is factuals.
+    /// # Decay Goods
+    ///
+    /// End-of-day decay for this firm.
+    ///
+    /// 1. Return `used` capital to `quantity` and clear `used` so it can decay.
+    /// 2. Decay on-hand `quantity` by each good's `decay_rate` (skip Exposure while owned).
+    /// 3. Apply decay byproducts. Do not stamp them as `produced`.
+    /// 4. [`FirmPRow::sync_reserve`] after quantity changes.
+    ///
+    /// `consumed` on the row is a day-flow counter (goods already left `quantity`
+    /// during production, and Consumed-type byproducts were applied there). It is
+    /// not destroyed again here. Clear it with [`Firm::clear_day_flows`].
     pub fn decay_goods(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Firm decay goods")
+        let mut gains: HashMap<usize, f64> = HashMap::new();
+
+        for (&good_id, row) in self.property.iter_mut() {
+            if row.used != 0.0 {
+                row.quantity += row.used;
+                row.used = 0.0;
+            }
+
+            let good = factuals.find_good(good_id);
+            let exposure = good.tags.contains(&GoodTag::Exposure);
+            if !exposure && good.decay_rate > 0.0 && row.quantity > 0.0 {
+                let lost = row.quantity * good.decay_rate;
+                row.quantity -= lost;
+                debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
+                for (&byproduct, &ratio) in &good.decay_result {
+                    if ratio != 0.0 && lost != 0.0 {
+                        *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
+                    }
+                }
+            }
+
+            row.sync_reserve();
+        }
+
+        for (good_id, amount) in gains {
+            if amount == 0.0 {
+                continue;
+            }
+            let row = self.property.entry(good_id).or_insert_with(FirmPRow::new);
+            row.quantity += amount;
+            row.sync_reserve();
+        }
+    }
+
+    /// # Clear Day Flows
+    ///
+    /// Zero today's exchange and production counters on every property row:
+    /// `produced`, `consumed`, `bought`, `bought_amv`, `sold`, `sold_amv`.
+    ///
+    /// Leaves `used` alone (returned in [`Firm::decay_goods`]) and does not
+    /// touch cost basis, prices, or planning targets.
+    ///
+    /// Intended for day start so the previous day's totals stay visible overnight.
+    /// Safe to call from a later phase if we want that window longer.
+    pub fn clear_day_flows(&mut self) {
+        for row in self.property.values_mut() {
+            row.produced = 0.0;
+            row.consumed = 0.0;
+            row.bought = 0.0;
+            row.bought_amv = 0.0;
+            row.sold = 0.0;
+            row.sold_amv = 0.0;
+        }
     }
 
     /// Hiring / expansion pressure that pulls workers into this firm.
@@ -155,15 +217,27 @@ impl Firm {
     /// Side effects on the firm:
     /// - Applies all good changes (consumed inputs, produced outputs, decay results)
     ///   directly to `property` quantities. New output goods are auto-created.
+    /// - Stamps day-flows on each [`FirmPRow`]: `produced` for positive changes
+    ///   (outputs + decay results), `consumed` for destroyed/consumed inputs.
+    ///   Those two input types are not distinguished on the row; decay products of
+    ///   Consumed inputs show up as `produced` on their result goods.
     /// - Used capital goods are removed from `quantity` **and** recorded into the
-    ///   `used_capital` field on the corresponding `FirmPRow` (to be returned at 
-    ///   the end of the day).
+    ///   `used` field on the corresponding `FirmPRow` (to be returned at
+    ///   the end of the day). Capital is never added to `consumed`.
+    ///   Later: fold capital cost / maintenance / amortization into output
+    ///   `average_cost`. Capital should wear; it is not indestructible. Not
+    ///   needed for v0 cost blending.
+    /// - Factors are left untouched (not consumed, used, or locked).
+    /// - After quantity changes, [`FirmPRow::sync_reserve`] matches `reserve` to
+    ///   `min(quantity, reserve_target)`.
+    /// - Output `average_cost` blends this run's input AMV (allocated by each
+    ///   output's share of `last_amv_produced`) into existing inventory cost basis.
     /// - Records success rate, iterations, effects, missing goods, and AMV 
     ///   of the goods involved on each `ProductionLine`.
     /// 
-    /// Returns a `ProductionReport` containing:
-    /// - All `ProcessEffect`s produced (research, culture, growth...)
-    /// - Consolidated `produced` and `consumed` quantities across every process run.
+    /// Returns `ProcessEffect`s (research, culture, growth...) for the caller to
+    /// apply elsewhere. Good flows live on the property rows; market
+    /// production/consumption totals should sum those rows.
     /// 
     /// Only reads from `self.property` for available stock. The `market` parameter is
     /// used solely to snapshot current AMV values for record-keeping.
@@ -171,8 +245,8 @@ impl Firm {
     /// ## Panic
     /// 
     /// Panics if good or process is not found in factuals.
-    pub fn run_production(&mut self, factuals: &Factuals, market: &Market) -> ProductionReport {
-        let mut report = ProductionReport::default();
+    pub fn run_production(&mut self, factuals: &Factuals, market: &Market) -> Vec<ProcessEffect> {
+        let mut effects = Vec::new();
 
         for line in &mut self.production_line {
             // if process is not found, panic
@@ -189,27 +263,55 @@ impl Firm {
 
             let result = process.do_process(&available, line.target, factuals);
 
+            // This-run AMV snapshots; leftover values would poison cost blending.
+            line.last_amv_consumed = 0.0;
+            line.last_amv_produced = 0.0;
+
             // Apply net changes to property (outputs + consumed inputs + decay)
+            // and stamp produced / consumed day-flows on each row.
             for (&good_id, &delta) in &result.changes {
-                if let Some(row) = self.property.get_mut(&good_id) {
-                    // if already in property, add delta
+                let amv = if let Some(good) = market.goods.get(&good_id) {
+                    good.amv
+                } else { 1.0 };
+
+                if delta > 0.0 {
+                    // Produced (outputs + decay results of Consumed inputs)
+                    let row = self.property.entry(good_id).or_insert_with(FirmPRow::new);
                     row.quantity += delta;
+                    row.produced += delta;
+                    row.sync_reserve();
                     debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
-                } else if delta > 0.0 {
-                    // New good produced — create row with sensible defaults
-                    self.property.insert(
-                        good_id,
-                        FirmPRow {
-                            quantity: delta,
-                            rolling_average: 0.0,
-                            target: 0.0,
-                            reserve: 0.0,
-                            average_cost: 0.0,
-                            used_capital: 0.0,
-                        },
-                    );
+                    line.last_amv_produced += amv * delta;
                 } else if delta < 0.0 {
-                    unreachable!("A sanity checkpoint, we should never consume goods we don't have.");
+                    // Destroyed or Consumed inputs; both stamp `consumed`.
+                    let consumed_qty = -delta;
+                    let Some(row) = self.property.get_mut(&good_id) else {
+                        unreachable!("A sanity checkpoint, we should never consume goods we don't have.");
+                    };
+                    row.quantity += delta;
+                    row.consumed += consumed_qty;
+                    row.sync_reserve();
+                    debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
+                    line.last_amv_consumed += amv * consumed_qty;
+                }
+            }
+
+            // Blend this run's input AMV into each output's inventory cost basis.
+            // Allocated by that output's share of produced AMV (joint products split cost).
+            for (&good_id, &delta) in &result.changes {
+                if delta <= 0.0 {
+                    continue;
+                }
+                let amv = if let Some(good) = market.goods.get(&good_id) {
+                    good.amv
+                } else { 1.0 };
+                let unit_cost = if line.last_amv_produced != 0.0 {
+                    line.last_amv_consumed * amv / line.last_amv_produced
+                } else {
+                    0.0
+                };
+                if let Some(row) = self.property.get_mut(&good_id) {
+                    row.blend_average_cost(delta, unit_cost);
                 }
             }
 
@@ -218,25 +320,8 @@ impl Firm {
                 if let Some(row) = self.property.get_mut(&good_id) {
                     row.quantity -= used;
                     debug_assert!(row.quantity >= 0.0, "Quantity should never be negative.");
-                    row.used_capital += used;
-                }
-            }
-
-            // --- Record AMV snapshots and build consolidated produced/consumed ---
-            for (&good_id, &delta) in &result.changes {
-                let amv = if let Some(good) = market.goods.get(&good_id) {
-                    good.amv
-                } else { 1.0 };
-
-                if delta > 0.0 {
-                    // Produced (outputs + decay results)
-                    *report.produced.entry(good_id).or_insert(0.0) += delta;
-                    line.last_amv_produced += amv * delta;
-                } else if delta < 0.0 {
-                    // Consumed (Destroyed or Consumed input types)
-                    let consumed_qty = -delta;
-                    *report.consumed.entry(good_id).or_insert(0.0) += consumed_qty;
-                    line.last_amv_consumed -= amv * delta;
+                    row.used += used;
+                    row.sync_reserve();
                 }
             }
 
@@ -256,10 +341,10 @@ impl Firm {
             line.last_missing_goods = result.missing_goods.clone();
 
             // Collect effects for the caller to apply elsewhere
-            report.effects.extend(result.effects);
+            effects.extend(result.effects);
         }
 
-        report
+        effects
     }
 }
 
@@ -283,27 +368,25 @@ pub struct Owners {
     /// 
     /// If owned by a state, then it is under the control of the player, and so the
     /// player sets it's goals and rules.
+    /// 
+    /// Firms owned by an Institution or State can still have a parent and children 
+    /// firms, representing logical subdivisions under them. For example, a 'Guilds'
+    /// institution could represent mulitple Guilds, and each of these guilds is a
+    /// firm with it's own internal structure, keeping them financially independent, but
+    /// still able to coordinate and operate together.
     pub owner: Actor,
+
+    /// If the owner is a State or Institution, they may override the market priority 
+    /// of the firm.
+    pub priority_override: Option<f64>,
 }
 impl Owners {
     pub fn empty() -> Self {
         Owners {
             owner: Actor::Pop(0),
+            priority_override: None
         }
     }
-}
-
-/// Consolidated record of everything a production run created and consumed.
-/// Returned by `Firm::run_production` so a single object can be used by both
-/// the Market (to increment `MarketGood.production` / `consumption`) and by
-/// the Firm for its own record-keeping and later AMV/productivity analysis.
-#[derive(Debug, Clone, Default)]
-pub struct ProductionReport {
-    pub effects: Vec<ProcessEffect>,
-    /// Total quantity of each good created by production (outputs + decay results).
-    pub produced: HashMap<usize, f64>,
-    /// Total quantity of each good destroyed/consumed as non-capital inputs.
-    pub consumed: HashMap<usize, f64>,
 }
 
 /// # Production Line
@@ -343,27 +426,260 @@ pub struct ProductionLine {
 /// 
 /// A row of property data for a Firm. Includes data for management, oversight, and 
 /// targeting for both purchasing and use in production.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FirmPRow {
+    // unit info and budgeting data
     /// The amount currently owned.
     pub quantity: f64,
-    /// The average ownership of the good over the last 30 days.
-    pub rolling_average: f64,
-    /// The target amount the firm wants to have after shopping.
-    /// This should be before production processes.
-    pub target: f64,
-    /// If trading the good, this is the amount that the firm will never willingly 
-    /// part with.
+    /// The number of units of quantity which are currently reserved and thus won't be
+    /// offered for sale. Meant to reserve for production or between buying and selling
+    /// for merchants.
     pub reserve: f64,
+    /// The average ownership of the good over the last 30 days at the end of the day
+    /// to include both mercantile buy/sell and productive consumption/output.
+    pub rolling_average: f64,
 
+    /// How many the firm wants to purchase from the market. Mercantile firms will try
+    /// to purchase this amonut before they turn around and sell.
+    pub purchase_target: f64,
+    /// If selling, how many units they wish to sell each day. 
+    pub sell_target: f64,
+    /// How much we want to use in a given day, used/consumed/destroyed.
+    pub use_target: f64,
+    /// The target amount the firm wants to have after all purchases have been made.
+    /// For production oriented firms, this is what they will have before production.
+    /// For mercantile firms, this is what they want to have before they
+    /// turn around and sell.
+    pub stock_target: f64,
+    /// The target for reservation, how much they want to keep on hand. This is a backup
+    /// target, meant to help inconsistent supply. Goes up or down depending on the 
+    /// success of reaching purchase, sell, and use targets, modulated by the firm's
+    /// uncertainty.
+    pub reserve_target: f64,
+
+    // market exchange data
     /// The average cost to get these good so far. Updated after each purchase and
-    /// productive process.
+    /// productive process. Equal to the AMV of purchase, or the AMV of the goods which 
+    /// went into producing it.
     /// Used for value production efficiency calculations.
     pub average_cost: f64,
+    /// If being sold, this is the average AMV price they've been able to get for it.
+    /// Used for value efficiency calculations.
+    pub average_price: f64,
+    /// How many were purchased today.
+    pub bought: f64,
+    /// The Total AMV cost for bought today. Unit cost = bought_amv / bought.
+    pub bought_amv: f64,
+    /// How many were sold today.
+    pub sold: f64,
+    /// The total AMV gained for sales today. Unit cost = sold_amv / sold.
+    pub sold_amv: f64,
+    /// The targeted unit AMV for Buying and/or Selling. If the row has both purchase 
+    /// and sell targets, then this is a midpoint price, and the difference between
+    /// buying and selling is defined by the Margin
+    pub amv_target: f64,
 
+    // Production data
     /// Amount of this good currently tied up as capital in active production runs.
     /// Removed from `quantity` during `run_production`; returned later.
-    pub used_capital: f64,
+    pub used: f64,
+    /// Amount of the good that was consumed or destroyed today in production.
+    /// We do not need to distinguish between consumed and destroyed as the output of 
+    /// production procesess includes the output of consumed.
+    pub consumed: f64,
+    /// How many units of the good were produced today either directly through processes
+    /// or indirectly through consumption/decay outputs.
+    pub produced: f64,
+}
+
+impl FirmPRow {
+    /// Empty row; all fields 0. Same as [`Default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets on-hand quantity.
+    /// Must be `>= 0.0`.
+    pub fn with_quantity(mut self, quantity: f64) -> Self {
+        debug_assert!(quantity >= 0.0, "quantity must be >= 0.0");
+        self.quantity = quantity;
+        self
+    }
+
+    /// Sets units earmarked and not offered for sale.
+    /// Must be `>= 0.0`.
+    pub fn with_reserve(mut self, reserve: f64) -> Self {
+        debug_assert!(reserve >= 0.0, "reserve must be >= 0.0");
+        self.reserve = reserve;
+        self
+    }
+
+    /// Sets the rolling average of on-hand quantity.
+    /// Must be `>= 0.0`.
+    pub fn with_rolling_average(mut self, rolling_average: f64) -> Self {
+        debug_assert!(rolling_average >= 0.0, "rolling_average must be >= 0.0");
+        self.rolling_average = rolling_average;
+        self
+    }
+
+    /// Sets how many units the firm wants to buy today.
+    /// Must be `>= 0.0`.
+    pub fn with_purchase_target(mut self, purchase_target: f64) -> Self {
+        debug_assert!(purchase_target >= 0.0, "purchase_target must be >= 0.0");
+        self.purchase_target = purchase_target;
+        self
+    }
+
+    /// Sets how many units the firm wants to sell today.
+    /// Must be `>= 0.0`.
+    pub fn with_sell_target(mut self, sell_target: f64) -> Self {
+        debug_assert!(sell_target >= 0.0, "sell_target must be >= 0.0");
+        self.sell_target = sell_target;
+        self
+    }
+
+    /// Sets how many units the firm wants to use, consume, or destroy today.
+    /// Must be `>= 0.0`.
+    pub fn with_use_target(mut self, use_target: f64) -> Self {
+        debug_assert!(use_target >= 0.0, "use_target must be >= 0.0");
+        self.use_target = use_target;
+        self
+    }
+
+    /// Sets the operating inventory target after shopping.
+    /// Must be `>= 0.0`.
+    pub fn with_stock_target(mut self, stock_target: f64) -> Self {
+        debug_assert!(stock_target >= 0.0, "stock_target must be >= 0.0");
+        self.stock_target = stock_target;
+        self
+    }
+
+    /// Sets the sell-floor / backup stockpile target.
+    /// Must be `>= 0.0`.
+    pub fn with_reserve_target(mut self, reserve_target: f64) -> Self {
+        debug_assert!(reserve_target >= 0.0, "reserve_target must be >= 0.0");
+        self.reserve_target = reserve_target;
+        self
+    }
+
+    /// Sets inventory cost basis (AMV). May be negative for bads.
+    pub fn with_average_cost(mut self, average_cost: f64) -> Self {
+        self.average_cost = average_cost;
+        self
+    }
+
+    /// Sets realized average sale AMV. May be negative for bads.
+    pub fn with_average_price(mut self, average_price: f64) -> Self {
+        self.average_price = average_price;
+        self
+    }
+
+    /// Sets units purchased today.
+    /// Must be `>= 0.0`.
+    pub fn with_bought(mut self, bought: f64) -> Self {
+        debug_assert!(bought >= 0.0, "bought must be >= 0.0");
+        self.bought = bought;
+        self
+    }
+
+    /// Sets total AMV spent on today's purchases.
+    pub fn with_bought_amv(mut self, bought_amv: f64) -> Self {
+        self.bought_amv = bought_amv;
+        self
+    }
+
+    /// Sets units sold today.
+    /// Must be `>= 0.0`.
+    pub fn with_sold(mut self, sold: f64) -> Self {
+        debug_assert!(sold >= 0.0, "sold must be >= 0.0");
+        self.sold = sold;
+        self
+    }
+
+    /// Sets total AMV received from today's sales.
+    pub fn with_sold_amv(mut self, sold_amv: f64) -> Self {
+        self.sold_amv = sold_amv;
+        self
+    }
+
+    /// Sets the standing unit AMV for buying and/or selling.
+    pub fn with_amv_target(mut self, amv_target: f64) -> Self {
+        self.amv_target = amv_target;
+        self
+    }
+
+    /// Sets capital currently locked in production.
+    /// Must be `>= 0.0`.
+    pub fn with_used(mut self, used: f64) -> Self {
+        debug_assert!(used >= 0.0, "used must be >= 0.0");
+        self.used = used;
+        self
+    }
+
+    /// Sets units consumed or destroyed in production today.
+    /// Must be `>= 0.0`.
+    pub fn with_consumed(mut self, consumed: f64) -> Self {
+        debug_assert!(consumed >= 0.0, "consumed must be >= 0.0");
+        self.consumed = consumed;
+        self
+    }
+
+    /// Sets units produced today (direct outputs and decay results).
+    /// Must be `>= 0.0`.
+    pub fn with_produced(mut self, produced: f64) -> Self {
+        debug_assert!(produced >= 0.0, "produced must be >= 0.0");
+        self.produced = produced;
+        self
+    }
+
+    /// Match `reserve` to the stockpile guarantee: `min(quantity, reserve_target)`.
+    /// Never negative.
+    pub fn sync_reserve(&mut self) {
+        debug_assert!(self.quantity >= 0.0, "quantity must be >= 0.0");
+        self.reserve = self.quantity.min(self.reserve_target.max(0.0)).max(0.0);
+    }
+
+    /// Blend `added` units at `unit_cost` into inventory cost basis.
+    /// `quantity` must already include `added`.
+    pub fn blend_average_cost(&mut self, added: f64, unit_cost: f64) {
+        debug_assert!(self.quantity >= 0.0, "quantity must be >= 0.0");
+        if self.quantity > 0.0 {
+            let previous = (self.quantity - added).max(0.0);
+            self.average_cost =
+                (previous * self.average_cost + added * unit_cost) / self.quantity;
+        }
+    }
+
+    /// Unreserved stock: `quantity - reserve`.
+    pub fn available(&self) -> f64 {
+        self.quantity - self.reserve
+    }
+
+    /// Units that can be offered for sale.
+    /// `quantity - max(reserve, reserve_target)`, floored at 0.
+    /// `reserve_target` is the stockpile guarantee; `reserve` is the live copy.
+    pub fn sellable(&self) -> f64 {
+        let floor = self.reserve.max(self.reserve_target).max(0.0);
+        (self.quantity - floor).max(0.0)
+    }
+
+    /// Unit AMV paid today: `bought_amv / bought`. 0 if nothing was bought.
+    pub fn bought_unit_amv(&self) -> f64 {
+        if self.bought > 0.0 {
+            self.bought_amv / self.bought
+        } else {
+            0.0
+        }
+    }
+
+    /// Unit AMV received today: `sold_amv / sold`. 0 if nothing was sold.
+    pub fn sold_unit_amv(&self) -> f64 {
+        if self.sold > 0.0 {
+            self.sold_amv / self.sold
+        } else {
+            0.0
+        }
+    }
 }
 
 
@@ -374,7 +690,7 @@ mod firm {
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
     use std::collections::{HashMap, HashSet};
-    use crate::game::firm::{Firm, FirmPRow, ProductionLine, ProductionReport};
+    use crate::game::firm::{Firm, FirmPRow, ProductionLine};
 
     fn make_good(id: usize, name: &str, decay_result: HashMap<usize, f64>) -> Good {
         Good {
@@ -414,14 +730,7 @@ mod firm {
     }
 
     fn empty_firm_row(quantity: f64) -> FirmPRow {
-        FirmPRow {
-            quantity,
-            rolling_average: 0.0,
-            target: 0.0,
-            reserve: 0.0,
-            average_cost: 0.0,
-            used_capital: 0.0,
-        }
+        FirmPRow::new().with_quantity(quantity)
     }
 
     fn empty_production_line(process_id: usize) -> ProductionLine {
@@ -455,14 +764,7 @@ mod firm {
             factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
 
             let mut firm = Firm::new(1, "Test Sawmill".into(), 42, hexx::Hex::new(0, 0));
-            firm.property.insert(10, FirmPRow {
-                quantity: 10.0,
-                rolling_average: 0.0,
-                target: 0.0,
-                reserve: 0.0,
-                average_cost: 0.0,
-                used_capital: 0.0,
-            });
+            firm.property.insert(10, FirmPRow::new().with_quantity(10.0));
 
             // Add a production line
             firm.production_line.push(ProductionLine {
@@ -480,16 +782,17 @@ mod firm {
 
             let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            let effects = firm.run_production(&factuals, &market);
 
             // Property should be updated
             assert_eq!(firm.property[&10].quantity, 0.0);
             assert_eq!(firm.property[&20].quantity, 5.0); // 5 iterations * 1.0
-
-            // Report should show what was produced and consumed
-            assert_eq!(report.produced.get(&20), Some(&5.0));
-            assert_eq!(report.consumed.get(&10), Some(&10.0));
-            assert!(report.effects.is_empty());
+            assert_eq!(firm.property[&10].consumed, 10.0);
+            assert_eq!(firm.property[&20].produced, 5.0);
+            assert_eq!(firm.property[&10].used, 0.0);
+            // 10 wood * AMV 5 = 50 in; 5 planks * AMV 12 = 60 out -> unit cost 10.
+            assert_eq!(firm.property[&20].average_cost, 10.0);
+            assert!(effects.is_empty());
 
             // Line should have recorded success + AMV snapshots
             let line = &firm.production_line[0];
@@ -497,6 +800,93 @@ mod firm {
             assert_eq!(line.last_iterations, 5.0);
             assert_eq!(line.last_amv_consumed, 50.0);
             assert_eq!(line.last_amv_produced, 60.0);
+        }
+
+        #[test]
+        fn clamps_reserve_when_consumed_quantity_falls_below_it() {
+            let process = Process::new(1, "sawmill", 0)
+                .with_input(ProcessInput::new(10, 1.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Reserved Sawmill".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_reserve(8.0)
+                    .with_reserve_target(8.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+            firm.production_line[0].target = Some(4.0);
+
+            let market = make_market_with_amvs(&[(10, 1.0), (20, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            // 4 consumed: quantity 6, reserve synced to min(6, target 8).
+            assert_eq!(firm.property[&10].quantity, 6.0);
+            assert_eq!(firm.property[&10].reserve, 6.0);
+            assert_eq!(firm.property[&10].consumed, 4.0);
+        }
+
+        #[test]
+        fn syncs_reserve_up_toward_target_on_new_output() {
+            let process = Process::new(1, "sawmill", 0)
+                .with_input(ProcessInput::new(10, 1.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Stockpile Mill".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(10, FirmPRow::new().with_quantity(4.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_quantity(0.0).with_reserve_target(10.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+            firm.production_line[0].target = Some(4.0);
+
+            let market = make_market_with_amvs(&[(10, 1.0), (20, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.property[&20].quantity, 4.0);
+            assert_eq!(firm.property[&20].reserve, 4.0);
+        }
+
+        #[test]
+        fn blends_input_amv_into_existing_output_cost() {
+            let process = Process::new(1, "sawmill", 0)
+                .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Blend Mill".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(10, FirmPRow::new().with_quantity(4.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_quantity(2.0).with_average_cost(4.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+            firm.production_line[0].target = Some(2.0);
+
+            // 4 wood * AMV 5 = 20 in; 2 planks * AMV 10 = 20 out -> unit cost 10.
+            // (2 * 4 + 2 * 10) / 4 = 7.
+            let market = make_market_with_amvs(&[(10, 5.0), (20, 10.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.property[&20].quantity, 4.0);
+            assert_eq!(firm.property[&20].average_cost, 7.0);
         }
 
         #[test]
@@ -530,7 +920,7 @@ mod firm {
 
             let market = make_market_with_amvs(&[(30, 2.0), (40, 8.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // check property changes
             assert_eq!(firm.property[&30].quantity, 0.0);
@@ -544,8 +934,8 @@ mod firm {
             assert_eq!(line.last_amv_consumed, 12.0);
             assert_eq!(line.last_amv_produced, 16.0);
 
-            assert_eq!(report.consumed.get(&30), Some(&6.0));
-            assert_eq!(report.produced.get(&40), Some(&2.0));
+            assert_eq!(firm.property[&30].consumed, 6.0);
+            assert_eq!(firm.property[&40].produced, 2.0);
         }
 
         #[test]
@@ -580,16 +970,15 @@ mod firm {
 
             let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0), (50, 100.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
-            // Capital good should be recorded in used_capital, not in report.consumed
-            assert_eq!(firm.property[&50].used_capital, 1.0);
+            // Capital good should be recorded in used, not in consumed
+            assert_eq!(firm.property[&50].used, 1.0);
+            assert_eq!(firm.property[&50].consumed, 0.0);
             assert_eq!(firm.property[&50].quantity, 0.0);
             assert_eq!(firm.property[&10].quantity, 8.0);
-
-            assert!(report.consumed.get(&50).is_none()); // capital should NOT appear in consumed
-            assert_eq!(report.consumed.get(&10), Some(&2.0));
-            assert_eq!(report.produced.get(&20), Some(&1.0));
+            assert_eq!(firm.property[&10].consumed, 2.0);
+            assert_eq!(firm.property[&20].produced, 1.0);
         }
 
         #[test]
@@ -621,14 +1010,16 @@ mod firm {
 
             let market = make_market_with_amvs(&[(10, 3.0), (99, 50.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            let effects = firm.run_production(&factuals, &market);
 
-            assert_eq!(report.effects.len(), 1);
-            assert!(matches!(report.effects[0], ProcessEffect::Research(50.0)));
+            assert_eq!(effects.len(), 1);
+            assert!(matches!(effects[0], ProcessEffect::Research(50.0)));
 
             // New good 99 should have been created in property
             assert!(firm.property.contains_key(&99));
             assert_eq!(firm.property[&99].quantity, 10.0);
+            assert_eq!(firm.property[&99].produced, 10.0);
+            assert_eq!(firm.property[&10].consumed, 5.0);
         }
 
         #[test]
@@ -692,21 +1083,21 @@ mod firm {
 
             let market = make_market_with_amvs(&[(100, 2.0), (110, 5.0), (120, 15.0), (200, 50.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // Property assertions
             assert_eq!(firm.property[&100].quantity, 15.0);   // 20 - 5
             assert_eq!(firm.property[&110].quantity, 2.0);    // produced 5, consumed 3, 
-            assert_eq!(firm.property[&200].used_capital, 8.0); // 5 + 3
+            assert_eq!(firm.property[&200].used, 8.0); // 5 + 3
+            assert_eq!(firm.property[&200].consumed, 0.0); // capital never in consumed
             assert_eq!(firm.property[&200].quantity, 12.0);    // 20- 5 - 3
             // (adjust expected numbers based on exact per-iter costs you want)
 
-            // Report aggregation across both lines
-            assert_eq!(report.produced.get(&110), Some(&5.0)); // planks created
-            assert_eq!(report.produced.get(&120), Some(&3.0)); // tables created
-            assert_eq!(report.consumed.get(&100), Some(&5.0)); // wood
-            assert_eq!(report.consumed.get(&110), Some(&3.0));  // planks consumed in line 2
-            assert!(report.consumed.get(&200).is_none());       // capital never in consumed
+            // Row day-flows aggregated across both lines
+            assert_eq!(firm.property[&110].produced, 5.0); // planks created
+            assert_eq!(firm.property[&110].consumed, 3.0); // planks consumed in line 2
+            assert_eq!(firm.property[&120].produced, 3.0); // tables created
+            assert_eq!(firm.property[&100].consumed, 5.0); // wood
 
             // Both lines recorded AMV snapshots
             assert_eq!(firm.production_line[0].last_amv_consumed, 10.0);
@@ -745,7 +1136,7 @@ mod firm {
 
             let market = make_market_with_amvs(&[(100, 2.0), (110, 6.0), (120, 20.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // Should run (required factor present) but without the optional throughput bonus
             assert!(firm.production_line[0].last_success_rate > 0.9);
@@ -754,20 +1145,27 @@ mod firm {
             assert!(firm.production_line[0].last_missing_goods.contains(&100));
             assert_eq!(firm.production_line[0].last_amv_consumed, 160.0);
             assert_eq!(firm.production_line[0].last_amv_produced, 400.0);
-            assert_eq!(report.consumed.get(&100), Some(&20.0)); // 10 iterations * 2.0
-            assert_eq!(report.consumed.get(&110), Some(&20.0)); // 10 iterations * 2.0
-            assert_eq!(report.produced.get(&120), Some(&20.0)); // 10 iterations * 2.0
+            assert_eq!(firm.property[&100].consumed, 20.0);
+            assert_eq!(firm.property[&110].consumed, 20.0);
+            assert_eq!(firm.property[&120].produced, 20.0);
+            // Factors are present but not consumed, used, or locked.
+            assert_eq!(firm.property[&300].quantity, 1.0);
+            assert_eq!(firm.property[&300].consumed, 0.0);
+            assert_eq!(firm.property[&300].used, 0.0);
 
             // test with optional factor included
             firm.property.insert(301, empty_firm_row(1.0));
             firm.property.get_mut(&100).unwrap().quantity += 20.0;
+            firm.property.get_mut(&100).unwrap().consumed = 0.0;
             firm.property.get_mut(&110).unwrap().quantity += 20.0;
+            firm.property.get_mut(&110).unwrap().consumed = 0.0;
+            firm.property.get_mut(&120).unwrap().produced = 0.0;
             firm.production_line[0].last_amv_consumed = 0.0;
             firm.production_line[0].last_amv_produced = 0.0;
             firm.production_line[0].last_iterations = 0.0;
             firm.production_line[0].last_success_rate = 0.0;
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // Should run (required factor present) but without the optional throughput bonus
             assert!(firm.production_line[0].last_success_rate > 0.9);
@@ -776,9 +1174,12 @@ mod firm {
             assert!(firm.production_line[0].last_missing_goods.contains(&100));
             assert_eq!(firm.production_line[0].last_amv_consumed, 220.0);
             assert_eq!(firm.production_line[0].last_amv_produced, 600.0);
-            assert_eq!(report.consumed.get(&100), Some(&20.0)); // 10 iterations * 2.0
-            assert_eq!(report.consumed.get(&110), Some(&30.0)); // 10 iterations * 2.0
-            assert_eq!(report.produced.get(&120), Some(&30.0)); // 10 iterations * 2.0
+            assert_eq!(firm.property[&100].consumed, 20.0);
+            assert_eq!(firm.property[&110].consumed, 30.0);
+            assert_eq!(firm.property[&120].produced, 30.0);
+            assert_eq!(firm.property[&301].quantity, 1.0);
+            assert_eq!(firm.property[&301].consumed, 0.0);
+            assert_eq!(firm.property[&301].used, 0.0);
         }
 
         #[test]
@@ -804,15 +1205,15 @@ mod firm {
 
             let market = make_market_with_amvs(&[(100, 2.0), (110, 7.0), (400, 10.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // With catalyst bonus we should get more than the base 5 iterations worth of output
             assert_eq!(firm.production_line[0].last_iterations, 10.0);
             assert_eq!(firm.production_line[0].last_amv_consumed, 50.0);
             assert_eq!(firm.production_line[0].last_amv_produced, 75.25);
-            assert_eq!(report.consumed[&100], 10.0);
-            assert_eq!(report.consumed[&400], 3.0);
-            assert_eq!(report.produced[&110], 10.75);
+            assert_eq!(firm.property[&100].consumed, 10.0);
+            assert_eq!(firm.property[&400].consumed, 3.0);
+            assert_eq!(firm.property[&110].produced, 10.75);
         }
 
         #[test]
@@ -848,11 +1249,11 @@ mod firm {
 
             let market = make_market_with_amvs(&[(100, 2.0), (110, 6.0), (130, 0.5)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
-            assert_eq!(report.produced.get(&110), Some(&8.0));  // main output
-            assert_eq!(report.produced.get(&130), Some(&4.0));  // decay result (8 iters * 0.5)
-            assert_eq!(report.consumed.get(&100), Some(&8.0)); 
+            assert_eq!(firm.property[&110].produced, 8.0);  // main output
+            assert_eq!(firm.property[&130].produced, 4.0);  // decay result (8 iters * 0.5)
+            assert_eq!(firm.property[&100].consumed, 8.0);
             assert_eq!(firm.production_line[0].last_amv_consumed, 16.0);
             assert_eq!(firm.production_line[0].last_amv_produced, 50.0);
             assert_eq!(firm.production_line[0].last_iterations, 8.0);
@@ -888,15 +1289,13 @@ mod firm {
 
             let market = make_market_with_amvs(&[(100, 2.0), (110, 3.0), (120, 10.0), (130, 5.0), (500, 1.0)]);
 
-            let report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
-            assert_eq!(report.produced.len(), 2);
-            assert_eq!(report.consumed.len(), 3);
-            assert_eq!(report.produced.get(&120), Some(&8.0));  // main output
-            assert_eq!(report.produced.get(&130), Some(&13.0));  // decay result (8 iters * 0.5)
-            assert_eq!(report.consumed.get(&100), Some(&8.0)); 
-            assert_eq!(report.consumed.get(&110), Some(&13.0)); 
-            assert_eq!(report.consumed.get(&500), Some(&5.0)); 
+            assert_eq!(firm.property[&120].produced, 8.0);  // main output
+            assert_eq!(firm.property[&130].produced, 13.0);
+            assert_eq!(firm.property[&100].consumed, 8.0);
+            assert_eq!(firm.property[&110].consumed, 13.0);
+            assert_eq!(firm.property[&500].consumed, 5.0);
             assert_eq!(firm.production_line[0].last_amv_consumed, 2.0*8.0 + 3.0*13.0 + 5.0*1.0);
             assert_eq!(firm.production_line[0].last_amv_produced, 8.0*10.0 + 13.0*5.0);
             assert_eq!(firm.production_line[0].last_iterations, 8.0);
@@ -928,13 +1327,197 @@ mod firm {
             // Market does NOT contain good 999
             let market = make_market_with_amvs(&[(110, 4.0)]);
 
-            let _report = firm.run_production(&factuals, &market);
+            firm.run_production(&factuals, &market);
 
             // Should fall back to the economic default of 1.0
             assert_eq!(
                 firm.production_line[0].last_amv_consumed, 5.0,
                 "Missing goods should default to AMV 1.0"
             );
+            assert_eq!(firm.property[&999].consumed, 5.0);
+            assert_eq!(firm.property[&110].produced, 5.0);
+        }
+    }
+
+    mod firm_prow_should {
+        use super::*;
+
+        #[test]
+        fn available_is_quantity_minus_reserve() {
+            let row = FirmPRow::new().with_quantity(10.0).with_reserve(4.0);
+            assert_eq!(row.available(), 6.0);
+        }
+
+        #[test]
+        fn sellable_uses_the_larger_of_reserve_and_reserve_target() {
+            let live_higher = FirmPRow::new()
+                .with_quantity(20.0)
+                .with_reserve(6.0)
+                .with_reserve_target(5.0);
+            assert_eq!(live_higher.sellable(), 14.0);
+
+            let target_higher = FirmPRow::new()
+                .with_quantity(20.0)
+                .with_reserve(3.0)
+                .with_reserve_target(8.0);
+            assert_eq!(target_higher.sellable(), 12.0);
+        }
+
+        #[test]
+        fn sellable_floors_at_zero() {
+            let row = FirmPRow::new()
+                .with_quantity(3.0)
+                .with_reserve(1.0)
+                .with_reserve_target(10.0);
+            assert_eq!(row.sellable(), 0.0);
+        }
+
+        #[test]
+        fn sync_reserve_matches_min_of_quantity_and_target() {
+            let mut row = FirmPRow::new()
+                .with_quantity(20.0)
+                .with_reserve(1.0)
+                .with_reserve_target(5.0);
+            row.sync_reserve();
+            assert_eq!(row.reserve, 5.0);
+            assert_eq!(row.sellable(), 15.0);
+
+            row.quantity = 3.0;
+            row.sync_reserve();
+            assert_eq!(row.reserve, 3.0);
+            assert_eq!(row.sellable(), 0.0);
+        }
+
+        #[test]
+        fn blend_average_cost_weights_old_stock_and_new_units() {
+            let mut row = FirmPRow::new()
+                .with_quantity(5.0)
+                .with_average_cost(4.0);
+            row.quantity = 10.0;
+            row.blend_average_cost(5.0, 10.0);
+            assert_eq!(row.average_cost, 7.0);
+        }
+
+        #[test]
+        fn bought_unit_amv_divides_total_spend_by_units() {
+            let row = FirmPRow::new().with_bought(4.0).with_bought_amv(10.0);
+            assert_eq!(row.bought_unit_amv(), 2.5);
+        }
+
+        #[test]
+        fn sold_unit_amv_is_zero_when_nothing_sold() {
+            let row = FirmPRow::new().with_sold_amv(99.0);
+            assert_eq!(row.sold_unit_amv(), 0.0);
+        }
+
+        #[test]
+        fn sold_unit_amv_divides_total_by_units() {
+            let row = FirmPRow::new().with_sold(2.0).with_sold_amv(9.0);
+            assert_eq!(row.sold_unit_amv(), 4.5);
+        }
+    }
+
+    mod decay_goods_should {
+        use super::*;
+        use crate::game::good::GoodTag;
+
+        #[test]
+        fn returns_used_then_decays_quantity_with_byproducts() {
+            let mut wood = make_good(10, "wood", HashMap::from([(11, 0.5)]));
+            wood.decay_rate = 0.2;
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(10, wood);
+            factuals.goods.insert(11, make_good(11, "ash", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Yard".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_used(5.0)
+                    .with_reserve_target(20.0),
+            );
+
+            firm.decay_goods(&factuals);
+
+            // used 5 returned -> 15, then 20% decay -> 12, ash 1.5 (lost 3 * 0.5).
+            assert_eq!(firm.property[&10].used, 0.0);
+            assert_eq!(firm.property[&10].quantity, 12.0);
+            assert_eq!(firm.property[&10].reserve, 12.0);
+            assert_eq!(firm.property[&11].quantity, 1.5);
+        }
+
+        #[test]
+        fn does_not_destroy_consumed_counter_as_stock() {
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(
+                10,
+                make_good(10, "wood", HashMap::from([(11, 1.0)])),
+            );
+
+            let mut firm = Firm::new(1, "Yard".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_quantity(4.0).with_consumed(10.0),
+            );
+            firm.decay_goods(&factuals);
+
+            assert_eq!(firm.property[&10].quantity, 4.0);
+            assert_eq!(firm.property[&10].consumed, 10.0);
+            assert!(!firm.property.contains_key(&11));
+        }
+
+        #[test]
+        fn skips_exposure_decay_while_owned() {
+            let mut land = make_good(10, "land", HashMap::new());
+            land.decay_rate = 1.0;
+            land.tags.insert(GoodTag::Exposure);
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(10, land);
+
+            let mut firm = Firm::new(1, "Farm".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(10, FirmPRow::new().with_quantity(8.0));
+            firm.decay_goods(&factuals);
+
+            assert_eq!(firm.property[&10].quantity, 8.0);
+        }
+    }
+
+    mod clear_day_flows_should {
+        use super::*;
+
+        #[test]
+        fn zeros_counters_and_keeps_stock_cost_and_used() {
+            let mut firm = Firm::new(1, "Shop".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(7.0)
+                    .with_used(2.0)
+                    .with_produced(3.0)
+                    .with_consumed(4.0)
+                    .with_bought(1.0)
+                    .with_bought_amv(5.0)
+                    .with_sold(2.0)
+                    .with_sold_amv(8.0)
+                    .with_average_cost(3.0)
+                    .with_reserve_target(1.0)
+                    .with_reserve(1.0),
+            );
+
+            firm.clear_day_flows();
+
+            let row = &firm.property[&10];
+            assert_eq!(row.produced, 0.0);
+            assert_eq!(row.consumed, 0.0);
+            assert_eq!(row.bought, 0.0);
+            assert_eq!(row.bought_amv, 0.0);
+            assert_eq!(row.sold, 0.0);
+            assert_eq!(row.sold_amv, 0.0);
+            assert_eq!(row.quantity, 7.0);
+            assert_eq!(row.used, 2.0);
+            assert_eq!(row.average_cost, 3.0);
+            assert_eq!(row.reserve, 1.0);
         }
     }
 }

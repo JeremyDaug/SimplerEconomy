@@ -356,6 +356,30 @@ passive culture/research).
 **Meaning:** A semi-autonomous org which handles and focuses on productive economic activity.
 **Code:**  `Firm`
 
+### Firm property row
+**Preferred:** firm property row  
+**Code:** `FirmPRow`
+
+Per-good warehouse ledger. Groups: stock, planning targets, exchange, production flows.
+
+| Preferred | Meaning | Code |
+|-----------|---------|------|
+| **stock target** | Operating inventory after shopping (producers: before production; merchants: before selling) | `stock_target` |
+| **reserve** (firm) | Live stockpile guarantee; still in `quantity`; not offered for sale. Synced ASAP to `min(quantity, reserve_target)`. Not the same as pop `reserved` (today's consume earmark) | `reserve` |
+| **reserve target** | Policy floor for the stockpile guarantee. Planning raises or lowers it from missed purchase/sell/use targets | `reserve_target` |
+| **purchase target** / **sell target** | Units to buy / sell today. Independent so merchants can buy-for-resale | `purchase_target`, `sell_target` |
+| **use target** | Sum of production-line targets for this good (rollup, not a budget). Lines budget themselves | `use_target` |
+| **average cost** | Inventory cost basis (AMV of purchases and of goods that went into producing the stock). Not today's unit buy price | `average_cost` |
+| **average price** | Realized average sale AMV | `average_price` |
+| **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
+| **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask | `amv_target` |
+| **available** (firm) | `quantity - reserve` | `FirmPRow::available` |
+| **sellable** | `quantity - max(reserve, reserve_target)`, floored at 0 | `FirmPRow::sellable` |
+
+Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs stamp **produced** on the result goods. Capital stamps **used**, not consumed. Factors are not moved.
+
+**Deferred:** capital cost / maintenance / amortization. Output `average_cost` currently blends consumed-input AMV only. Later, used capital should contribute wear (not the full tool AMV each run) so capital is not indestructible and produced goods carry a maintenance slice. Not v0.
+
 ### State
 **Preferred:** State, Player
 
