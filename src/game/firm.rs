@@ -1,17 +1,10 @@
 use std::collections::HashMap;
 
+use bevy::platform::collections::HashSet;
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor,
-    contract::Contract,
-    factuals::Factuals,
-    firmorganization::FirmOrganization,
-    good::GoodTag,
-    market::Market,
-    pop::Pop,
-    process::ProcessEffect,
-    workforce::Workforce,
+    actor::Actor, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::MarketOrder, pop::Pop, process::ProcessEffect, workforce::Workforce,
 };
 
 /// # Firm 
@@ -206,6 +199,39 @@ impl Firm {
         }
     }
 
+    /// # Create Orders
+    /// 
+    /// Creates market orders for the firm. 
+    /// 
+    /// It does this by first collecting 'for sale' and 'for exchange' property into AMV
+    /// (creating sell orders for 'for sell' goods), then using that AMV to create buy
+    /// orders similarly to pops.
+    /// 
+    /// This should not edit the state of the pop directly.
+    /// 
+    /// ## Categorization Rules
+    /// 
+    /// - Exchange triggers if the good has a salability of 0.6 or higher.
+    /// - Sell triggers if the good has a sale target and a salability of 0.8 or less.
+    /// - Buy triggers if they have a buy order target.
+    /// 
+    /// ## Order creation priority.
+    /// 
+    /// - If a good is both a sell and exchange good, split 50/50 between sell orders and
+    /// reserve for exchange (don't actually use reserve value).
+    /// - If a good has both buy and sell targets, 
+    pub fn create_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
+        let mut result = vec![];
+        // iterate over property, splitting into buy, sell, and exchange goods.
+        let mut buy = HashSet::new();
+        let mut sell = HashSet::new();
+        let mut exchange = HashSet::new();
+        for (good, row)  in self.property.iter() {
+            
+        }
+        result
+    }
+
     /// # Run Production
     /// 
     /// Executes all production plans currently in `production_line` (in order).
@@ -380,6 +406,7 @@ pub struct Owners {
     /// of the firm.
     pub priority_override: Option<f64>,
 }
+
 impl Owners {
     pub fn empty() -> Self {
         Owners {
@@ -478,6 +505,13 @@ pub struct FirmPRow {
     /// and sell targets, then this is a midpoint price, and the difference between
     /// buying and selling is defined by the Margin
     pub amv_target: f64,
+    /// If being bought and sold, this modifies the buy and sell prices off of the 
+    /// [`FirmPRow::amv_target`] appropriately. A simple multiplier to the AMV.
+    /// Buy Price = amv_target * (1.0 + margin)
+    /// Sell Price = amv_target * (1.0 - margin)
+    /// 
+    /// Should never be negative, but not enforced as that should be self-correcting.
+    pub margin: f64,
 
     // Production data
     /// Amount of this good currently tied up as capital in active production runs.
@@ -605,6 +639,13 @@ impl FirmPRow {
     /// Sets the standing unit AMV for buying and/or selling.
     pub fn with_amv_target(mut self, amv_target: f64) -> Self {
         self.amv_target = amv_target;
+        self
+    }
+
+    /// Sets the current price margin up and down from the amv_target for buy and sell
+    /// orders.
+    pub fn with_margin(mut self, margin: f64) -> Self {
+        self.margin = margin;
         self
     }
 
