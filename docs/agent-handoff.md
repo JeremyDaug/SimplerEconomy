@@ -53,6 +53,8 @@ In-repo navigation:
 
 `FirmPRow` is the per-good firm ledger: stock (`quantity`, `reserve`, `rolling_average`), planning (`purchase_target`, `sell_target`, `use_target`, `stock_target`, `reserve_target`), exchange (`average_cost`, `average_price`, `bought`/`bought_amv`, `sold`/`sold_amv`, `amv_target`), production (`used`, `consumed`, `produced`). `new()` / `Default` / `with_*`. Helpers: `available()`, `sellable()`, `bought_unit_amv()`, `sold_unit_amv()`.
 
+`Firm::create_orders` is read-only. Free on-hand stock (production-fenced units stay out) may be **sell and/or exchange**, or **liquidate**. Exchange if salability >= `EXCHANGE_SALABILITY_MIN` (0.6). Dedicated sell if `sell_target` > 0 (no salability cap). When both apply, salability lerps the pile from 90/10 sell/exchange at 0.6 to 10/90 at 1.0 (`SELL_EXCHANGE_EDGE`); exchange is rounded to nearest whole units, then sell is capped at `sell_target`. Unwanted leftover (no purchase/sell/use, salability below the exchange floor) is liquidated as **offer** orders, never priced sells. Dual buy+sell: producer inputs buy the stock-target shortfall and sell only excess; merchants emit full `purchase_target` even above stock. Budget is exchange AMV plus expected sell and liquidate AMV. Matching still does not use AMV; orders stamp bid/ask for later. Merchant-like firms (purchase and sell, no use) stamp `FIRM_MERCHANT`, others `FIRM_PRODUCER`.
+
 `Firm::run_production` stamps `produced` / `consumed` / `used` on those rows and returns `Vec<ProcessEffect>` (no `ProductionReport`). Destroyed and Consumed inputs both go to `consumed`; Consumed decay products go to `produced` on the result good; capital goes to `used` only; factors are untouched. Output `average_cost` blends this run's input AMV (split by each output's share of produced AMV). Used capital is **not** in that blend yet. Later: capital cost / maintenance / amortization so tools wear and are not indestructible; not v0. `reserve` is a stockpile guarantee: `sync_reserve` sets `min(quantity, reserve_target)` after quantity changes. `sellable` = `quantity - max(reserve, reserve_target)`. `decay_goods` returns `used` then decays on-hand stock. `clear_day_flows` zeros produced/consumed/bought/sold (and AMV totals) and is meant for day start so totals stay visible overnight. Production still not wired into the playstate phase.
 
 ### MarketGood
@@ -219,6 +221,7 @@ Open review debt is empty. Last close-out was 2026-08-18. This market slice has 
 | Concern | Location |
 |---------|----------|
 | Firm property + production flows | `src/game/firm.rs` → `FirmPRow`, `Firm::run_production`, `decay_goods`, `clear_day_flows` |
+| Firm market orders | `src/game/firm.rs` → `Firm::create_orders` (read-only; exclusive sell / exchange / production on-hand; optimistic budget) |
 | Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets`, `planning_growth_factor` |
 | Cheapest tradeable basket | `src/game/pop.rs` → `cheapest_tradeable_cover` |
 | Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |

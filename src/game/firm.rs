@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
-use bevy::platform::collections::HashSet;
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::MarketOrder, pop::Pop, process::ProcessEffect, workforce::Workforce,
+    actor::Actor, config::{market_constants, market_priority}, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::lerp, workforce::Workforce,
 };
 
 /// # Firm 
@@ -200,36 +199,197 @@ impl Firm {
     }
 
     /// # Create Orders
-    /// 
-    /// Creates market orders for the firm. 
-    /// 
-    /// It does this by first collecting 'for sale' and 'for exchange' property into AMV
-    /// (creating sell orders for 'for sell' goods), then using that AMV to create buy
-    /// orders similarly to pops.
-    /// 
-    /// This should not edit the state of the pop directly.
-    /// 
-    /// ## Categorization Rules
-    /// 
-    /// - Exchange triggers if the good has a salability of 0.6 or higher.
-    /// - Sell triggers if the good has a sale target and a salability of 0.8 or less.
-    /// - Buy triggers if they have a buy order target.
-    /// 
-    /// ## Order creation priority.
-    /// 
-    /// - If a good is both a sell and exchange good, split 50/50 between sell orders and
-    /// reserve for exchange (don't actually use reserve value).
-    /// - If a good has both buy and sell targets, 
-    pub fn create_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
-        let mut result = vec![];
-        // iterate over property, splitting into buy, sell, and exchange goods.
-        let mut buy = HashSet::new();
-        let mut sell = HashSet::new();
-        let mut exchange = HashSet::new();
-        for (good, row)  in self.property.iter() {
-            
+    ///
+    /// Turns current [`FirmPRow`] targets and on-hand stock into market orders.
+    /// Read-only: does not edit the firm.
+    ///
+    /// 1. Classify each tradeable row's free on-hand pile as **sell**, **exchange**,
+    ///    and/or **liquidate**. Production-fenced stock is not in that pile.
+    /// 2. Emit sell/offer orders, then buy/request orders funded by exchange AMV
+    ///    plus expected sell and liquidate AMV (optimistic: assumes outgoing fills).
+    ///
+    /// Exchange if salability >= [`market_constants::EXCHANGE_SALABILITY_MIN`].
+    /// Dedicated sell if `sell_target` > 0. When both apply, salability lerps the
+    /// free pile from 90% sell / 10% exchange at the exchange floor to 10% sell /
+    /// 90% exchange at salability 1.0. Exchange units are rounded to nearest;
+    /// sell is the remainder, then capped at `sell_target` (overflow stays
+    /// exchange).
+    ///
+    /// Liquidate if the row has free stock and no purchase, sell, or use target,
+    /// and it is not exchange-eligible. Those units are leftover barter and go
+    /// out as offer orders, never priced sell orders.
+    ///
+    /// Dual buy+sell: producer inputs (`use_target` > 0) buy only the stock-target
+    /// shortfall and sell only free excess. Merchants (no `use_target`) emit the
+    /// full `purchase_target` even above stock target. Buy is incoming stock, not
+    /// an on-hand role, so a row may still buy and sell the same good.
+    ///
+    /// Buys stop when spendable AMV is exhausted; the last buy may overdraw.
+    /// AMV on orders is stamped for later settlement. Matching does not use it yet.
+    /// Buy order priority is the merchant band if any row is merchant-like
+    /// (purchase and sell, no use), otherwise the producer band. Sells use
+    /// [`compose_sell_priority`].
+    pub fn create_orders(&self, history: &MarketHistory, factuals: &Factuals) -> Vec<MarketOrder> {
+        let mut line_rank: HashMap<usize, usize> = HashMap::new();
+        for (idx, line) in self.production_line.iter().enumerate() {
+            for &good_id in &line.inputs {
+                line_rank.entry(good_id).or_insert(idx);
+            }
         }
-        result
+
+        let mut plans: Vec<RowPlan> = Vec::new();
+        let mut merchant_like = false;
+
+        for (&good, row) in &self.property {
+            if !factuals.find_good(good).is_buyable() {
+                continue;
+            }
+
+            if row.purchase_target > 0.0 && row.sell_target > 0.0 && row.use_target == 0.0 {
+                merchant_like = true;
+            }
+
+            let salability = history.salability(good);
+            let mid = row.mid_amv(history.price(good));
+            let split = classify_on_hand(row, salability);
+            let buy_qty = row.purchase_qty();
+
+            debug_assert!(split.sell >= 0.0, "sell_qty must be >= 0.0");
+            debug_assert!(split.exchange >= 0.0, "exchange_qty must be >= 0.0");
+            debug_assert!(split.liquidate >= 0.0, "liquidate_qty must be >= 0.0");
+            debug_assert!(buy_qty >= 0.0, "buy_qty must be >= 0.0");
+            debug_assert!(
+                split.liquidate == 0.0 || (split.sell == 0.0 && split.exchange == 0.0),
+                "liquidate stock cannot also be sell or exchange"
+            );
+
+            if buy_qty == 0.0
+                && split.sell == 0.0
+                && split.exchange == 0.0
+                && split.liquidate == 0.0
+            {
+                continue;
+            }
+
+            plans.push(RowPlan {
+                good,
+                buy_qty,
+                sell_qty: split.sell,
+                exchange_qty: split.exchange,
+                liquidate_qty: split.liquidate,
+                use_target: row.use_target,
+                bid: row.bid_amv(mid),
+                ask: row.ask_amv(mid),
+                salability,
+                line_rank: line_rank.get(&good).copied().unwrap_or(usize::MAX),
+            });
+        }
+
+        let buy_band = if merchant_like {
+            market_priority::FIRM_MERCHANT
+        } else {
+            market_priority::FIRM_PRODUCER
+        };
+
+        // vec(good_id, salability, market_price)
+        let mut exchange_goods: Vec<(usize, f64, f64)> = plans
+            .iter()
+            .filter(|plan| plan.exchange_qty > 0.0)
+            .map(|plan| (plan.good, plan.salability, history.price(plan.good)))
+            .collect();
+        exchange_goods.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        let mut spendable = 0.0;
+        for plan in &plans {
+            spendable += plan.exchange_qty * history.price(plan.good);
+            spendable += plan.sell_qty * plan.ask;
+            spendable += plan.liquidate_qty * history.price(plan.good);
+        }
+
+        let mut orders: Vec<MarketOrder> = Vec::new();
+        let mut outgoing: Vec<&RowPlan> = plans
+            .iter()
+            .filter(|plan| plan.sell_qty > 0.0 || plan.liquidate_qty > 0.0)
+            .collect();
+        outgoing.sort_by_key(|plan| plan.good);
+        for plan in outgoing {
+            let (qty, liquidate) = if plan.liquidate_qty > 0.0 {
+                (plan.liquidate_qty, true)
+            } else {
+                (plan.sell_qty, false)
+            };
+            let weight = compose_sell_priority(buy_band, qty, 0.0);
+            if liquidate {
+                orders.push(MarketOrder::offer_order(
+                    Actor::Firm(self.id),
+                    plan.good,
+                    -qty,
+                    weight,
+                ));
+            } else if let Some((pay_good, pay_price)) =
+                counter_good(&exchange_goods, plan.good)
+            {
+                orders.push(MarketOrder::sell_order(
+                    Actor::Firm(self.id),
+                    plan.good,
+                    -qty,
+                    plan.ask,
+                    pay_good,
+                    qty * plan.ask / pay_price,
+                    weight,
+                ));
+            } else {
+                orders.push(MarketOrder::offer_order(
+                    Actor::Firm(self.id),
+                    plan.good,
+                    -qty,
+                    weight,
+                ));
+            }
+        }
+
+        let mut buys: Vec<&RowPlan> = plans.iter().filter(|plan| plan.buy_qty > 0.0).collect();
+        buys.sort_by(|a, b| {
+            let a_prod = if a.use_target > 0.0 { 0 } else { 1 };
+            let b_prod = if b.use_target > 0.0 { 0 } else { 1 };
+            a_prod
+                .cmp(&b_prod)
+                .then(a.line_rank.cmp(&b.line_rank))
+                .then(a.good.cmp(&b.good))
+        });
+
+        let mut remaining = spendable;
+        for plan in buys {
+            if remaining <= 0.0 {
+                break;
+            }
+            let cost = plan.buy_qty * plan.bid;
+            if let Some((pay_good, pay_price)) = counter_good(&exchange_goods, plan.good) {
+                orders.push(MarketOrder::buy_order(
+                    Actor::Firm(self.id),
+                    plan.good,
+                    plan.buy_qty,
+                    plan.bid,
+                    pay_good,
+                    -(plan.buy_qty * plan.bid / pay_price),
+                    buy_band,
+                ));
+            } else {
+                orders.push(MarketOrder::request_order(
+                    Actor::Firm(self.id),
+                    plan.good,
+                    plan.buy_qty,
+                    buy_band,
+                ));
+            }
+            remaining -= cost;
+        }
+
+        orders
     }
 
     /// # Run Production
@@ -507,8 +667,8 @@ pub struct FirmPRow {
     pub amv_target: f64,
     /// If being bought and sold, this modifies the buy and sell prices off of the 
     /// [`FirmPRow::amv_target`] appropriately. A simple multiplier to the AMV.
-    /// Buy Price = amv_target * (1.0 + margin)
-    /// Sell Price = amv_target * (1.0 - margin)
+    /// Buy Price = amv_target * (1.0 - margin)
+    /// Sell Price = amv_target * (1.0 + margin)
     /// 
     /// Should never be negative, but not enforced as that should be self-correcting.
     pub margin: f64,
@@ -704,6 +864,58 @@ impl FirmPRow {
         (self.quantity - floor).max(0.0)
     }
 
+    /// On-hand units not fenced by reserve, reserve target, or (for production
+    /// inputs) stock target / use target.
+    pub fn free_for_market(&self) -> f64 {
+        let mut floor = self.reserve.max(self.reserve_target);
+        if self.use_target > 0.0 {
+            floor = floor.max(self.stock_target).max(self.use_target);
+        }
+        (self.quantity - floor).max(0.0)
+    }
+
+    /// Units to buy today from current targets and stock.
+    /// Producer inputs cap at the stock-target shortfall when stock_target is set.
+    /// Merchants (no use_target) emit the full purchase_target.
+    pub fn purchase_qty(&self) -> f64 {
+        if self.purchase_target <= 0.0 {
+            0.0
+        } else if self.use_target > 0.0 && self.stock_target > 0.0 {
+            self.purchase_target.min((self.stock_target - self.quantity).max(0.0))
+        } else {
+            self.purchase_target
+        }
+    }
+
+    /// Mid AMV for orders: `amv_target` when set, otherwise `fallback`.
+    pub fn mid_amv(&self, fallback: f64) -> f64 {
+        if self.amv_target != 0.0 {
+            self.amv_target
+        } else {
+            fallback
+        }
+    }
+
+    /// Standing bid AMV: `mid * (1 - margin)` when the row both buys and sells,
+    /// else `mid`.
+    pub fn bid_amv(&self, mid: f64) -> f64 {
+        if self.purchase_target > 0.0 && self.sell_target > 0.0 {
+            mid * (1.0 - self.margin)
+        } else {
+            mid
+        }
+    }
+
+    /// Standing ask AMV: `mid * (1 + margin)` when the row both buys and sells,
+    /// else `mid`.
+    pub fn ask_amv(&self, mid: f64) -> f64 {
+        if self.purchase_target > 0.0 && self.sell_target > 0.0 {
+            mid * (1.0 + self.margin)
+        } else {
+            mid
+        }
+    }
+
     /// Unit AMV paid today: `bought_amv / bought`. 0 if nothing was bought.
     pub fn bought_unit_amv(&self) -> f64 {
         if self.bought > 0.0 {
@@ -723,6 +935,119 @@ impl FirmPRow {
     }
 }
 
+/// Per-row shopping plan built by [`Firm::create_orders`].
+struct RowPlan {
+    good: usize,
+    buy_qty: f64,
+    sell_qty: f64,
+    exchange_qty: f64,
+    liquidate_qty: f64,
+    use_target: f64,
+    bid: f64,
+    ask: f64,
+    salability: f64,
+    line_rank: usize,
+}
+
+/// Split of free on-hand stock for [`classify_on_hand`].
+struct OnHandSplit {
+    sell: f64,
+    exchange: f64,
+    liquidate: f64,
+}
+
+impl OnHandSplit {
+    fn empty() -> Self {
+        Self {
+            sell: 0.0,
+            exchange: 0.0,
+            liquidate: 0.0,
+        }
+    }
+}
+
+/// Split free on-hand stock into sell, exchange, and/or liquidate.
+/// Production-fenced units are already excluded by [`FirmPRow::free_for_market`].
+fn classify_on_hand(row: &FirmPRow, salability: f64) -> OnHandSplit {
+    let free = row.free_for_market();
+    if free <= 0.0 {
+        return OnHandSplit::empty();
+    }
+
+    let trading = row.purchase_target > 0.0
+        || row.sell_target > 0.0
+        || row.use_target > 0.0;
+    let can_exchange = salability >= market_constants::EXCHANGE_SALABILITY_MIN;
+
+    if !trading {
+        if can_exchange {
+            return OnHandSplit {
+                sell: 0.0,
+                exchange: free,
+                liquidate: 0.0,
+            };
+        }
+        return OnHandSplit {
+            sell: 0.0,
+            exchange: 0.0,
+            liquidate: free,
+        };
+    }
+
+    let can_sell = row.sell_target > 0.0;
+    if can_sell && can_exchange {
+        let span = 1.0 - market_constants::EXCHANGE_SALABILITY_MIN;
+        let t = if span > 0.0 {
+            ((salability - market_constants::EXCHANGE_SALABILITY_MIN) / span).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let edge = market_constants::SELL_EXCHANGE_EDGE;
+        let exchange_frac = lerp(edge, 1.0 - edge, t);
+        let mut exchange_qty = round_units(free * exchange_frac).clamp(0.0, free);
+        let mut sell_qty = free - exchange_qty;
+        if sell_qty > row.sell_target {
+            exchange_qty += sell_qty - row.sell_target;
+            sell_qty = row.sell_target;
+        }
+        OnHandSplit {
+            sell: sell_qty,
+            exchange: exchange_qty,
+            liquidate: 0.0,
+        }
+    } else if can_sell {
+        OnHandSplit {
+            sell: row.sell_target.min(free),
+            exchange: 0.0,
+            liquidate: 0.0,
+        }
+    } else if can_exchange {
+        OnHandSplit {
+            sell: 0.0,
+            exchange: free,
+            liquidate: 0.0,
+        }
+    } else {
+        OnHandSplit::empty()
+    }
+}
+
+/// Round a non-negative unit count half-up to a whole number.
+fn round_units(amount: f64) -> f64 {
+    debug_assert!(amount >= 0.0, "amount must be >= 0.0");
+    (amount + 0.5).floor()
+}
+
+/// First exchange tender that is not `exclude`, as (good id, unit price).
+fn counter_good(exchange_goods: &[(usize, f64, f64)], exclude: usize) -> Option<(usize, f64)> {
+    exchange_goods.iter().find_map(|&(good, _, price)| {
+        if good != exclude && price != 0.0 {
+            Some((good, price))
+        } else {
+            None
+        }
+    })
+}
 
 #[cfg(test)]
 mod firm {
@@ -1456,6 +1781,54 @@ mod firm {
             let row = FirmPRow::new().with_sold(2.0).with_sold_amv(9.0);
             assert_eq!(row.sold_unit_amv(), 4.5);
         }
+
+        #[test]
+        fn dual_sided_row_splits_mid_by_margin() {
+            let row = FirmPRow::new()
+                .with_purchase_target(1.0)
+                .with_sell_target(1.0)
+                .with_margin(0.2);
+            assert!((row.bid_amv(10.0) - 8.0).abs() < 1e-12);
+            assert!((row.ask_amv(10.0) - 12.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn one_sided_row_uses_mid_as_bid_and_ask() {
+            let buy_only = FirmPRow::new().with_purchase_target(1.0).with_margin(0.2);
+            assert_eq!(buy_only.bid_amv(10.0), 10.0);
+            assert_eq!(buy_only.ask_amv(10.0), 10.0);
+        }
+
+        #[test]
+        fn purchase_qty_caps_producer_inputs_at_stock_shortfall() {
+            let row = FirmPRow::new()
+                .with_quantity(4.0)
+                .with_purchase_target(8.0)
+                .with_use_target(5.0)
+                .with_stock_target(10.0);
+            assert_eq!(row.purchase_qty(), 6.0);
+
+            let full = row.with_quantity(12.0);
+            assert_eq!(full.purchase_qty(), 0.0);
+        }
+
+        #[test]
+        fn purchase_qty_lets_merchants_buy_the_full_target() {
+            let row = FirmPRow::new()
+                .with_quantity(20.0)
+                .with_purchase_target(8.0)
+                .with_stock_target(20.0);
+            assert_eq!(row.purchase_qty(), 8.0);
+        }
+
+        #[test]
+        fn free_for_market_fences_producer_stock_and_use() {
+            let row = FirmPRow::new()
+                .with_quantity(15.0)
+                .with_use_target(5.0)
+                .with_stock_target(10.0);
+            assert_eq!(row.free_for_market(), 5.0);
+        }
     }
 
     mod decay_goods_should {
@@ -1559,6 +1932,428 @@ mod firm {
             assert_eq!(row.used, 2.0);
             assert_eq!(row.average_cost, 3.0);
             assert_eq!(row.reserve, 1.0);
+        }
+    }
+
+    mod create_orders_should {
+        use super::*;
+        use crate::game::actor::Actor;
+        use crate::game::config::market_priority;
+        use crate::game::good::GoodTag;
+        use crate::game::market::MarketHistory;
+        use crate::game::marketorder::compose_sell_priority;
+
+        fn make_history(entries: &[(usize, f64, f64)]) -> MarketHistory {
+            let mut history = MarketHistory::new();
+            for &(id, price, salability) in entries {
+                history.prices.insert(id, price);
+                history.salability.insert(id, salability);
+            }
+            history
+        }
+
+        fn make_factuals_goods(ids: &[usize]) -> Factuals {
+            let mut factuals = Factuals::new();
+            for &id in ids {
+                factuals.goods.insert(id, make_good(id, "good", HashMap::new()));
+            }
+            factuals
+        }
+
+        fn empty_firm() -> Firm {
+            Firm::new(7, "Shop".into(), 42, hexx::Hex::new(0, 0))
+        }
+
+        fn orders_for(orders: &[crate::game::marketorder::MarketOrder], good: usize) -> Vec<&crate::game::marketorder::MarketOrder> {
+            orders.iter().filter(|order| order.target == good).collect()
+        }
+
+        #[test]
+        fn miller_sells_output_and_buys_input_shortfall() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(4.0)
+                    .with_purchase_target(8.0)
+                    .with_use_target(6.0)
+                    .with_stock_target(10.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(12.0)
+                    .with_sell_target(12.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.4), (20, 2.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 2);
+            assert!(orders[0].is_offer_order());
+            assert_eq!(orders[0].target, 20);
+            assert_eq!(orders[0].target_amount, -12.0);
+            assert_eq!(
+                orders[0].priority,
+                compose_sell_priority(market_priority::FIRM_PRODUCER, 12.0, 0.0)
+            );
+            assert!(orders[1].is_request_order());
+            assert_eq!(orders[1].target, 10);
+            assert_eq!(orders[1].target_amount, 6.0);
+            assert_eq!(orders[1].priority, market_priority::FIRM_PRODUCER);
+            assert_eq!(firm.property[&10].quantity, 4.0);
+            assert_eq!(firm.property[&20].quantity, 12.0);
+        }
+
+        #[test]
+        fn merchant_buys_beyond_stock_and_sells_current_sellable() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(20.0)
+                    .with_reserve_target(5.0)
+                    .with_purchase_target(8.0)
+                    .with_sell_target(10.0)
+                    .with_stock_target(20.0)
+                    .with_amv_target(2.0)
+                    .with_margin(0.1),
+            );
+
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 2.0, 0.5)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 2);
+            assert!(orders[0].is_offer_order());
+            assert_eq!(orders[0].target, 10);
+            assert_eq!(orders[0].target_amount, -10.0);
+            assert_eq!(
+                orders[0].priority,
+                compose_sell_priority(market_priority::FIRM_MERCHANT, 10.0, 0.0)
+            );
+            assert!(orders[1].is_request_order());
+            assert_eq!(orders[1].target, 10);
+            assert_eq!(orders[1].target_amount, 8.0);
+            assert_eq!(orders[1].priority, market_priority::FIRM_MERCHANT);
+        }
+
+        #[test]
+        fn producer_dumps_only_excess_above_stock() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(15.0)
+                    .with_purchase_target(8.0)
+                    .with_sell_target(20.0)
+                    .with_use_target(5.0)
+                    .with_stock_target(10.0),
+            );
+
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 1);
+            assert!(orders[0].is_offer_order());
+            assert_eq!(orders[0].target_amount, -5.0);
+            assert_eq!(orders[0].priority, compose_sell_priority(
+                market_priority::FIRM_PRODUCER, 5.0, 0.0
+            ));
+        }
+
+        #[test]
+        fn mid_salability_split_is_half_sell_half_exchange() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_sell_target(10.0),
+            );
+
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.8)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 1);
+            assert!(orders[0].is_offer_order());
+            assert_eq!(orders[0].target, 10);
+            assert_eq!(orders[0].target_amount, -5.0);
+        }
+
+        #[test]
+        fn exchange_floor_keeps_ten_percent_as_tender() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_sell_target(10.0),
+            );
+
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.6)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].target_amount, -9.0);
+        }
+
+        #[test]
+        fn full_salability_keeps_ten_percent_for_sale() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_sell_target(10.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(1.0),
+            );
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 1.0), (20, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let outgoing = orders_for(&orders, 10);
+            assert_eq!(outgoing.len(), 1);
+            assert_eq!(outgoing[0].target_amount, -1.0);
+            assert_eq!(orders.iter().find(|o| o.target == 20).unwrap().counter_offer, Some(10));
+        }
+
+        #[test]
+        fn sell_target_caps_then_remainder_stays_exchange() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_sell_target(2.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.75), (20, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let outgoing = orders_for(&orders, 10);
+            assert_eq!(outgoing.len(), 1);
+            assert_eq!(outgoing[0].target_amount, -2.0);
+            assert!(orders.iter().any(|o| o.target == 20 && o.counter_offer == Some(10)));
+        }
+
+        #[test]
+        fn liquidates_unwanted_low_salability_as_offer() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_quantity(5.0),
+            );
+
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.3)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 1);
+            assert!(orders[0].is_offer_order());
+            assert!(!orders[0].is_sell_order());
+            assert_eq!(orders[0].target, 10);
+            assert_eq!(orders[0].target_amount, -5.0);
+        }
+
+        #[test]
+        fn liquidate_stays_an_offer_even_when_money_exists() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                1,
+                FirmPRow::new().with_quantity(10.0),
+            );
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_quantity(5.0),
+            );
+
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, 1.0, 0.9), (10, 1.0, 0.3)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let pottery = orders_for(&orders, 10);
+            assert_eq!(pottery.len(), 1);
+            assert!(pottery[0].is_offer_order());
+            assert!(!pottery[0].is_sell_order());
+        }
+
+        #[test]
+        fn unwanted_high_salability_is_exchange_not_liquidate() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                1,
+                FirmPRow::new().with_quantity(10.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(2.0),
+            );
+
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders_for(&orders, 1).len(), 0);
+            assert_eq!(orders.len(), 1);
+            assert!(orders[0].is_buy_order());
+            assert_eq!(orders[0].target, 20);
+            assert_eq!(orders[0].counter_offer, Some(1));
+        }
+
+        #[test]
+        fn buys_production_inputs_before_merchant_restock() {
+            let mut firm = empty_firm();
+            // Coin-like tender funds both buys.
+            firm.property.insert(
+                5,
+                FirmPRow::new().with_quantity(100.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_purchase_target(3.0),
+            );
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_purchase_target(3.0)
+                    .with_use_target(3.0)
+                    .with_stock_target(3.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+
+            let factuals = make_factuals_goods(&[5, 10, 20]);
+            let history = make_history(&[
+                (5, 1.0, 0.9),
+                (10, 1.0, 0.4),
+                (20, 1.0, 0.4),
+            ]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let buys: Vec<_> = orders.iter().filter(|o| o.target_amount > 0.0).collect();
+            assert_eq!(buys.len(), 2);
+            assert_eq!(buys[0].target, 10);
+            assert_eq!(buys[1].target, 20);
+            assert_eq!(buys[0].priority, market_priority::FIRM_PRODUCER);
+        }
+
+        #[test]
+        fn skips_untradeable_goods() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(5.0)
+                    .with_purchase_target(2.0)
+                    .with_sell_target(2.0),
+            );
+            let mut factuals = make_factuals_goods(&[10]);
+            factuals.goods.get_mut(&10).unwrap().tags.insert(GoodTag::Untradeable);
+            let history = make_history(&[(10, 1.0, 0.5)]);
+
+            let orders = firm.create_orders(&history, &factuals);
+            assert!(orders.is_empty());
+        }
+
+        #[test]
+        fn emits_nothing_without_spendable_amv() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+            assert!(orders.is_empty());
+        }
+
+        #[test]
+        fn does_not_mutate_the_firm() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(8.0)
+                    .with_sell_target(3.0)
+                    .with_purchase_target(1.0),
+            );
+            let before = firm.clone();
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.4)]);
+            let _ = firm.create_orders(&history, &factuals);
+            assert_eq!(firm.property[&10].quantity, before.property[&10].quantity);
+            assert_eq!(
+                firm.property[&10].purchase_target,
+                before.property[&10].purchase_target
+            );
+            assert_eq!(firm.property[&10].sell_target, before.property[&10].sell_target);
+        }
+
+        #[test]
+        fn merchant_with_tender_stamps_bid_ask_spread() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                1,
+                FirmPRow::new().with_quantity(10.0),
+            );
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(20.0)
+                    .with_purchase_target(5.0)
+                    .with_sell_target(5.0)
+                    .with_amv_target(2.0)
+                    .with_margin(0.1),
+            );
+
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, 1.0, 0.9), (10, 2.0, 0.5)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
+            let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
+            assert_eq!(sell.target, 10);
+            assert_eq!(sell.target_amount, -5.0);
+            assert_eq!(sell.amv_target, Some(2.2));
+            assert_eq!(sell.counter_offer, Some(1));
+            assert_eq!(buy.target, 10);
+            assert_eq!(buy.target_amount, 5.0);
+            assert_eq!(buy.amv_target, Some(1.8));
+            assert_eq!(buy.counter_offer, Some(1));
+            assert_eq!(buy.priority, market_priority::FIRM_MERCHANT);
+        }
+
+        #[test]
+        fn origin_is_this_firm() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(4.0)
+                    .with_sell_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[10]);
+            let history = make_history(&[(10, 1.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+            assert_eq!(orders[0].origin, Actor::Firm(7));
         }
     }
 }

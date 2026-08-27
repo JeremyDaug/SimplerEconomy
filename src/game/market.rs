@@ -269,6 +269,7 @@ impl Market {
         let mut history = MarketHistory::new();
         for (&good_id, good) in &self.goods {
             history.prices.insert(good_id, good.amv);
+            history.salability.insert(good_id, good.salability);
         }
         history
     }

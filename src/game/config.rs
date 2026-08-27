@@ -142,6 +142,12 @@ pub mod market_constants {
     /// AMV_MIN_ABS)` bounces that far past 0 from the previous sign
     /// (positive -> slightly negative, negative -> slightly positive).
     pub const AMV_MIN_ABS: f64 = 0.00001;
+
+    /// Minimum salability to treat on-hand stock as exchange tender.
+    pub const EXCHANGE_SALABILITY_MIN: f64 = 0.6;
+    /// When a pile is both sold and exchanged, each side keeps at least this
+    /// share (0.1 = 10%). Salability lerps the rest.
+    pub const SELL_EXCHANGE_EDGE: f64 = 0.1;
 }
 
 /// Named intramarket order-priority slots.
