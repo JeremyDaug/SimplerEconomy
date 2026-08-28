@@ -220,7 +220,7 @@ Savings does not fence reserves or consumption.
 **Preferred:** liquid wealth, mobile wealth
 
 **Meaning:** Spendable stock: `Sum(quantity * price * salability)` for tradeable goods.
-Missing prices and salability default to `1.0`. Untradeable goods are skipped.
+Missing prices default to `1.0`. Missing salability defaults to `SALABILITY_DEFAULT` (`0.4`). Untradeable goods are skipped.
 **Code:** `PopRecords::liquid_wealth`, `Pop::property_liquid_wealth`
 
 ### Save target
@@ -398,7 +398,7 @@ Firm **consumed** covers both Destroyed and Consumed process inputs; decay produ
 **Avoid:** special resources (except the pop method name), state resources (faith/culture routing is the caller's job)
 
 **Meaning:** Non-good stocks the player spends and accumulates: **culture**, **research**, **legitimacy**, **authority**, **faith**. Daily yield is harvested from pops; the pool lives on the player (`State`). Negatives are allowed and apply increasing penalties; there is no zero floor. Culture and research do not decay; faith, legitimacy, and authority decay after spend (rest-value-like).  
-**Code:** `PlayerResources` (`player_resources.rs`), `State.resources`; desire/pop arms harvested in `Pop::extract_special_resources` (still stub)
+**Code:** `PlayerResources` (`player_resources.rs`), `State.resources`; desire/pop arms harvested in `Pop::extract_special_resources`
 
 ---
 

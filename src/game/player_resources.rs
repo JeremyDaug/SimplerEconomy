@@ -96,10 +96,8 @@ impl PlayerResources {
     /// `sat` is that desire's success rate (`satisfaction / amount`).
     /// Callers clamp **common** (and basic) to `[0, 1]` and leave **luxury**
     /// unclamped so extra levels scale. Household / part-of-house scale is
-    /// already baked into the desire amount; do not multiply by count here.
-    ///
-    /// Harvest on the pop currently multiplies by `get_scaling_factor` itself
-    /// because Platonic -> Demo -> Pop does not bake effect magnitudes yet.
+    /// already baked into the desire amount and additive effect magnitudes;
+    /// do not multiply by count here.
     pub fn add_desire_effect(&mut self, effect: DesireEffect, sat: f64) {
         if !effect.is_player_resource() {
             return;

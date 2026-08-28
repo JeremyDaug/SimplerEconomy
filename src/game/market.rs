@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use bevy::ui::State;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -262,9 +261,9 @@ impl Market {
 
     /// # History
     ///
-    /// Snapshot of current AMVs for pop record keeping and sentiment wealth.
-    /// Salability is not stored on [`MarketGood`] yet, so it stays empty
-    /// (readers default missing salability to 1.0).
+    /// Snapshot of current AMVs and salability for pop record keeping and
+    /// sentiment wealth. Readers default missing prices to 1.0 and missing
+    /// salability to [`market_constants::SALABILITY_DEFAULT`].
     pub fn history(&self) -> MarketHistory {
         let mut history = MarketHistory::new();
         for (&good_id, good) in &self.goods {
@@ -341,9 +340,12 @@ impl MarketHistory {
         self.prices.get(&good_id).copied().unwrap_or(1.0)
     }
 
-    /// Salability for `good_id`, or 1.0 if missing.
+    /// Salability for `good_id`, or [`market_constants::SALABILITY_DEFAULT`] if missing.
     pub fn salability(&self, good_id: usize) -> f64 {
-        self.salability.get(&good_id).copied().unwrap_or(1.0)
+        self.salability
+            .get(&good_id)
+            .copied()
+            .unwrap_or(market_constants::SALABILITY_DEFAULT)
     }
 }
 
@@ -424,12 +426,12 @@ pub struct MarketGood {
 }
 
 impl Default for MarketGood {
-    /// AMV defaults to 1.0, average price to 1.0, and salability to 0.6.
-    /// All others default to 0.0.
+    /// AMV defaults to 1.0, average price to 1.0, and salability to
+    /// [`market_constants::SALABILITY_DEFAULT`]. All others default to 0.0.
     fn default() -> Self {
         Self {
             amv: 1.0,
-            salability: 0.6,
+            salability: market_constants::SALABILITY_DEFAULT,
             production: 0.0,
             consumption: 0.0,
             imported: 0.0,
@@ -451,8 +453,8 @@ impl Default for MarketGood {
 impl MarketGood {
     /// # New
     ///
-    /// Same defaults as [`Default`]: AMV 1.0, salability 0.6, average price 1.0,
-    /// all others 0.0.
+    /// Same defaults as [`Default`]: AMV 1.0, salability
+    /// [`market_constants::SALABILITY_DEFAULT`], average price 1.0, all others 0.0.
     pub fn new() -> Self {
         Self::default()
     }
@@ -712,10 +714,10 @@ mod market_good_should {
     use crate::game::config::market_constants;
 
     #[test]
-    fn default_to_unit_amv_mid_salability_and_zero_flow() {
+    fn default_to_unit_amv_default_salability_and_zero_flow() {
         let good = MarketGood::new();
         assert_eq!(good.amv, 1.0);
-        assert_eq!(good.salability, 0.6);
+        assert_eq!(good.salability, market_constants::SALABILITY_DEFAULT);
         assert_eq!(good.average_price, 1.0);
         assert_eq!(good.production, 0.0);
         assert_eq!(good.consumption, 0.0);

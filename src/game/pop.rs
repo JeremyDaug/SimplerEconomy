@@ -153,8 +153,8 @@ impl Pop {
     /// via `Factuals::source_demo_desire`.
     /// 
     /// Flow:
-    /// 1. Update existing desires (amount, satisfaction, targets, demo priority) or drop
-    ///    ones whose demo no longer exists.
+    /// 1. Update existing desires (amount, satisfaction, targets, effects, demo
+    ///    priority) or drop ones whose demo no longer exists.
     /// 2. Add any new demo desires from the pop's species/culture/religion that are not
     ///    already present (scaled via `DemoDesire::create_desire`).
     /// 3. Scale property `shop_target` / `desire_needs` for population growth.
@@ -168,9 +168,11 @@ impl Pop {
             let mut desire_idx = 0;
             while desire_idx < self.desires[tier_idx].len() {
                 if let Some(demo) = factuals.source_demo_desire(&self.desires[tier_idx][desire_idx]) {
-                    let new_amount = demo.amount * self.get_scaling_factor(demo.scalar);
+                    let scale = self.get_scaling_factor(demo.scalar);
+                    let new_amount = demo.amount * scale;
                     let priority = demo.priority;
                     let targets = demo.bucket.clone();
+                    let effects = demo.scaled_effects(scale);
 
                     let desire = &mut self.desires[tier_idx][desire_idx];
                     // Place using the parent demo's priority for this update's sort.
@@ -182,6 +184,7 @@ impl Pop {
                     desire.amount = new_amount;
                     // Override targets from the demo definition.
                     desire.target = targets; // TODO: cheaper sync if needed later.
+                    desire.effect = effects;
                     existing_desires.insert(desire.source);
                     desire_idx += 1;
                 } else {
@@ -1100,7 +1103,8 @@ impl Pop {
     /// # Property Liquid Wealth
     /// 
     /// Spendable wealth: `Sum(qty * price * salability)` for tradeable goods.
-    /// Missing prices and salability default to `1.0`.
+    /// Missing prices default to `1.0`. Missing salability defaults to
+    /// [`crate::game::config::market_constants::SALABILITY_DEFAULT`].
     pub fn property_liquid_wealth(&self, market_history: &MarketHistory, factuals: &Factuals) -> f64 {
         let mut total = 0.0;
         for (good_id, row) in &self.property {
@@ -1703,10 +1707,9 @@ impl Pop {
     /// pop, and returning it to the caller.
     /// 
     /// Meant to be called after [`Self::update_sentiments`], but before migration.
-    /// 
-    /// The resources produced here 
-    /// 
-    /// Where those resources go is not up to the pop.
+    ///
+    /// The resources produced here are a daily yield bag. Where they go is not
+    /// up to the pop.
     pub fn extract_special_resources(&mut self, factuals: &Factuals) -> PlayerResources {
         // sanity check that working desires is empty.
         debug_assert!(
@@ -1802,7 +1805,7 @@ impl Pop {
         let potential = if n == 0 {
             0.0
         } else {
-            k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * (n as f64)
+            k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * (n as f64 - 1.0)
         };
         // get the average satisfaction (unclamped above, floored at 0).
         // Low SOL does not produce negative sat-legitimacy; mood covers that.
@@ -1906,7 +1909,7 @@ impl Pop {
         // check and get religion
         if self.demographics.religion != 0 {
             Self::demo_special_resources(&mut result, 
-            &factuals.find_culture(self.demographics.culture).culture_effects,
+            &factuals.find_religion(self.demographics.religion).religion_effects,
             self.demographics.household.count);
         }
         result
@@ -2300,6 +2303,43 @@ mod pop {
             // sole desire; baked priority is its tier index
             assert_eq!(pop.desires[0][0].priority, 0);
             assert_eq!(*pop.desires[0][0].source.demo_desire_id(), 10);
+        }
+
+        #[test]
+        fn bakes_additive_culture_effect_with_households() {
+            let demo = household_demo(1, 1.0, 0, 1)
+                .with_effect(DesireEffect::Culture(0.5, true));
+            let pop = make_pop();
+            let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            assert_eq!(desire.effect, vec![DesireEffect::Culture(5.0, true)]);
+        }
+
+        #[test]
+        fn leaves_birthrate_effect_unscaled() {
+            let demo = household_demo(1, 1.0, 0, 0)
+                .with_effect(DesireEffect::Birthrate(0.2, true));
+            let pop = make_pop();
+            let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            assert_eq!(desire.effect, vec![DesireEffect::Birthrate(0.2, true)]);
+        }
+
+        #[test]
+        fn rescales_additive_effects_when_households_grow() {
+            let demo = household_demo(3, 1.0, 0, 0)
+                .with_effect(DesireEffect::Culture(0.5, true));
+            let culture = Culture::new(1, "Test").with_desire(demo.clone());
+            let factuals = Factuals::new().with_culture(culture);
+
+            let mut pop = make_pop();
+            pop.demographics.culture = 1;
+            let desire = demo.create_desire(&pop, DesireSource::Culture(1, 0));
+            pop.desires[0].push(desire);
+            assert_eq!(pop.desires[0][0].effect[0], DesireEffect::Culture(5.0, true));
+
+            pop.demographics.household.count = 20.0;
+            pop.update_desires(&factuals);
+
+            assert_eq!(pop.desires[0][0].effect[0], DesireEffect::Culture(10.0, true));
         }
 
         #[test]
@@ -3068,14 +3108,16 @@ mod pop {
         }
 
         #[test]
-        fn missing_price_and_salability_default_to_one() {
+        fn missing_price_defaults_to_one_salability_to_default() {
+            use crate::game::config::market_constants;
             let mut pop = make_pop();
             pop.property.insert(100, PopPRow::new(10.0));
             let history = MarketHistory::new();
             let factuals = make_default_factuals();
-            // 10 * 1.0 * 1.0 = 10
+            // 10 * 1.0 * SALABILITY_DEFAULT
             let liquid = pop.property_liquid_wealth(&history, &factuals);
-            assert!((liquid - 10.0).abs() < 1e-9);
+            let expected = 10.0 * market_constants::SALABILITY_DEFAULT;
+            assert!((liquid - expected).abs() < 1e-9);
         }
     }
 
@@ -4319,7 +4361,7 @@ mod pop {
             pop.records.trend = 0.0;
             let people = pop.demographics.total_population();
             let n = 1.0;
-            let potential = k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * n;
+            let potential = k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * (n - 1.0);
             let expected = potential * 2.0 * people;
             let bag = pop.extract_special_resources(&extract_factuals());
             assert!((bag.legitimacy - expected).abs() < 1e-12);
@@ -4417,6 +4459,37 @@ mod pop {
             let bag = pop.extract_special_resources(&extract_factuals());
             // Living-well luxury culture is 0 (tier_sat[2] = 0). Effect: 4.0 * 2.0 sat.
             assert!((bag.culture - 8.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn desire_culture_from_create_desire_scales_with_households() {
+            use crate::game::desire::DemoDesire;
+
+            let demo = DemoDesire::new(1)
+                .with_amount(1.0)
+                .with_tier(1)
+                .with_scalar(ScalingFactor::Household(1.0))
+                .with_effect(DesireEffect::Culture(0.5, true));
+
+            let mut small = make_pop();
+            small.records.tier_sat = [0.0, 0.0, 0.0];
+            small.records.trend = 0.0;
+            let mut desire = demo.create_desire(&small, DesireSource::Culture(1, 0));
+            desire.satisfaction = desire.amount;
+            small.desires[1].push(desire);
+
+            let mut big = make_pop();
+            big.demographics.household.count = 20.0;
+            big.records.tier_sat = [0.0, 0.0, 0.0];
+            big.records.trend = 0.0;
+            let mut desire = demo.create_desire(&big, DesireSource::Culture(1, 0));
+            desire.satisfaction = desire.amount;
+            big.desires[1].push(desire);
+
+            let a = small.extract_special_resources(&extract_factuals());
+            let b = big.extract_special_resources(&extract_factuals());
+            assert!((a.culture - 5.0).abs() < 1e-12);
+            assert!((b.culture / a.culture - 2.0).abs() < 1e-12);
         }
 
         #[test]

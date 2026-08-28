@@ -16,7 +16,9 @@ When reviewing commits, a branch, a PR, or local changes:
 
 ---
 
-**Last updated:** 2026-08-18 — closed the 2026-08-18 record-keeping review items.  
+**Last updated:** 2026-08-27 — second review pass on the uncommitted intramarket/extract
+cleanup. No open code issues. Handoff refreshed (`SALABILITY_DEFAULT` 0.4, desire-effect
+bake, religion harvest, counter AMV, legitimacy `n-1`).
 **Open items:** 0 bugs, 0 suggestions, 0 nits.
 
 ---
@@ -32,24 +34,3 @@ When reviewing commits, a branch, a PR, or local changes:
 ## Open nits
 
 (none)
-
-## Closed / deferred (2026-08-18)
-
-- **Fixed** `pop.rs` growing-pop double scale — record keeping owns next-day shop/save
-  (consume-need scaled by post-growth pre-migration `growth_f`; save buffer inflates
-  only). `update_desires` no longer multiplies property targets. Morning demo-definition
-  demand shifts roll in at the next rewrite.
-- **Fixed** `create_orders` — planned shop shortfalls on non-desire goods (parked
-  savings) are requested after the desire shop pass and before opportunistic extra buys.
-- **Fixed** `satisfy_one_desire` / `PopPRow::saved` — reserved floors at 0; leftover
-  AMV is leftover quantity.
-- **Fixed** `living_need_amv` / `specific_buffer_weights` — shared cheapest tradeable
-  cover (skip untradeable, respect `cap`).
-- **Fixed** growth buffer uses `count - net_migration` as post-growth size.
-- **Fixed** `playstate.rs` — `MarketLookups` is one history per market plus pop-to-market.
-- **Fixed** `good_is_tradeable` now `Good::is_buyable()`; `DesireTarget::new` documents
-  positive efficiency.
-- **Deferred** luxury consume leveling — extra luxury passes can empty the leftover
-  pile; cap/pace later. See `TODO.md`.
-- **Deferred** `Pop.market_id` — membership currently lives on `Market.pops` and
-  `MarketLookups.pop_to_market`. Revisit when migration leaves write.

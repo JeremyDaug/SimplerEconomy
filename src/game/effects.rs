@@ -11,8 +11,6 @@
 //! stay on `process` for now: they change production math, not actor state. Their
 //! birth / mortality arms bridge into [`ProcessEffect`] / [`EffectKind`].
 
-use std::vec;
-
 use crate::game::sentiment::SentimentKind;
 use crate::game::household::HouseholdTarget;
 

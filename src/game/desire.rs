@@ -145,7 +145,7 @@ impl PlatonicDesire {
         desire_targets: Vec<usize>, priority: isize) -> DemoDesire {
         debug_assert!(self.tiers.contains(&tier),
             "Tier must be a valid tier for the Platonic Desire.");
-        // This is gross, rework this if possible.
+        // Keep only the platonic targets this demo selected.
         let first_desire = self.bucket.iter()
             .filter(|x| desire_targets.contains(&x.good))
             .map(|x| x.clone())
@@ -302,48 +302,35 @@ impl DemoDesire {
     /// 
     /// Creates a pop-level `Desire` from this demographic desire.
     /// 
-    /// Copies bucket, effects, scalar, and decay. Satisfaction starts at 0.0 and
+    /// Copies bucket, scalar, and decay. Satisfaction starts at 0.0 and
     /// category is left empty. `source` is stored with this demo desire's `id`
     /// filled in (second field of `DesireSource`) so lookups can resolve it later.
     /// 
     /// The target `amount` is this desire's base amount multiplied by the pop via
     /// `Pop::get_scaling_factor` and `self.scalar`.
+    ///
+    /// Additive effects (player resources, bonus goods) are multiplied by that
+    /// same scale. Birth, mortality, sentiment, and satisfaction arms are
+    /// copied unchanged.
     pub fn create_desire(&self, pop: &Pop, source: DesireSource) -> Desire {
+        let scale = pop.get_scaling_factor(self.scalar);
         Desire {
             source: source.with_demo_desire_id(self.id),
             priority: self.priority,
             target: self.bucket.clone(),
-            amount: self.amount * pop.get_scaling_factor(self.scalar),
+            amount: self.amount * scale,
             satisfaction: 0.0,
             category: None,
-            effect: self.effects.clone(),
+            effect: self.scaled_effects(scale),
             scalar: self.scalar,
             decay: self.decay,
         }
     }
 
-    /// # Derive Desire
-    /// 
-    /// Given the current demographic desire, create a desire for a pop and adjust it 
-    /// to them apropriately.
-    /// 
-    /// The amount on the output should be scaled to match the pop, and the effect
-    /// should scale apropriately as well to ensure it outputs the correct amount as a
-    /// percent of total success (satisfaction / amount)
-    /// 
-    /// Does not set the satisfaction.
-    ///
-    /// Additive effects (culture, research, faith, authority, legitimacy, bonus goods)
-    /// are multiplied by the same pop scale as amount. Birth, mortality, sentiment,
-    /// and satisfaction arms are left as demo rates / percents.
-    pub fn derive_desire(&self, source: DesireSource, pop: &Pop) -> Desire {
-        // amount per unit times that number in the pop.
-        let scale = pop.get_scaling_factor(self.scalar);
-        let amount = self.amount * scale;
-        // Additive arms (player resources, bonus goods) are per-scalar on the demo
-        // and must grow with household/adult/etc. count. Rate and percent arms stay.
-        let effect = self
-            .effects
+    /// Additive arms (player resources, bonus goods) grow with the same pop
+    /// scale as amount. Rate and percent arms stay at demo values.
+    pub(crate) fn scaled_effects(&self, scale: f64) -> Vec<DesireEffect> {
+        self.effects
             .iter()
             .map(|e| {
                 if e.is_additive() {
@@ -352,18 +339,7 @@ impl DemoDesire {
                     *e
                 }
             })
-            .collect();
-        Desire {
-            source: source.with_demo_desire_id(self.id),
-            priority: self.priority,
-            target: self.bucket.clone(),
-            amount,
-            satisfaction: 0.0,
-            category: None,
-            effect,
-            scalar: self.scalar,
-            decay: self.decay,
-        }
+            .collect()
     }
 }
 

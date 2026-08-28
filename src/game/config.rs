@@ -109,11 +109,11 @@ pub mod player_resource_constants {
     /// Weaker, unclamped luxury ladder (same pop scale).
     pub const LUXURY_CULTURE_RATE: f64 = 0.35;
 
-    /// Legitimacy from the first common desire (scaled by average desire sat).
+    /// Legitimacy from the first desire (scaled by average desire sat).
     /// Further desires add [`EXTRA_DESIRE_LEGITIMACY`] each, so extra wants are
     /// a weak legitimacy source.
     pub const FIRST_DESIRE_LEGITIMACY: f64 = 0.5;
-    /// Legitimacy added per common desire after the first.
+    /// Legitimacy added per desire after the first.
     pub const EXTRA_DESIRE_LEGITIMACY: f64 = 0.1;
     /// Luxury legitimacy per 1.0 luxury tier-sat mass (unclamped).
     pub const LUXURY_LEGITIMACY_RATE: f64 = 0.40;
@@ -143,6 +143,9 @@ pub mod market_constants {
     /// (positive -> slightly negative, negative -> slightly positive).
     pub const AMV_MIN_ABS: f64 = 0.00001;
 
+    /// Default salability for a new or unrecorded good.
+    /// Below [`EXCHANGE_SALABILITY_MIN`], so unknown goods are not till money.
+    pub const SALABILITY_DEFAULT: f64 = 0.4;
     /// Minimum salability to treat on-hand stock as exchange tender.
     pub const EXCHANGE_SALABILITY_MIN: f64 = 0.6;
     /// When a pile is both sold and exchanged, each side keeps at least this

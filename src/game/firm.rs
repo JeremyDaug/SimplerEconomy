@@ -291,7 +291,6 @@ impl Firm {
             market_priority::FIRM_PRODUCER
         };
 
-        // vec(good_id, salability, market_price)
         let mut exchange_goods: Vec<(usize, f64, f64)> = plans
             .iter()
             .filter(|plan| plan.exchange_qty > 0.0)
@@ -305,9 +304,14 @@ impl Firm {
 
         let mut spendable = 0.0;
         for plan in &plans {
-            spendable += plan.exchange_qty * history.price(plan.good);
-            spendable += plan.sell_qty * plan.ask;
-            spendable += plan.liquidate_qty * history.price(plan.good);
+            let price = history.price(plan.good);
+            if price > 0.0 {
+                spendable += plan.exchange_qty * price;
+                spendable += plan.liquidate_qty * price;
+            }
+            if plan.ask > 0.0 {
+                spendable += plan.sell_qty * plan.ask;
+            }
         }
 
         let mut orders: Vec<MarketOrder> = Vec::new();
@@ -1039,9 +1043,11 @@ fn round_units(amount: f64) -> f64 {
 }
 
 /// First exchange tender that is not `exclude`, as (good id, unit price).
+/// Skips non-positive AMV so counter amounts keep the buy/sell sign.
 fn counter_good(exchange_goods: &[(usize, f64, f64)], exclude: usize) -> Option<(usize, f64)> {
     exchange_goods.iter().find_map(|&(good, _, price)| {
-        if good != exclude && price != 0.0 {
+        if good != exclude && price > 0.0 {
+            debug_assert!(price.is_finite(), "tender AMV must be finite");
             Some((good, price))
         } else {
             None
@@ -2354,6 +2360,63 @@ mod firm {
             let history = make_history(&[(10, 1.0, 0.4)]);
             let orders = firm.create_orders(&history, &factuals);
             assert_eq!(orders[0].origin, Actor::Firm(7));
+        }
+
+        #[test]
+        fn skips_non_positive_tender_price() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                1,
+                FirmPRow::new().with_quantity(10.0),
+            );
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(20.0)
+                    .with_purchase_target(5.0)
+                    .with_sell_target(5.0)
+                    .with_amv_target(2.0)
+                    .with_margin(0.1),
+            );
+
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, -1.0, 0.9), (10, 2.0, 0.5)]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            let sell = orders.iter().find(|o| o.target == 10 && o.target_amount < 0.0)
+                .expect("outgoing");
+            let buy = orders.iter().find(|o| o.target == 10 && o.target_amount > 0.0)
+                .expect("incoming");
+            assert!(sell.is_offer_order());
+            assert!(!sell.is_sell_order());
+            assert!(sell.counter_offer.is_none());
+            assert!(buy.is_request_order());
+            assert!(!buy.is_buy_order());
+            assert!(buy.counter_offer.is_none());
+        }
+
+        #[test]
+        fn skips_non_positive_tender_and_uses_next() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(2, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(2.0),
+            );
+
+            let factuals = make_factuals_goods(&[1, 2, 20]);
+            let history = make_history(&[
+                (1, -1.0, 0.95),
+                (2, 1.0, 0.9),
+                (20, 1.0, 0.4),
+            ]);
+            let orders = firm.create_orders(&history, &factuals);
+
+            assert_eq!(orders.len(), 1);
+            assert!(orders[0].is_buy_order());
+            assert_eq!(orders[0].target, 20);
+            assert_eq!(orders[0].counter_offer, Some(2));
         }
     }
 }
