@@ -1,128 +1,91 @@
 //! CLI box for probing a market day. Currently only [`Market::match_orders`];
 //! meant to grow into a full intramarket-day loop.
 //!
-//! No factuals and no settlement. Prefab names are labels on ids so we can
-//! talk about the same goods and actors; they are not a goods catalog.
+//! Startup builds a small living roster (3 pops, 5 producer firms), factuals,
+//! and a price/salability snapshot, then loads books from
+//! [`Pop::create_orders`] / [`Firm::create_orders`]. Hand-typed orders still
+//! work. No settlement.
 //!
 //! ```text
 //! cargo run --example market_tester
 //! ```
 //!
 //! ```text
-//!   request farmers grain 3
-//!   offer mill grain 4
-//!   list
+//!   shop
 //!   match
+//!   request laborers grain 3
 //! ```
-//!
-//! Actor and good still accept `kind id` / raw numbers (`pop 1`, `1`).
 
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 
+use hexx::Hex;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use simpler_economy::game::actor::Actor;
 use simpler_economy::game::config::market_priority;
-use simpler_economy::game::market::Market;
+use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+use simpler_economy::game::factuals::Factuals;
+use simpler_economy::game::firm::{Firm, FirmPRow, ProductionLine};
+use simpler_economy::game::good::Good;
+use simpler_economy::game::household::Household;
+use simpler_economy::game::market::{Market, MarketHistory};
 use simpler_economy::game::marketorder::{compose_sell_priority, MarketOrder};
+use simpler_economy::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
+use simpler_economy::game::scalingfactor::ScalingFactor;
+use simpler_economy::game::sentiment::Sentiment;
 
-/// Label on a good id. Not a factual.
+/// Label on a good id.
 struct NamedGood {
     id: usize,
     name: &'static str,
 }
 
-/// Label on an actor id. Not a living actor.
+/// Label on an actor id.
 struct NamedActor {
     actor: Actor,
     name: &'static str,
 }
 
+const GRAIN: usize = 1;
+const WATER: usize = 2;
+const BREAD: usize = 3;
+const GOLD: usize = 4;
+const COIN: usize = 5;
+const JEWELRY: usize = 6;
+
 const PREFAB_GOODS: &[NamedGood] = &[
-    NamedGood {
-        id: 1,
-        name: "grain",
-    },
-    NamedGood {
-        id: 2,
-        name: "bread",
-    },
-    NamedGood {
-        id: 3,
-        name: "timber",
-    },
-    NamedGood {
-        id: 4,
-        name: "tools",
-    },
-    NamedGood {
-        id: 5,
-        name: "cloth",
-    },
-    NamedGood {
-        id: 6,
-        name: "iron",
-    },
-    NamedGood {
-        id: 7,
-        name: "fish",
-    },
-    NamedGood {
-        id: 8,
-        name: "pottery",
-    },
-    NamedGood {
-        id: 9,
-        name: "meat",
-    },
-    NamedGood {
-        id: 10,
-        name: "coin",
-    },
+    NamedGood { id: GRAIN, name: "grain" },
+    NamedGood { id: WATER, name: "water" },
+    NamedGood { id: BREAD, name: "bread" },
+    NamedGood { id: GOLD, name: "gold" },
+    NamedGood { id: COIN, name: "coin" },
+    NamedGood { id: JEWELRY, name: "jewelry" },
 ];
 
-/// 1 state, 2 institutions, 3 firms, 4 pops.
 const PREFAB_ACTORS: &[NamedActor] = &[
-    NamedActor {
-        actor: Actor::State(1),
-        name: "crown",
-    },
-    NamedActor {
-        actor: Actor::Institution(1),
-        name: "guild",
-    },
-    NamedActor {
-        actor: Actor::Institution(2),
-        name: "temple",
-    },
-    NamedActor {
-        actor: Actor::Firm(1),
-        name: "farm",
-    },
-    NamedActor {
-        actor: Actor::Firm(2),
-        name: "mill",
-    },
-    NamedActor {
-        actor: Actor::Firm(3),
-        name: "trader",
-    },
-    NamedActor {
-        actor: Actor::Pop(1),
-        name: "farmers",
-    },
-    NamedActor {
-        actor: Actor::Pop(2),
-        name: "millers",
-    },
-    NamedActor {
-        actor: Actor::Pop(3),
-        name: "laborers",
-    },
-    NamedActor {
-        actor: Actor::Pop(4),
-        name: "townsfolk",
-    },
+    NamedActor { actor: Actor::Pop(1), name: "farmers" },
+    NamedActor { actor: Actor::Pop(2), name: "laborers" },
+    NamedActor { actor: Actor::Pop(3), name: "townsfolk" },
+    NamedActor { actor: Actor::Firm(1), name: "farm" },
+    NamedActor { actor: Actor::Firm(2), name: "bakery" },
+    NamedActor { actor: Actor::Firm(3), name: "mine" },
+    NamedActor { actor: Actor::Firm(4), name: "mint" },
+    NamedActor { actor: Actor::Firm(5), name: "jeweler" },
+    NamedActor { actor: Actor::Firm(6), name: "well" },
+];
+
+/// Intended buy/sell roles for the roster table (not live order amounts).
+const ROSTER: &[(&str, &str, &str)] = &[
+    ("farmers", "water, bread, jewelry", "-"),
+    ("laborers", "grain, water, bread, jewelry", "-"),
+    ("townsfolk", "grain, water, bread, jewelry", "-"),
+    ("farm", "water", "grain"),
+    ("bakery", "grain", "bread"),
+    ("mine", "-", "gold"),
+    ("mint", "gold", "coin"),
+    ("jeweler", "gold", "jewelry"),
+    ("well", "-", "water"),
 ];
 
 struct Session {
@@ -131,6 +94,10 @@ struct Session {
     rng: StdRng,
     seed: Option<u64>,
     log: String,
+    pops: Vec<Pop>,
+    firms: Vec<Firm>,
+    factuals: Factuals,
+    history: MarketHistory,
 }
 
 struct Tokens<'a> {
@@ -158,22 +125,32 @@ impl<'a> Tokens<'a> {
 }
 
 fn main() {
+    let (pops, firms, factuals, history) = build_world();
     let mut session = Session {
         buys: Vec::new(),
         sells: Vec::new(),
         rng: StdRng::from_os_rng(),
         seed: None,
-        log: "Type help for commands. Matcher is read-only (books stay put).".into(),
+        log: String::new(),
+        pops,
+        firms,
+        factuals,
+        history,
     };
+    session.log = shop_from_actors(&mut session);
 
     let tty = io::stdout().is_terminal();
     if tty {
         draw_ui(&session);
     } else {
         println!("=== market tester ===");
-        println!("Prefab names are labels on ids. Type help for commands.");
+        println!("Living roster loaded via create_orders. Type help for commands.");
         println!("Matcher is read-only (books stay put).\n");
-        print_legend();
+        print_legend(&session);
+        println!();
+        list_books(&session);
+        println!();
+        println!("{}", session.log.trim_end());
     }
 
     let stdin = io::stdin();
@@ -222,7 +199,7 @@ fn clear_screen() {
 fn draw_ui(session: &Session) {
     clear_screen();
     println!("=== market tester ===");
-    print_legend();
+    print_legend(session);
     println!();
     list_books(session);
     if !session.log.is_empty() {
@@ -243,8 +220,8 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
     let rest = &tokens[1..];
     let msg = match cmd.as_str() {
         "help" | "?" | "h" => help_text(),
-        "legend" | "ids" | "prefabs" | "cls" | "list" | "ls" | "l" => {
-            "header already shows prefabs and books.".into()
+        "legend" | "ids" | "prefabs" | "roster" | "cls" | "list" | "ls" | "l" => {
+            "header already shows roster, goods, and books.".into()
         }
         "quit" | "exit" | "q" => return CmdResult::Quit,
         "clear" => {
@@ -252,6 +229,7 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
             session.sells.clear();
             "books cleared.".into()
         }
+        "shop" => shop_from_actors(session),
         "seed" => match parse_seed(rest) {
             Ok(seed) => {
                 session.rng = StdRng::seed_from_u64(seed);
@@ -291,35 +269,71 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
     CmdResult::Continue(msg)
 }
 
-fn print_legend() {
-    println!("prefab goods");
-    for (i, good) in PREFAB_GOODS.iter().enumerate() {
-        print!("  {:>2} {:<8}", good.id, good.name);
-        if i % 5 == 4 {
-            println!();
-        }
+fn shop_from_actors(session: &mut Session) -> String {
+    session.buys.clear();
+    session.sells.clear();
+    let mut pop_orders = Vec::new();
+    for pop in &session.pops {
+        pop_orders.extend(pop.create_orders(&session.history, &session.factuals));
     }
-    if PREFAB_GOODS.len() % 5 != 0 {
-        println!();
+    let n_pop = pop_orders.len();
+    let mut firm_orders = Vec::new();
+    for firm in &session.firms {
+        firm_orders.extend(firm.create_orders(&session.history, &session.factuals));
     }
-    println!("prefab actors  (1 state, 2 inst, 3 firms, 4 pops)");
-    for named in PREFAB_ACTORS {
-        println!("  {:<10}  {}", fmt_actor_kind_id(named.actor), named.name);
+    let n_firm = firm_orders.len();
+    for order in pop_orders.into_iter().chain(firm_orders) {
+        insert_order(session, order);
+    }
+    format!(
+        "shop loaded {} pop + {} firm orders ({} buys, {} sells).",
+        n_pop,
+        n_firm,
+        session.buys.len(),
+        session.sells.len()
+    )
+}
+
+fn insert_order(session: &mut Session, order: MarketOrder) {
+    if order.target_amount > 0.0 {
+        let _ = add_buy(session, order);
+    } else {
+        let _ = add_sell(session, order);
+    }
+}
+
+fn print_legend(session: &Session) {
+    println!("goods  (id  name  amv  sal)");
+    for good in PREFAB_GOODS {
+        let amv = session.history.price(good.id);
+        let sal = session.history.salability(good.id);
+        println!(
+            "  {:>2}  {:<8}  {:>6}  {:>4}",
+            good.id,
+            good.name,
+            fmt_num(amv),
+            fmt_num(sal)
+        );
     }
     println!();
-    println!("Type a prefab name, or kind+id / raw good id.");
-    println!("  request farmers grain 3");
-    println!("  request pop 1 1 3");
+    println!("roster  (pops request only; firms buy/sell from create_orders)");
+    println!("  {:<10}  {:<32}  {}", "actor", "buying", "selling");
+    for (name, buying, selling) in ROSTER {
+        println!("  {:<10}  {:<32}  {}", name, buying, selling);
+    }
+    println!();
+    println!("Type a name, or kind+id / raw good id.  shop  reloads actor orders.");
+    println!("  request laborers grain 3");
     println!();
     println!("Buy order priority: lower goes first. Defaults:");
-    println!("  state 0   inst 1   firm 2 (merchant)   pop 4");
-    println!("Sell/offer priority: higher is more likely. Default is compose_sell_priority");
-    println!("  (1 / actor-band + sqrt(amount) + 0 fills).");
+    println!("  firm 2.5 (producer)   pop 4");
+    println!("Sell/offer priority: higher is more likely. Default is compose_sell_priority.");
 }
 
 fn help_text() -> String {
     "\
 commands
+  shop                  reload books from pop and firm create_orders
   request <actor> <good> <amount> [priority]
   offer   <actor> <good> <amount> [priority]
   buy     <actor> <good> <amount> <amv> <pay-good> <pay-amount> [priority]
@@ -335,19 +349,18 @@ commands
   quit
 
 The screen clears and redraws after each command. Empty enter also redraws.
-actor: prefab name (farmers, mill, crown, ...) or kind id (pop 1, firm 2)
-good:  prefab name (grain, coin, ...) or id (1, 10)
+Startup runs shop once. Pops emit requests; firms emit buy/sell/offer.
+actor: prefab name (farmers, bakery, ...) or kind id (pop 1, firm 2)
+good:  prefab name (grain, coin, jewelry) or id (1, 5, 6)
 amounts: type positives. request/buy store +amount, offer/sell store -amount.
-buy pay-amount is what the buyer tenders (stored negative). sell want-amount
-is what the seller asks for in return (stored positive).
 
 examples
-  request farmers grain 3
-  offer mill grain 4
-  request townsfolk tools 1 4.5
-  buy trader grain 5 1.0 coin 5
-  sell farm grain 5 1.0 coin 5
-  match"
+  shop
+  match
+  request laborers grain 3
+  offer farm grain 4
+  buy bakery grain 5 1.0 coin 5
+  sell farm grain 5 1.0 coin 5"
         .into()
 }
 
@@ -499,7 +512,7 @@ fn parse_positive_amount(raw: &str) -> Result<f64, String> {
 fn default_buy_priority(actor: Actor) -> f64 {
     match actor {
         Actor::Pop(_) => market_priority::POP_START,
-        Actor::Firm(_) => market_priority::FIRM_MERCHANT,
+        Actor::Firm(_) => market_priority::FIRM_PRODUCER,
         Actor::Institution(_) => market_priority::INSTITUTION_BEFORE_FIRMS,
         Actor::State(_) => market_priority::STATE_FIRST,
     }
@@ -684,6 +697,19 @@ fn fmt_good(id: usize) -> String {
     }
 }
 
+fn fmt_order(order: &MarketOrder) -> String {
+    format!(
+        "{} {} {} amt {} prio {} amv {} counter {}",
+        order_kind(order),
+        fmt_actor(order.origin),
+        fmt_good(order.target),
+        fmt_num(order.target_amount),
+        fmt_num(order.priority),
+        amv_cell(order),
+        counter_cell(order)
+    )
+}
+
 fn order_kind(order: &MarketOrder) -> &'static str {
     if order.is_request_order() {
         "request"
@@ -748,15 +774,268 @@ fn order_row(idx: usize, order: &MarketOrder) -> String {
     )
 }
 
-fn fmt_order(order: &MarketOrder) -> String {
-    format!(
-        "{} {} {} amt {}  prio {}  amv {}  counter {}",
-        order_kind(order),
-        fmt_actor(order.origin),
-        fmt_good(order.target),
-        fmt_num(order.target_amount),
-        fmt_num(order.priority),
-        amv_cell(order),
-        counter_cell(order)
-    )
+// --- living roster ----------------------------------------------------------
+
+fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
+    let factuals = Factuals::new()
+        .with_good(make_good(GRAIN, "grain"))
+        .with_good(make_good(WATER, "water"))
+        .with_good(make_good(BREAD, "bread"))
+        .with_good(make_good(GOLD, "gold"))
+        .with_good(make_good(COIN, "coin"))
+        .with_good(make_good(JEWELRY, "jewelry"));
+
+    let mut history = MarketHistory::default();
+    // AMV spread: staples cheap, metals dear, jewelry dearest.
+    // Coins are money (sal 1.0); jewelry is liquid-ish (0.8); rest stay below
+    // the 0.6 exchange floor unless noted (gold 0.7 can be tender).
+    set_quote(&mut history, GRAIN, 1.0, 0.50);
+    set_quote(&mut history, WATER, 0.3, 0.35);
+    set_quote(&mut history, BREAD, 2.2, 0.45);
+    set_quote(&mut history, GOLD, 8.0, 0.70);
+    set_quote(&mut history, COIN, 1.0, 1.00);
+    set_quote(&mut history, JEWELRY, 15.0, 0.80);
+
+    let pops = vec![
+        make_farmers_pop(),
+        make_laborers_pop(),
+        make_townsfolk_pop(),
+    ];
+    let firms = vec![
+        make_farm(),
+        make_bakery(),
+        make_mine(),
+        make_mint(),
+        make_jeweler(),
+        make_well(),
+    ];
+    (pops, firms, factuals, history)
+}
+
+fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, salability: f64) {
+    history.prices.insert(good, amv);
+    history.salability.insert(good, salability);
+}
+
+fn make_good(id: usize, name: &str) -> Good {
+    Good {
+        id,
+        name: name.to_string(),
+        class: None,
+        decay_rate: 0.0,
+        decay_result: HashMap::new(),
+        mass: 1.0,
+        volume: 1.0,
+        tags: Default::default(),
+        categories: vec![],
+    }
+}
+
+fn consume_target(good: usize) -> DesireTarget {
+    DesireTarget::new(good, DesireTargetType::Consume, 1.0)
+}
+
+fn make_desire(id: usize, good: usize, amount: f64) -> Desire {
+    Desire {
+        source: DesireSource::Species(0, id),
+        priority: id as isize,
+        target: vec![consume_target(good)],
+        amount,
+        satisfaction: 0.0,
+        category: None,
+        effect: vec![],
+        scalar: ScalingFactor::Household(1.0),
+        decay: 0.0,
+    }
+}
+
+/// Same desire spread on every pop: grain+water basic, bread common, jewelry luxury.
+fn with_need_spread(mut pop: Pop) -> Pop {
+    pop.desires[0].push(make_desire(0, GRAIN, 8.0));
+    pop.desires[0].push(make_desire(1, WATER, 6.0));
+    pop.desires[1].push(make_desire(2, BREAD, 4.0));
+    pop.desires[2].push(make_desire(3, JEWELRY, 1.0));
+    pop
+}
+
+fn empty_pop(id: usize) -> Pop {
+    Pop {
+        id,
+        job: 0,
+        property: HashMap::new(),
+        desires: vec![vec![]; 3],
+        working_desires: vec![],
+        demographics: DemoRow {
+            household: Household::with_count(10.0),
+            species: 0,
+            culture: 0,
+            class: 0,
+            religion: 0,
+        },
+        current_orders: vec![],
+        stored_effects: vec![],
+        sentiment: Sentiment::new(),
+        records: PopRecords::default(),
+    }
+}
+
+fn make_farmers_pop() -> Pop {
+    let mut pop = with_need_spread(empty_pop(1));
+    // Grain surplus funds water/bread/jewelry requests. No grain shop shortfall.
+    pop.property.insert(GRAIN, PopPRow::new(24.0).with_target(4.0));
+    pop.property.insert(WATER, PopPRow::new(1.0).with_target(6.0));
+    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(5.0));
+    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(1.0));
+    pop.property.insert(COIN, PopPRow::new(8.0));
+    pop
+}
+
+fn make_laborers_pop() -> Pop {
+    let mut pop = with_need_spread(empty_pop(2));
+    pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(8.0));
+    pop.property.insert(WATER, PopPRow::new(0.0).with_target(6.0));
+    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(4.0));
+    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(1.0));
+    pop.property.insert(COIN, PopPRow::new(16.0));
+    pop
+}
+
+fn make_townsfolk_pop() -> Pop {
+    let mut pop = with_need_spread(empty_pop(3));
+    pop.property.insert(GRAIN, PopPRow::new(4.0).with_target(6.0));
+    pop.property.insert(WATER, PopPRow::new(2.0).with_target(4.0));
+    pop.property.insert(BREAD, PopPRow::new(1.0).with_target(6.0));
+    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(2.0));
+    pop.property.insert(COIN, PopPRow::new(40.0));
+    pop
+}
+
+fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine {
+    ProductionLine {
+        process,
+        target: Some(target),
+        inputs,
+        historical_productivity: 0.0,
+        last_success_rate: 0.0,
+        last_iterations: 0.0,
+        last_effects: vec![],
+        last_missing_goods: vec![],
+        last_amv_consumed: 0.0,
+        last_amv_produced: 0.0,
+    }
+}
+
+fn make_farm() -> Firm {
+    let mut firm = Firm::new(1, "farm".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(1, 20.0, vec![WATER]));
+    firm.property.insert(
+        WATER,
+        FirmPRow::new()
+            .with_quantity(2.0)
+            .with_purchase_target(8.0)
+            .with_use_target(5.0)
+            .with_stock_target(10.0),
+    );
+    firm.property.insert(
+        GRAIN,
+        FirmPRow::new()
+            .with_quantity(30.0)
+            .with_sell_target(20.0)
+            .with_amv_target(1.0),
+    );
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(6.0));
+    firm
+}
+
+fn make_bakery() -> Firm {
+    let mut firm = Firm::new(2, "bakery".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(2, 10.0, vec![GRAIN]));
+    firm.property.insert(
+        GRAIN,
+        FirmPRow::new()
+            .with_quantity(4.0)
+            .with_purchase_target(12.0)
+            .with_use_target(10.0)
+            .with_stock_target(16.0),
+    );
+    firm.property.insert(
+        BREAD,
+        FirmPRow::new()
+            .with_quantity(15.0)
+            .with_sell_target(12.0)
+            .with_amv_target(2.2),
+    );
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(8.0));
+    firm
+}
+
+fn make_mine() -> Firm {
+    let mut firm = Firm::new(3, "mine".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(3, 5.0, vec![]));
+    firm.property.insert(
+        GOLD,
+        FirmPRow::new()
+            .with_quantity(10.0)
+            .with_sell_target(8.0)
+            .with_amv_target(8.0),
+    );
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(4.0));
+    firm
+}
+
+fn make_mint() -> Firm {
+    let mut firm = Firm::new(4, "mint".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(4, 10.0, vec![GOLD]));
+    firm.property.insert(
+        GOLD,
+        FirmPRow::new()
+            .with_quantity(2.0)
+            .with_purchase_target(6.0)
+            .with_use_target(5.0)
+            .with_stock_target(8.0),
+    );
+    firm.property.insert(
+        COIN,
+        FirmPRow::new()
+            .with_quantity(20.0)
+            .with_sell_target(15.0)
+            .with_amv_target(1.0),
+    );
+    firm
+}
+
+fn make_jeweler() -> Firm {
+    let mut firm = Firm::new(5, "jeweler".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(5, 2.0, vec![GOLD]));
+    firm.property.insert(
+        GOLD,
+        FirmPRow::new()
+            .with_quantity(1.0)
+            .with_purchase_target(4.0)
+            .with_use_target(3.0)
+            .with_stock_target(5.0),
+    );
+    firm.property.insert(
+        JEWELRY,
+        FirmPRow::new()
+            .with_quantity(6.0)
+            .with_sell_target(5.0)
+            .with_amv_target(15.0),
+    );
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+    firm
+}
+
+fn make_well() -> Firm {
+    let mut firm = Firm::new(6, "well".into(), 1, Hex::new(0, 0));
+    firm.production_line.push(dummy_line(6, 20.0, vec![]));
+    firm.property.insert(
+        WATER,
+        FirmPRow::new()
+            .with_quantity(25.0)
+            .with_sell_target(20.0)
+            .with_amv_target(0.3),
+    );
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(4.0));
+    firm
 }

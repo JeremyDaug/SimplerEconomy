@@ -1,10 +1,10 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Handoff date:** 2026-08-27  
+**Handoff date:** 2026-08-28  
 **Purpose:** Catch a new agent/session up on recent work and direction. Prefer this plus `AGENTS.md`, `STYLE.md`, `TODO.md`, `reviewlog.md`, and `docs/design-vocabulary.md` over inventing process from scratch.
 
-**Build (as of this wrap-up):** `cargo test --lib` green (**259** tests).
+**Build (as of this wrap-up):** `cargo test --lib` green (**259** tests). CLI smoke: `cargo run --example market_tester` then `shop` / `match`.
 
 ```bash
 cargo check --lib
@@ -47,7 +47,7 @@ In-repo navigation:
 
 ---
 
-## 3. What is true now (2026-08-27)
+## 3. What is true now (2026-08-28)
 
 ### FirmPRow / `run_production`
 
@@ -133,19 +133,31 @@ Return: `OrderMatchBatch { matched: Option<OrderMatch>, unmatched_buys: Vec<usiz
 
 ### Market tester CLI
 
-`cargo run --example market_tester` (`examples/market_tester.rs`). Intended to grow into a full intramarket-day loop. **Today it only drives `match_orders`.**
+`cargo run --example market_tester` (`examples/market_tester.rs`). Small living roster plus `match_orders`. No settlement.
 
-- **No factuals, no living actors, no settlement.** Prefab names are labels on ids so humans can talk about the same goods and actors. They are not a goods catalog.
-- Hand-typed `request` / `offer` / `buy` / `sell` into two in-memory books. Feels arbitrary because it is: you are authoring `MarketOrder`s directly, not shopping from pops or firms. That is expected at this stage.
-- On a TTY the screen clears and redraws after each command (header, prefabs, buy table, sell table, last log). Empty enter or `cls` refreshes. Piped stdout skips ANSI and only prints the last log.
-- `match` is read-only. Books are not dropped or restamped. `clear` empties the books, not the screen. `drop buy N` / `drop sell N` use the table `#` column.
-- Names or raw ids both work (`request farmers grain 3` or `request pop 1 1 3`).
+Checked 2026-08-28: startup `shop` loads **10 pop + 10 firm orders** (14 buys, 6 sells). `match` finds a deal (seen: bakery grain vs farm; farm water vs well). Books stay put; `clear` then `shop` reloads the same set. Good enough as a smoke loop; not a full intramarket test.
 
-**Prefab goods (id / name):** 1 grain, 2 bread, 3 timber, 4 tools, 5 cloth, 6 iron, 7 fish, 8 pottery, 9 meat, 10 coin.
+- Startup builds factuals, `MarketHistory` quotes, 3 pops, and 6 producer firms, then runs `shop` (pop + firm `create_orders` into the books). `shop` reloads; `clear` empties; hand-typed `request` / `offer` / `buy` / `sell` still work.
+- Dummy production lines only stamp `target` / `inputs` so `create_orders` can rank buys. No processes run.
+- Pops share the same desire spread set outright (not from demographics): basic grain+water, common bread, luxury jewelry. They emit **requests** only.
+- No merchants. Firm default hand-typed buy priority is `FIRM_PRODUCER` (`2.5`).
+- On a TTY the screen clears and redraws after each command (goods with AMV/sal, roster table, books, last log). Piped stdout prints the same then the last log. `match` is read-only.
 
-**Prefab actors:** state 1 crown; inst 1 guild, inst 2 temple; firm 1 farm, firm 2 mill, firm 3 trader; pop 1 farmers, pop 2 millers, pop 3 laborers, pop 4 townsfolk.
+**Goods (id / AMV / sal):** 1 grain 1.0 / 0.5, 2 water 0.3 / 0.35, 3 bread 2.2 / 0.45, 4 gold 8.0 / 0.7, 5 coin 1.0 / 1.0, 6 jewelry 15.0 / 0.8.
 
-Default buy order priority by kind: state `0`, inst `1`, firm `2` (merchant), pop `4`. Sell default is `compose_sell_priority`. Buy/sell tables columns: `#`, kind, actor, good, amt, prio, amv, counter.
+**Roster (intended roles, not live amounts):**
+
+| actor | buying | selling |
+|-------|--------|---------|
+| farmers | water, bread, jewelry | - |
+| laborers | grain, water, bread, jewelry | - |
+| townsfolk | grain, water, bread, jewelry | - |
+| farm | water | grain |
+| bakery | grain | bread |
+| mine | - | gold |
+| mint | gold | coin |
+| jeweler | gold | jewelry |
+| well | - | water |
 
 **Not built:** deal execution, inventory transfer, AMV drift, `MarketGood` volume/purchased/tender updates, `next_shopping_trip`, PlayState intramarket phase. `main.rs` is still the Bevy hex stub.
 
@@ -256,7 +268,7 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 | Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |
 | Order type + buy/sell priority helpers | `src/game/marketorder.rs` |
 | Matching | `src/game/market.rs` → `Market::match_orders`, `OrderMatchBatch` |
-| Market CLI (no factuals) | `examples/market_tester.rs` — `cargo run --example market_tester` (prefabs, TTY redraw, order tables; matcher only) |
+| Market CLI | `examples/market_tester.rs` — `cargo run --example market_tester` (living pops/firms, `shop` via create_orders, TTY redraw, matcher only) |
 | MarketGood setters / AMV bounce | `src/game/market.rs` → `MarketGood` |
 | Order-priority tunables | `src/game/config.rs` → `market_priority`, `market_constants` |
 | Priority design (deferred too) | `docs/proposals/market-order-priority.md` |
@@ -278,7 +290,7 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 
 1. Read `AGENTS.md` + this handoff + `docs/design-vocabulary.md` + `docs/proposals/market-order-priority.md`.
 2. `cargo test --lib`.
-3. Next closed loop is **deal/settlement** around `match_orders`, not a third household model and not class/graphics. Probe matching with `cargo run --example market_tester` (TTY redraw + order tables; no deals yet). Firm and pop `create_orders` already emit real orders; do not rewrite shopping in the example.
+3. Next closed loop is **deal/settlement** around `match_orders`, not a third household model and not class/graphics. Probe with `cargo run --example market_tester` (`shop` loads pop/firm orders; matcher still read-only). Do not invent a second shopping model in the example.
 4. Match `STYLE.md` on any edits; update `reviewlog.md` when doing reviews.
 5. Prefer vault **EconCiv** notes for design intent when code and notes disagree — **call out conflicts** rather than silent invention. Vault `Turns.md` sequential shopping walk vs collect-and-match: **match** is the live model.
 
@@ -286,4 +298,4 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 
 ## 8. One-line status
 
-**Pop economic day is closed through record keeping. Desire additive effects bake at pop scale on create/update; extract harvests (yield still discarded). Firms emit intramarket orders from current targets (`Firm::create_orders`: sell/exchange lerp, liquidate offers, optimistic budget, skip non-positive AMV). Unknown salability is `0.4`. Market orders have dual-use priority; `Market::match_orders` returns one front-group deal plus any hopeless buys and still ignores AMV. Market tester CLI exists (`examples/market_tester.rs`): prefab ids, TTY redraw, buy/sell tables, hand-typed orders, matcher only. No settlement, no intramarket PlayState wire. Next: execute a deal from a match.**
+**Pop economic day is closed through record keeping. Firms emit intramarket orders (`Firm::create_orders`). Market tester CLI (`examples/market_tester.rs`) shops a living roster (3 pops, 6 producers including a well) and `match` finds at least one deal; matcher still read-only. No settlement, no intramarket PlayState wire. Next: execute a deal from a match.**
