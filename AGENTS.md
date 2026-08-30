@@ -93,7 +93,7 @@ repo sources.
 | App / play shell | `src/playstate.rs`, `src/main.rs` |
 
 Domain modules of note: `good`, `process`, `culture`, `species`, `religion`,
-`firm`, `market`, `household`, `state`, map/territory types.
+`firm`, `market`, `deal`, `household`, `state`, map/territory types.
 
 ## Coding style
 
@@ -109,6 +109,7 @@ Short reminders (details in `STYLE.md`):
   `Pop::get_scaling_factor` / `DemoDesire::create_desire`.
 - Section docs `/// # Name` on domain types and major methods; tests in
   `#[cfg(test)]` modules named `*_should`.
+- Function comments: **what it does first**, why second (see `STYLE.md` §5).
 - Match the file you edit; no drive-by refactors; no vault edits unless asked.
 
 ## Documentation
@@ -116,6 +117,8 @@ Short reminders (details in `STYLE.md`):
 - Comments use **ASCII only** (common keyboard characters): prefer `Sum` over
   summation glyphs, `->` over arrow characters, plain `-` over en/em dashes.
 - Leave commenting to User, only add, do not edit or replace. Notify user instead.
+- When you do add a function comment, lead with the operation (returns / caps /
+  sorts / looks up). Why is optional. Knowing what it does often explains why.
 
 ### Code review log
 

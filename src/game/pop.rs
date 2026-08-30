@@ -3,7 +3,10 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::{market_priority, player_resource_constants, pop_constants}, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    actor::Actor, config::{market_priority, player_resource_constants, pop_constants}, deal::{
+        deal_goods_tradeable, evaluate_pop_amv, form_buy_proposal, sort_tenders_by_salability,
+        DealMaker, DealResponse, ProposedDeal,
+    }, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -1928,6 +1931,114 @@ impl Pop {
         }
     }
 
+}
+
+impl DealMaker for Pop {
+    /// # Buy
+    ///
+    /// Returns a proposed basket as buyer, or `None` if no tender can be named.
+    /// Uses excess above `shop_target`. Seller's named counter first (any
+    /// salability), then other excess by salability. Highly salable goods
+    /// (and that counter) cover the fill first; lower salability only if
+    /// those cannot. Shrinks the fill if still short. Does not move stock.
+    fn buy(
+        &self,
+        own_order: &MarketOrder,
+        other_order: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> Option<ProposedDeal> {
+        debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
+        let targeted_good = own_order.target;
+        let live = pop_live_tenders(self, targeted_good, history, factuals);
+        form_buy_proposal(
+            Actor::Pop(self.id),
+            own_order,
+            other_order,
+            history,
+            |good| pop_tenderable(self, good, targeted_good, factuals),
+            &live,
+        )
+    }
+
+    /// # Evaluate
+    ///
+    /// Returns Accept or Reject for this deal as this pop.
+    /// Keep must meet the pop AMV floor. Desire / shop-target goods skip
+    /// salability; other received goods are haircut. Buyers accept windfalls.
+    /// Does not move stock.
+    fn evaluate(
+        &self,
+        deal: &ProposedDeal,
+        own_order: &MarketOrder,
+        other_order: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> DealResponse {
+        let _ = other_order;
+        debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
+        let Some(role) = deal.role_of(Actor::Pop(self.id)) else {
+            debug_assert!(false, "pop must be a party to the deal");
+            return DealResponse::Reject;
+        };
+        if !deal_goods_tradeable(deal, factuals) {
+            return DealResponse::Reject;
+        }
+        evaluate_pop_amv(deal, role, history, |good| pop_uses_good(self, good))
+    }
+}
+
+/// Returns true if this pop has a shop_target or desire target for `good`.
+/// Those goods skip the salability haircut when received.
+fn pop_uses_good(pop: &Pop, good: usize) -> bool {
+    if pop
+        .property
+        .get(&good)
+        .is_some_and(|row| row.shop_target > 0.0)
+    {
+        return true;
+    }
+    pop.desires.iter().flatten().any(|desire| {
+        desire.target.iter().any(|target| target.good == good)
+    })
+}
+
+/// A Helper that tells us whether a given good is able to be offered and in what quantity.
+/// 
+/// If the good matches the targeted good, we treat that as 0.0, even if it technically could be 
+/// offered.
+fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
+    if good == targeted_good {
+        return 0.0;
+    }
+    if !factuals.find_good(good).is_buyable() {
+        return 0.0;
+    }
+    pop.property
+        .get(&good)
+        .map(|row| row.exchange().max(0.0))
+        .unwrap_or(0.0)
+}
+
+/// A helper that gets the pop's available goods that it can offer, sorted by salability.
+fn pop_live_tenders(
+    pop: &Pop,
+    targeted_good: usize,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Vec<(usize, f64)> {
+    let mut rows = Vec::new();
+    for &good in pop.property.keys() {
+        let qty = pop_tenderable(pop, good, targeted_good, factuals);
+        if qty <= 0.0 {
+            continue;
+        }
+        if history.price(good) <= 0.0 {
+            continue;
+        }
+        rows.push((good, history.salability(good), qty));
+    }
+    sort_tenders_by_salability(rows)
 }
 
 #[cfg(test)]
@@ -4544,6 +4655,142 @@ mod pop {
             pop.records.tier_sat = [0.0, 0.0, 0.0];
             let bag = pop.extract_special_resources(&factuals);
             assert!((bag.culture - 0.5 * pop.demographics.household.count).abs() < 1e-12);
+        }
+    }
+
+    mod deal_should {
+        use crate::game::actor::Actor;
+        use crate::game::config::market_priority;
+        use crate::game::deal::{DealMaker, DealResponse};
+        use crate::game::marketorder::MarketOrder;
+
+        use super::*;
+
+        fn buy_and_offer() -> (MarketOrder, MarketOrder) {
+            let buy = MarketOrder::request_order(
+                Actor::Pop(0),
+                100,
+                4.0,
+                market_priority::POP_START,
+            );
+            let sell = MarketOrder::offer_order(
+                Actor::Firm(2),
+                100,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            (buy, sell)
+        }
+
+        #[test]
+        fn buy_names_excess_tender_and_does_not_move_stock() {
+            let mut pop = make_pop();
+            pop.property.insert(500, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+
+            let deal = pop.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert_eq!(deal.buyer, Actor::Pop(0));
+            assert_eq!(deal.seller, Actor::Firm(2));
+            assert!((deal.goods[&100] + 4.0).abs() < 1e-12);
+            assert!((deal.goods[&500] - 4.0).abs() < 1e-12);
+            assert_eq!(pop.property[&500].quantity, 10.0);
+        }
+
+        #[test]
+        fn buy_returns_none_without_excess_tender() {
+            let pop = make_pop();
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            assert!(pop.buy(&own, &other, &history, &factuals).is_none());
+        }
+
+        #[test]
+        fn buy_does_not_tender_shop_target_stock() {
+            let mut pop = make_pop();
+            pop.property.insert(500, PopPRow::new(10.0).with_target(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            assert!(pop.buy(&own, &other, &history, &factuals).is_none());
+        }
+
+        #[test]
+        fn evaluate_accepts_even_amv_and_does_not_move_stock() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(4.0));
+            pop.property.insert(500, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.2);
+            history.salability.insert(500, 1.0);
+            let (own, other) = buy_and_offer();
+            let deal = pop.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+            assert_eq!(pop.property[&500].quantity, 10.0);
+        }
+
+        #[test]
+        fn evaluate_haircuts_unwanted_low_salability_tender() {
+            let pop = make_pop();
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.2);
+            history.salability.insert(500, 1.0);
+            let own = MarketOrder::offer_order(
+                Actor::Pop(0),
+                500,
+                -4.0,
+                market_priority::POP_START,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Firm(2),
+                500,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Firm(2), Actor::Pop(0))
+                .with_good(500, -4.0)
+                .with_good(100, 4.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_rejects_more_than_seventy_five_percent_amv_loss() {
+            let pop = make_pop();
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 5.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_accepts_a_buyer_windfall() {
+            let pop = make_pop();
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -10.0)
+                .with_good(500, 1.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
         }
     }
 }

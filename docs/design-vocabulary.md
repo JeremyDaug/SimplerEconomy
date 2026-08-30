@@ -373,10 +373,11 @@ Per-good warehouse ledger. Groups: stock, planning targets, exchange, production
 | **average price** | Realized average sale AMV | `average_price` |
 | **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
 | **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask | `amv_target` |
+| **AMV bound** | Recipe-derived planning bound. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `create_orders` clamps bid/ask written on the order to the bound and skips buys when market AMV is above the cap. Planning does not compute the numbers yet | `amv_bound`, `FirmAmvBound` |
 | **available** (firm) | `quantity - reserve` | `FirmPRow::available` |
 | **sellable** | `quantity - max(reserve, reserve_target)`, floored at 0 | `FirmPRow::sellable` |
 
-Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs stamp **produced** on the result goods. Capital stamps **used**, not consumed. Factors are not moved.
+Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs are recorded as **produced** on the result goods. Capital is recorded as **used**, not consumed. Factors are not moved.
 
 **Deferred:** capital cost / maintenance / amortization. Output `average_cost` currently blends consumed-input AMV only. Later, used capital should contribute wear (not the full tool AMV each run) so capital is not indestructible and produced goods carry a maintenance slice. Not v0.
 
@@ -385,6 +386,69 @@ Firm **consumed** covers both Destroyed and Consumed process inputs; decay produ
 
 **Meaning:** A state is the required aspects of a player, existing even when operated by a human player. State and Player should be treated as mostly synonymous. A State is the mechanisms of control and management, while the Player is the controller and decision making of the state.
 
+### Deal
+**Preferred:** deal, proposed deal  
+**Avoid:** settlement (internal shorthand for applying an accepted deal)
+
+**Meaning:** A complete exchange basket after a match, before anyone's stock
+moves. `goods` is the **seller's inventory change**: add the map to the
+seller, subtract it from the buyer. Negative qty is the sold good (seller
+loses it); positive qty is tender/payment (seller gains it). Avoid
+"seller-signed" (sounds like assignment, not `+` / `-`).
+
+**Code:** `ProposedDeal` (`deal.rs`)
+
+### Take tenders
+**Preferred:** take tenders  
+**Avoid:** make change (that is returning excess)
+
+**Meaning:** Buyer helper that covers remaining targeted units by adding
+tenders to the proposed basket. Preferred goods are the seller's named
+counter (regardless of salability) plus goods at or above
+`HIGH_SALABILITY` (`0.8`). Lower-salability goods are only added if those
+cannot form a valid offer. If every on-hand tender is still short, the
+targeted units shrink.
+
+**Code:** `take_tenders`, `take_tender`, `form_buy_proposal` (`deal.rs`),
+`deal_constants::HIGH_SALABILITY`
+
+### Make change
+**Preferred:** make change  
+**Avoid:** take tenders (that is covering a shortfall with more payment goods)
+
+**Meaning:** Return excess from an overpay so the basket is closer to even.
+The deal-response label is **Accept with Change**. Unused in the first
+pass; no helper yet.
+
+**Code:** `DealResponse::AcceptWithChange`
+
+### Deal response
+**Preferred:** deal response, verdict  
+**Labels:** **Accept**, **Accept with Change**, **Counteroffer**, **Reject**,
+**Hard Reject**
+
+**Meaning:** Judge a complete proposed deal. **Accept with Change** is
+specifically "you gave me more than enough, here is your change," not a
+full rewrite. **Counteroffer** rewrites the basket. **Hard Reject** skips
+retries on this pairing. First-pass impls return Accept or Reject only.
+
+**Code:** `DealResponse`
+
+### AMV keep
+**Preferred:** AMV keep, keep ratio  
+**Avoid:** ratio alone
+
+**Meaning:** `received AMV / given AMV` for one side of a deal. Given goods
+are always full market AMV. Received goods the actor will **use** (pop
+desire / shop target, firm `use_target`) are full AMV; anything else is
+`AMV * salability` (coins at 1.0 count in full, leftover copper is
+discounted). Pop min keep `0.25` (up to 75% AMV loss). Firm min keep
+`0.50` (up to 50% AMV loss), with a need-catch down to the pop keep when
+the firm has a purchase or use target on a received good. Buyers accept
+windfalls (`keep >= 1.0`); they do not seek a more equitable split.
+
+**Code:** `deal_constants`, `evaluate_amv_floor`, `amv_percent_keep`
+
 ### Order priority
 **Preferred:** order priority, market priority  
 **Avoid:** priority alone (conflicts with **desire priority**), purchase order (ambiguous with `MarketOrder`)
@@ -392,6 +456,12 @@ Firm **consumed** covers both Destroyed and Consumed process inputs; decay produ
 **Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SELL_SUCCESS_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
 **Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
 **Deferred detail:** `docs/proposals/market-order-priority.md`
+
+### Write / set (order and row fields)
+**Preferred:** write, set  
+**Avoid:** stamp, restamp (except a **stamped deal**: market marks an accepted exchange complete)
+
+**Meaning:** Filling in a field on an order or property row is not a final act. Say **write** or **set** AMV, counter, or order priority on create. Say **update** or **edit** when changing an order already in the books (remaining amount, sell success bonus). **Stamp** is reserved for closing a deal.
 
 ### Player resources
 **Preferred:** player resources  
@@ -412,6 +482,7 @@ Firm **consumed** covers both Destroyed and Consumed process inputs; decay produ
 | mood (for the struct) | **sentiment** |
 | level (for desire tier) | **tier** (basic/common/luxury) |
 | priority (alone) | **order priority** or **desire priority** (pick one) |
+| stamp / restamp (orders, rows) | **write** / **set** (create); **update** / **edit** (in the books). **Stamp** only for a completed deal |
 
 ---
 

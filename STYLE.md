@@ -98,6 +98,10 @@ Rules:
 
 ## 5. Documentation comments
 
+### What first, why second
+
+Function comments, especially on small helpers, must say **what the function does** first (returns, caps, sorts, looks up). **Why** it exists is optional and secondary. Knowing what it does often explains why it is needed. Do not write a comment that only describes the result on some other object ("bid written on a buy order") without stating the operation (`min(bid, cap)` when a cap is set).
+
 ### Section headers for domain types and major methods
 
 ```rust

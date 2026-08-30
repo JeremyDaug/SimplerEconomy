@@ -37,7 +37,7 @@ impl OrderMatchBatch {
         }
     }
 
-    /// True when there is nothing for the caller to deal or restamp.
+    /// True when there is nothing for the caller to deal or update.
     pub fn is_empty(&self) -> bool {
         self.matched.is_none() && self.unmatched_buys.is_empty()
     }
@@ -197,13 +197,13 @@ impl Market {
     /// # Match Orders
     ///
     /// One pass over the **front** buy-priority group. Does not mutate the
-    /// lists; the caller removes, restamps, or reinserts after.
+    /// lists; the caller removes, updates, or reinserts after.
     ///
     /// `buys` must be sorted by order priority (lowest first, FCFS). `sells`
     /// must be sorted by target good id. The front group is shuffled. At most
     /// **one** match (weighted sell of that good; coincidence doubles this pick
     /// only). Every front-group buy with no other-origin seller is listed in
-    /// `unmatched_buys` so the caller can restamp those while the one deal
+    /// `unmatched_buys` so the caller can update those while the one deal
     /// runs. Later priority groups wait for the next call.
     pub fn match_orders<R: Rng + ?Sized>(
         buys: &[MarketOrder],

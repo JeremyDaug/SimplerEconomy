@@ -26,7 +26,7 @@ use simpler_economy::game::actor::Actor;
 use simpler_economy::game::config::market_priority;
 use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
-use simpler_economy::game::firm::{Firm, FirmPRow, ProductionLine};
+use simpler_economy::game::firm::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
 use simpler_economy::game::good::Good;
 use simpler_economy::game::household::Household;
 use simpler_economy::game::market::{Market, MarketHistory};
@@ -322,12 +322,40 @@ fn print_legend(session: &Session) {
         println!("  {:<10}  {:<32}  {}", name, buying, selling);
     }
     println!();
+    print_firm_bounds(session);
+    println!();
     println!("Type a name, or kind+id / raw good id.  shop  reloads actor orders.");
     println!("  request laborers grain 3");
     println!();
     println!("Buy order priority: lower goes first. Defaults:");
     println!("  firm 2.5 (producer)   pop 4");
     println!("Sell/offer priority: higher is more likely. Default is compose_sell_priority.");
+}
+
+fn print_firm_bounds(session: &Session) {
+    println!("firm bounds  (min = sell floor, max = buy cap)");
+    println!("  shop skips a buy when market AMV is already above max.");
+    println!("  {:<10}  {:<8}  {}", "actor", "good", "bound");
+    let mut any = false;
+    for firm in &session.firms {
+        let mut rows: Vec<_> = firm.property.iter().collect();
+        rows.sort_by_key(|(id, _)| *id);
+        for (&good, row) in rows {
+            if row.amv_bound == FirmAmvBound::None {
+                continue;
+            }
+            any = true;
+            println!(
+                "  {:<10}  {:<8}  {}",
+                fmt_actor(Actor::Firm(firm.id)),
+                fmt_good(good),
+                fmt_bound(row.amv_bound)
+            );
+        }
+    }
+    if !any {
+        println!("  (none)");
+    }
 }
 
 fn help_text() -> String {
@@ -350,6 +378,8 @@ commands
 
 The screen clears and redraws after each command. Empty enter also redraws.
 Startup runs shop once. Pops emit requests; firms emit buy/sell/offer.
+Firm rows may carry an AMV bound (min sell floor / max buy cap). create_orders
+clamps order AMV to that bound and skips buys when market AMV is above max.
 actor: prefab name (farmers, bakery, ...) or kind id (pop 1, firm 2)
 good:  prefab name (grain, coin, jewelry) or id (1, 5, 6)
 amounts: type positives. request/buy store +amount, offer/sell store -amount.
@@ -559,13 +589,13 @@ fn add_buy(session: &mut Session, order: MarketOrder) -> String {
         .buys
         .partition_point(|o| o.priority <= order.priority);
     session.buys.insert(i, order);
-    format!("buy [{i}] {}", fmt_order(&session.buys[i]))
+    format!("buy [{i}] {}", fmt_order(session, &session.buys[i]))
 }
 
 fn add_sell(session: &mut Session, order: MarketOrder) -> String {
     let i = session.sells.partition_point(|o| o.target <= order.target);
     session.sells.insert(i, order);
-    format!("sell [{i}] {}", fmt_order(&session.sells[i]))
+    format!("sell [{i}] {}", fmt_order(session, &session.sells[i]))
 }
 
 fn drop_order(session: &mut Session, rest: &[&str]) -> Result<String, String> {
@@ -580,14 +610,14 @@ fn drop_order(session: &mut Session, rest: &[&str]) -> Result<String, String> {
                 return Err(format!("no buy [{idx}]"));
             }
             let removed = session.buys.remove(idx);
-            Ok(format!("dropped buy [{idx}] {}", fmt_order(&removed)))
+            Ok(format!("dropped buy [{idx}] {}", fmt_order(session, &removed)))
         }
         "sell" | "s" => {
             if idx >= session.sells.len() {
                 return Err(format!("no sell [{idx}]"));
             }
             let removed = session.sells.remove(idx);
-            Ok(format!("dropped sell [{idx}] {}", fmt_order(&removed)))
+            Ok(format!("dropped sell [{idx}] {}", fmt_order(session, &removed)))
         }
         other => Err(format!("drop side must be buy or sell, got '{other}'")),
     }
@@ -602,12 +632,12 @@ fn list_books(session: &Session) {
         }
     );
     println!();
-    print_order_table("buys  (priority, lowest first)", &session.buys);
+    print_order_table(session, "buys  (priority, lowest first)", &session.buys);
     println!();
-    print_order_table("sells  (target good id)", &session.sells);
+    print_order_table(session, "sells  (target good id)", &session.sells);
 }
 
-fn print_order_table(title: &str, orders: &[MarketOrder]) {
+fn print_order_table(session: &Session, title: &str, orders: &[MarketOrder]) {
     println!("{title}");
     println!("{}", order_header());
     println!("{}", order_rule());
@@ -615,7 +645,7 @@ fn print_order_table(title: &str, orders: &[MarketOrder]) {
         println!("  (empty)");
     } else {
         for (i, order) in orders.iter().enumerate() {
-            println!("{}", order_row(i, order));
+            println!("{}", order_row(session, i, order));
         }
     }
 }
@@ -623,7 +653,7 @@ fn print_order_table(title: &str, orders: &[MarketOrder]) {
 fn run_match(session: &mut Session) -> String {
     let batch = Market::match_orders(&session.buys, &session.sells, &mut session.rng);
     if batch.is_empty() {
-        return "empty batch (no buys, or nothing to deal / restamp).\nbooks unchanged.".into();
+        return "empty batch (no buys, or nothing to deal / update).\nbooks unchanged.".into();
     }
     let mut out = String::new();
     match batch.matched {
@@ -634,8 +664,8 @@ fn run_match(session: &mut Session) -> String {
                 "matched  buy[{}]  <->  sell[{}]\n",
                 pair.buy_index, pair.sell_index
             ));
-            out.push_str(&format!("  buy  {}\n", fmt_order(buy)));
-            out.push_str(&format!("  sell {}\n", fmt_order(sell)));
+            out.push_str(&format!("  buy  {}\n", fmt_order(session, buy)));
+            out.push_str(&format!("  sell {}\n", fmt_order(session, sell)));
             if coincidence(buy, sell) {
                 out.push_str(
                     "  coincidence: matching counter-offer goods (sell weight x2 this pick).\n",
@@ -649,10 +679,10 @@ fn run_match(session: &mut Session) -> String {
     } else {
         out.push_str("unmatched buys (no other-origin seller of that good):\n");
         for &i in &batch.unmatched_buys {
-            out.push_str(&format!("  [{i}] {}\n", fmt_order(&session.buys[i])));
+            out.push_str(&format!("  [{i}] {}\n", fmt_order(session, &session.buys[i])));
         }
     }
-    out.push_str("books unchanged (matcher does not remove or restamp).");
+    out.push_str("books unchanged (matcher does not remove or update).");
     out
 }
 
@@ -697,15 +727,16 @@ fn fmt_good(id: usize) -> String {
     }
 }
 
-fn fmt_order(order: &MarketOrder) -> String {
+fn fmt_order(session: &Session, order: &MarketOrder) -> String {
     format!(
-        "{} {} {} amt {} prio {} amv {} counter {}",
+        "{} {} {} amt {} prio {} amv {} bound {} counter {}",
         order_kind(order),
         fmt_actor(order.origin),
         fmt_good(order.target),
         fmt_num(order.target_amount),
         fmt_num(order.priority),
         amv_cell(order),
+        order_bound_cell(session, order),
         counter_cell(order)
     )
 }
@@ -746,23 +777,47 @@ fn amv_cell(order: &MarketOrder) -> String {
     }
 }
 
+fn fmt_bound(bound: FirmAmvBound) -> String {
+    match bound {
+        FirmAmvBound::None => "-".into(),
+        FirmAmvBound::Minimum(v) => format!("min {}", fmt_num(v)),
+        FirmAmvBound::Maximum(v) => format!("max {}", fmt_num(v)),
+        FirmAmvBound::MinMax(min, max) => {
+            format!("min {} max {}", fmt_num(min), fmt_num(max))
+        }
+    }
+}
+
+fn order_bound_cell(session: &Session, order: &MarketOrder) -> String {
+    let Actor::Firm(id) = order.origin else {
+        return "-".into();
+    };
+    let Some(firm) = session.firms.iter().find(|f| f.id == id) else {
+        return "-".into();
+    };
+    match firm.property.get(&order.target) {
+        Some(row) => fmt_bound(row.amv_bound),
+        None => "-".into(),
+    }
+}
+
 fn order_header() -> String {
     format!(
-        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {}",
-        "#", "kind", "actor", "good", "amt", "prio", "amv", "counter"
+        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
+        "#", "kind", "actor", "good", "amt", "prio", "amv", "bound", "counter"
     )
 }
 
 fn order_rule() -> String {
     format!(
-        "{:-<2}  {:-<7}  {:-<10}  {:-<8}  {:-<8}  {:-<8}  {:-<6}  {:-<16}",
-        "", "", "", "", "", "", "", ""
+        "{:-<2}  {:-<7}  {:-<10}  {:-<8}  {:-<8}  {:-<8}  {:-<6}  {:-<16}  {:-<16}",
+        "", "", "", "", "", "", "", "", ""
     )
 }
 
-fn order_row(idx: usize, order: &MarketOrder) -> String {
+fn order_row(session: &Session, idx: usize, order: &MarketOrder) -> String {
     format!(
-        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {}",
+        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
         idx,
         order_kind(order),
         fmt_actor(order.origin),
@@ -770,6 +825,7 @@ fn order_row(idx: usize, order: &MarketOrder) -> String {
         fmt_num(order.target_amount),
         fmt_num(order.priority),
         amv_cell(order),
+        order_bound_cell(session, order),
         counter_cell(order)
     )
 }
@@ -934,14 +990,16 @@ fn make_farm() -> Firm {
             .with_quantity(2.0)
             .with_purchase_target(8.0)
             .with_use_target(5.0)
-            .with_stock_target(10.0),
+            .with_stock_target(10.0)
+            .with_amv_bound(FirmAmvBound::Maximum(1.0)),
     );
     firm.property.insert(
         GRAIN,
         FirmPRow::new()
             .with_quantity(30.0)
             .with_sell_target(20.0)
-            .with_amv_target(1.0),
+            .with_amv_target(1.0)
+            .with_amv_bound(FirmAmvBound::Minimum(1.2)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(6.0));
     firm
@@ -956,14 +1014,17 @@ fn make_bakery() -> Firm {
             .with_quantity(4.0)
             .with_purchase_target(12.0)
             .with_use_target(10.0)
-            .with_stock_target(16.0),
+            .with_stock_target(16.0)
+            .with_amv_target(2.0)
+            .with_amv_bound(FirmAmvBound::Maximum(1.5)),
     );
     firm.property.insert(
         BREAD,
         FirmPRow::new()
             .with_quantity(15.0)
             .with_sell_target(12.0)
-            .with_amv_target(2.2),
+            .with_amv_target(2.2)
+            .with_amv_bound(FirmAmvBound::Minimum(1.8)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(8.0));
     firm
@@ -977,7 +1038,8 @@ fn make_mine() -> Firm {
         FirmPRow::new()
             .with_quantity(10.0)
             .with_sell_target(8.0)
-            .with_amv_target(8.0),
+            .with_amv_target(8.0)
+            .with_amv_bound(FirmAmvBound::Minimum(6.0)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(4.0));
     firm
@@ -992,14 +1054,16 @@ fn make_mint() -> Firm {
             .with_quantity(2.0)
             .with_purchase_target(6.0)
             .with_use_target(5.0)
-            .with_stock_target(8.0),
+            .with_stock_target(8.0)
+            .with_amv_bound(FirmAmvBound::Maximum(12.0)),
     );
     firm.property.insert(
         COIN,
         FirmPRow::new()
             .with_quantity(20.0)
             .with_sell_target(15.0)
-            .with_amv_target(1.0),
+            .with_amv_target(1.0)
+            .with_amv_bound(FirmAmvBound::Minimum(0.8)),
     );
     firm
 }
@@ -1013,14 +1077,16 @@ fn make_jeweler() -> Firm {
             .with_quantity(1.0)
             .with_purchase_target(4.0)
             .with_use_target(3.0)
-            .with_stock_target(5.0),
+            .with_stock_target(5.0)
+            .with_amv_bound(FirmAmvBound::Maximum(7.0)),
     );
     firm.property.insert(
         JEWELRY,
         FirmPRow::new()
             .with_quantity(6.0)
             .with_sell_target(5.0)
-            .with_amv_target(15.0),
+            .with_amv_target(15.0)
+            .with_amv_bound(FirmAmvBound::Minimum(12.0)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
     firm
@@ -1034,7 +1100,8 @@ fn make_well() -> Firm {
         FirmPRow::new()
             .with_quantity(25.0)
             .with_sell_target(20.0)
-            .with_amv_target(0.3),
+            .with_amv_target(0.3)
+            .with_amv_bound(FirmAmvBound::Minimum(0.4)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(4.0));
     firm

@@ -153,6 +153,25 @@ pub mod market_constants {
     pub const SELL_EXCHANGE_EDGE: f64 = 0.1;
 }
 
+/// Deal-making AMV acceptance floors and tender cutoffs.
+///
+/// Values are **keep ratios** (`received AMV / given AMV`). A pop "75% max
+/// loss" is keep `0.25`. Buyers still accept windfalls (`keep >= 1.0`).
+pub mod deal_constants {
+    /// Pop minimum AMV keep. `0.25` = accept up to 75% AMV loss.
+    pub const POP_AMV_MIN_KEEP: f64 = 0.25;
+    /// Firm minimum AMV keep. `0.50` = accept up to 50% AMV loss.
+    pub const FIRM_AMV_MIN_KEEP: f64 = 0.50;
+    /// When a firm deal cannot land in [`FIRM_AMV_MIN_KEEP`] but the firm
+    /// needs the received goods (purchase or use target), fall back to this
+    /// keep ratio (same as pop).
+    pub const FIRM_AMV_NEED_KEEP: f64 = POP_AMV_MIN_KEEP;
+    /// Salability at or above this is highly salable (money-like). Buy
+    /// proposals fill from these (plus the seller's named counter) before
+    /// offering lower-salability goods.
+    pub const HIGH_SALABILITY: f64 = 0.8;
+}
+
 /// Named intramarket order-priority slots.
 ///
 /// Lower values go first. Bands are half-open `[start, end)`. Equal values are
@@ -185,7 +204,7 @@ pub mod market_priority {
     pub const STATE_FIRM_SLOT_MARGIN: f64 = 0.01;
 
     /// Pop band start (inclusive). Unranked pop orders sit here until the
-    /// market stamps a wealth rank.
+    /// market sets a wealth rank.
     pub const POP_START: f64 = 4.0;
     /// Pop band end (exclusive).
     pub const POP_END: f64 = 5.0;

@@ -30,8 +30,12 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
       - [ ] Prioritize orders, match buyers and sellers, and get them trading.
         - [x] Order priority field, named slots, sell-weight compose.
         - [x] `Market::match_orders` (one success, multiple front-group failures).
-        - [ ] Deal / settlement (move goods, AMV, `MarketGood` stats, restamp).
-        - [ ] Stamp pop wealth ranks on receive; pop offer orders; PlayState wire.
+        - [ ] Multimatch (later, not now): after the first pair, pull that buyer's other buys at similar priority against the same seller's other goods. One trip, one `ProposedDeal`. Variety sellers load the cart; do not mix other buyers or other sellers. `form_buy_proposal` still assumes one target.
+        - [ ] Deal / settlement (move goods, AMV, `MarketGood` stats, update leftover orders).
+          - [x] `DealMaker` trait, `ProposedDeal`, `buy` / `evaluate` (read-only).
+          - [x] Multi-good buy tender: seller counter + high-sal `take_tenders`, low-sal last.
+          - [ ] `sell` rewrite, `finalize`, market loop, tester `deal` command.
+        - [ ] Set pop wealth ranks on receive; pop offer orders; PlayState wire.
       - [ ] Be sure to record general results of trades after they are complete.
   - [ ] Phase Intermarket Day
     - [ ] Recalculate travel routes between markets.
@@ -110,6 +114,12 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
 
 ## Refactors and improvements
 
+- [ ] Function comments: what first, why second  
+  Many existing `///` on small helpers describe context or the result elsewhere
+  instead of the operation. Dedicated pass: lead with what the function does
+  (returns, caps, sorts, looks up). Why is optional; the operation often
+  explains itself. Deal/bound helpers were done; the rest of `src/game/` is
+  still pending. Do not mix into unrelated work unless asked.
 - [ ] Household / population change helpers  
   From [this conversation](https://grok.com/share/c2hhcmQtMw_e2b20412-fa4e-4d6e-ad1e-29cf133c819e): simpler household size edits, less hassle when defs change, addresses household total-pop jumps.
 - [ ] Store market id on `Pop`  

@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor, config::{market_constants, market_priority}, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::lerp, workforce::Workforce,
+    actor::Actor, config::{market_constants, market_priority}, contract::Contract, deal::{
+        deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal, sort_tenders_by_salability,
+        DealMaker, DealResponse, ProposedDeal,
+    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::lerp, workforce::Workforce,
 };
 
 /// # Firm 
@@ -106,7 +109,7 @@ impl Firm {
     ///
     /// 1. Return `used` capital to `quantity` and clear `used` so it can decay.
     /// 2. Decay on-hand `quantity` by each good's `decay_rate` (skip Exposure while owned).
-    /// 3. Apply decay byproducts. Do not stamp them as `produced`.
+    /// 3. Apply decay byproducts. Do not record them as `produced`.
     /// 4. [`FirmPRow::sync_reserve`] after quantity changes.
     ///
     /// `consumed` on the row is a day-flow counter (goods already left `quantity`
@@ -225,7 +228,12 @@ impl Firm {
     /// an on-hand role, so a row may still buy and sell the same good.
     ///
     /// Buys stop when spendable AMV is exhausted; the last buy may overdraw.
-    /// AMV on orders is stamped for later settlement. Matching does not use it yet.
+    /// AMV on priced orders is recorded (`amv_target`) for later settlement.
+    /// Matching does not use it yet. [`FirmPRow::amv_bound`] clamps that AMV:
+    /// buy AMV is never above the buy cap, sell AMV is never below the sell
+    /// floor. If market AMV is already above the buy cap, no buy/request is
+    /// emitted for that good. `None` bounds leave bid/ask unchanged. This does
+    /// not compute residual WTP; planning writes the bound.
     /// Buy order priority is the merchant band if any row is merchant-like
     /// (purchase and sell, no use), otherwise the producer band. Sells use
     /// [`compose_sell_priority`].
@@ -250,9 +258,14 @@ impl Firm {
             }
 
             let salability = history.salability(good);
-            let mid = row.mid_amv(history.price(good));
+            let market_amv = history.price(good);
+            let mid = row.mid_amv(market_amv);
             let split = classify_on_hand(row, salability);
-            let buy_qty = row.purchase_qty();
+            let buy_qty = if row.amv_bound.market_above_buy_cap(market_amv) {
+                0.0
+            } else {
+                row.purchase_qty()
+            };
 
             debug_assert!(split.sell >= 0.0, "sell_qty must be >= 0.0");
             debug_assert!(split.exchange >= 0.0, "exchange_qty must be >= 0.0");
@@ -278,8 +291,8 @@ impl Firm {
                 exchange_qty: split.exchange,
                 liquidate_qty: split.liquidate,
                 use_target: row.use_target,
-                bid: row.bid_amv(mid),
-                ask: row.ask_amv(mid),
+                bid: row.amv_bound.clamp_bid(row.bid_amv(mid)),
+                ask: row.amv_bound.clamp_ask(row.ask_amv(mid)),
                 salability,
                 line_rank: line_rank.get(&good).copied().unwrap_or(usize::MAX),
             });
@@ -407,7 +420,7 @@ impl Firm {
     /// Side effects on the firm:
     /// - Applies all good changes (consumed inputs, produced outputs, decay results)
     ///   directly to `property` quantities. New output goods are auto-created.
-    /// - Stamps day-flows on each [`FirmPRow`]: `produced` for positive changes
+    /// - Records day-flows on each [`FirmPRow`]: `produced` for positive changes
     ///   (outputs + decay results), `consumed` for destroyed/consumed inputs.
     ///   Those two input types are not distinguished on the row; decay products of
     ///   Consumed inputs show up as `produced` on their result goods.
@@ -458,7 +471,7 @@ impl Firm {
             line.last_amv_produced = 0.0;
 
             // Apply net changes to property (outputs + consumed inputs + decay)
-            // and stamp produced / consumed day-flows on each row.
+            // and record produced / consumed day-flows on each row.
             for (&good_id, &delta) in &result.changes {
                 let amv = if let Some(good) = market.goods.get(&good_id) {
                     good.amv
@@ -473,7 +486,7 @@ impl Firm {
                     debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
                     line.last_amv_produced += amv * delta;
                 } else if delta < 0.0 {
-                    // Destroyed or Consumed inputs; both stamp `consumed`.
+                    // Destroyed or Consumed inputs; both recorded as `consumed`.
                     let consumed_qty = -delta;
                     let Some(row) = self.property.get_mut(&good_id) else {
                         unreachable!("A sanity checkpoint, we should never consume goods we don't have.");
@@ -613,6 +626,76 @@ pub struct ProductionLine {
     pub last_amv_produced: f64,
 }
 
+/// # Firm AMV Bound
+/// Recipe-derived AMV bounds for a [`FirmPRow`] (planning).
+///
+/// Not filled by [`Firm::create_orders`] or deal evaluate yet. Planning will
+/// write these from process recipes: residual WTP as a buy cap on inputs,
+/// input-cost rollup as a sell floor on outputs. Headroom vs market AMV is
+/// a later growth / margin read.
+///
+/// [`FirmAmvBound::None`] is exchange-only stock (barter, till, merchant
+/// restock) that is not a process input or output here.
+/// [`FirmAmvBound::MinMax`] is an in-firm intermediate (produced and used
+/// in this firm).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FirmAmvBound {
+    /// Not a process input or output for this firm.
+    #[default]
+    None,
+    /// Output sell floor: unit AMV below which the firm does not want to sell.
+    Minimum(f64),
+    /// Input buy cap: unit AMV above which the firm does not want to pay.
+    Maximum(f64),
+    /// Both a sell floor and a buy cap `(minimum, maximum)`.
+    MinMax(f64, f64),
+}
+
+impl FirmAmvBound {
+    /// Returns the sell-floor AMV, or `None` if this bound has no floor.
+    pub fn minimum(self) -> Option<f64> {
+        match self {
+            Self::None | Self::Maximum(_) => None,
+            Self::Minimum(v) | Self::MinMax(v, _) => Some(v),
+        }
+    }
+
+    /// Returns the buy-cap AMV, or `None` if this bound has no cap.
+    pub fn maximum(self) -> Option<f64> {
+        match self {
+            Self::None | Self::Minimum(_) => None,
+            Self::Maximum(v) | Self::MinMax(_, v) => Some(v),
+        }
+    }
+
+    /// Caps `bid` to this bound's buy cap when one is set; otherwise returns `bid`.
+    /// Used when writing AMV on a buy order so they do not post above the cap.
+    pub fn clamp_bid(self, bid: f64) -> f64 {
+        match self.maximum() {
+            Some(cap) => bid.min(cap),
+            None => bid,
+        }
+    }
+
+    /// Raises `ask` to this bound's sell floor when one is set; otherwise returns `ask`.
+    /// Used when writing AMV on a sell order so they do not post below the floor.
+    pub fn clamp_ask(self, ask: f64) -> f64 {
+        match self.minimum() {
+            Some(floor) => ask.max(floor),
+            None => ask,
+        }
+    }
+
+    /// Returns true if this bound has a buy cap and `market_amv` is above it.
+    /// `create_orders` skips the buy when this is true.
+    pub fn market_above_buy_cap(self, market_amv: f64) -> bool {
+        match self.maximum() {
+            Some(cap) => market_amv > cap,
+            None => false,
+        }
+    }
+}
+
 /// # Firm Property Row
 /// 
 /// A row of property data for a Firm. Includes data for management, oversight, and 
@@ -647,6 +730,9 @@ pub struct FirmPRow {
     /// success of reaching purchase, sell, and use targets, modulated by the firm's
     /// uncertainty.
     pub reserve_target: f64,
+    /// Recipe-derived buy cap / sell floor. See [`FirmAmvBound`]. Planning data;
+    /// default [`FirmAmvBound::None`].
+    pub amv_bound: FirmAmvBound,
 
     // market exchange data
     /// The average cost to get these good so far. Updated after each purchase and
@@ -757,6 +843,23 @@ impl FirmPRow {
     pub fn with_reserve_target(mut self, reserve_target: f64) -> Self {
         debug_assert!(reserve_target >= 0.0, "reserve_target must be >= 0.0");
         self.reserve_target = reserve_target;
+        self
+    }
+
+    /// Sets recipe-derived AMV bounds (buy cap / sell floor).
+    /// Bound values must be finite.
+    pub fn with_amv_bound(mut self, amv_bound: FirmAmvBound) -> Self {
+        match amv_bound {
+            FirmAmvBound::None => {}
+            FirmAmvBound::Minimum(v) | FirmAmvBound::Maximum(v) => {
+                debug_assert!(v.is_finite(), "amv_bound value must be finite");
+            }
+            FirmAmvBound::MinMax(min, max) => {
+                debug_assert!(min.is_finite(), "amv_bound minimum must be finite");
+                debug_assert!(max.is_finite(), "amv_bound maximum must be finite");
+            }
+        }
+        self.amv_bound = amv_bound;
         self
     }
 
@@ -1055,6 +1158,114 @@ fn counter_good(exchange_goods: &[(usize, f64, f64)], exclude: usize) -> Option<
     })
 }
 
+impl DealMaker for Firm {
+    /// # Buy
+    ///
+    /// Returns a proposed basket as buyer, or `None` if no tender can be named.
+    /// Tenders [`FirmPRow::free_for_market`]. Seller's named counter first
+    /// (any salability), then other free stock by salability. Highly
+    /// salable goods (and that counter) cover the fill first; lower
+    /// salability only if those cannot. Shrinks the fill if still short.
+    /// Does not move stock.
+    fn buy(
+        &self,
+        own_order: &MarketOrder,
+        other_order: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> Option<ProposedDeal> {
+        debug_assert_eq!(own_order.origin, Actor::Firm(self.id));
+        let targeted_good = own_order.target;
+        let live = firm_live_tenders(self, targeted_good, history, factuals);
+        form_buy_proposal(
+            Actor::Firm(self.id),
+            own_order,
+            other_order,
+            history,
+            |good| firm_tenderable(self, good, targeted_good, factuals),
+            &live,
+        )
+    }
+
+    /// # Evaluate
+    ///
+    /// Returns Accept or Reject for this deal as this firm.
+    /// Keep must meet the firm AMV floor, with the need catch (purchase or
+    /// use target on a received good) down to the pop keep. Process inputs
+    /// skip salability; other received goods are haircut. Buyers accept
+    /// windfalls. Does not move stock.
+    fn evaluate(
+        &self,
+        deal: &ProposedDeal,
+        own_order: &MarketOrder,
+        other_order: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> DealResponse {
+        let _ = other_order;
+        debug_assert_eq!(own_order.origin, Actor::Firm(self.id));
+        let Some(role) = deal.role_of(Actor::Firm(self.id)) else {
+            debug_assert!(false, "firm must be a party to the deal");
+            return DealResponse::Reject;
+        };
+        if !deal_goods_tradeable(deal, factuals) {
+            return DealResponse::Reject;
+        }
+        let needs_received = deal.goods_received(role).any(|(good, _)| {
+            self.property
+                .get(&good)
+                .is_some_and(|row| row.purchase_target > 0.0 || row.use_target > 0.0)
+        });
+        evaluate_firm_amv(deal, role, history, needs_received, |good| {
+            firm_uses_good(self, good)
+        })
+    }
+}
+
+/// Returns true if this firm has `use_target` on `good`.
+/// Those goods skip the salability haircut when received.
+fn firm_uses_good(firm: &Firm, good: usize) -> bool {
+    firm.property
+        .get(&good)
+        .is_some_and(|row| row.use_target > 0.0)
+}
+
+/// Returns how many units of `good` this firm can tender (0 if it is `targeted_good`).
+fn firm_tenderable(firm: &Firm, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
+    if good == targeted_good {
+        return 0.0;
+    }
+    if !factuals.find_good(good).is_buyable() {
+        return 0.0;
+    }
+    firm.property
+        .get(&good)
+        .map(|row| row.free_for_market())
+        .unwrap_or(0.0)
+}
+
+/// Returns this firm's tenderable goods as `(id, salability, qty)`, highest salability 
+/// first.
+fn firm_live_tenders(
+    firm: &Firm,
+    targeted_good: usize,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Vec<(usize, f64)> {
+    let mut rows = Vec::new();
+    for (&good, _) in &firm.property {
+        let qty = firm_tenderable(firm, good, targeted_good, factuals);
+        if qty <= 0.0 {
+            continue;
+        }
+        if history.price(good) <= 0.0 {
+            continue;
+        }
+        rows.push((good, history.salability(good), qty));
+    }
+    sort_tenders_by_salability(rows)
+}
+
 #[cfg(test)]
 mod firm {
     use crate::game::factuals::Factuals;
@@ -1062,7 +1273,7 @@ mod firm {
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
     use std::collections::{HashMap, HashSet};
-    use crate::game::firm::{Firm, FirmPRow, ProductionLine};
+    use crate::game::firm::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
 
     fn make_good(id: usize, name: &str, decay_result: HashMap<usize, f64>) -> Good {
         Good {
@@ -1835,6 +2046,53 @@ mod firm {
                 .with_stock_target(10.0);
             assert_eq!(row.free_for_market(), 5.0);
         }
+
+        #[test]
+        fn amv_bound_defaults_to_none() {
+            let row = FirmPRow::new();
+            assert_eq!(row.amv_bound, FirmAmvBound::None);
+            assert_eq!(row.amv_bound.minimum(), None);
+            assert_eq!(row.amv_bound.maximum(), None);
+        }
+
+        #[test]
+        fn amv_bound_minimum_is_sell_floor_only() {
+            let row = FirmPRow::new().with_amv_bound(FirmAmvBound::Minimum(25.0));
+            assert_eq!(row.amv_bound.minimum(), Some(25.0));
+            assert_eq!(row.amv_bound.maximum(), None);
+        }
+
+        #[test]
+        fn amv_bound_maximum_is_buy_cap_only() {
+            let row = FirmPRow::new().with_amv_bound(FirmAmvBound::Maximum(22.5));
+            assert_eq!(row.amv_bound.minimum(), None);
+            assert_eq!(row.amv_bound.maximum(), Some(22.5));
+        }
+
+        #[test]
+        fn amv_bound_minmax_keeps_both() {
+            let row = FirmPRow::new().with_amv_bound(FirmAmvBound::MinMax(25.0, 40.0));
+            assert_eq!(row.amv_bound.minimum(), Some(25.0));
+            assert_eq!(row.amv_bound.maximum(), Some(40.0));
+        }
+
+        #[test]
+        fn amv_bound_clamps_bid_down_and_ask_up() {
+            let cap = FirmAmvBound::Maximum(22.5);
+            assert_eq!(cap.clamp_bid(40.0), 22.5);
+            assert_eq!(cap.clamp_bid(10.0), 10.0);
+            assert!(!cap.market_above_buy_cap(10.0));
+            assert!(cap.market_above_buy_cap(22.6));
+
+            let floor = FirmAmvBound::Minimum(25.0);
+            assert_eq!(floor.clamp_ask(20.0), 25.0);
+            assert_eq!(floor.clamp_ask(30.0), 30.0);
+            assert_eq!(floor.clamp_bid(40.0), 40.0);
+
+            let both = FirmAmvBound::MinMax(25.0, 22.5);
+            assert_eq!(both.clamp_bid(40.0), 22.5);
+            assert_eq!(both.clamp_ask(20.0), 25.0);
+        }
     }
 
     mod decay_goods_should {
@@ -2314,7 +2572,7 @@ mod firm {
         }
 
         #[test]
-        fn merchant_with_tender_stamps_bid_ask_spread() {
+        fn merchant_with_tender_sets_bid_ask_spread() {
             let mut firm = empty_firm();
             firm.property.insert(
                 1,
@@ -2345,6 +2603,65 @@ mod firm {
             assert_eq!(buy.amv_target, Some(1.8));
             assert_eq!(buy.counter_offer, Some(1));
             assert_eq!(buy.priority, market_priority::FIRM_MERCHANT);
+        }
+
+        #[test]
+        fn buy_cap_clamps_order_bid() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_purchase_target(4.0)
+                    .with_use_target(4.0)
+                    .with_stock_target(4.0)
+                    .with_amv_target(40.0)
+                    .with_amv_bound(FirmAmvBound::Maximum(22.5)),
+            );
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, 1.0, 0.9), (10, 10.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+            let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
+            assert_eq!(buy.target, 10);
+            assert_eq!(buy.amv_target, Some(22.5));
+        }
+
+        #[test]
+        fn buy_cap_skips_when_market_is_above_cap() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_purchase_target(4.0)
+                    .with_use_target(4.0)
+                    .with_stock_target(4.0)
+                    .with_amv_bound(FirmAmvBound::Maximum(22.5)),
+            );
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, 1.0, 0.9), (10, 30.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+            assert!(orders.iter().all(|o| o.target != 10 || o.target_amount <= 0.0));
+        }
+
+        #[test]
+        fn sell_floor_raises_order_ask() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(12.0)
+                    .with_sell_target(12.0)
+                    .with_amv_target(20.0)
+                    .with_amv_bound(FirmAmvBound::Minimum(25.0)),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 20.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals);
+            let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
+            assert_eq!(sell.target, 20);
+            assert_eq!(sell.amv_target, Some(25.0));
         }
 
         #[test]
@@ -2417,6 +2734,233 @@ mod firm {
             assert!(orders[0].is_buy_order());
             assert_eq!(orders[0].target, 20);
             assert_eq!(orders[0].counter_offer, Some(2));
+        }
+    }
+
+    mod deal_should {
+        use super::*;
+        use crate::game::actor::Actor;
+        use crate::game::config::market_priority;
+        use crate::game::deal::{DealMaker, DealResponse, ProposedDeal};
+        use crate::game::market::MarketHistory;
+        use crate::game::marketorder::MarketOrder;
+
+        fn make_history(entries: &[(usize, f64, f64)]) -> MarketHistory {
+            let mut history = MarketHistory::new();
+            for &(id, price, salability) in entries {
+                history.prices.insert(id, price);
+                history.salability.insert(id, salability);
+            }
+            history
+        }
+
+        fn make_factuals_goods(ids: &[usize]) -> Factuals {
+            let mut factuals = Factuals::new();
+            for &id in ids {
+                factuals.goods.insert(id, make_good(id, "good", HashMap::new()));
+            }
+            factuals
+        }
+
+        fn empty_firm() -> Firm {
+            Firm::new(7, "Shop".into(), 42, hexx::Hex::new(0, 0))
+        }
+
+        #[test]
+        fn buy_tenders_free_stock_and_does_not_move_it() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 2.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::offer_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+
+            let deal = firm.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert_eq!(deal.buyer, Actor::Firm(7));
+            assert_eq!(deal.seller, Actor::Firm(2));
+            assert!((deal.goods[&20] + 4.0).abs() < 1e-12);
+            assert!((deal.goods[&1] - 8.0).abs() < 1e-12);
+            assert_eq!(firm.property[&1].quantity, 10.0);
+        }
+
+        #[test]
+        fn evaluate_rejects_forty_percent_keep_without_need() {
+            let firm = empty_firm();
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 1.0, 0.4)]);
+            let own = MarketOrder::offer_order(
+                Actor::Firm(7),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Pop(1),
+                20,
+                4.0,
+                market_priority::POP_START,
+            );
+            let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(7))
+                .with_good(20, -10.0)
+                .with_good(1, 4.0);
+            assert_eq!(
+                firm.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_uses_input_at_full_amv_despite_low_salability() {
+            let mut firm = empty_firm();
+            firm.property.insert(10, FirmPRow::new().with_use_target(4.0));
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.3), (20, 1.0, 0.4)]);
+            let own = MarketOrder::offer_order(
+                Actor::Firm(7),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Pop(1),
+                20,
+                4.0,
+                market_priority::POP_START,
+            );
+            let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(7))
+                .with_good(20, -4.0)
+                .with_good(10, 4.0);
+            assert_eq!(
+                firm.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn evaluate_discounts_unused_low_salability_tender() {
+            let firm = empty_firm();
+            let factuals = make_factuals_goods(&[11, 20]);
+            let history = make_history(&[(11, 1.0, 0.3), (20, 1.0, 0.4)]);
+            let own = MarketOrder::offer_order(
+                Actor::Firm(7),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Pop(1),
+                20,
+                4.0,
+                market_priority::POP_START,
+            );
+            let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(7))
+                .with_good(20, -4.0)
+                .with_good(11, 4.0);
+            assert_eq!(
+                firm.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_takes_high_salability_money_at_full_amv() {
+            let firm = empty_firm();
+            let factuals = make_factuals_goods(&[12, 20]);
+            let history = make_history(&[(12, 1.0, 1.0), (20, 1.0, 0.4)]);
+            let own = MarketOrder::offer_order(
+                Actor::Firm(7),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Pop(1),
+                20,
+                4.0,
+                market_priority::POP_START,
+            );
+            let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(7))
+                .with_good(20, -4.0)
+                .with_good(12, 4.0);
+            assert_eq!(
+                firm.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn evaluate_need_catch_accepts_forty_percent_keep_on_an_input() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_use_target(4.0).with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 1.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::offer_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let deal = ProposedDeal::new(Actor::Firm(7), Actor::Firm(2))
+                .with_good(20, -4.0)
+                .with_good(1, 10.0);
+            assert_eq!(
+                firm.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn buy_skips_reserved_stock() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                1,
+                FirmPRow::new()
+                    .with_quantity(10.0)
+                    .with_reserve_target(10.0)
+                    .with_reserve(10.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 2.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::offer_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            assert!(firm.buy(&own, &other, &history, &factuals).is_none());
         }
     }
 }

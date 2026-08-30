@@ -28,6 +28,7 @@ pub mod players;
 pub mod mapdata;
 pub mod scalingfactor;
 pub mod marketorder;
+pub mod deal;
 pub mod religion;
 pub mod effects;
 pub mod player_resources;

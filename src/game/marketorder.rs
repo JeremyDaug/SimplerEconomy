@@ -377,7 +377,7 @@ mod market_order_should {
     }
 
     #[test]
-    fn with_priority_restamps_a_pop_order() {
+    fn with_priority_updates_a_pop_order() {
         let order = MarketOrder::request_order(
             Actor::Pop(1),
             7,
