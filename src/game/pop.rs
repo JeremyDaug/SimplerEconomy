@@ -2003,10 +2003,8 @@ fn pop_uses_good(pop: &Pop, good: usize) -> bool {
     })
 }
 
-/// A Helper that tells us whether a given good is able to be offered and in what quantity.
-/// 
-/// If the good matches the targeted good, we treat that as 0.0, even if it technically could be 
-/// offered.
+/// Returns how many units of `good` this pop can tender (0 if it is `targeted_good`).
+/// Excess above `shop_target`.
 fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
     if good == targeted_good {
         return 0.0;
@@ -2020,7 +2018,7 @@ fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factu
         .unwrap_or(0.0)
 }
 
-/// A helper that gets the pop's available goods that it can offer, sorted by salability.
+/// Returns this pop's tenderable goods as `(id, qty)`, highest salability first.
 fn pop_live_tenders(
     pop: &Pop,
     targeted_good: usize,

@@ -16,10 +16,11 @@ When reviewing commits, a branch, a PR, or local changes:
 
 ---
 
-**Last updated:** 2026-08-27 — second review pass on the uncommitted intramarket/extract
-cleanup. No open code issues. Handoff refreshed (`SALABILITY_DEFAULT` 0.4, desire-effect
-bake, religion harvest, counter AMV, legitimacy `n-1`).
-**Open items:** 0 bugs, 0 suggestions, 0 nits.
+**Last updated:** 2026-08-30 — implemented mixed-good / self-trade `None`,
+buyer unit-AMV cap, firm sell/offer earmark on tenders, and pop tender
+helper comment style. Leftover salability TODO and tester roster-count nit
+still open.
+**Open items:** 0 bugs, 1 suggestion, 1 nit.
 
 ---
 
@@ -29,8 +30,14 @@ bake, religion harvest, counter AMV, legitimacy `n-1`).
 
 ## Open suggestions
 
-(none)
+- `src/game/deal.rs:139` — leftover `TODO, consider adding salability here`
+  on the full-price load, immediately before the received-side haircut that
+  already applies salability. Reads as design chatter and makes it look like
+  given goods might also be haircut (would contradict keep-ratio). Drop it,
+  or replace with a one-liner that given goods stay at full AMV on purpose.
 
 ## Open nits
 
-(none)
+- `examples/market_tester.rs:4` — module docs say "3 pops, 5 producer firms".
+  The roster builds six firms (farm, bakery, mine, mint, jeweler, well).
+  Say 6 firms (or 6 producers).

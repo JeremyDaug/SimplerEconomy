@@ -364,6 +364,9 @@ pub fn evaluate_firm_amv(
 /// tender exists.
 /// Different target goods are a matcher bug (`debug_assert`); release still
 /// returns `None` so no mixed-good deal is built.
+/// Self-trade (`buyer` equals the sell origin) also returns `None`.
+/// Buyer `amv_target`, when set, is a unit-AMV ceiling: payment AMV per
+/// filled unit above it returns `None`.
 ///
 /// # Arguments
 ///
@@ -399,6 +402,9 @@ pub fn form_buy_proposal(
         own_order.target, other_order.target,
         "matched orders must share a target good"
     );
+    if own_order.target != other_order.target || buyer == other_order.origin {
+        return None;
+    }
     let targeted_good = own_order.target;
     let needed_units = own_order.target_amount.min(-other_order.target_amount);
     if needed_units <= 0.0 {
@@ -464,7 +470,40 @@ pub fn form_buy_proposal(
     for (good, qty) in tenders {
         deal = deal.with_good(good, qty);
     }
+    if let Some(cap) = own_order.amv_target {
+        if deal_exceeds_buyer_unit_cap(&deal, targeted_good, cap, history) {
+            return None;
+        }
+    }
     Some(deal)
+}
+
+/// Returns true if payment AMV per unit of `targeted_good` is above `cap`.
+pub(crate) fn deal_exceeds_buyer_unit_cap(
+    deal: &ProposedDeal,
+    targeted_good: usize,
+    cap: f64,
+    history: &MarketHistory,
+) -> bool {
+    if !cap.is_finite() {
+        return false;
+    }
+    let filled = deal.goods.get(&targeted_good).copied().unwrap_or(0.0).abs();
+    if filled <= 0.0 {
+        return false;
+    }
+    let payment: f64 = deal
+        .goods
+        .iter()
+        .filter_map(|(&good, &qty)| {
+            if good != targeted_good && qty > 0.0 {
+                Some(qty * history.price(good))
+            } else {
+                None
+            }
+        })
+        .sum();
+    payment > cap * filled + 1e-12
 }
 
 /// Covers as many of `remaining_units` of `targeted_good` as `candidates`
@@ -991,5 +1030,81 @@ mod form_buy_proposal_should {
         assert!(deal.goods.contains_key(&4));
         assert!(!deal.goods.contains_key(&2));
         assert!((deal.goods[&4] - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn returns_none_when_buyer_is_the_seller() {
+        let actor = Actor::Pop(1);
+        let own = request(actor, 1, 4.0);
+        let other = offer(actor, 1, 4.0);
+        let history = unit_history();
+        assert!(form_buy_proposal(actor, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn returns_none_when_target_goods_differ() {
+        let buyer = Actor::Pop(1);
+        let own = request(buyer, 1, 4.0);
+        let other = offer(Actor::Firm(2), 3, 4.0);
+        let history = unit_history();
+        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+    }
+
+    fn priced_buy(
+        buyer: Actor,
+        good: usize,
+        qty: f64,
+        amv: f64,
+        pay: usize,
+        pay_qty: f64,
+    ) -> MarketOrder {
+        MarketOrder::buy_order(
+            buyer,
+            good,
+            qty,
+            amv,
+            pay,
+            -pay_qty,
+            market_priority::FIRM_PRODUCER,
+        )
+    }
+
+    #[test]
+    fn returns_none_when_payment_unit_amv_exceeds_buyer_cap() {
+        let buyer = Actor::Firm(1);
+        // Cap 1.5; seller named rate is 8 coin for 4 bread = 2.0 AMV/unit.
+        let own = priced_buy(buyer, 1, 4.0, 1.5, 2, 6.0);
+        let other = MarketOrder::sell_order(
+            Actor::Firm(2),
+            1,
+            -4.0,
+            2.0,
+            2,
+            8.0,
+            market_priority::FIRM_PRODUCER,
+        );
+        let history = unit_history();
+        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+    }
+
+    #[test]
+    fn still_proposes_when_payment_unit_amv_is_at_buyer_cap() {
+        let buyer = Actor::Firm(1);
+        let own = priced_buy(buyer, 1, 4.0, 1.5, 2, 6.0);
+        let other = MarketOrder::sell_order(
+            Actor::Firm(2),
+            1,
+            -4.0,
+            1.5,
+            2,
+            6.0,
+            market_priority::FIRM_PRODUCER,
+        );
+        let history = unit_history();
+        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+            .expect("proposal at cap");
+        assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 6.0).abs() < 1e-12);
     }
 }

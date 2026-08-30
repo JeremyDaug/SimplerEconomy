@@ -4,8 +4,8 @@ use hexx::Hex;
 
 use crate::game::{
     actor::Actor, config::{market_constants, market_priority}, contract::Contract, deal::{
-        deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal, sort_tenders_by_salability,
-        DealMaker, DealResponse, ProposedDeal,
+        deal_exceeds_buyer_unit_cap, deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal,
+        sort_tenders_by_salability, DealMaker, DealResponse, ProposedDeal,
     }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::lerp, workforce::Workforce,
 };
 
@@ -1166,6 +1166,8 @@ impl DealMaker for Firm {
     /// (any salability), then other free stock by salability. Highly
     /// salable goods (and that counter) cover the fill first; lower
     /// salability only if those cannot. Shrinks the fill if still short.
+    /// Does not tender units `create_orders` would put on sell or offer.
+    /// Request orders with no `amv_target` still honor the row buy cap.
     /// Does not move stock.
     fn buy(
         &self,
@@ -1177,14 +1179,26 @@ impl DealMaker for Firm {
         debug_assert_eq!(own_order.origin, Actor::Firm(self.id));
         let targeted_good = own_order.target;
         let live = firm_live_tenders(self, targeted_good, history, factuals);
-        form_buy_proposal(
+        let deal = form_buy_proposal(
             Actor::Firm(self.id),
             own_order,
             other_order,
             history,
-            |good| firm_tenderable(self, good, targeted_good, factuals),
+            |good| firm_tenderable(self, good, targeted_good, factuals, history),
             &live,
-        )
+        )?;
+        if own_order.amv_target.is_none() {
+            if let Some(cap) = self
+                .property
+                .get(&targeted_good)
+                .and_then(|row| row.amv_bound.maximum())
+            {
+                if deal_exceeds_buyer_unit_cap(&deal, targeted_good, cap, history) {
+                    return None;
+                }
+            }
+        }
+        Some(deal)
     }
 
     /// # Evaluate
@@ -1231,17 +1245,25 @@ fn firm_uses_good(firm: &Firm, good: usize) -> bool {
 }
 
 /// Returns how many units of `good` this firm can tender (0 if it is `targeted_good`).
-fn firm_tenderable(firm: &Firm, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
+/// Excludes units `create_orders` would put on sell or offer (still in `free_for_market`).
+fn firm_tenderable(
+    firm: &Firm,
+    good: usize,
+    targeted_good: usize,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> f64 {
     if good == targeted_good {
         return 0.0;
     }
     if !factuals.find_good(good).is_buyable() {
         return 0.0;
     }
-    firm.property
-        .get(&good)
-        .map(|row| row.free_for_market())
-        .unwrap_or(0.0)
+    let Some(row) = firm.property.get(&good) else {
+        return 0.0;
+    };
+    let split = classify_on_hand(row, history.salability(good));
+    (row.free_for_market() - split.sell - split.liquidate).max(0.0)
 }
 
 /// Returns this firm's tenderable goods as `(id, salability, qty)`, highest salability 
@@ -1254,7 +1276,7 @@ fn firm_live_tenders(
 ) -> Vec<(usize, f64)> {
     let mut rows = Vec::new();
     for (&good, _) in &firm.property {
-        let qty = firm_tenderable(firm, good, targeted_good, factuals);
+        let qty = firm_tenderable(firm, good, targeted_good, factuals, history);
         if qty <= 0.0 {
             continue;
         }
@@ -2958,6 +2980,71 @@ mod firm {
                 Actor::Firm(2),
                 20,
                 -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            assert!(firm.buy(&own, &other, &history, &factuals).is_none());
+        }
+
+        #[test]
+        fn buy_does_not_tender_stock_on_a_sell_order() {
+            let mut firm = empty_firm();
+            // 15 bread, sell_target 12, salability at the exchange floor:
+            // 12 sell / 3 exchange. Only the 3 exchange units are tenderable.
+            firm.property.insert(
+                1,
+                FirmPRow::new()
+                    .with_quantity(15.0)
+                    .with_sell_target(12.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.6), (20, 1.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::offer_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+
+            let deal = firm.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert!((deal.goods[&20] + 3.0).abs() < 1e-12);
+            assert!((deal.goods[&1] - 3.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn buy_returns_none_when_request_exceeds_row_buy_cap() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(20.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_purchase_target(4.0)
+                    .with_amv_bound(FirmAmvBound::Maximum(1.5)),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 1.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::sell_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                2.0,
+                1,
+                8.0,
                 market_priority::FIRM_PRODUCER,
             );
             assert!(firm.buy(&own, &other, &history, &factuals).is_none());

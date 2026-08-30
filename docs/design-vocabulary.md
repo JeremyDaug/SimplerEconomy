@@ -373,7 +373,7 @@ Per-good warehouse ledger. Groups: stock, planning targets, exchange, production
 | **average price** | Realized average sale AMV | `average_price` |
 | **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
 | **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask | `amv_target` |
-| **AMV bound** | Recipe-derived planning bound. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `create_orders` clamps bid/ask written on the order to the bound and skips buys when market AMV is above the cap. Planning does not compute the numbers yet | `amv_bound`, `FirmAmvBound` |
+| **AMV bound** | Recipe-derived planning bound. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `create_orders` clamps bid/ask written on the order to the bound and skips buys when market AMV is above the cap. `form_buy_proposal` returns `None` if payment unit AMV is above the buyer's order `amv_target`; `Firm::buy` also applies the row cap on request orders. Planning does not compute the numbers yet | `amv_bound`, `FirmAmvBound` |
 | **available** (firm) | `quantity - reserve` | `FirmPRow::available` |
 | **sellable** | `quantity - max(reserve, reserve_target)`, floored at 0 | `FirmPRow::sellable` |
 
