@@ -407,10 +407,41 @@ tenders to the proposed basket. Preferred goods are the seller's named
 counter (regardless of salability) plus goods at or above
 `HIGH_SALABILITY` (`0.8`). Lower-salability goods are only added if those
 cannot form a valid offer. If every on-hand tender is still short, the
-targeted units shrink.
+targeted units shrink. Fill and payment are **whole units**.
 
 **Code:** `take_tenders`, `take_tender`, `form_buy_proposal` (`deal.rs`),
 `deal_constants::HIGH_SALABILITY`
+
+### Whole units
+**Preferred:** whole units, whole-unit exchange
+**Avoid:** integer goods (sounds like the type), discrete goods (sounds like a tag)
+
+**Meaning:** Market orders and proposed deals only move whole unit quantities
+of **goods**. Inventory may still hold fractions (decay, consume, leftover
+crumbs). A shortfall below 1 does not emit a buy or sell. Payment ceils the
+AMV (or named-counter) cost of the largest whole fill on-hand can cover, so
+2.5 AMV of value for 1 unit is paid as 3 coins. That mismatch is intentional.
+
+**AMV** is not a good. Bid, ask, `amv_target`, keep, and payment AMV may be
+fractional.
+
+**Transport cost** (the wagon bill, `transport_needed` / `pay_transport`) may
+be fractional and may spend a fraction of a transport-tagged good. If that
+same good is **exchanged** (bought, sold, or tendered in the deal map), it
+is still whole units.
+
+**Code:** `util::whole_units`, `util::whole_units_up`, `MarketOrder` amounts,
+`ProposedDeal.goods`
+
+### Take good
+**Preferred:** take good
+**Avoid:** clear good (sounds like zeroing the row in place)
+
+**Meaning:** Remove a property row for one good and return the on-hand
+quantity (`0` if it was not held). Cleans out storage, including fractional
+crumbs that cannot be posted.
+
+**Code:** `Pop::take_good`, `Firm::take_good`
 
 ### Make change
 **Preferred:** make change  
@@ -456,6 +487,37 @@ windfalls (`keep >= 1.0`); they do not seek a more equitable split.
 **Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SELL_SUCCESS_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
 **Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
 **Deferred detail:** `docs/proposals/market-order-priority.md`
+
+### Friction / transport
+**Preferred:** friction, transport cost, transport units  
+**Avoid:** AMV cost (that is valuation, not the wagon bill)
+
+**Meaning:** Intramarket cost of a meeting, paid in **transport-tagged** goods (time, cargo, shipping), not AMV.
+
+```text
+transport_needed = TRANSACTION_COST + bulk * market.friction
+bulk = Sum(|qty| * good.bulk())   // bulk = mass + 400 * volume
+```
+
+`TRANSACTION_COST` is a flat **unit** count (placeholder 10). `market.friction` is 0 on a one-hex market. Buyer pays. Seller never receives the spent units. Excess transport stays with the buyer. Each transport good's **Transport tag** carries efficiency (1.0 = time baseline); cover is `qty * efficiency`. The bill and the spend may be fractional. Exchanging a transport-tagged good (the deal map) is still **whole units**.
+
+**Wash / failed meeting:** spend only `TRANSACTION_COST` from **on-hand** transport (cannot use goods this deal would have brought in). Then renew or close.
+
+**Success:** cap the intended fill so post-exchange cover can pay the bill, *then* form the basket. After the goods map moves, spend the **full** bill. Do not also charge the door fee at the start (that would double the flat piece).
+
+**Unavailable:** no other-origin seller of that good. Not a meeting. No fee. The **market** records the good; `create_orders` receives that set. Cleared at day start.
+
+If the world has no transport-tagged goods, the bill is 0.
+
+**Code:** `GoodTag::Transport(efficiency)`, `Market.friction`, `Market.unavailable_goods`, `ProposedDeal.transport_needed`, `with_transport_budget`, `DealMaker::pay_transport`, `market_constants::TRANSACTION_COST`
+
+### Order tries
+**Preferred:** tries, try count  
+**Avoid:** attempts (unless talking about matcher passes in general)
+
+**Meaning:** How many failed deals a **buy/request** has already retried. Fresh orders are `0`. After a wash the buyer may **renew** (default: auto-renew the same order). Each renew increments `tries`. After `BUY_TRY_LIMIT` (`2`) retries, a further failure **closes** the order (the third close-out). Recalculating the basket on renew is later. Sell/offer orders carry the field at `0` unused.
+
+**Code:** `MarketOrder.tries`, `DealMaker::renew_buy`, `market_constants::BUY_TRY_LIMIT`
 
 ### Write / set (order and row fields)
 **Preferred:** write, set  

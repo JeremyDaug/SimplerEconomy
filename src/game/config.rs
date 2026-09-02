@@ -151,6 +151,15 @@ pub mod market_constants {
     /// When a pile is both sold and exchanged, each side keeps at least this
     /// share (0.1 = 10%). Salability lerps the rest.
     pub const SELL_EXCHANGE_EDGE: f64 = 0.1;
+
+    /// Failed-deal retries a buy/request may take. `tries` starts at 0.
+    /// After this many renewals a further failure closes the order
+    /// (the third close-out).
+    pub const BUY_TRY_LIMIT: u32 = 2;
+
+    /// Flat transport units charged per meeting (success or wash).
+    /// Tune down if 10 is too heavy. Not AMV.
+    pub const TRANSACTION_COST: f64 = 10.0;
 }
 
 /// Deal-making AMV acceptance floors and tender cutoffs.

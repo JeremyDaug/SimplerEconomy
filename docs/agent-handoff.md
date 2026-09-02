@@ -1,10 +1,10 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Handoff date:** 2026-08-29  
+**Handoff date:** 2026-09-01  
 **Purpose:** Catch a new agent/session up on recent work and direction. Prefer this plus `AGENTS.md`, `STYLE.md`, `TODO.md`, `reviewlog.md`, and `docs/design-vocabulary.md` over inventing process from scratch.
 
-**Build (as of this wrap-up):** `cargo test --lib` green (**284** tests). CLI smoke: `cargo run --example market_tester` then `shop` / `match`.
+**Build (as of this wrap-up):** `cargo test --lib` green (**345** tests). CLI smoke: `cargo run --example market_tester` then `shop` / `match`.
 
 ```bash
 cargo check --lib
@@ -41,13 +41,15 @@ In-repo navigation:
 
 1. **Pop day logic** — desires, consume, growth, sentiment, record keeping, decay — implemented largely on `Pop`, wired into `PlayState::advance_turn` as phases mature.
 2. **Factuals vs game state** — definitions (goods, species, culture, religion, processes) vs live map/markets/actors/prices.
-3. **Turn shell** — `advance_turn` lists many phases; several are orchestrator-wired with stub leaves. **Intramarket day is the active system:** order priority, matching, pop/firm `create_orders`, and read-only `DealMaker` `buy` / `evaluate` exist; finalize / market loop / PlayState wiring do not.
+3. **Turn shell** — `advance_turn` lists many phases; several are orchestrator-wired with stub leaves. **Intramarket day is the active system:** `Market::run_market_day` collects pop/firm orders, collates books, loops match / deal / finalize, and records `MarketGood` stats. PlayState intramarket phase, institution/state orders, `next_shopping_trip`, and AMV drift are not wired.
 4. **Household** — averages + count evolved by `DemographicRates`. Rates are **not** stored on each pop; resolve via factuals when growth needs them. Do not reopen that model.
 5. **Scale expectation** — potentially thousands to millions of pops (split by demographics and job). Prefer designs that scale with **unique demographic combos**, not full cartesian precompute.
 
 ---
 
-## 3. What is true now (2026-08-28)
+## 3. What is true now (2026-09-01)
+
+**Landed this wrap.** Intramarket `Market::run_market_day` is a real loop: collect pop/firm orders, collate books, match, buyer `buy` + `with_transport_budget`, seller `evaluate`, `finalize` both, leftover orders, wash / renew / unavailable. Transport efficiency is on `GoodTag::Transport(f64)`. Offers and proposals move **whole units of goods**; AMV and the wagon bill stay fractional. `Pop::take_good` / `Firm::take_good` dump a property row and return the quantity. PlayState intramarket phase, tester `day`, `next_shopping_trip`, and AMV drift are not wired.
 
 ### FirmPRow / `run_production`
 
@@ -59,7 +61,9 @@ In-repo navigation:
 
 ### Firm `create_orders`
 
-Read-only (`&self`). Signature: `create_orders(&self, history: &MarketHistory, factuals: &Factuals) -> Vec<MarketOrder>`. Mechanical emitter: it honors current row targets and stock; it does **not** replan. Planning / record keeping still `todo!()`.
+Read-only (`&self`). Signature: `create_orders(&self, history: &MarketHistory, factuals: &Factuals, unavailable: &HashSet<usize>) -> Vec<MarketOrder>`. Mechanical emitter: it honors current row targets and stock; it does **not** replan. Planning / record keeping still `todo!()`. Skips buys for goods in `unavailable` (market-day unmatched).
+
+Posted buy/sell/offer **good** amounts are **whole units**. Named counters ceil to the next whole payment unit. Bid/ask AMV stays fractional (AMV is not a good). Inventory may still hold fractions.
 
 On-hand free stock (`FirmPRow::free_for_market`) is classified as **sell**, **exchange**, and/or **liquidate**:
 
@@ -86,7 +90,8 @@ Setter invariants (`src/game/market.rs`, tunables in `config::market_constants`)
 
 - **AMV / average_price:** never `0`. Values with `|x| < AMV_MIN_ABS` (`0.00001`) bounce past 0 from the previous sign (positive -> slightly negative, and vice versa).
 - **Salability:** clamp to `0.0..=1.0`.
-- **Non-negative** (`debug_assert`): production, consumption, stock, supply, suppliers, demand, buyers, volume, requests, purchased, tender, payment.
+- **Non-negative** (`debug_assert`): production, consumption, stock, supply, suppliers, demand, buyers, requests, purchased, tender, payment.
+- **Volume** is derived: `purchased + payment` (`MarketGood::volume()`). Not stored.
 - **Imported** may be negative (exports).
 
 Fields are still `pub`; day logic should go through setters. `Market::history()` snapshots **AMV and salability**. Missing salability on a `MarketHistory` defaults to `SALABILITY_DEFAULT` (`0.4`). Missing prices still default to `1.0`.
@@ -106,7 +111,7 @@ Buy-side bands (pops `[4, 5)`, firms `[2, 3)`) are `debug_assert`ed only on **bu
 
 Buy-side named slots live in `config::market_priority` (`StateMarketSlot`, `MarketSlot::priority` for institutions `1` / `3` / `5`). There is **no** state-among-pops slot. State firm inserts sit at `band_end - STATE_FIRM_SLOT_MARGIN` (`2.49`, `2.99`). Firm rank helpers lerp toward those slots and never reach them.
 
-Wealth rank for pop buys: **per household**, **total AMV** (`wealth_amv / household count`), not liquid. `unit_rank = 1 - wealth / max_wealth` (richest -> `0` -> band start). `wealth_unit_rank` / `pop_priority_from_wealth` exist; the **market** must set `[4, 5)` when it receives orders. `Pop::create_orders` still writes `POP_START` (`4.0`) as an unranked placeholder. Offers are not generated yet.
+Wealth rank for pop buys: **per household**, **total AMV** (`property_wealth_amv / household count`), not liquid. `unit_rank = 1 - wealth / max_wealth` (richest -> `0` -> band start). `run_market_day` **writes** `[4, 5)` when it collects pop orders. `Pop::create_orders` still writes `POP_START` (`4.0`) as an unranked placeholder. Offers are not generated yet.
 
 Sell-side compose (write on create, then update after fills):
 
@@ -135,15 +140,46 @@ Return: `OrderMatchBatch { matched: Option<OrderMatch>, unmatched_buys: Vec<usiz
 
 ### Deal making (`DealMaker`)
 
-Trait + types in `src/game/deal.rs`. `buy` / `evaluate` / default identity `sell` are **read-only**. Stock does not move. Finalize is not on the trait yet.
+Trait + types in `src/game/deal.rs`. `buy` / `evaluate` / default identity `sell` are **read-only**. `finalize` applies an accepted basket to inventory (seller adds the map, buyer subtracts it) and does not edit orders.
 
 `ProposedDeal.goods` is the **seller's inventory change**: seller adds the map, buyer subtracts it. Negative qty = sold good; positive = tender.
 
-`buy` (Pop, Firm): ranks the seller's named counter first (any salability), then other live tenders by salability (pop: excess above `shop_target`; firm: `free_for_market` minus units `create_orders` would sell or liquidate). `take_tenders` fills remaining targeted units from those preferred goods plus anything at or above `HIGH_SALABILITY` (`0.8`). Goods below that floor are only added if preferred tenders cannot cover. If everything is still short, targeted units shrink. `None` if no tender, if targets differ / self-trade, or if payment unit AMV is above the buyer's `amv_target` (or the firm row buy cap on a request). Buyer's named counter is no longer a special slot (it sits in live tenders by salability). **Make change** (seller returning excess) is reserved and unused.
+`buy` (Pop, Firm): ranks the seller's named counter first (any salability), then other live tenders by salability (pop: excess above `shop_target`; firm: `free_for_market` minus units `create_orders` would sell or liquidate). `take_tenders` fills remaining targeted units from those preferred goods plus anything at or above `HIGH_SALABILITY` (`0.8`). Goods below that floor are only added if preferred tenders cannot cover. If everything is still short, targeted units shrink. Fill and payment **goods** are **whole units** (including a transport-tagged good in the deal map): a fractional shortfall is dropped, and payment ceils the AMV (or named-counter) cost of the largest whole fill on-hand can cover (2.5 AMV of value for 1 unit is paid as 3 coins). AMV itself stays fractional. The wagon bill (`transport_needed` / `pay_transport`) may be fractional and may spend a fraction of cargo. `None` if no tender, if targets differ / self-trade, if a whole unit cannot be bought, or if payment unit AMV is above the buyer's `amv_target` (or the firm row buy cap on a request). Buyer's named counter is no longer a special slot (it sits in live tenders by salability). **Make change** (seller returning excess) is reserved and unused.
 
 `evaluate`: AMV **keep** = received AMV / given AMV. Given goods are full AMV. Received goods the actor will use (pop shop/desire, firm `use_target`) skip salability; others are `AMV * salability`. Pop min keep `0.25` (75% max loss). Firm min keep `0.50`, with a need-catch to `0.25` when a received good has `purchase_target` or `use_target`. Merchant restock is a need, not a use, so it still takes the haircut. Buyers accept windfalls (`keep >= 1.0`). First pass returns `Accept` or `Reject` only (`AcceptWithChange` / `Counteroffer` / `HardReject` exist unused).
 
+`finalize` (Pop, Firm): quantity follows the signed map. Pop is quantity-only. Firm also records buyer `bought` / `bought_amv`, seller `sold` / `sold_amv`, blends `average_cost` at market AMV on inflows, and `sync_reserve`. Does not raise reserve toward stock target.
+
 Tunables: `config::deal_constants`.
+
+### Whole units
+
+**Preferred term:** whole units / whole-unit exchange (`docs/design-vocabulary.md`).
+
+Market orders and `ProposedDeal.goods` only move whole units of **goods** (including a transport-tagged good being bought, sold, or tendered). Inventory may still hold fractions (decay, consume, leftover crumbs). A shortfall below 1 does not post. Payment ceils the AMV (or named-counter) cost of the largest whole fill on-hand can cover (2.5 AMV of value for 1 unit is paid as 3 coins). Helpers: `util::whole_units` (trunc toward 0), `util::whole_units_up` (away from 0). Leftover order amounts snap to whole units.
+
+**Not whole-unit:** AMV (bid, ask, `amv_target`, keep, payment AMV) is not a good. The wagon bill (`transport_needed` / `pay_transport`) may be fractional and may spend a fraction of cargo.
+
+### Take good
+
+`Pop::take_good` / `Firm::take_good` remove that good's property row and return on-hand quantity (`0` if missing), including leftover fractions that cannot be posted.
+
+### Market day (`Market::run_market_day`)
+
+Signature: `run_market_day(&mut self, factuals, pops: &mut HashMap<usize, Pop>, firms: &mut HashMap<usize, Firm>, rng)`. RNG is required. HashMaps are keyed by actor id; only ids in `self.pops` / `self.firms` are collected. Institutions and states are skipped.
+
+1. **Collect.** `Pop::create_orders` / `Firm::create_orders`. Pop buy/request order priority is **written** from per-household total AMV (`property_wealth_amv / household count` vs market max).
+2. **Collate.** Opening `supply` / `demand` / `buyers` / `suppliers` on `MarketGood`. Day exchange counters are zeroed first (not AMV, salability, average price, stock, production, consumption, imports).
+3. **Loop** until `match_orders` returns empty (no buys left):
+   - One matched pair plus hopeless front-group buys.
+   - Hopeless buys: insert the good on `Market.unavailable_goods`. Not a meeting; no transport fee; no renew. `create_orders(..., unavailable)` skips those goods.
+   - Matched pair: buyer `buy` (`with_transport_budget` caps fill to a whole unit, then forms the basket so post-exchange cover pays `TRANSACTION_COST + bulk * friction`; efficiency is on `GoodTag::Transport`). Seller `evaluate`. Accept -> `finalize` both, then buyer `pay_transport(transport_needed)` after the map. Leftover order amounts stay whole units. Reject / no proposal -> **wash**: `pay_transport(TRANSACTION_COST)` from on-hand, then `renew_buy` until `BUY_TRY_LIMIT` 2. Worlds with no Transport tag skip the bill.
+   - New orders after a fill (`next_shopping_trip`, firm re-emit) are **not** added.
+4. **Cleanup.** Clear member pops' `current_orders`. No AMV drift.
+
+Lookups go through `as_deal_maker` / `as_deal_maker_mut` (`&dyn DealMaker`). Member pop/firm ids are `expect`ed present.
+
+PlayState `phase_intra_market_day` is still `todo!()`. Tester `match` is still read-only.
 
 ### Market tester CLI
 
@@ -173,11 +209,11 @@ Checked 2026-08-29: startup `shop` loads **10 pop + 9 firm orders** (13 buys, 6 
 | jeweler | gold | jewelry |
 | well | - | water |
 
-**Not built:** deal execution, inventory transfer, AMV drift, `MarketGood` volume/purchased/tender updates, `next_shopping_trip`, PlayState intramarket phase. `main.rs` is still the Bevy hex stub.
+**Not built in the tester:** calling `run_market_day`, inventory transfer from the CLI, AMV drift, `next_shopping_trip`. `main.rs` is still the Bevy hex stub. The lib loop is `Market::run_market_day`.
 
 ### Pop economic day (still closed through record keeping)
 
-Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snapshots then rewrites next-day shop/save. Morning `update_desires` does **not** multiply shop/save. Consume need, days-of-buffer savings, reserved never negative, `create_orders` three passes (desire shop, parked non-desire shop, opportunistic extra).
+Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snapshots then rewrites next-day shop/save. Morning `update_desires` does **not** multiply shop/save. Consume need, days-of-buffer savings, reserved never negative, `create_orders` three passes (desire shop, parked non-desire shop, opportunistic extra). Request amounts are whole units; a shortfall below 1 is skipped.
 
 `DemoDesire::create_desire` (the only demo-to-pop path; `derive_desire` was folded in) scales `amount` **and** additive effects (player resources, bonus goods) by `get_scaling_factor`. Birth, mortality, sentiment, and satisfaction arms stay as demo rates. `update_desires` rewrites existing desire effects from the parent demo the same way. Harvest is sat times that baked magnitude; do not multiply by household count again.
 
@@ -185,7 +221,7 @@ Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snaps
 
 ### Turn wiring
 
-- `phase_intra_market_day` is still `todo!()`. Matcher is a lib function, not wired.
+- `phase_intra_market_day` is still `todo!()`. `Market::run_market_day` is a lib function, not wired into PlayState.
 - Sentiments after growth, before migration; `MarketLookups` rebuilt at sentiments and record keeping.
 - `extract_special_resources` phase is wired (yield discarded).
 
@@ -219,7 +255,11 @@ Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snaps
 | **Matching** | One success per pass, front group only. Multiple hopeless buys OK. Do not batch several deals. Later **multimatch** (TODO): same buyer+seller extra goods as one trip; do not start unless asked. |
 | **Firm create_orders** | Mechanical. Do not replan (no success-rate / "dump vs mill" logic here). Planning writes the targets. |
 | **Matching AMV** | Not used yet. Do not add AMV into `match_orders` unless asked. |
-| **Deal AMV keep** | Pop min keep `0.25`, firm `0.50`, firm-need catch `0.25`. Use-goods skip salability; other received goods * salability. Buyers accept windfalls. `buy` / `evaluate` do not mutate. |
+| **Deal AMV keep** | Pop min keep `0.25`, firm `0.50`, firm-need catch `0.25`. Use-goods skip salability; other received goods * salability. Buyers accept windfalls. `buy` / `evaluate` do not mutate. `finalize` does. |
+| **Market day wash** | Reject or no proposal keeps the sell and charges `TRANSACTION_COST` transport from on-hand. Buyer `renew_buy` may put the buy back (`BUY_TRY_LIMIT` 2). Unmatched = unavailable, no fee, no renew. |
+| **Transport / friction** | `GoodTag::Transport(efficiency)` (1.0 = time). Cover is `qty * efficiency`. Success bill is `TRANSACTION_COST + bulk * market.friction`. Cap fill then form the basket. Wash is the flat fee only. Unavailable goods live on the **market**. No Transport tag => bill 0. Bill and spend may be fractional. |
+| **Whole units** | Orders and deal-map goods only. AMV stays fractional. Wagon bill stays fractional. Transport *goods in the deal map* are still whole units. |
+| **Take good** | Removes the property row, returns quantity (0 if missing). |
 | **Buy tenders** | Seller's named counter first (any salability), then live tenders by salability. `take_tenders` covers remaining units from that preferred set plus `HIGH_SALABILITY` (`0.8`). Low-sal only if those cannot cover. Shrink fill only after all tenders. **Make change** is returning excess, not this helper. |
 | **Desire effect bake** | Additive arms (player resources, bonus goods) bake in `create_desire` / `update_desires`. Harvest does not multiply by count. |
 | **Salability default** | `SALABILITY_DEFAULT` is `0.4` (new goods and missing history). Below exchange floor: not till money. |
@@ -235,10 +275,12 @@ Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snaps
 
 ### Natural next system
 
-- **Deal / settlement** — `buy` / `evaluate` exist and do not move stock. Next: `finalize` (inventory + leftover orders), then a caller loop around `match_orders` (one `buy`, one `evaluate`, Accept or wash). `sell` rewrite / second chance / haggling later. Wire the tester after finalize. Do not invent a second shopping model in the example.
-- **Set pop wealth ranks** when a market receives orders (`wealth_amv / household count` vs market max).
+- **Wire PlayState** `phase_intra_market_day` to `Market::run_market_day` (needs an RNG on play state or the phase). Institution / state orders still missing.
+- **Tester `day` command** — call `run_market_day` from `market_tester` so settlement is visible. Do not invent a second shopping model in the example.
+- **New orders after a fill** — `Pop::next_shopping_trip` (still `todo!()`), firm re-emit. After a buy fills, raise reserve toward stock target before re-calling `create_orders`, or merchants dump what they just bought.
 - **Offer generation** — pops still only emit requests.
-- **Firm `next_shopping_trip` / reserve-on-fill** — after a buy fills, raise reserve toward stock target before re-emitting orders, or merchants dump what they just bought.
+- **`sell` rewrite / haggling** — identity `sell`; Accept/Reject only.
+- **AMV drift** on accept/reject, leftover book carry.
 
 ### Nearby leftovers (do not start unless asked)
 
@@ -248,7 +290,7 @@ Unchanged from 2026-08-18 in substance on shop/save. `Pop::record_keeping` snaps
 - Firm / institution / market / state `record_keeping` bodies still `todo!()`
 - Firm `apply_passive_bonuses` is a stub; region/market bonus apply is unchecked
 - `run_production` exists + tests; **not** wired into the production phase
-- `Firm::create_orders` exists + tests; **not** wired into intramarket / PlayState
+- `Firm::create_orders` exists + tests; used by `run_market_day`, **not** wired into PlayState
 - `Pop::start_day` exists; day-start phase still stub (TODO: "Completed not Connected")
 - Migration orchestrator exists; leaves are `todo!()` (wants live sentiment + liquid wealth)
 - Class demographics unimplemented (vault: park this)
@@ -284,13 +326,16 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 | Concern | Location |
 |---------|----------|
 | Firm property + production flows | `src/game/firm.rs` → `FirmPRow`, `Firm::run_production`, `decay_goods`, `clear_day_flows` |
-| Firm market orders | `src/game/firm.rs` → `Firm::create_orders`, `classify_on_hand`, `counter_good` (read-only; sell/exchange lerp; liquidate offers; optimistic budget; skip non-positive AMV) |
+| Firm market orders | `src/game/firm.rs` → `Firm::create_orders`, `classify_on_hand`, `counter_good`, `Firm::take_good` (read-only emit; whole-unit amounts; skip `unavailable`) |
 | Record keeping + planning + shop/save | `src/game/pop.rs` → `record_keeping`, `update_planning`, `rewrite_shop_and_save_targets`, `planning_growth_factor` |
 | Cheapest tradeable basket | `src/game/pop.rs` → `cheapest_tradeable_cover` |
-| Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires) |
+| Pop request orders | `src/game/pop.rs` → `create_orders` (plan, then parked shop, then extra desires; whole units; skip `unavailable`) |
+| Dump a property row | `Pop::take_good`, `Firm::take_good` |
+| Whole-unit helpers | `src/game/util.rs` → `whole_units`, `whole_units_up`, `is_whole_unit` |
 | Order type + buy/sell priority helpers | `src/game/marketorder.rs` |
 | Matching | `src/game/market.rs` → `Market::match_orders`, `OrderMatchBatch` |
-| Deal making | `src/game/deal.rs` → `DealMaker`, `ProposedDeal`; impls on `Pop` / `Firm` |
+| Market day | `src/game/market.rs` → `Market::run_market_day` (collect, collate, match/deal/finalize loop) |
+| Deal making | `src/game/deal.rs` → `DealMaker`, `ProposedDeal`; impls on `Pop` / `Firm` (`buy` / `evaluate` / `finalize`) |
 | Market CLI | `examples/market_tester.rs` — `cargo run --example market_tester` (living pops/firms, `shop` via create_orders, TTY redraw, matcher only) |
 | MarketGood setters / AMV bounce | `src/game/market.rs` → `MarketGood` |
 | Order-priority tunables | `src/game/config.rs` → `market_priority`, `market_constants` |
@@ -313,7 +358,7 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 
 1. Read `AGENTS.md` + this handoff + `docs/design-vocabulary.md` + `docs/proposals/market-order-priority.md`.
 2. `cargo test --lib`.
-3. Next closed loop is **`finalize`** on `DealMaker` (inventory + leftover orders), then a one-shot buy/evaluate loop around `match_orders`. Probe with `cargo run --example market_tester` (`shop` loads pop/firm orders; matcher still read-only). Do not invent a second shopping model in the example.
+3. Intramarket loop is **`Market::run_market_day`**. Natural next: PlayState wire, tester `day`, `next_shopping_trip` / firm re-emit. Probe with `cargo run --example market_tester` (`shop` / `match` still read-only). Do not invent a second shopping model in the example.
 4. Match `STYLE.md` on any edits; update `reviewlog.md` when doing reviews.
 5. Prefer vault **EconCiv** notes for design intent when code and notes disagree — **call out conflicts** rather than silent invention. Vault `Turns.md` sequential shopping walk vs collect-and-match: **match** is the live model.
 
@@ -321,4 +366,4 @@ Open review debt is empty. Second pass 2026-08-27 found no new code issues; hand
 
 ## 8. One-line status
 
-**Pop economic day is closed through record keeping. Firms emit intramarket orders (`Firm::create_orders`). `DealMaker` `buy` / `evaluate` propose and judge a basket (seller's inventory change) without moving stock. Market tester `match` is still read-only. No finalize, no intramarket PlayState wire. Next: `finalize` then a one-shot deal loop.**
+**Pop economic day is closed through record keeping. `Market::run_market_day` collects pop/firm orders, collates books, matches, deals (`buy` / `evaluate` / `finalize` / transport / wash), and records `MarketGood` stats. Offers and proposals are whole-unit goods; AMV and the wagon bill stay fractional. PlayState intramarket phase, tester settlement, new orders after a fill, and AMV drift are not wired.**

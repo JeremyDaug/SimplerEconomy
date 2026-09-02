@@ -16,7 +16,7 @@
 //!   request laborers grain 3
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
 
 use hexx::Hex;
@@ -274,12 +274,20 @@ fn shop_from_actors(session: &mut Session) -> String {
     session.sells.clear();
     let mut pop_orders = Vec::new();
     for pop in &session.pops {
-        pop_orders.extend(pop.create_orders(&session.history, &session.factuals));
+        pop_orders.extend(pop.create_orders(
+            &session.history,
+            &session.factuals,
+            &HashSet::new(),
+        ));
     }
     let n_pop = pop_orders.len();
     let mut firm_orders = Vec::new();
     for firm in &session.firms {
-        firm_orders.extend(firm.create_orders(&session.history, &session.factuals));
+        firm_orders.extend(firm.create_orders(
+            &session.history,
+            &session.factuals,
+            &HashSet::new(),
+        ));
     }
     let n_firm = firm_orders.len();
     for order in pop_orders.into_iter().chain(firm_orders) {

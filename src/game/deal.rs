@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
-use crate::game::config::deal_constants;
+use crate::game::config::{deal_constants, market_constants};
 use crate::game::factuals::Factuals;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::MarketOrder;
+use crate::game::util::{is_whole_unit, whole_units, whole_units_up};
 
 /// # Deal Role
 ///
@@ -61,7 +62,13 @@ pub struct ProposedDeal {
     pub buyer: Actor,
     pub seller: Actor,
     /// Seller's inventory change, keyed by good id. Zero entries are omitted.
+    /// Whole units, including a transport-tagged good being exchanged.
     pub goods: HashMap<usize, f64>,
+    /// Transport units the buyer must spend after this deal succeeds.
+    /// `TRANSACTION_COST + bulk * market.friction`. 0 if the world has no
+    /// transport-tagged goods. May be fractional; paying it may spend a
+    /// fraction of a transport good.
+    pub transport_needed: f64,
 }
 
 impl ProposedDeal {
@@ -73,14 +80,16 @@ impl ProposedDeal {
             buyer,
             seller,
             goods: HashMap::new(),
+            transport_needed: 0.0,
         }
     }
 
     /// Adds a quantity in seller-inventory terms. Zero is omitted. Same good
     /// accumulates; a zero total is dropped.
-    /// `qty` must be finite.
+    /// `qty` must be finite and a whole unit.
     pub fn with_good(mut self, good: usize, qty: f64) -> Self {
         debug_assert!(qty.is_finite(), "qty must be finite");
+        debug_assert!(is_whole_unit(qty), "qty must be a whole unit, got {qty}");
         if qty != 0.0 {
             let entry = self.goods.entry(good).or_insert(0.0);
             *entry += qty;
@@ -187,6 +196,17 @@ impl ProposedDeal {
             received / given
         }
     }
+
+    /// Sets transport units the buyer spends on a successful finalize.
+    /// Must be `>= 0.0`.
+    pub fn with_transport_needed(mut self, transport_needed: f64) -> Self {
+        debug_assert!(
+            transport_needed >= 0.0 && transport_needed.is_finite(),
+            "transport_needed must be >= 0.0"
+        );
+        self.transport_needed = transport_needed;
+        self
+    }
 }
 
 /// # Deal Maker
@@ -194,8 +214,8 @@ impl ProposedDeal {
 /// An actor who can sit on either side of a matched pair.
 ///
 /// `buy`, `sell`, and `evaluate` are read-only. They propose or judge a
-/// [`ProposedDeal`] and do not move stock. Applying an accepted deal is a later
-/// finalize step (not on this trait yet).
+/// [`ProposedDeal`] and do not move stock. [`DealMaker::finalize`] applies an
+/// accepted basket to this actor's inventory. It does not edit market orders.
 pub trait DealMaker {
     /// Returns a proposed basket as buyer, or `None` if no tender can be named.
     ///
@@ -230,6 +250,37 @@ pub trait DealMaker {
     ) -> ProposedDeal {
         let _ = (self, own_order, other_order, history, factuals);
         deal.clone()
+    }
+
+    /// Applies `deal` to this actor's inventory (seller adds the map, buyer
+    /// subtracts it). Does not edit orders. `history` prices are used for
+    /// exchange records where the actor keeps them.
+    fn finalize(&mut self, deal: &ProposedDeal, history: &MarketHistory);
+
+    /// Spends `amount` friction-cover from on-hand transport-tagged goods
+    /// (lowest id first, `qty * efficiency`). Never goes negative; leftover
+    /// unpaid is dropped.
+    /// `amount` may be fractional. This is the wagon bill, not an exchange.
+    fn pay_transport(&mut self, amount: f64, factuals: &Factuals);
+
+    /// Returns a renewed copy of this failed buy/request with `tries`
+    /// incremented, or `None` to close it out.
+    ///
+    /// Default auto-renews the same order until
+    /// [`market_constants::BUY_TRY_LIMIT`] retries; a further failure
+    /// closes. Recalculating amounts is later.
+    fn renew_buy(&self, order: &MarketOrder) -> Option<MarketOrder> {
+        let _ = self;
+        debug_assert!(
+            order.target_amount > 0.0,
+            "renew_buy is for buy/request orders"
+        );
+        if order.tries >= market_constants::BUY_TRY_LIMIT {
+            return None;
+        }
+        let mut renewed = order.clone();
+        renewed.tries += 1;
+        Some(renewed)
     }
 }
 
@@ -368,6 +419,11 @@ pub fn evaluate_firm_amv(
 /// Buyer `amv_target`, when set, is a unit-AMV ceiling: payment AMV per
 /// filled unit above it returns `None`.
 ///
+/// Fill and payment quantities are whole units. A fractional shortfall
+/// is dropped; AMV (or a named counter) that is not a whole number of
+/// tender units is paid by ceiling the cost of the largest whole fill
+/// on-hand can cover.
+///
 /// # Arguments
 ///
 /// * `buyer` — the buying actor; must be `own_order.origin`.
@@ -406,7 +462,7 @@ pub fn form_buy_proposal(
         return None;
     }
     let targeted_good = own_order.target;
-    let needed_units = own_order.target_amount.min(-other_order.target_amount);
+    let needed_units = whole_units(own_order.target_amount.min(-other_order.target_amount));
     if needed_units <= 0.0 {
         return None;
     }
@@ -478,6 +534,120 @@ pub fn form_buy_proposal(
     Some(deal)
 }
 
+/// Returns whether any good in `factuals` is tagged Transport.
+fn world_has_transport(factuals: &Factuals) -> bool {
+    factuals.goods.values().any(|good| good.is_transport())
+}
+
+/// Sum of `|qty| * bulk` over the deal map.
+fn deal_bulk(deal: &ProposedDeal, factuals: &Factuals) -> f64 {
+    deal.goods
+        .iter()
+        .map(|(&id, &qty)| qty.abs() * factuals.find_good(id).bulk())
+        .sum()
+}
+
+/// Buyer-given and buyer-received transport *cover* in `deal` (qty * efficiency).
+fn deal_transport_legs(deal: &ProposedDeal, factuals: &Factuals) -> (f64, f64) {
+    let mut given = 0.0;
+    let mut received = 0.0;
+    for (&id, &qty) in &deal.goods {
+        let good = factuals.find_good(id);
+        if qty > 0.0 {
+            given += good.transport_cover(qty);
+        } else {
+            received += good.transport_cover(qty.abs());
+        }
+    }
+    (given, received)
+}
+
+/// Fill scale `k` in `(0, 1]` so post-exchange transport cover pays
+/// `TRANSACTION_COST + bulk * friction`. `None` if the flat fee cannot be met.
+fn transport_fill_scale(
+    deal: &ProposedDeal,
+    factuals: &Factuals,
+    friction: f64,
+    on_hand: f64,
+) -> Option<f64> {
+    debug_assert!(friction.is_finite(), "friction must be finite");
+    debug_assert!(on_hand.is_finite(), "on_hand must be finite");
+    let fee = market_constants::TRANSACTION_COST;
+    let factor = friction.max(0.0);
+    let bulk = deal_bulk(deal, factuals);
+    let (given_t, rec_t) = deal_transport_legs(deal, factuals);
+    let coef = given_t - rec_t + bulk * factor;
+    let slack = on_hand - fee;
+    if coef <= 0.0 {
+        if slack >= coef {
+            Some(1.0)
+        } else {
+            None
+        }
+    } else {
+        let k = (slack / coef).min(1.0);
+        if k <= 0.0 {
+            None
+        } else {
+            Some(k)
+        }
+    }
+}
+
+fn transport_needed_for(deal: &ProposedDeal, factuals: &Factuals, friction: f64) -> f64 {
+    market_constants::TRANSACTION_COST + deal_bulk(deal, factuals) * friction.max(0.0)
+}
+
+/// Caps the buy fill to what post-exchange transport can pay, then forms the
+/// basket at that size. Does not scale an already-built map.
+///
+/// `on_hand` is current transport *cover* (`qty * efficiency`). Worlds with no
+/// transport-tagged goods skip the bill. Returns `None` if the flat fee cannot
+/// be covered even at a vanishing fill.
+/// Recap fill is floored to whole units before the basket is formed again.
+/// The wagon bill on the result may still be fractional.
+pub fn with_transport_budget(
+    deal: ProposedDeal,
+    buyer: Actor,
+    own_order: &MarketOrder,
+    other_order: &MarketOrder,
+    history: &MarketHistory,
+    factuals: &Factuals,
+    tenderable: impl Fn(usize) -> f64,
+    live_tenders: &[(usize, f64)],
+    on_hand: f64,
+) -> Option<ProposedDeal> {
+    if !world_has_transport(factuals) {
+        return Some(deal.with_transport_needed(0.0));
+    }
+    let k = transport_fill_scale(&deal, factuals, history.friction, on_hand)?;
+    let mut out = if k >= 1.0 {
+        deal
+    } else {
+        let filled = deal
+            .goods
+            .get(&own_order.target)
+            .copied()
+            .unwrap_or(0.0)
+            .abs();
+        let mut capped = own_order.clone();
+        capped.target_amount = whole_units(filled * k);
+        if capped.target_amount <= 0.0 {
+            return None;
+        }
+        form_buy_proposal(
+            buyer,
+            &capped,
+            other_order,
+            history,
+            tenderable,
+            live_tenders,
+        )?
+    };
+    out.transport_needed = transport_needed_for(&out, factuals, history.friction);
+    Some(out)
+}
+
 /// Returns true if payment AMV per unit of `targeted_good` is above `cap`.
 pub(crate) fn deal_exceeds_buyer_unit_cap(
     deal: &ProposedDeal,
@@ -539,6 +709,11 @@ fn take_tenders(
 
 /// Pays as much of `remaining_units` as `have` of `good` can cover.
 /// Adds that qty to `tenders` and returns leftover targeted units.
+/// Give and fill are whole units of goods (including a transport-tagged
+/// good being exchanged). Payment ceils the AMV (or named-counter) cost of
+/// the largest whole fill `have` can cover, so 2.5 AMV of value for 1
+/// target unit becomes 3 coins paid. AMV itself stays fractional. Sub-unit
+/// leftovers stay in inventory. The wagon bill is not this path.
 fn take_tender(
     remaining_units: f64,
     targeted_good: usize,
@@ -559,12 +734,35 @@ fn take_tender(
     if intended <= 0.0 {
         return remaining_units;
     }
-    let give = have.min(intended);
-    if give <= 0.0 {
+    let Some((fill, give)) = whole_fill_and_pay(remaining_units, have, intended) else {
         return remaining_units;
-    }
+    };
     *tenders.entry(good).or_insert(0.0) += give;
-    remaining_units * (1.0 - give / intended)
+    remaining_units - fill
+}
+
+/// Largest whole fill of `remaining` that `have` can pay for at `intended`
+/// cost for those remaining units, and the whole payment for that fill.
+/// Payment ceils the AMV (or named-counter) cost. `None` if not even 1 unit.
+fn whole_fill_and_pay(remaining: f64, have: f64, intended: f64) -> Option<(f64, f64)> {
+    let remaining = whole_units(remaining);
+    let have = whole_units(have);
+    if remaining <= 0.0 || have <= 0.0 || intended <= 0.0 {
+        return None;
+    }
+    let unit_cost = intended / remaining;
+    if !unit_cost.is_finite() || unit_cost <= 0.0 {
+        return None;
+    }
+    let fill = whole_units((have / unit_cost).min(remaining));
+    if fill <= 0.0 {
+        return None;
+    }
+    let give = have.min(whole_units_up(unit_cost * fill));
+    if give <= 0.0 {
+        return None;
+    }
+    Some((fill, give))
 }
 
 /// Returns true if every good in the deal is buyable in `factuals`.
@@ -914,7 +1112,8 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = sal_history();
-        // 4 bread * 2 AMV = 8. Coin covers 3, gold covers the rest 5.
+        // 4 bread * 2 AMV = 8. 3 coins buy 1 bread (2 coins, leftover 1);
+        // gold covers the remaining 3 bread with 6.
         let deal = form_buy_proposal(
             buyer,
             &own,
@@ -925,8 +1124,8 @@ mod form_buy_proposal_should {
         )
         .expect("proposal");
         assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
-        assert!((deal.goods[&2] - 3.0).abs() < 1e-12);
-        assert!((deal.goods[&3] - 5.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 2.0).abs() < 1e-12);
+        assert!((deal.goods[&3] - 6.0).abs() < 1e-12);
     }
 
     #[test]
@@ -989,7 +1188,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = sal_history();
-        // Coins cover 3 AMV of 8; barter good 4 covers the rest 5.
+        // 3 coins buy 1 bread (2 coins); barter good 4 covers the remaining 3 with 6.
         let deal = form_buy_proposal(
             buyer,
             &own,
@@ -1000,8 +1199,8 @@ mod form_buy_proposal_should {
         )
         .expect("proposal");
         assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
-        assert!((deal.goods[&2] - 3.0).abs() < 1e-12);
-        assert!((deal.goods[&4] - 5.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 2.0).abs() < 1e-12);
+        assert!((deal.goods[&4] - 6.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1106,5 +1305,269 @@ mod form_buy_proposal_should {
             .expect("proposal at cap");
         assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
         assert!((deal.goods[&2] - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ceils_payment_when_amv_is_not_a_whole_unit() {
+        let buyer = Actor::Pop(1);
+        let own = request(buyer, 1, 1.0);
+        let other = offer(Actor::Firm(2), 1, 1.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 2.5);
+        history.prices.insert(2, 1.0);
+        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+            .expect("proposal");
+        // 2.5 AMV of coin for 1 bread becomes 3 coins paid.
+        assert!((deal.goods[&1] + 1.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn does_not_tender_a_fractional_remainder() {
+        let buyer = Actor::Pop(1);
+        let own = request(buyer, 1, 4.0);
+        let other = offer(Actor::Firm(2), 1, 4.0);
+        let history = unit_history();
+        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 2.7, &[(2, 2.7)])
+            .expect("proposal");
+        // 2.7 coins floors to 2; bread is 2 AMV so that buys 1 whole unit.
+        assert!((deal.goods[&1] + 1.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn returns_none_when_a_whole_unit_cannot_be_bought() {
+        let buyer = Actor::Pop(1);
+        let own = request(buyer, 1, 1.0);
+        let other = offer(Actor::Firm(2), 1, 1.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 2.5);
+        history.prices.insert(2, 1.0);
+        // 2 coins cannot cover ceil(2.5) for one bread.
+        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 2.0, &[(2, 2.0)]).is_none());
+    }
+
+    #[test]
+    fn exchanging_a_transport_good_is_still_whole_units() {
+        let buyer = Actor::Pop(1);
+        let own = request(buyer, 9, 4.0);
+        let other = offer(Actor::Firm(2), 9, 4.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(9, 2.0);
+        history.prices.insert(2, 1.0);
+        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+            .expect("proposal");
+        assert!((deal.goods[&9] + 4.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 8.0).abs() < 1e-12);
+        assert!(deal.goods.values().all(|&qty| qty == qty.trunc()));
+    }
+}
+
+#[cfg(test)]
+mod with_transport_budget_should {
+    use super::*;
+    use crate::game::config::{market_constants, market_priority};
+    use crate::game::good::Good;
+    use std::collections::HashSet;
+
+    fn plain_good(id: usize) -> Good {
+        Good {
+            id,
+            name: format!("g{id}"),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: vec![],
+        }
+    }
+
+    fn cargo_good(id: usize, efficiency: f64) -> Good {
+        let mut good = plain_good(id);
+        good.mass = 0.0;
+        good = good.with_transport_efficiency(efficiency);
+        good
+    }
+
+    fn request(qty: f64) -> MarketOrder {
+        MarketOrder::request_order(Actor::Pop(1), 1, qty, market_priority::POP_START)
+    }
+
+    fn offer(qty: f64) -> MarketOrder {
+        MarketOrder::offer_order(Actor::Firm(2), 1, -qty, market_priority::FIRM_PRODUCER)
+    }
+
+    fn history(friction: f64) -> MarketHistory {
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 2.0);
+        history.prices.insert(2, 1.0);
+        history.prices.insert(9, 1.0);
+        history.friction = friction;
+        history
+    }
+
+    fn budget(
+        deal: ProposedDeal,
+        factuals: &Factuals,
+        friction: f64,
+        on_hand: f64,
+        own: &MarketOrder,
+        other: &MarketOrder,
+    ) -> Option<ProposedDeal> {
+        let history = history(friction);
+        with_transport_budget(
+            deal,
+            Actor::Pop(1),
+            own,
+            other,
+            &history,
+            factuals,
+            |_| 10.0,
+            &[(2, 10.0)],
+            on_hand,
+        )
+    }
+
+    #[test]
+    fn skips_when_world_has_no_transport_tag() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(1, -4.0)
+            .with_good(2, 8.0);
+        let own = request(4.0);
+        let other = offer(4.0);
+        let out = budget(deal, &factuals, 1.0, 0.0, &own, &other).expect("no cargo world");
+        assert_eq!(out.transport_needed, 0.0);
+        assert!((out.goods[&1] + 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn charges_the_flat_fee_when_friction_is_zero() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 1.0));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(1, -4.0)
+            .with_good(2, 8.0);
+        let own = request(4.0);
+        let other = offer(4.0);
+        let out = budget(deal, &factuals, 0.0, 20.0, &own, &other).expect("cover");
+        assert!((out.transport_needed - market_constants::TRANSACTION_COST).abs() < 1e-12);
+        assert!((out.goods[&1] + 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn returns_none_when_on_hand_cannot_cover_the_fee() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 1.0));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(1, -4.0)
+            .with_good(2, 8.0);
+        let own = request(4.0);
+        let other = offer(4.0);
+        assert!(budget(deal, &factuals, 0.0, 5.0, &own, &other).is_none());
+    }
+
+    #[test]
+    fn reforms_at_a_smaller_fill_when_bulk_friction_overdraws() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 1.0));
+        let own = request(4.0);
+        let other = offer(4.0);
+        let history = history(1.0);
+        let deal = form_buy_proposal(
+            Actor::Pop(1),
+            &own,
+            &other,
+            &history,
+            |_| 10.0,
+            &[(2, 10.0)],
+        )
+        .expect("probe");
+        // bulk = 4*1 + 8*1 = 12, F = 1, T = 10, coef = 12, on_hand = 16, k = 0.5
+        let out = with_transport_budget(
+            deal,
+            Actor::Pop(1),
+            &own,
+            &other,
+            &history,
+            &factuals,
+            |_| 10.0,
+            &[(2, 10.0)],
+            16.0,
+        )
+        .expect("reformed");
+        assert!((out.goods[&1] + 2.0).abs() < 1e-12);
+        assert!((out.goods[&2] - 4.0).abs() < 1e-12);
+        assert!((out.transport_needed - 16.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn received_transport_can_cover_the_flat_fee() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 1.0));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(9, -20.0)
+            .with_good(2, 20.0);
+        let own = MarketOrder::request_order(
+            Actor::Pop(1),
+            9,
+            20.0,
+            market_priority::POP_START,
+        );
+        let other = MarketOrder::offer_order(
+            Actor::Firm(2),
+            9,
+            -20.0,
+            market_priority::FIRM_PRODUCER,
+        );
+        let out = budget(deal, &factuals, 0.0, 0.0, &own, &other).expect("buy cargo");
+        assert!((out.transport_needed - market_constants::TRANSACTION_COST).abs() < 1e-12);
+        assert!((out.goods[&9] + 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn efficiency_above_one_covers_more_per_unit() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 2.0));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(1, -4.0)
+            .with_good(2, 8.0);
+        let own = request(4.0);
+        let other = offer(4.0);
+        // 5 units at efficiency 2.0 = 10 cover, exactly the flat fee.
+        let out = budget(deal, &factuals, 0.0, 10.0, &own, &other).expect("efficient cargo");
+        assert!((out.transport_needed - market_constants::TRANSACTION_COST).abs() < 1e-12);
+        assert!((out.goods[&1] + 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn transport_bill_may_be_fractional() {
+        let factuals = Factuals::new()
+            .with_good(plain_good(1))
+            .with_good(plain_good(2))
+            .with_good(cargo_good(9, 1.0));
+        let deal = ProposedDeal::new(Actor::Pop(1), Actor::Firm(2))
+            .with_good(1, -4.0)
+            .with_good(2, 8.0);
+        let own = request(4.0);
+        let other = offer(4.0);
+        // bulk 12 * 0.125 + TRANSACTION_COST 10 = 11.5
+        let out = budget(deal, &factuals, 0.125, 20.0, &own, &other).expect("cover");
+        assert!((out.transport_needed - 11.5).abs() < 1e-12);
+        assert!((out.goods[&1] + 4.0).abs() < 1e-12);
+        assert!((out.goods[&2] - 8.0).abs() < 1e-12);
     }
 }

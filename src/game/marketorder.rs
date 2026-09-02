@@ -1,6 +1,6 @@
 use crate::game::actor::Actor;
 use crate::game::config::market_priority;
-use crate::game::util::lerp;
+use crate::game::util::{is_whole_unit, lerp};
 
 /// # Market Order
 /// 
@@ -26,6 +26,11 @@ use crate::game::util::lerp;
 /// Orders also carry a purchase **order priority** (lower goes first). Named slots
 /// live in [`market_priority`]. Bands, ranking, and what is not wired yet are in
 /// `docs/proposals/market-order-priority.md`.
+///
+/// `target_amount` and `counter_offer_amount` are whole units of goods. A pop
+/// or firm may still own a fraction; those crumbs cannot be posted.
+/// `amv_target` is a price, not a good, and may be fractional. A
+/// transport-tagged good in the order is still a whole-unit exchange.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketOrder {
     /// Who is making this order.
@@ -47,6 +52,12 @@ pub struct MarketOrder {
     /// [`compose_sell_priority`]; add [`market_priority::SELL_SUCCESS_BONUS`]
     /// after each successful fill.
     pub priority: f64,
+
+    /// How many failed deals this buy/request has already retried.
+    /// Fresh orders are 0. After
+    /// [`crate::game::config::market_constants::BUY_TRY_LIMIT`] retries,
+    /// a further failure closes the order out.
+    pub tries: u32,
 }
 
 /// Predefined state / player insert points along the market-day order.
@@ -199,12 +210,21 @@ fn assert_priority_for_origin(origin: Actor, priority: f64, target_amount: f64) 
 #[inline(always)]
 fn assert_priority_for_origin(_origin: Actor, _priority: f64, _target_amount: f64) {}
 
+fn assert_whole_amount(amount: f64, what: &str) {
+    debug_assert!(
+        is_whole_unit(amount),
+        "{what} must be a whole unit, got {amount}"
+    );
+}
+
 impl MarketOrder {
     pub fn buy_order(buyer: Actor, target: usize, target_amount: f64,
     amv_target: f64, counter_offer: usize, counter_offer_amount: f64,
     priority: f64) -> Self {
         debug_assert!(target_amount > 0.0, "Buy Orders must have positive target amounts.");
         debug_assert!(counter_offer_amount < 0.0, "Counter Offers in buy Orders must be negative.");
+        assert_whole_amount(target_amount, "buy target_amount");
+        assert_whole_amount(counter_offer_amount, "buy counter_offer_amount");
         assert_priority_for_origin(buyer, priority, target_amount);
 
         Self {
@@ -215,6 +235,7 @@ impl MarketOrder {
             counter_offer: Some(counter_offer),
             counter_offer_amount: Some(counter_offer_amount),
             priority,
+            tries: 0,
         }
     }
 
@@ -223,6 +244,8 @@ impl MarketOrder {
     priority: f64) -> Self {
         debug_assert!(target_amount < 0.0, "Sell Orders must have Negative target amounts.");
         debug_assert!(counter_offer_amount > 0.0, "Counter Offers in Sell Orders must be Positive.");
+        assert_whole_amount(target_amount, "sell target_amount");
+        assert_whole_amount(counter_offer_amount, "sell counter_offer_amount");
         assert_priority_for_origin(seller, priority, target_amount);
 
         Self {
@@ -233,12 +256,14 @@ impl MarketOrder {
             counter_offer: Some(counter_offer),
             counter_offer_amount: Some(counter_offer_amount),
             priority,
+            tries: 0,
         }
     }
 
     pub fn offer_order(seller: Actor, target: usize, target_amount: f64,
     priority: f64) -> Self {
         debug_assert!(target_amount < 0.0, "Offer Orders must have negative target amounts.");
+        assert_whole_amount(target_amount, "offer target_amount");
         assert_priority_for_origin(seller, priority, target_amount);
 
         Self {
@@ -249,12 +274,14 @@ impl MarketOrder {
             counter_offer: None,
             counter_offer_amount: None,
             priority,
+            tries: 0,
         }
     }
 
     pub fn request_order(buyer: Actor, target: usize, target_amount: f64,
     priority: f64) -> Self {
         debug_assert!(target_amount > 0.0, "Request Orders must have positive target amounts.");
+        assert_whole_amount(target_amount, "request target_amount");
         assert_priority_for_origin(buyer, priority, target_amount);
 
         Self {
@@ -265,7 +292,14 @@ impl MarketOrder {
             counter_offer: None,
             counter_offer_amount: None,
             priority,
+            tries: 0,
         }
+    }
+
+    /// Sets how many failed deals this buy/request has already retried.
+    pub fn with_tries(mut self, tries: u32) -> Self {
+        self.tries = tries;
+        self
     }
 
     /// Sets order priority.
@@ -373,6 +407,7 @@ mod market_order_should {
         assert_eq!(order.target, 10);
         assert_eq!(order.target_amount, 2.0);
         assert_eq!(order.priority, market_priority::POP_START);
+        assert_eq!(order.tries, 0);
         assert!(order.is_request_order());
     }
 

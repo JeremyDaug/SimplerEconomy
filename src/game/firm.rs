@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hexx::Hex;
 
 use crate::game::{
     actor::Actor, config::{market_constants, market_priority}, contract::Contract, deal::{
         deal_exceeds_buyer_unit_cap, deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal,
-        sort_tenders_by_salability, DealMaker, DealResponse, ProposedDeal,
-    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::lerp, workforce::Workforce,
+        with_transport_budget, sort_tenders_by_salability, DealMaker, DealResponse, DealRole,
+        ProposedDeal,
+    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::{lerp, whole_units, whole_units_up}, workforce::Workforce,
 };
 
 /// # Firm 
@@ -171,6 +172,14 @@ impl Firm {
         }
     }
 
+    /// # Take Good
+    ///
+    /// Removes this good's property row and returns the on-hand quantity.
+    /// Returns 0.0 if the good was not held.
+    pub fn take_good(&mut self, good: usize) -> f64 {
+        self.property.remove(&good).map(|row| row.quantity).unwrap_or(0.0)
+    }
+
     /// Hiring / expansion pressure that pulls workers into this firm.
     pub fn calculate_hiring_pressure(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
@@ -237,7 +246,16 @@ impl Firm {
     /// Buy order priority is the merchant band if any row is merchant-like
     /// (purchase and sell, no use), otherwise the producer band. Sells use
     /// [`compose_sell_priority`].
-    pub fn create_orders(&self, history: &MarketHistory, factuals: &Factuals) -> Vec<MarketOrder> {
+    ///
+    /// Posted buy/sell/offer amounts are whole units. Named counters ceil to
+    /// the next whole payment unit so a 2.5 AMV cost is posted as 3 coins.
+    /// Bid and ask AMV stay fractional.
+    pub fn create_orders(
+        &self,
+        history: &MarketHistory,
+        factuals: &Factuals,
+        unavailable: &HashSet<usize>,
+    ) -> Vec<MarketOrder> {
         let mut line_rank: HashMap<usize, usize> = HashMap::new();
         for (idx, line) in self.production_line.iter().enumerate() {
             for &good_id in &line.inputs {
@@ -261,25 +279,30 @@ impl Firm {
             let market_amv = history.price(good);
             let mid = row.mid_amv(market_amv);
             let split = classify_on_hand(row, salability);
-            let buy_qty = if row.amv_bound.market_above_buy_cap(market_amv) {
+            let buy_qty = whole_units(if unavailable.contains(&good) {
+                0.0
+            } else if row.amv_bound.market_above_buy_cap(market_amv) {
                 0.0
             } else {
                 row.purchase_qty()
-            };
+            });
+            let sell_qty = whole_units(split.sell);
+            let exchange_qty = whole_units(split.exchange);
+            let liquidate_qty = whole_units(split.liquidate);
 
-            debug_assert!(split.sell >= 0.0, "sell_qty must be >= 0.0");
-            debug_assert!(split.exchange >= 0.0, "exchange_qty must be >= 0.0");
-            debug_assert!(split.liquidate >= 0.0, "liquidate_qty must be >= 0.0");
+            debug_assert!(sell_qty >= 0.0, "sell_qty must be >= 0.0");
+            debug_assert!(exchange_qty >= 0.0, "exchange_qty must be >= 0.0");
+            debug_assert!(liquidate_qty >= 0.0, "liquidate_qty must be >= 0.0");
             debug_assert!(buy_qty >= 0.0, "buy_qty must be >= 0.0");
             debug_assert!(
-                split.liquidate == 0.0 || (split.sell == 0.0 && split.exchange == 0.0),
+                liquidate_qty == 0.0 || (sell_qty == 0.0 && exchange_qty == 0.0),
                 "liquidate stock cannot also be sell or exchange"
             );
 
             if buy_qty == 0.0
-                && split.sell == 0.0
-                && split.exchange == 0.0
-                && split.liquidate == 0.0
+                && sell_qty == 0.0
+                && exchange_qty == 0.0
+                && liquidate_qty == 0.0
             {
                 continue;
             }
@@ -287,9 +310,9 @@ impl Firm {
             plans.push(RowPlan {
                 good,
                 buy_qty,
-                sell_qty: split.sell,
-                exchange_qty: split.exchange,
-                liquidate_qty: split.liquidate,
+                sell_qty,
+                exchange_qty,
+                liquidate_qty,
                 use_target: row.use_target,
                 bid: row.amv_bound.clamp_bid(row.bid_amv(mid)),
                 ask: row.amv_bound.clamp_ask(row.ask_amv(mid)),
@@ -350,15 +373,25 @@ impl Firm {
             } else if let Some((pay_good, pay_price)) =
                 counter_good(&exchange_goods, plan.good)
             {
-                orders.push(MarketOrder::sell_order(
-                    Actor::Firm(self.id),
-                    plan.good,
-                    -qty,
-                    plan.ask,
-                    pay_good,
-                    qty * plan.ask / pay_price,
-                    weight,
-                ));
+                let pay = whole_units_up(qty * plan.ask / pay_price);
+                if pay > 0.0 {
+                    orders.push(MarketOrder::sell_order(
+                        Actor::Firm(self.id),
+                        plan.good,
+                        -qty,
+                        plan.ask,
+                        pay_good,
+                        pay,
+                        weight,
+                    ));
+                } else {
+                    orders.push(MarketOrder::offer_order(
+                        Actor::Firm(self.id),
+                        plan.good,
+                        -qty,
+                        weight,
+                    ));
+                }
             } else {
                 orders.push(MarketOrder::offer_order(
                     Actor::Firm(self.id),
@@ -386,15 +419,25 @@ impl Firm {
             }
             let cost = plan.buy_qty * plan.bid;
             if let Some((pay_good, pay_price)) = counter_good(&exchange_goods, plan.good) {
-                orders.push(MarketOrder::buy_order(
-                    Actor::Firm(self.id),
-                    plan.good,
-                    plan.buy_qty,
-                    plan.bid,
-                    pay_good,
-                    -(plan.buy_qty * plan.bid / pay_price),
-                    buy_band,
-                ));
+                let pay = whole_units_up(plan.buy_qty * plan.bid / pay_price);
+                if pay > 0.0 {
+                    orders.push(MarketOrder::buy_order(
+                        Actor::Firm(self.id),
+                        plan.good,
+                        plan.buy_qty,
+                        plan.bid,
+                        pay_good,
+                        -pay,
+                        buy_band,
+                    ));
+                } else {
+                    orders.push(MarketOrder::request_order(
+                        Actor::Firm(self.id),
+                        plan.good,
+                        plan.buy_qty,
+                        buy_band,
+                    ));
+                }
             } else {
                 orders.push(MarketOrder::request_order(
                     Actor::Firm(self.id),
@@ -1187,6 +1230,17 @@ impl DealMaker for Firm {
             |good| firm_tenderable(self, good, targeted_good, factuals, history),
             &live,
         )?;
+        let deal = with_transport_budget(
+            deal,
+            Actor::Firm(self.id),
+            own_order,
+            other_order,
+            history,
+            factuals,
+            |good| firm_tenderable(self, good, targeted_good, factuals, history),
+            &live,
+            firm_transport_on_hand(self, factuals),
+        )?;
         if own_order.amv_target.is_none() {
             if let Some(cap) = self
                 .property
@@ -1233,6 +1287,87 @@ impl DealMaker for Firm {
         evaluate_firm_amv(deal, role, history, needs_received, |good| {
             firm_uses_good(self, good)
         })
+    }
+
+    /// # Finalize
+    ///
+    /// Applies `deal` to this firm's on-hand `quantity`. Seller adds the map,
+    /// buyer subtracts it. Incoming units blend into `average_cost` at market
+    /// AMV. Buyer receipts also add `bought` / `bought_amv`; seller outflows
+    /// add `sold` / `sold_amv`. Syncs reserve after each good. Does not edit
+    /// orders or raise reserve toward stock target.
+    fn finalize(&mut self, deal: &ProposedDeal, history: &MarketHistory) {
+        let Some(role) = deal.role_of(Actor::Firm(self.id)) else {
+            debug_assert!(false, "firm must be a party to the deal");
+            return;
+        };
+        for (&good, _) in &deal.goods {
+            let delta = deal.signed_qty(role, good);
+            if delta == 0.0 {
+                continue;
+            }
+            let price = history.price(good);
+            let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+            row.quantity += delta;
+            debug_assert!(row.quantity >= 0.0, "quantity must be >= 0.0");
+            if delta > 0.0 {
+                row.blend_average_cost(delta, price);
+                if role == DealRole::Buyer {
+                    row.bought += delta;
+                    row.bought_amv += delta * price;
+                }
+            } else if role == DealRole::Seller {
+                let sold = -delta;
+                row.sold += sold;
+                row.sold_amv += sold * price;
+            }
+            row.sync_reserve();
+        }
+    }
+
+    fn pay_transport(&mut self, amount: f64, factuals: &Factuals) {
+        spend_firm_transport(self, amount, factuals);
+    }
+}
+
+/// Sum of on-hand units of transport-tagged goods.
+fn firm_transport_on_hand(firm: &Firm, factuals: &Factuals) -> f64 {
+    firm.property
+        .iter()
+        .map(|(id, row)| factuals.find_good(*id).transport_cover(row.quantity.max(0.0)))
+        .sum()
+}
+
+/// Spends `amount` from this firm's transport-tagged rows, lowest id first.
+fn spend_firm_transport(firm: &mut Firm, mut amount: f64, factuals: &Factuals) {
+    if amount <= 0.0 {
+        return;
+    }
+    let mut ids: Vec<usize> = firm
+        .property
+        .keys()
+        .copied()
+        .filter(|&id| factuals.find_good(id).is_transport())
+        .collect();
+    ids.sort_unstable();
+    for id in ids {
+        if amount <= 0.0 {
+            break;
+        }
+        let row = firm.property.get_mut(&id).unwrap();
+        let cover = factuals.find_good(id).transport_cover(row.quantity.max(0.0));
+        if cover <= 0.0 {
+            continue;
+        }
+        if cover >= amount {
+            let eff = factuals.find_good(id).transport_efficiency();
+            row.quantity -= amount / eff;
+            amount = 0.0;
+        } else {
+            amount -= cover;
+            row.quantity = 0.0;
+        }
+        row.sync_reserve();
     }
 }
 
@@ -1331,6 +1466,8 @@ mod firm {
             firms: HashSet::new(),
             institution_ids: HashSet::new(),
             goods,
+            friction: 0.0,
+            unavailable_goods: HashSet::new(),
         }
     }
 
@@ -2276,7 +2413,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10, 20]);
             let history = make_history(&[(10, 1.0, 0.4), (20, 2.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 2);
             assert!(orders[0].is_offer_order());
@@ -2311,7 +2448,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 2.0, 0.5)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 2);
             assert!(orders[0].is_offer_order());
@@ -2342,7 +2479,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 1);
             assert!(orders[0].is_offer_order());
@@ -2364,7 +2501,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.8)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 1);
             assert!(orders[0].is_offer_order());
@@ -2384,7 +2521,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.6)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 1);
             assert_eq!(orders[0].target_amount, -9.0);
@@ -2406,7 +2543,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10, 20]);
             let history = make_history(&[(10, 1.0, 1.0), (20, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let outgoing = orders_for(&orders, 10);
             assert_eq!(outgoing.len(), 1);
@@ -2430,7 +2567,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10, 20]);
             let history = make_history(&[(10, 1.0, 0.75), (20, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let outgoing = orders_for(&orders, 10);
             assert_eq!(outgoing.len(), 1);
@@ -2448,7 +2585,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.3)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 1);
             assert!(orders[0].is_offer_order());
@@ -2471,7 +2608,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, 1.0, 0.9), (10, 1.0, 0.3)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let pottery = orders_for(&orders, 10);
             assert_eq!(pottery.len(), 1);
@@ -2493,7 +2630,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[1, 20]);
             let history = make_history(&[(1, 1.0, 0.9), (20, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders_for(&orders, 1).len(), 0);
             assert_eq!(orders.len(), 1);
@@ -2531,7 +2668,7 @@ mod firm {
                 (10, 1.0, 0.4),
                 (20, 1.0, 0.4),
             ]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let buys: Vec<_> = orders.iter().filter(|o| o.target_amount > 0.0).collect();
             assert_eq!(buys.len(), 2);
@@ -2554,7 +2691,7 @@ mod firm {
             factuals.goods.get_mut(&10).unwrap().tags.insert(GoodTag::Untradeable);
             let history = make_history(&[(10, 1.0, 0.5)]);
 
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             assert!(orders.is_empty());
         }
 
@@ -2567,7 +2704,7 @@ mod firm {
             );
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             assert!(orders.is_empty());
         }
 
@@ -2584,7 +2721,7 @@ mod firm {
             let before = firm.clone();
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.4)]);
-            let _ = firm.create_orders(&history, &factuals);
+            let _ = firm.create_orders(&history, &factuals, &HashSet::new());
             assert_eq!(firm.property[&10].quantity, before.property[&10].quantity);
             assert_eq!(
                 firm.property[&10].purchase_target,
@@ -2612,7 +2749,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, 1.0, 0.9), (10, 2.0, 0.5)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
             let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
@@ -2642,7 +2779,7 @@ mod firm {
             );
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, 1.0, 0.9), (10, 10.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
             assert_eq!(buy.target, 10);
             assert_eq!(buy.amv_target, Some(22.5));
@@ -2662,7 +2799,7 @@ mod firm {
             );
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, 1.0, 0.9), (10, 30.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             assert!(orders.iter().all(|o| o.target != 10 || o.target_amount <= 0.0));
         }
 
@@ -2680,7 +2817,7 @@ mod firm {
             );
             let factuals = make_factuals_goods(&[1, 20]);
             let history = make_history(&[(1, 1.0, 0.9), (20, 20.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
             assert_eq!(sell.target, 20);
             assert_eq!(sell.amv_target, Some(25.0));
@@ -2697,7 +2834,7 @@ mod firm {
             );
             let factuals = make_factuals_goods(&[10]);
             let history = make_history(&[(10, 1.0, 0.4)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             assert_eq!(orders[0].origin, Actor::Firm(7));
         }
 
@@ -2720,7 +2857,7 @@ mod firm {
 
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, -1.0, 0.9), (10, 2.0, 0.5)]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             let sell = orders.iter().find(|o| o.target == 10 && o.target_amount < 0.0)
                 .expect("outgoing");
@@ -2750,12 +2887,84 @@ mod firm {
                 (2, 1.0, 0.9),
                 (20, 1.0, 0.4),
             ]);
-            let orders = firm.create_orders(&history, &factuals);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 1);
             assert!(orders[0].is_buy_order());
             assert_eq!(orders[0].target, 20);
             assert_eq!(orders[0].counter_offer, Some(2));
+        }
+
+        #[test]
+        fn floors_fractional_sell_and_buy_to_whole_units() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(5.7)
+                    .with_sell_target(10.0),
+            );
+            firm.property.insert(1, FirmPRow::new().with_quantity(20.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(2.7),
+            );
+
+            let factuals = make_factuals_goods(&[1, 10, 20]);
+            let history = make_history(&[
+                (1, 1.0, 0.9),
+                (10, 1.0, 0.4),
+                (20, 1.0, 0.4),
+            ]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let sell = orders.iter().find(|o| o.target == 10).expect("sell");
+            let buy = orders.iter().find(|o| o.target == 20).expect("buy");
+            assert_eq!(sell.target_amount, -5.0);
+            assert_eq!(buy.target_amount, 2.0);
+        }
+
+        #[test]
+        fn ceils_named_counter_to_a_whole_payment() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_purchase_target(1.0)
+                    .with_amv_target(2.5),
+            );
+
+            let factuals = make_factuals_goods(&[1, 10]);
+            let history = make_history(&[(1, 1.0, 0.9), (10, 2.5, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
+            assert_eq!(buy.target_amount, 1.0);
+            assert_eq!(buy.counter_offer_amount, Some(-3.0));
+        }
+    }
+
+    mod take_good_should {
+        use super::*;
+
+        #[test]
+        fn returns_quantity_and_removes_the_row() {
+            let mut firm = Firm::new(7, "Shop".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(2.3)
+                    .with_purchase_target(4.0),
+            );
+            firm.property.insert(11, FirmPRow::new().with_quantity(5.0));
+            assert!((firm.take_good(10) - 2.3).abs() < 1e-12);
+            assert!(!firm.property.contains_key(&10));
+            assert_eq!(firm.property[&11].quantity, 5.0);
+        }
+
+        #[test]
+        fn returns_zero_when_the_good_is_not_held() {
+            let mut firm = Firm::new(7, "Shop".into(), 42, hexx::Hex::new(0, 0));
+            assert_eq!(firm.take_good(10), 0.0);
         }
     }
 
@@ -2817,6 +3026,36 @@ mod firm {
             assert!((deal.goods[&20] + 4.0).abs() < 1e-12);
             assert!((deal.goods[&1] - 8.0).abs() < 1e-12);
             assert_eq!(firm.property[&1].quantity, 10.0);
+        }
+
+        #[test]
+        fn finalize_moves_stock_and_records_bought() {
+            let mut firm = empty_firm();
+            firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_purchase_target(4.0),
+            );
+            let factuals = make_factuals_goods(&[1, 20]);
+            let history = make_history(&[(1, 1.0, 0.9), (20, 2.0, 0.4)]);
+            let own = MarketOrder::request_order(
+                Actor::Firm(7),
+                20,
+                4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let other = MarketOrder::offer_order(
+                Actor::Firm(2),
+                20,
+                -4.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            let deal = firm.buy(&own, &other, &history, &factuals).expect("proposal");
+            firm.finalize(&deal, &history);
+            assert!((firm.property[&1].quantity - 2.0).abs() < 1e-12);
+            assert!((firm.property[&20].quantity - 4.0).abs() < 1e-12);
+            assert!((firm.property[&20].bought - 4.0).abs() < 1e-12);
+            assert!((firm.property[&20].bought_amv - 8.0).abs() < 1e-12);
         }
 
         #[test]

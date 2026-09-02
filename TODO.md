@@ -25,18 +25,26 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
   - [ ] Phase Intramarket Day
     - [ ] Market Day
       - [ ] Gather Player / State Orders (In priority buckets)
-      - [ ] Gather Institution/Firm Orders
-      - [ ] Gather Pop Orders
+      - [x] Gather Firm Orders (`create_orders`; institutions not collected yet)
+      - [x] Gather Pop Orders (`create_orders`; wealth-rank buy order priority)
       - [ ] Prioritize orders, match buyers and sellers, and get them trading.
         - [x] Order priority field, named slots, sell-weight compose.
         - [x] `Market::match_orders` (one success, multiple front-group failures).
+        - [x] `Market::run_market_day` loop: collect, collate, match, deal, finalize, leftover orders.
         - [ ] Multimatch (later, not now): after the first pair, pull that buyer's other buys at similar priority against the same seller's other goods. One trip, one `ProposedDeal`. Variety sellers load the cart; do not mix other buyers or other sellers. `form_buy_proposal` still assumes one target.
         - [ ] Deal / settlement (move goods, AMV, `MarketGood` stats, update leftover orders).
           - [x] `DealMaker` trait, `ProposedDeal`, `buy` / `evaluate` (read-only).
           - [x] Multi-good buy tender: seller counter + high-sal `take_tenders`, low-sal last.
-          - [ ] `sell` rewrite, `finalize`, market loop, tester `deal` command.
-        - [ ] Set pop wealth ranks on receive; pop offer orders; PlayState wire.
-      - [ ] Be sure to record general results of trades after they are complete.
+          - [x] Whole-unit offers and proposals (inventory may stay fractional).
+          - [x] `Pop` / `Firm` `take_good` (return qty, drop the property row).
+          - [x] `finalize` (inventory). Accept from both sides applies; reject washes (drop buy, keep sell).
+          - [ ] `sell` rewrite, tester `deal` / `day` command, PlayState wire.
+        - [x] Set pop wealth ranks on receive (per-household total AMV).
+        - [ ] Pop offer orders.
+      - [x] Record deal results on `MarketGood` (requests/tender, purchased/payment/average price; volume is purchased + payment).
+      - [x] Transport / friction: `TRANSACTION_COST + bulk * market.friction` in transport-tagged units. Wash pays the flat fee; unmatched is unavailable (no fee).
+      - [ ] New orders after a fill (`next_shopping_trip`, firm re-emit / reserve toward stock target).
+      - [ ] AMV drift and other market clean-up.
   - [ ] Phase Intermarket Day
     - [ ] Recalculate travel routes between markets.
       - [ ] Add new port tiles to markets.

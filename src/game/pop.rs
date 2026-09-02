@@ -4,9 +4,9 @@ use bevy::platform::collections::HashSet;
 
 use crate::game::{
     actor::Actor, config::{market_priority, player_resource_constants, pop_constants}, deal::{
-        deal_goods_tradeable, evaluate_pop_amv, form_buy_proposal, sort_tenders_by_salability,
-        DealMaker, DealResponse, ProposedDeal,
-    }, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+        deal_goods_tradeable, evaluate_pop_amv, form_buy_proposal, with_transport_budget,
+        sort_tenders_by_salability, DealMaker, DealResponse, ProposedDeal,
+    }, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::{lerp, whole_units},
 };
 
 pub use crate::game::effects::PopEffect;
@@ -362,7 +362,14 @@ impl Pop {
     /// 
     /// When creating oredrs for Luxury needs, it will only do one pass, even if the 
     /// budget has excess at the end.
-    pub fn create_orders(&self, market_history: &MarketHistory, factuals: &Factuals) -> Vec<MarketOrder> {
+    ///
+    /// Posted request amounts are whole units. A shortfall below 1 is skipped.
+    pub fn create_orders(
+        &self,
+        market_history: &MarketHistory,
+        factuals: &Factuals,
+        unavailable: &std::collections::HashSet<usize>,
+    ) -> Vec<MarketOrder> {
         let mut orders: Vec<MarketOrder> = Vec::new();
 
         let mut remaining_budget = self.current_excess_value(market_history);
@@ -385,12 +392,17 @@ impl Pop {
                     if  seen.contains(&target.good) {
                         continue;
                     }
+                    if unavailable.contains(&target.good) {
+                        continue;
+                    }
                     seen.insert(target.good);
 
                     let good_price = market_history.prices.get(&target.good)
                         .unwrap_or(&1.0);
-                    let purchase_target = self.property.get(&target.good).unwrap().shop_target 
-                        - self.property.get(&target.good).unwrap().quantity;
+                    let purchase_target = whole_units(
+                        self.property.get(&target.good).unwrap().shop_target
+                            - self.property.get(&target.good).unwrap().quantity,
+                    );
                     if purchase_target <= 0.0 {
                         continue;
                     }
@@ -413,10 +425,13 @@ impl Pop {
                 if seen.contains(&good_id) || row.shop_target <= 0.0 {
                     continue;
                 }
+                if unavailable.contains(&good_id) {
+                    continue;
+                }
                 if !factuals.find_good(good_id).is_buyable() {
                     continue;
                 }
-                let purchase = row.shop_target - row.quantity;
+                let purchase = whole_units(row.shop_target - row.quantity);
                 if purchase <= 0.0 {
                     continue;
                 }
@@ -462,10 +477,17 @@ impl Pop {
                         if  seen.contains(&target.good) {
                             continue;
                         }
+                        if unavailable.contains(&target.good) {
+                            continue;
+                        }
                         seen.insert(target.good);
 
                         let good_price = market_history.prices.get(&target.good).unwrap_or(&0.0);
-                        let purchase_target = desire.amount * target.cap / target.efficiency;
+                        let purchase_target =
+                            whole_units(desire.amount * target.cap / target.efficiency);
+                        if purchase_target <= 0.0 {
+                            continue;
+                        }
                         let cost = purchase_target * good_price;
 
                         // create order for full amount
@@ -496,6 +518,14 @@ impl Pop {
             }
         }
         excess
+    }
+
+    /// # Take Good
+    ///
+    /// Removes this good's property row and returns the on-hand quantity.
+    /// Returns 0.0 if the good was not held.
+    pub fn take_good(&mut self, good: usize) -> f64 {
+        self.property.remove(&good).map(|row| row.quantity).unwrap_or(0.0)
     }
 
     /// # Next Shopping Trip
@@ -1951,13 +1981,24 @@ impl DealMaker for Pop {
         debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
         let targeted_good = own_order.target;
         let live = pop_live_tenders(self, targeted_good, history, factuals);
-        form_buy_proposal(
+        let deal = form_buy_proposal(
             Actor::Pop(self.id),
             own_order,
             other_order,
             history,
             |good| pop_tenderable(self, good, targeted_good, factuals),
             &live,
+        )?;
+        with_transport_budget(
+            deal,
+            Actor::Pop(self.id),
+            own_order,
+            other_order,
+            history,
+            factuals,
+            |good| pop_tenderable(self, good, targeted_good, factuals),
+            &live,
+            pop_transport_on_hand(self, factuals),
         )
     }
 
@@ -1985,6 +2026,75 @@ impl DealMaker for Pop {
             return DealResponse::Reject;
         }
         evaluate_pop_amv(deal, role, history, |good| pop_uses_good(self, good))
+    }
+
+    /// # Finalize
+    ///
+    /// Applies `deal` to this pop's on-hand `quantity`. Seller adds the map,
+    /// buyer subtracts it. Creates a row at 0 if the good is new. Does not
+    /// edit orders, reserved, or shop/save targets.
+    fn finalize(&mut self, deal: &ProposedDeal, history: &MarketHistory) {
+        let _ = history;
+        let Some(role) = deal.role_of(Actor::Pop(self.id)) else {
+            debug_assert!(false, "pop must be a party to the deal");
+            return;
+        };
+        for (&good, _) in &deal.goods {
+            let delta = deal.signed_qty(role, good);
+            if delta == 0.0 {
+                continue;
+            }
+            let row = self
+                .property
+                .entry(good)
+                .or_insert_with(|| PopPRow::new(0.0));
+            row.quantity += delta;
+            debug_assert!(row.quantity >= 0.0, "quantity must be >= 0.0");
+        }
+    }
+
+    fn pay_transport(&mut self, amount: f64, factuals: &Factuals) {
+        spend_pop_transport(self, amount, factuals);
+    }
+}
+
+/// Sum of on-hand units of transport-tagged goods.
+fn pop_transport_on_hand(pop: &Pop, factuals: &Factuals) -> f64 {
+    pop.property
+        .iter()
+        .map(|(id, row)| factuals.find_good(*id).transport_cover(row.quantity.max(0.0)))
+        .sum()
+}
+
+/// Spends `amount` from this pop's transport-tagged rows, lowest id first.
+fn spend_pop_transport(pop: &mut Pop, mut amount: f64, factuals: &Factuals) {
+    if amount <= 0.0 {
+        return;
+    }
+    let mut ids: Vec<usize> = pop
+        .property
+        .keys()
+        .copied()
+        .filter(|&id| factuals.find_good(id).is_transport())
+        .collect();
+    ids.sort_unstable();
+    for id in ids {
+        if amount <= 0.0 {
+            break;
+        }
+        let row = pop.property.get_mut(&id).unwrap();
+        let cover = factuals.find_good(id).transport_cover(row.quantity.max(0.0));
+        if cover <= 0.0 {
+            continue;
+        }
+        if cover >= amount {
+            let eff = factuals.find_good(id).transport_efficiency();
+            row.quantity -= amount / eff;
+            amount = 0.0;
+        } else {
+            amount -= cover;
+            row.quantity = 0.0;
+        }
     }
 }
 
@@ -2180,7 +2290,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 1); 
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2201,7 +2311,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 1); 
             assert_eq!(orders[0].target, 101); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2227,7 +2337,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 2); 
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2253,7 +2363,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 5);
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2285,7 +2395,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 2);
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2312,7 +2422,7 @@ mod pop {
             factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 2);
             assert_eq!(orders[0].target, 101); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2334,7 +2444,7 @@ mod pop {
             let factuals = make_default_factuals();
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 2);
             assert_eq!(orders[0].target, 100);
             assert_eq!(orders[0].target_amount, 10.0);
@@ -2361,7 +2471,7 @@ mod pop {
             factuals.goods.get_mut(&100).unwrap().tags.insert(GoodTag::Untradeable);
             let market_history = make_default_market_history();
 
-            let orders = pop.create_orders(&market_history, &factuals);
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 3);
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
@@ -2369,6 +2479,61 @@ mod pop {
             assert_eq!(orders[1].target_amount, 10.0); // should be the first good in the list
             assert_eq!(orders[2].target, 200); // should be the first good in the list
             assert_eq!(orders[2].target_amount, 10.0); // should be the first good in the list
+        }
+
+        #[test]
+        fn floors_fractional_shortfall_to_whole_units() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.get_mut(&100).unwrap().quantity = 0.3;
+            pop.property.get_mut(&100).unwrap().shop_target = 2.7;
+            pop.property.insert(500, PopPRow::new(10.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
+            let grain = orders.iter().find(|o| o.target == 100).expect("grain");
+            assert_eq!(grain.target_amount, 2.0);
+        }
+
+        #[test]
+        fn skips_shortfall_below_one_unit() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.get_mut(&100).unwrap().quantity = 10.0;
+            pop.property.get_mut(&100).unwrap().shop_target = 10.7;
+            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
+            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
+            pop.property.insert(500, PopPRow::new(10.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
+            assert!(orders.iter().all(|o| o.target != 100));
+        }
+    }
+
+    mod take_good_should {
+        use super::*;
+
+        #[test]
+        fn returns_quantity_and_removes_the_row() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(2.3).with_target(4.0));
+            pop.property.insert(101, PopPRow::new(5.0));
+            assert!((pop.take_good(100) - 2.3).abs() < 1e-12);
+            assert!(!pop.property.contains_key(&100));
+            assert_eq!(pop.property[&101].quantity, 5.0);
+        }
+
+        #[test]
+        fn returns_zero_when_the_good_is_not_held() {
+            let mut pop = make_pop();
+            assert_eq!(pop.take_good(100), 0.0);
         }
     }
 
@@ -4789,6 +4954,43 @@ mod pop {
                 pop.evaluate(&deal, &own, &other, &history, &factuals),
                 DealResponse::Accept
             );
+        }
+
+        #[test]
+        fn finalize_moves_stock_as_buyer() {
+            let mut pop = make_pop();
+            pop.property.insert(500, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            let deal = pop.buy(&own, &other, &history, &factuals).expect("proposal");
+            pop.finalize(&deal, &history);
+            assert!((pop.property[&100].quantity - 4.0).abs() < 1e-12);
+            assert!((pop.property[&500].quantity - 6.0).abs() < 1e-12);
+        }
+
+        #[test]
+        fn renew_buy_auto_retries_then_closes() {
+            let pop = make_pop();
+            let (own, _) = buy_and_offer();
+            let once = pop.renew_buy(&own).expect("first retry");
+            assert_eq!(once.tries, 1);
+            let twice = pop.renew_buy(&once).expect("second retry");
+            assert_eq!(twice.tries, 2);
+            assert!(pop.renew_buy(&twice).is_none());
+        }
+
+        #[test]
+        fn pay_transport_may_spend_a_fraction() {
+            let mut pop = make_pop();
+            pop.property.insert(9, PopPRow::new(20.0));
+            let mut factuals = make_default_factuals();
+            factuals.goods.insert(
+                9,
+                make_good(9, "cargo".to_string()).with_transport_efficiency(1.0),
+            );
+            pop.pay_transport(11.5, &factuals);
+            assert!((pop.property[&9].quantity - 8.5).abs() < 1e-12);
         }
     }
 }
