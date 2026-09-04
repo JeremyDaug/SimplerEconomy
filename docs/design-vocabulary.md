@@ -311,13 +311,37 @@ does not apply growth arms or bonus goods.
 
 ## World data
 
+### World data
+**Preferred:** world data  
+**Avoid:** save (that is a running game), init / scenario (that is kickoff state)
+
+**Meaning:** Mostly fixed definitions for a whole game, meant to be human-readable
+and moddable. Today this is **factuals** (goods first). Later: overlapping mod
+folders with ids, dependencies, and exclusivity.
+
+**Code:** `data/world/`, `Factuals::load_from_path`
+
+### Initialization data
+**Preferred:** initialization data, init data, scenario  
+**Avoid:** world data (that is the factuals), save data
+
+**Meaning:** Kickoff state for a new game: starting prices, pops, firms, markets,
+property. Not loaded yet.
+
+### Save data
+**Preferred:** save data  
+**Avoid:** world data, init data
+
+**Meaning:** Enough to resume an already-started game. Locked to the world data
+that was used. Not loaded yet.
+
 ### Factuals
 **Preferred:** factuals  
 
 **Meaning:** Mostly static world definitions (goods, processes, species, cultures,
 religions). The "Facts" of the world the game is taking place in.
 **Not:** current prices, stocks, actors.  
-**Code:** `Factuals`
+**Code:** `Factuals`, `Factuals::load_from_path` (`data/world/goods.toml`)
 
 ### Game state
 **Preferred:** game state, play state
@@ -464,6 +488,43 @@ full rewrite. **Counteroffer** rewrites the basket. **Hard Reject** skips
 retries on this pairing. First-pass impls return Accept or Reject only.
 
 **Code:** `DealResponse`
+
+### AMV drift
+**Preferred:** AMV drift  
+**Avoid:** restamp prices, average price (that is realized fill price)
+
+**Meaning:** Live `MarketGood.amv` moves as meetings resolve. Intra-day orders and
+evaluate still read the opening `MarketHistory` snapshot. A successful basket
+lerps both sides toward the midpoint of sold-AMV vs payment-AMV. A seller
+reject raises the sought good (demand edge 1.1) and lowers each tender,
+harder when more units were offered per unit sought. No-proposal raises the
+sought good only. Unmatched (no seller) does not move AMV.
+
+**Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
+`drift_amv_on_no_proposal`, `market_constants::AMV_ACCEPT_BLEND`,
+`AMV_REJECT_BLEND`, `AMV_REJECT_DEMAND_EDGE`
+
+### AMV history
+**Preferred:** AMV history, AMV trail
+**Avoid:** price history (ambiguous with average_price)
+
+**Meaning:** Ring of AMV samples on `MarketGood`, oldest first. The first
+sample is the opening AMV on the day the ring was seeded; later samples are
+end-of-day closes. Intra-day drift is not recorded tick-by-tick. Caps at
+`AMV_HISTORY_MAX` (16).
+
+**Code:** `MarketGood.amv_history`, `MarketGood::record_amv`,
+`MarketGood::amv_trail`, `market_constants::AMV_HISTORY_MAX`
+
+### Salability update
+**Preferred:** salability update  
+**Avoid:** AMV drift (that is value, not how easy it is to spend)
+
+**Meaning:** Day-end rolling lerp of salability toward `payment / tender` for
+goods that were offered as payment. No tender means no change. Volume and
+fill-rate of demand are not this pass.
+
+**Code:** `Market::update_salability`, `market_constants::SALABILITY_BLEND`
 
 ### AMV keep
 **Preferred:** AMV keep, keep ratio  

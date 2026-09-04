@@ -2,6 +2,11 @@
 
 Working focus list. Prefer broad strokes; long-form design lives in the EconCiv vault.
 
+- [x] Load world-data goods (`data/world/goods.toml` -> `Factuals::load_from_path`; tester uses it).
+- [ ] Load remaining factuals (processes, species, cultures, religions).
+- [ ] Load initialization data (pops, firms, markets, starting prices).
+- [ ] Save data (later).
+
 ---
 
 ## Major steps
@@ -38,13 +43,17 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
           - [x] Whole-unit offers and proposals (inventory may stay fractional).
           - [x] `Pop` / `Firm` `take_good` (return qty, drop the property row).
           - [x] `finalize` (inventory). Accept from both sides applies; reject washes (drop buy, keep sell).
-          - [ ] `sell` rewrite, tester `deal` / `day` command, PlayState wire.
+          - [x] Tester `day` command (`Market::run_market_day` + `MarketDayReport`).
+          - [ ] `sell` rewrite, PlayState wire.
         - [x] Set pop wealth ranks on receive (per-household total AMV).
         - [ ] Pop offer orders.
       - [x] Record deal results on `MarketGood` (requests/tender, purchased/payment/average price; volume is purchased + payment).
       - [x] Transport / friction: `TRANSACTION_COST + bulk * market.friction` in transport-tagged units. Wash pays the flat fee; unmatched is unavailable (no fee).
       - [ ] New orders after a fill (`next_shopping_trip`, firm re-emit / reserve toward stock target).
-      - [ ] AMV drift and other market clean-up.
+      - [x] AMV drift on accept/reject (live `MarketGood.amv`; frozen history for the day).
+      - [x] Salability day-end from payment/tender.
+      - [x] AMV history rings on `MarketGood` (opening seed + daily close; tester trail).
+      - [ ] Other market clean-up (leftover book carry).
   - [ ] Phase Intermarket Day
     - [ ] Recalculate travel routes between markets.
       - [ ] Add new port tiles to markets.

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use circular_buffer::CircularBuffer;
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -9,7 +10,7 @@ use crate::game::deal::{DealMaker, DealResponse};
 use crate::game::firm::Firm;
 use crate::game::marketorder::{pop_priority_from_wealth, MarketOrder};
 use crate::game::pop::Pop;
-use crate::game::util::whole_units;
+use crate::game::util::{lerp, whole_units};
 use crate::game::{actors::Actors, factuals::Factuals};
 
 /// One buy/sell pair from [`Market::match_orders`].
@@ -43,6 +44,55 @@ impl OrderMatchBatch {
     pub fn is_empty(&self) -> bool {
         self.matched.is_none() && self.unmatched_buys.is_empty()
     }
+}
+
+/// Why a matched pair washed instead of trading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WashReason {
+    /// Buyer [`DealMaker::buy`] returned `None`.
+    NoProposal,
+    /// Seller did not [`DealResponse::Accept`].
+    Rejected,
+    /// Accepted map did not move the target good.
+    EmptyFill,
+}
+
+/// Result of one matched buy/sell meeting.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeetingOutcome {
+    /// Seller accepted. `goods` is the seller's inventory change.
+    Traded {
+        goods: HashMap<usize, f64>,
+        transport_needed: f64,
+    },
+    /// No trade. Flat meeting fee from on-hand. `closed` means the buy was
+    /// not renewed.
+    Wash {
+        reason: WashReason,
+        transport: f64,
+        closed: bool,
+    },
+}
+
+/// One buy/sell pair that reached `settle_pair` (traded or washed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketMeeting {
+    pub buy: MarketOrder,
+    pub sell: MarketOrder,
+    pub outcome: MeetingOutcome,
+}
+
+/// What [`Market::run_market_day`] did.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MarketDayReport {
+    /// Buys with no other-origin seller. Marked unavailable. Not a meeting.
+    pub unmatched_buys: Vec<MarketOrder>,
+    /// Each matched pair, in day order, traded or washed.
+    pub meetings: Vec<MarketMeeting>,
+    /// Buys still in the book when the loop stopped.
+    pub leftover_buys: Vec<MarketOrder>,
+    /// Sells still in the book when the loop stopped.
+    pub leftover_sells: Vec<MarketOrder>,
 }
 
 /// Length of the leading run of buys that share `buys[0].priority`.
@@ -171,6 +221,7 @@ fn leftover_order(mut order: MarketOrder, filled: f64) -> Option<MarketOrder> {
 
 /// Charges the flat transport meeting fee from on-hand, pushes `sell_order`
 /// back onto `sells`, and asks the buyer to [`DealMaker::renew_buy`].
+/// Returns true if the buy was renewed.
 fn wash_pair(
     buy_order: MarketOrder,
     sell_order: MarketOrder,
@@ -179,12 +230,24 @@ fn wash_pair(
     firms: &mut HashMap<usize, Firm>,
     buys: &mut Vec<MarketOrder>,
     sells: &mut Vec<MarketOrder>,
-) {
+) -> bool {
     as_deal_maker_mut(pops, firms, buy_order.origin)
         .pay_transport(market_constants::TRANSACTION_COST, factuals);
     sells.push(sell_order);
     if let Some(renewed) = as_deal_maker(pops, firms, buy_order.origin).renew_buy(&buy_order) {
         buys.push(renewed);
+        true
+    } else {
+        false
+    }
+}
+
+/// Flat wash fee when the world has transport-tagged goods, else 0.
+fn wash_transport(factuals: &Factuals) -> f64 {
+    if factuals.goods.values().any(|good| good.is_transport()) {
+        market_constants::TRANSACTION_COST
+    } else {
+        0.0
     }
 }
 
@@ -331,18 +394,25 @@ impl Market {
     ///       renew up to [`market_constants::BUY_TRY_LIMIT`] retries).
     ///    4. New orders after a fill (`Pop::next_shopping_trip`, firm re-emit)
     ///       are deferred.
-    /// 4. Cleanup: clear member pops' `current_orders`. AMV drift, leftover
-    ///    book carry, and re-planning are deferred.
+    /// 4. Cleanup: clear member pops' `current_orders`. AMV is written on
+    ///    [`MarketGood`] as meetings resolve (history stays the opening
+    ///    snapshot). Salability updates from payment/tender after the loop.
+    ///    Leftover book carry and re-planning are deferred.
+    ///
+    /// Returns a [`MarketDayReport`] of unmatched buys, each meeting, and
+    /// leftover book orders.
     pub fn run_market_day<R: Rng + ?Sized>(
         &mut self,
         factuals: &Factuals,
         pops: &mut HashMap<usize, Pop>,
         firms: &mut HashMap<usize, Firm>,
         rng: &mut R,
-    ) {
+    ) -> MarketDayReport {
         self.unavailable_goods.clear();
+        let mut report = MarketDayReport::default();
 
         let history = self.history();
+        self.seed_amv_history();
         let (mut buys, mut sells) = self.collect_orders(&history, factuals, pops, firms);
         self.reset_day_exchange_stats();
         self.collate_order_books(&buys, &sells);
@@ -374,6 +444,7 @@ impl Market {
 
             for &i in &batch.unmatched_buys {
                 self.unavailable_goods.insert(buys[i].target);
+                report.unmatched_buys.push(buys[i].clone());
             }
 
             let mut remove_buys = batch.unmatched_buys.clone();
@@ -391,7 +462,15 @@ impl Market {
 
             if let Some((buy_order, sell_order, _)) = matched {
                 self.settle_pair(
-                    buy_order, sell_order, &history, factuals, pops, firms, &mut buys, &mut sells,
+                    buy_order,
+                    sell_order,
+                    &history,
+                    factuals,
+                    pops,
+                    firms,
+                    &mut buys,
+                    &mut sells,
+                    &mut report.meetings,
                 );
             }
         }
@@ -402,6 +481,113 @@ impl Market {
                 .current_orders
                 .clear();
         }
+
+        self.update_salability();
+        self.record_amv_closes();
+
+        report.leftover_buys = buys;
+        report.leftover_sells = sells;
+        report
+    }
+
+    /// Pushes current AMV into an empty history ring (the opening AMV).
+    fn seed_amv_history(&mut self) {
+        for good in self.goods.values_mut() {
+            if good.amv_history.is_empty() {
+                good.record_amv();
+            }
+        }
+    }
+
+    /// Pushes each good's current AMV as today's close.
+    fn record_amv_closes(&mut self) {
+        for good in self.goods.values_mut() {
+            good.record_amv();
+        }
+    }
+
+    /// Lerps each good's salability toward `payment / tender` when it was
+    /// offered as payment today. Goods with no tender are left alone.
+    fn update_salability(&mut self) {
+        let blend = market_constants::SALABILITY_BLEND;
+        for good in self.goods.values_mut() {
+            if good.tender <= 0.0 {
+                continue;
+            }
+            let accept = (good.payment / good.tender).clamp(0.0, 1.0);
+            if !accept.is_finite() {
+                continue;
+            }
+            good.set_salability(lerp(good.salability, accept, blend));
+        }
+    }
+
+    /// Pulls AMV of the sold good and its tenders toward the midpoint of the
+    /// basket totals. Uses live [`MarketGood::amv`], not the frozen history.
+    fn drift_amv_on_accept(&mut self, target: usize, filled: f64, goods: &HashMap<usize, f64>) {
+        if filled <= 0.0 {
+            return;
+        }
+        let blend = market_constants::AMV_ACCEPT_BLEND;
+        let target_amv = self.market_good_mut(target).amv;
+        let given_total = filled * target_amv;
+        if !given_total.is_finite() {
+            return;
+        }
+
+        let mut pays: Vec<(usize, f64, f64)> = Vec::new();
+        let mut pay_total = 0.0;
+        for (&id, &qty) in goods {
+            if id == target || qty <= 0.0 {
+                continue;
+            }
+            let amv = self.market_good_mut(id).amv;
+            pays.push((id, qty, amv));
+            pay_total += qty * amv;
+        }
+        if pay_total <= 0.0 || !pay_total.is_finite() {
+            return;
+        }
+
+        let mid = 0.5 * (given_total + pay_total);
+        let new_target = lerp(target_amv, mid / filled, blend);
+        self.market_good_mut(target).set_amv(new_target);
+
+        let scale = mid / pay_total;
+        for (id, _, amv) in pays {
+            let implied = amv * scale;
+            self.market_good_mut(id).set_amv(lerp(amv, implied, blend));
+        }
+    }
+
+    /// Raises the sought good's AMV and lowers each tender's AMV.
+    /// Tender down-push scales with units offered per unit sought.
+    fn drift_amv_on_reject(&mut self, target: usize, goods: &HashMap<usize, f64>) {
+        let sought = goods.get(&target).copied().unwrap_or(0.0).abs();
+        if sought <= 0.0 {
+            return;
+        }
+        let blend = market_constants::AMV_REJECT_BLEND;
+        let edge = market_constants::AMV_REJECT_DEMAND_EDGE;
+        let old = self.market_good_mut(target).amv;
+        self.market_good_mut(target).set_amv(lerp(old, old * edge, blend));
+
+        for (&id, &qty) in goods {
+            if id == target || qty <= 0.0 {
+                continue;
+            }
+            let down_blend = (blend * (qty / sought)).min(1.0);
+            let old = self.market_good_mut(id).amv;
+            self.market_good_mut(id).set_amv(lerp(old, old / edge, down_blend));
+        }
+    }
+
+    /// Raises the sought good's AMV when a meeting produced no basket.
+    fn drift_amv_on_no_proposal(&mut self, target: usize) {
+        let blend = market_constants::AMV_REJECT_BLEND;
+        let edge = market_constants::AMV_REJECT_DEMAND_EDGE;
+        let old = self.market_good_mut(target).amv;
+        self.market_good_mut(target).set_amv(lerp(old, old * edge, blend));
     }
 
     /// Emits pop and firm orders for this market and splits them into buy and
@@ -515,9 +701,11 @@ impl Market {
     ///
     /// 1. Buyer [`DealMaker::buy`] names a basket. That proposal is the buyer's accept.
     /// 2. Seller [`DealMaker::evaluate`]s it.
-    /// 3. Accept: record fill stats, [`DealMaker::finalize`] both inventories,
-    ///    push leftover order amounts back onto `buys` / `sells`.
-    /// 4. Reject / no proposal: wash. Charge [`market_constants::TRANSACTION_COST`]
+    /// 3. Accept: record fill stats, drift AMV on [`MarketGood`] toward the
+    ///    basket midpoint, [`DealMaker::finalize`] both inventories, push
+    ///    leftover order amounts back onto `buys` / `sells`.
+    /// 4. Reject / no proposal: drift AMV (sought up, tenders down on reject),
+    ///    wash. Charge [`market_constants::TRANSACTION_COST`]
     ///    transport from on-hand. Push `sell_order` back onto `sells`.
     ///    Buyer [`DealMaker::renew_buy`] may put the buy back with `tries`
     ///    incremented; after [`market_constants::BUY_TRY_LIMIT`] retries the
@@ -537,7 +725,10 @@ impl Market {
         firms: &mut HashMap<usize, Firm>,
         buys: &mut Vec<MarketOrder>,
         sells: &mut Vec<MarketOrder>,
+        meetings: &mut Vec<MarketMeeting>,
     ) {
+        let buy_snap = buy_order.clone();
+        let sell_snap = sell_order.clone();
         let target = buy_order.target;
         let sought = buy_order.target_amount.min(-sell_order.target_amount);
         if sought > 0.0 {
@@ -547,7 +738,18 @@ impl Market {
         let Some(proposal) = as_deal_maker(pops, firms, buy_order.origin)
             .buy(&buy_order, &sell_order, history, factuals)
         else {
-            wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            self.drift_amv_on_no_proposal(target);
+            let transport = wash_transport(factuals);
+            let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            meetings.push(MarketMeeting {
+                buy: buy_snap,
+                sell: sell_snap,
+                outcome: MeetingOutcome::Wash {
+                    reason: WashReason::NoProposal,
+                    transport,
+                    closed: !renewed,
+                },
+            });
             return;
         };
         for (&good, &qty) in &proposal.goods {
@@ -561,14 +763,35 @@ impl Market {
         if verdict != DealResponse::Accept {
             // TODO: Counteroffer haggling. The rewrite is seller-approved; the
             // buyer would then evaluate it (or a close-out). Wash for now.
-            wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            self.drift_amv_on_reject(target, &proposal.goods);
+            let transport = wash_transport(factuals);
+            let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            meetings.push(MarketMeeting {
+                buy: buy_snap,
+                sell: sell_snap,
+                outcome: MeetingOutcome::Wash {
+                    reason: WashReason::Rejected,
+                    transport,
+                    closed: !renewed,
+                },
+            });
             return;
         }
 
         let filled = proposal.goods.get(&target).copied().unwrap_or(0.0).abs();
         if filled <= 0.0 {
             debug_assert!(false, "accepted deal must move the target good");
-            wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            let transport = wash_transport(factuals);
+            let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
+            meetings.push(MarketMeeting {
+                buy: buy_snap,
+                sell: sell_snap,
+                outcome: MeetingOutcome::Wash {
+                    reason: WashReason::EmptyFill,
+                    transport,
+                    closed: !renewed,
+                },
+            });
             return;
         }
 
@@ -581,6 +804,7 @@ impl Market {
                 self.add_payment(good, qty);
             }
         }
+        self.drift_amv_on_accept(target, filled, &proposal.goods);
 
         as_deal_maker_mut(pops, firms, buy_order.origin).finalize(&proposal, history);
         as_deal_maker_mut(pops, firms, sell_order.origin).finalize(&proposal, history);
@@ -594,6 +818,15 @@ impl Market {
             leftover.add_sell_success_bonus();
             sells.push(leftover);
         }
+
+        meetings.push(MarketMeeting {
+            buy: buy_snap,
+            sell: sell_snap,
+            outcome: MeetingOutcome::Traded {
+                goods: proposal.goods.clone(),
+                transport_needed: proposal.transport_needed,
+            },
+        });
     }
 
     /// Returns the row for `good`, inserting a default if it is new.
@@ -828,6 +1061,10 @@ pub struct MarketGood {
     pub salability: f64,
 
     // placeholder for AMV Historical records.
+    /// Closing AMVs for the last [`market_constants::AMV_HISTORY_MAX`] market
+    /// days, oldest first. The first sample is the opening AMV on the day the
+    /// ring was seeded; later samples are end-of-day closes.
+    pub amv_history: CircularBuffer<{ market_constants::AMV_HISTORY_MAX }, f64>,
 
     // Physical data. End-of-Day-Stock = Stock + imported + production - Consumption.
     /// How many were made today.
@@ -874,6 +1111,7 @@ impl Default for MarketGood {
         Self {
             amv: 1.0,
             salability: market_constants::SALABILITY_DEFAULT,
+            amv_history: CircularBuffer::new(),
             production: 0.0,
             consumption: 0.0,
             imported: 0.0,
@@ -913,6 +1151,16 @@ impl MarketGood {
     pub fn with_amv(mut self, amv: f64) -> Self {
         self.set_amv(amv);
         self
+    }
+
+    /// Pushes the current AMV onto `amv_history`.
+    pub fn record_amv(&mut self) {
+        self.amv_history.push_back(self.amv);
+    }
+
+    /// Oldest-to-newest AMV samples currently in the ring.
+    pub fn amv_trail(&self) -> Vec<f64> {
+        self.amv_history.iter().copied().collect()
     }
 
     /// Sets salability, clamped to `0.0..=1.0`.
@@ -1168,6 +1416,7 @@ mod market_good_should {
         assert_eq!(good.purchased, 0.0);
         assert_eq!(good.tender, 0.0);
         assert_eq!(good.payment, 0.0);
+        assert!(good.amv_history.is_empty());
     }
 
     #[test]
@@ -1271,6 +1520,16 @@ mod market_good_should {
         assert_eq!(good.salability, 1.0);
         good.set_production(3.0);
         assert_eq!(good.production, 3.0);
+    }
+
+    #[test]
+    fn record_amv_pushes_current_value() {
+        let mut good = MarketGood::new().with_amv(2.5);
+        assert!(good.amv_history.is_empty());
+        good.record_amv();
+        good.set_amv(2.75);
+        good.record_amv();
+        assert_eq!(good.amv_trail(), vec![2.5, 2.75]);
     }
 }
 
@@ -1584,6 +1843,11 @@ mod run_market_day_should {
         assert!((firms[&1].property[&COIN].quantity - 4.0).abs() < 1e-12);
         assert!((firms[&1].property[&GRAIN].sold - 4.0).abs() < 1e-12);
         assert!(pops[&1].current_orders.is_empty());
+        // Even AMV basket: no accept drift. Coin fully accepted: salability stays 1.
+        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
+        assert!((market.goods[&COIN].amv - 1.0).abs() < 1e-12);
+        assert!((market.goods[&COIN].salability - 1.0).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
     }
 
     #[test]
@@ -1654,6 +1918,10 @@ mod run_market_day_should {
         assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
         // Three deal attempts (initial + two auto-renews), then close-out.
         assert!((market.goods[&GRAIN].requests - 12.0).abs() < 1e-12);
+        assert!(market.goods[&GRAIN].amv > 1.0);
+        assert!(market.goods[&COIN].amv < 1.0);
+        // Coin was tendered and never accepted.
+        assert!(market.goods[&COIN].salability < 0.2);
     }
 
     #[test]
@@ -1665,11 +1933,153 @@ mod run_market_day_should {
         pops.insert(1, shopper(1, 10.0, 4.0));
         let mut firms = HashMap::new();
 
-        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        let report = market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
         assert!(market.unavailable_goods.contains(&GRAIN));
         assert!((pops[&1].property[&GRAIN].quantity).abs() < 1e-12);
         assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
+        assert_eq!(report.unmatched_buys.len(), 1);
+        assert_eq!(report.unmatched_buys[0].target, GRAIN);
+        assert!(report.meetings.is_empty());
+        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn report_records_a_trade_and_leftover_sell() {
+        let mut market = priced_market();
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 4.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        let report = market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        assert_eq!(report.unmatched_buys.len(), 0);
+        assert_eq!(report.meetings.len(), 1);
+        match &report.meetings[0].outcome {
+            MeetingOutcome::Traded { goods, transport_needed } => {
+                assert!((goods[&GRAIN] + 4.0).abs() < 1e-12);
+                assert!((goods[&COIN] - 4.0).abs() < 1e-12);
+                assert_eq!(*transport_needed, 0.0);
+            }
+            other => panic!("expected trade, got {other:?}"),
+        }
+        assert_eq!(report.leftover_buys.len(), 0);
+        assert_eq!(report.leftover_sells.len(), 1);
+        assert!((report.leftover_sells[0].target_amount + 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn accept_whole_unit_overpay_pulls_amvs_together() {
+        let mut market = Market::new(1);
+        market.goods.insert(
+            GRAIN,
+            MarketGood::new().with_amv(2.5).with_salability(0.5),
+        );
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(1.0).with_salability(1.0),
+        );
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 1.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+
+        // 1 grain at 2.5 AMV ceils to 3 coin. Mid 2.75; grain rises, coin falls.
+        assert!((pops[&1].property[&GRAIN].quantity - 1.0).abs() < 1e-12);
+        let grain_amv = market.goods[&GRAIN].amv;
+        let coin_amv = market.goods[&COIN].amv;
+        assert!(grain_amv > 2.5);
+        assert!(grain_amv < 2.75);
+        assert!(coin_amv < 1.0);
+        assert!(coin_amv > 0.9);
+    }
+
+    #[test]
+    fn salability_lerps_toward_payment_over_tender() {
+        let mut market = Market::new(1);
+        market.goods.insert(
+            GRAIN,
+            MarketGood::new().with_amv(1.0).with_salability(0.5),
+        );
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(1.0).with_salability(0.5),
+        );
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 4.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+
+        // Coin fully accepted as payment: 0.5 -> lerp toward 1.0.
+        let expected = lerp(0.5, 1.0, market_constants::SALABILITY_BLEND);
+        assert!((market.goods[&COIN].salability - expected).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn records_opening_amv_and_each_days_close() {
+        let mut market = priced_market();
+        let mut pops = HashMap::new();
+        let mut firms = HashMap::new();
+
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        let grain = &market.goods[&GRAIN];
+        assert_eq!(grain.amv_trail(), vec![1.0, 1.0]);
+
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        let grain = &market.goods[&GRAIN];
+        assert_eq!(grain.amv_trail(), vec![1.0, 1.0, 1.0]);
+        assert!((grain.amv - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn close_records_the_drifted_amv() {
+        let mut market = Market::new(1);
+        market.goods.insert(
+            GRAIN,
+            MarketGood::new().with_amv(2.5).with_salability(0.5),
+        );
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(1.0).with_salability(1.0),
+        );
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 1.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+
+        let grain = &market.goods[&GRAIN];
+        let trail = grain.amv_trail();
+        assert_eq!(trail.len(), 2);
+        assert!((trail[0] - 2.5).abs() < 1e-12);
+        assert!((trail[1] - grain.amv).abs() < 1e-12);
+        assert!(trail[1] > trail[0]);
+
+        let coin = &market.goods[&COIN];
+        let trail = coin.amv_trail();
+        assert_eq!(trail.len(), 2);
+        assert!((trail[0] - 1.0).abs() < 1e-12);
+        assert!((trail[1] - coin.amv).abs() < 1e-12);
+        assert!(trail[1] < trail[0]);
     }
 
     fn cargo_good() -> Good {

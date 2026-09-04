@@ -1,8 +1,38 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::game::{
     culture::Culture, desire::{DemoDesire, Desire, DesireSource}, good::Good, household::DemographicRates, pop::DemoRow, process::Process, religion::Religion, species::Species,
 };
+
+/// TOML world-data file of goods (factuals).
+#[derive(Debug, Deserialize)]
+struct GoodsFile {
+    goods: Vec<Good>,
+}
+
+/// Failed to load factuals from a world-data file.
+#[derive(Debug)]
+pub enum FactualsLoadError {
+    Io(std::io::Error),
+    Toml(toml::de::Error),
+    DuplicateGood(usize),
+}
+
+impl fmt::Display for FactualsLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "read world goods: {err}"),
+            Self::Toml(err) => write!(f, "parse world goods: {err}"),
+            Self::DuplicateGood(id) => write!(f, "duplicate good id {id} in world goods"),
+        }
+    }
+}
+
+impl std::error::Error for FactualsLoadError {}
 
 /// # Factuals
 /// 
@@ -35,6 +65,26 @@ impl Factuals {
             species: HashMap::new(),
             religion: HashMap::new(),
         }
+    }
+
+    /// Loads goods from a TOML world-data file into an empty [`Factuals`].
+    /// Processes, species, cultures, and religions stay empty.
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, FactualsLoadError> {
+        let text = std::fs::read_to_string(path.as_ref()).map_err(FactualsLoadError::Io)?;
+        Self::load_from_toml(&text)
+    }
+
+    /// Loads goods from TOML text into an empty [`Factuals`].
+    pub fn load_from_toml(text: &str) -> Result<Self, FactualsLoadError> {
+        let file: GoodsFile = toml::from_str(text).map_err(FactualsLoadError::Toml)?;
+        let mut factuals = Factuals::new();
+        for good in file.goods {
+            if factuals.goods.contains_key(&good.id) {
+                return Err(FactualsLoadError::DuplicateGood(good.id));
+            }
+            factuals.goods.insert(good.id, good);
+        }
+        Ok(factuals)
     }
 
     /// Adds a good; panics if its ID is already present.
@@ -202,7 +252,87 @@ impl Factuals {
 #[cfg(test)]
 mod factuals_should {
     use super::*;
+    use crate::game::good::GoodTag;
     use crate::game::{culture::Culture, religion::Religion, species::Species};
+    use std::path::PathBuf;
+
+    fn repo_goods_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/goods.toml")
+    }
+
+    #[test]
+    fn load_from_toml_reads_cli_goods() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[goods]]
+id = 1
+name = "grain"
+mass = 1.0
+volume = 1.0
+"#,
+        )
+        .expect("toml");
+        let grain = factuals.find_good(1);
+        assert_eq!(grain.name, "grain");
+        assert_eq!(grain.mass, 1.0);
+        assert_eq!(grain.volume, 1.0);
+        assert!(grain.tags.is_empty());
+        assert!(factuals.processes.is_empty());
+    }
+
+    #[test]
+    fn load_from_toml_reads_tags() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[goods]]
+id = 9
+name = "cargo"
+mass = 0.0
+volume = 0.0
+tags = ["untradeable", { transport = 2.0 }]
+"#,
+        )
+        .expect("toml");
+        let cargo = factuals.find_good(9);
+        assert!(cargo.tags.contains(&GoodTag::Untradeable));
+        assert_eq!(cargo.transport_efficiency(), 2.0);
+    }
+
+    #[test]
+    fn load_from_path_reads_the_world_goods_file() {
+        let factuals = Factuals::load_from_path(repo_goods_file()).expect("world goods");
+        assert_eq!(factuals.goods.len(), 6);
+        assert_eq!(factuals.find_good(1).name, "grain");
+        assert_eq!(factuals.find_good(2).name, "water");
+        assert_eq!(factuals.find_good(3).name, "bread");
+        assert_eq!(factuals.find_good(4).name, "gold");
+        assert_eq!(factuals.find_good(5).name, "coin");
+        assert_eq!(factuals.find_good(6).name, "jewelry");
+    }
+
+    #[test]
+    fn load_from_toml_errors_on_duplicate_id() {
+        let err = Factuals::load_from_toml(
+            r#"
+[[goods]]
+id = 1
+name = "grain"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 1
+name = "also grain"
+mass = 1.0
+volume = 1.0
+"#,
+        )
+        .expect_err("duplicate");
+        match err {
+            FactualsLoadError::DuplicateGood(1) => {}
+            other => panic!("expected DuplicateGood(1), got {other}"),
+        }
+    }
 
     #[test]
     fn clear_household_changed_flags_resets_all_demographics() {

@@ -1,0 +1,40 @@
+# World data: goods (factuals).
+# Human-editable. Starting prices, pops, and firms are initialization data, not here.
+#
+# Tags (optional): "fixed", "exposure", "untradeable", or { transport = 1.0 }
+
+[[goods]]
+id = 1
+name = "grain"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 2
+name = "water"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 3
+name = "bread"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 4
+name = "gold"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 5
+name = "coin"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 6
+name = "jewelry"
+mass = 1.0
+volume = 1.0

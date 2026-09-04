@@ -160,6 +160,19 @@ pub mod market_constants {
     /// Flat transport units charged per meeting (success or wash).
     /// Tune down if 10 is too heavy. Not AMV.
     pub const TRANSACTION_COST: f64 = 10.0;
+
+    /// How hard a successful exchange pulls both sides' AMV toward the
+    /// midpoint of the basket (0 = no move, 1 = snap).
+    pub const AMV_ACCEPT_BLEND: f64 = 0.25;
+    /// How hard a rejected meeting pulls AMV (sought up, tenders down).
+    pub const AMV_REJECT_BLEND: f64 = 0.10;
+    /// Sought-good up-push is this times the tender down-push (demand edge).
+    pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
+    /// Day-end lerp of salability toward payment/tender (0 = no move, 1 = snap).
+    pub const SALABILITY_BLEND: f64 = 0.25;
+
+    /// Compile-time max ring slots for [`crate::game::market::MarketGood`] AMV history.
+    pub const AMV_HISTORY_MAX: usize = 16;
 }
 
 /// Deal-making AMV acceptance floors and tender cutoffs.

@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 /// # Good
 /// 
 /// Goods are things that are bought, sold, and traded in the economy.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Good {
     /// Unique ID of the good
     pub id: usize,
@@ -17,6 +18,7 @@ pub struct Good {
     /// 
     /// This is another good which exists. it points to the 'ideal' example of the 
     /// class of good. Think generic bread vs wonder bread.
+    #[serde(default)]
     pub class: Option<usize>,
 
     /// The rate that the good decays.
@@ -24,6 +26,7 @@ pub struct Good {
     /// [0, 1]
     /// 
     /// Decay rate of 0, means no decay, decay of 1 means it always decays.
+    #[serde(default)]
     pub decay_rate: f64,
     /// What the good decays into.
     /// 
@@ -31,6 +34,7 @@ pub struct Good {
     /// 
     /// General Rule 2, it should only decay into goods that are either indestructable
     /// or decay into nothing.
+    #[serde(default)]
     pub decay_result: HashMap<usize, f64>,
 
     /// The mass(kg) of the object, used as part of transportation, storage, and friction
@@ -41,11 +45,13 @@ pub struct Good {
     pub volume: f64,
 
     /// Tags which modify how the good is treated in markets.
+    #[serde(default)]
     pub tags: HashSet<GoodTag>,
 
     /// Categories that a Good belongs to. A tool for searching, sorting, and refining 
     /// goods into various sections. For example, a bucket of desires should all be
     /// goods which share a primary category.
+    #[serde(default)]
     pub categories: Vec<String>,
 }
 impl Good {
@@ -94,7 +100,8 @@ impl Good {
 /// # Good Tag
 ///
 /// Tags for goods.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GoodTag {
     /// Good cannot be transported between markets.
     Fixed,
