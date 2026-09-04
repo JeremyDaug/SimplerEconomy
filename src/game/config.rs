@@ -258,3 +258,15 @@ pub mod market_priority {
     /// good. Does not change stored priority. Both sides must be `Some`.
     pub const SELL_COINCIDENCE_WEIGHT: f64 = 2.0;
 }
+
+/// Stand-in labor payouts until wage contracts exist.
+///
+/// Shares of on-hand coinage, rounded up to whole units. Living owners are
+/// paid first; workers share what remains of their share. Missing owners
+/// are not paid and do not drain the till.
+pub mod labor_constants {
+    /// Share of on-hand coinage paid to a living owner (ceil).
+    pub const OWNER_SHARE: f64 = 0.30;
+    /// Share of on-hand coinage paid to workers (ceil).
+    pub const WORKER_SHARE: f64 = 0.30;
+}

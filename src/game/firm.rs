@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor, config::{market_constants, market_priority}, contract::Contract, deal::{
+    actor::Actor, config::{labor_constants, market_constants, market_priority}, contract::Contract, deal::{
         deal_exceeds_buyer_unit_cap, deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal,
         with_transport_budget, sort_tenders_by_salability, DealMaker, DealResponse, DealRole,
         ProposedDeal,
-    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::Pop, process::ProcessEffect, util::{lerp, whole_units, whole_units_up}, workforce::Workforce,
+    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::{Pop, PopPRow}, process::ProcessEffect, util::{lerp, whole_units, whole_units_up}, workforce::Workforce,
 };
 
 /// # Firm 
@@ -95,6 +95,93 @@ impl Firm {
     pub fn apply_passive_bonuses(&self, pops: &mut HashMap<usize, Pop>) {
         let _ = (self, pops);
         // Stub: firm → pop passive bonuses (wages-as-effects, owner dividends, …).
+    }
+
+    /// # Pay Wage Shares
+    ///
+    /// Pays a share of on-hand `coin` to owners and workers. Stand-in for
+    /// wage contracts: living owners get [`labor_constants::OWNER_SHARE`],
+    /// workers get [`labor_constants::WORKER_SHARE`], both rounded up to
+    /// whole units. Owners are paid first; workers split what remains of
+    /// their share.
+    ///
+    /// Owner `Actor::Pop(0)` (none / blank) or a missing owner pop is not
+    /// paid and does not drain the till. Worker pops missing from `pops`
+    /// are skipped and that slice stays in the firm. Credits
+    /// `PopRecords::income_amv` at `coin_amv` per unit.
+    pub fn pay_wage_shares(
+        &mut self,
+        pops: &mut HashMap<usize, Pop>,
+        coin: usize,
+        coin_amv: f64,
+    ) -> WagePayout {
+        let coinage = self
+            .property
+            .get(&coin)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        let mut payout = WagePayout::empty(self.owners.owner, coinage);
+        if coinage <= 0.0 {
+            return payout;
+        }
+
+        let owner_want = whole_units_up(coinage * labor_constants::OWNER_SHARE);
+        let worker_want = whole_units_up(coinage * labor_constants::WORKER_SHARE);
+        let mut remaining = coinage;
+
+        let owner_pay = owner_want.min(remaining);
+        if owner_pay > 0.0 {
+            if let Some(pop_id) = owner_pop_id(self.owners.owner) {
+                if let Some(pop) = pops.get_mut(&pop_id) {
+                    remaining -= owner_pay;
+                    payout.owner_amount = owner_pay;
+                    credit_pop_good(pop, coin, owner_pay, coin_amv);
+                    payout.owner_credited = true;
+                }
+            }
+        }
+
+        let worker_pay = worker_want.min(remaining);
+        if worker_pay > 0.0 {
+            let mut recipients: Vec<usize> = self
+                .workforce
+                .iter()
+                .map(|w| w.id)
+                .filter(|id| *id != 0 && pops.contains_key(id))
+                .collect();
+            recipients.sort_unstable();
+            recipients.dedup();
+            if !recipients.is_empty() {
+                remaining -= worker_pay;
+                payout.worker_amount = worker_pay;
+                let n = recipients.len() as f64;
+                let mut left = worker_pay;
+                for (i, pop_id) in recipients.iter().copied().enumerate() {
+                    let share = if i + 1 == recipients.len() {
+                        left
+                    } else {
+                        whole_units(worker_pay / n).min(left)
+                    };
+                    if share <= 0.0 {
+                        continue;
+                    }
+                    left -= share;
+                    if let Some(pop) = pops.get_mut(&pop_id) {
+                        credit_pop_good(pop, coin, share, coin_amv);
+                        payout.workers.push((pop_id, share));
+                    }
+                }
+            }
+        }
+
+        let paid = coinage - remaining;
+        if paid > 0.0 {
+            if let Some(row) = self.property.get_mut(&coin) {
+                row.quantity = remaining;
+                row.sync_reserve();
+            }
+        }
+        payout
     }
 
     /// End-of-day bookkeeping for this firm (production stats, costs, …).
@@ -634,6 +721,59 @@ impl Owners {
             priority_override: None
         }
     }
+}
+
+/// Result of [`Firm::pay_wage_shares`]. Amounts are whole units of the coin good.
+#[derive(Debug, Clone)]
+pub struct WagePayout {
+    /// On-hand coinage before the payout.
+    pub coinage: f64,
+    /// Units taken for the owner share (may not have been credited).
+    pub owner_amount: f64,
+    /// Units credited to workers in total.
+    pub worker_amount: f64,
+    /// Configured owner actor (may be `Pop(0)` / none).
+    pub owner: Actor,
+    /// True when the owner pop existed and received `owner_amount`.
+    pub owner_credited: bool,
+    /// Per-pop worker credits `(pop id, units)`.
+    pub workers: Vec<(usize, f64)>,
+}
+
+impl WagePayout {
+    /// Zero payout for this owner and starting till.
+    pub fn empty(owner: Actor, coinage: f64) -> Self {
+        Self {
+            coinage,
+            owner_amount: 0.0,
+            worker_amount: 0.0,
+            owner,
+            owner_credited: false,
+            workers: vec![],
+        }
+    }
+}
+
+/// Returns a living pop id for this owner, or `None` for blank / non-pop owners.
+fn owner_pop_id(owner: Actor) -> Option<usize> {
+    match owner {
+        Actor::Pop(id) if id != 0 => Some(id),
+        _ => None,
+    }
+}
+
+/// Adds `qty` of `good` to the pop and records wage AMV.
+fn credit_pop_good(pop: &mut Pop, good: usize, qty: f64, unit_amv: f64) {
+    debug_assert!(qty.is_finite() && qty >= 0.0, "credit qty must be finite and >= 0");
+    debug_assert!(unit_amv.is_finite(), "coin AMV must be finite");
+    if qty == 0.0 {
+        return;
+    }
+    pop.property
+        .entry(good)
+        .or_insert_with(|| PopPRow::new(0.0))
+        .quantity += qty;
+    pop.records.income_amv += qty * unit_amv;
 }
 
 /// # Production Line
@@ -3287,6 +3427,146 @@ mod firm {
                 market_priority::FIRM_PRODUCER,
             );
             assert!(firm.buy(&own, &other, &history, &factuals).is_none());
+        }
+    }
+
+    mod pay_wage_shares_should {
+        use super::*;
+        use crate::game::actor::Actor;
+        use crate::game::household::Household;
+        use crate::game::pop::{DemoRow, Pop, PopRecords};
+        use crate::game::sentiment::Sentiment;
+        use crate::game::workforce::Workforce;
+
+        const COIN: usize = 5;
+
+        fn make_pop(id: usize) -> Pop {
+            Pop {
+                id,
+                job: 0,
+                property: HashMap::new(),
+                desires: vec![vec![]; 3],
+                working_desires: vec![],
+                demographics: DemoRow {
+                    household: Household::with_count(10.0),
+                    species: 0,
+                    culture: 0,
+                    class: 0,
+                    religion: 0,
+                },
+                current_orders: vec![],
+                stored_effects: vec![],
+                sentiment: Sentiment::new(),
+                records: PopRecords::default(),
+            }
+        }
+
+        fn worker(id: usize) -> Workforce {
+            let mut w = Workforce::empty();
+            w.id = id;
+            w
+        }
+
+        #[test]
+        fn unowned_till_pays_workers_and_keeps_the_owner_share() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+            firm.workforce.push(worker(2));
+            let mut pops = HashMap::from([(2, make_pop(2))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert_eq!(payout.coinage, 10.0);
+            assert_eq!(payout.owner_amount, 0.0);
+            assert!(!payout.owner_credited);
+            assert_eq!(payout.worker_amount, 3.0);
+            assert_eq!(payout.workers, vec![(2, 3.0)]);
+            assert_eq!(firm.property[&COIN].quantity, 7.0);
+            assert_eq!(pops[&2].property[&COIN].quantity, 3.0);
+            assert_eq!(pops[&2].records.income_amv, 3.0);
+        }
+
+        #[test]
+        fn owner_pop_receives_the_owner_share() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+            firm.owners.owner = Actor::Pop(3);
+            let mut pops = HashMap::from([(3, make_pop(3))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert!(payout.owner_credited);
+            assert_eq!(payout.owner_amount, 3.0);
+            assert_eq!(payout.worker_amount, 0.0);
+            assert_eq!(firm.property[&COIN].quantity, 7.0);
+            assert_eq!(pops[&3].property[&COIN].quantity, 3.0);
+        }
+
+        #[test]
+        fn living_owner_is_paid_before_workers() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+            firm.owners.owner = Actor::Pop(3);
+            firm.workforce.push(worker(2));
+            let mut pops = HashMap::from([(2, make_pop(2)), (3, make_pop(3))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert!(payout.owner_credited);
+            assert_eq!(payout.owner_amount, 3.0);
+            assert_eq!(payout.worker_amount, 3.0);
+            assert_eq!(payout.workers, vec![(2, 3.0)]);
+            assert_eq!(firm.property[&COIN].quantity, 4.0);
+            assert_eq!(pops[&3].property[&COIN].quantity, 3.0);
+            assert_eq!(pops[&2].property[&COIN].quantity, 3.0);
+        }
+
+        #[test]
+        fn one_coin_goes_to_workers_when_there_is_no_owner() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(1.0));
+            firm.workforce.push(worker(2));
+            let mut pops = HashMap::from([(2, make_pop(2))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert_eq!(payout.owner_amount, 0.0);
+            assert_eq!(payout.worker_amount, 1.0);
+            assert_eq!(payout.workers, vec![(2, 1.0)]);
+            assert_eq!(firm.property[&COIN].quantity, 0.0);
+            assert_eq!(pops[&2].property[&COIN].quantity, 1.0);
+        }
+
+        #[test]
+        fn splits_the_worker_share_across_listed_pops() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(20.0));
+            firm.workforce.push(worker(2));
+            firm.workforce.push(worker(3));
+            let mut pops = HashMap::from([(2, make_pop(2)), (3, make_pop(3))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert_eq!(payout.owner_amount, 0.0);
+            assert_eq!(payout.worker_amount, 6.0);
+            assert_eq!(payout.workers, vec![(2, 3.0), (3, 3.0)]);
+            assert_eq!(pops[&2].property[&COIN].quantity, 3.0);
+            assert_eq!(pops[&3].property[&COIN].quantity, 3.0);
+            assert_eq!(firm.property[&COIN].quantity, 14.0);
+        }
+
+        #[test]
+        fn missing_workers_leave_the_worker_share_in_the_till() {
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+            firm.workforce.push(worker(9));
+            let mut pops = HashMap::new();
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+
+            assert_eq!(payout.owner_amount, 0.0);
+            assert_eq!(payout.worker_amount, 0.0);
+            assert_eq!(firm.property[&COIN].quantity, 10.0);
         }
     }
 }
