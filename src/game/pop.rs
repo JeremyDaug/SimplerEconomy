@@ -3,10 +3,10 @@ use std::{collections::HashMap};
 use bevy::platform::collections::HashSet;
 
 use crate::game::{
-    actor::Actor, config::{market_priority, player_resource_constants, pop_constants}, deal::{
-        deal_goods_tradeable, evaluate_pop_amv, form_buy_proposal, with_transport_budget,
+    actor::Actor, config::{GameConfig, PopConfig}, deal::{
+        deal_goods_tradeable, evaluate_amv_floor, form_buy_proposal, with_transport_budget,
         sort_tenders_by_salability, DealMaker, DealResponse, ProposedDeal,
-    }, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::{lerp, whole_units},
+    }, desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType}, effects::DemographicEffect, factuals::Factuals, good::{GoodTag, TIME}, household::{DemographicRates, HouseholdTarget}, market::{Market, MarketHistory}, marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::{lerp, whole_units},
 };
 
 pub use crate::game::effects::PopEffect;
@@ -371,6 +371,7 @@ impl Pop {
         unavailable: &std::collections::HashSet<usize>,
     ) -> Vec<MarketOrder> {
         let mut orders: Vec<MarketOrder> = Vec::new();
+        let pop_start = factuals.config.market_priority.pop_start;
 
         let mut remaining_budget = self.current_excess_value(market_history);
         let mut seen = HashSet::new();
@@ -411,7 +412,7 @@ impl Pop {
                     // create order for full amount
                     orders.push(MarketOrder::request_order(
                         Actor::Pop(self.id), target.good, purchase_target,
-                        market_priority::POP_START));
+                        pop_start));
                     remaining_budget -= cost;
                 }
             }
@@ -444,7 +445,7 @@ impl Pop {
                 }
                 orders.push(MarketOrder::request_order(
                     Actor::Pop(self.id), good_id, purchase,
-                    market_priority::POP_START));
+                    pop_start));
                 remaining_budget -= purchase * price;
                 seen.insert(good_id);
             }
@@ -493,7 +494,7 @@ impl Pop {
                         // create order for full amount
                         orders.push(MarketOrder::request_order(
                             Actor::Pop(self.id), target.good, purchase_target,
-                            market_priority::POP_START));
+                            pop_start));
                         remaining_budget -= cost;
                     }
                 }
@@ -526,6 +527,42 @@ impl Pop {
     /// Returns 0.0 if the good was not held.
     pub fn take_good(&mut self, good: usize) -> f64 {
         self.property.remove(&good).map(|row| row.quantity).unwrap_or(0.0)
+    }
+
+    /// Adds `qty` of `good` and records `qty * unit_amv` on `records.income_amv`.
+    pub fn credit_good(&mut self, good: usize, qty: f64, unit_amv: f64) {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "credit qty must be finite and >= 0");
+        debug_assert!(unit_amv.is_finite(), "unit AMV must be finite");
+        if qty == 0.0 {
+            return;
+        }
+        self.property
+            .entry(good)
+            .or_insert_with(|| PopPRow::new(0.0))
+            .quantity += qty;
+        self.records.income_amv += qty * unit_amv;
+    }
+
+    /// Removes up to `qty` Time. Returns how much was taken.
+    pub fn take_time(&mut self, qty: f64) -> f64 {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "time qty must be finite and >= 0");
+        if qty <= 0.0 {
+            return 0.0;
+        }
+        let Some(row) = self.property.get_mut(&TIME) else {
+            return 0.0;
+        };
+        let give = qty.min(row.quantity.max(0.0));
+        row.quantity -= give;
+        give
+    }
+
+    /// On-hand Time, or 0 if the pop has no Time row.
+    pub fn on_hand_time(&self) -> f64 {
+        self.property
+            .get(&TIME)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0)
     }
 
     /// # Next Shopping Trip
@@ -853,7 +890,8 @@ impl Pop {
     /// 5. Leave bonus-good stored arms for later phases (growth should already be consumed).
     ///
     /// `market_history` supplies prices for wealth AMV (missing good prices default to 1.0).
-    pub fn update_sentiments(&mut self, market_history: &MarketHistory) {
+    /// `config` supplies living-standard score weights, SOL trend blend, and sentiment rates.
+    pub fn update_sentiments(&mut self, market_history: &MarketHistory, config: &PopConfig) {
         // 1. Collect boosts per tier (desire effects + stored Satisfaction).
         let mut tier_boosts = [0.0_f64; 3];
         // 1a. Desire Bonuses first.
@@ -920,11 +958,11 @@ impl Pop {
             .flatten()
             .map(|d| d.satisfaction)
             .sum();
-        self.records.update_living_standard();
-        self.records.update_trend();
+        self.records.update_living_standard(config);
+        self.records.update_trend(config);
 
         // 3. From our updated records, shift sentiments.
-        let mut mods = self.sentiment_mods_from_satisfaction();
+        let mut mods = self.sentiment_mods_from_satisfaction(config);
 
         // 4. Desire sentiment effects (skip growth, bonus goods, satisfaction — done).
         for tier in &self.desires {
@@ -985,7 +1023,8 @@ impl Pop {
     /// The way things are 'expected' to work is that each tier is satisfied fully 
     /// before moving onto the next. As such, logic assumes little mixing of
     /// satisfaction.
-    fn sentiment_mods_from_satisfaction(&self) -> Vec<SentimentMod> {
+    /// `config` supplies the sentiment rates and the SOL-trend deadband.
+    fn sentiment_mods_from_satisfaction(&self, config: &PopConfig) -> Vec<SentimentMod> {
         // `records.tier_sat` stores sums of desire success rates; normalize by count for mood.
         // Empty tiers are recorded as 1.0 (treated as fully satisfied).
         let basic = if self.desires[0].is_empty() {
@@ -1010,57 +1049,57 @@ impl Pop {
         let mut mods: Vec<SentimentMod> = vec![
             SentimentMod::Flat {
                 kind: SentimentKind::Anger, // 100% at 
-                delta: lerp(pop_constants::ANGER_SENTIMENT_RATE, 0.0, basic),
+                delta: lerp(config.anger_sentiment_rate, 0.0, basic),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Fear,
-                delta: lerp(pop_constants::FEAR_SENTIMENT_RATE, 0.0, basic),
+                delta: lerp(config.fear_sentiment_rate, 0.0, basic),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Contentment,
-                delta: lerp(0.0, pop_constants::CONTENTMENT_SENTIMENT_RATE, basic * common_mood),
+                delta: lerp(0.0, config.contentment_sentiment_rate, basic * common_mood),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Happiness,
-                delta: lerp(0.0, pop_constants::HAPPINESS_SENTIMENT_RATE, common_mood),
+                delta: lerp(0.0, config.happiness_sentiment_rate, common_mood),
             },
             SentimentMod::Flat {
                 kind: SentimentKind::Hope,
-                delta: lerp(0.0, pop_constants::HOPE_SENTIMENT_RATE, luxury),
+                delta: lerp(0.0, config.hope_sentiment_rate, luxury),
             },
         ];
 
         // Create Modifications based on the trend of SOL.
         let trend = self.records.trend;
-        if trend.abs() >= pop_constants::SENTIMENT_TREND_DEADBAND {
+        if trend.abs() >= config.sentiment_trend_deadband {
             let sol = self.records.living_standard.max(0.5);
             let relative = trend / sol;
 
             if relative > 0.0 {
-                let strength = relative * pop_constants::SENTIMENT_RISE_GAIN;
+                let _strength = relative * config.sentiment_rise_gain;
                 // rising: Extra Contentment, Happiness, and Hope.
                 mods.push(SentimentMod::Relative {
                     kind: SentimentKind::Contentment,
-                    relative: relative * pop_constants::TREND_CONTENTMENT_SENTIMENT_RATE,
+                    relative: relative * config.trend_contentment_sentiment_rate,
                 });
                 mods.push(SentimentMod::Relative {
                     kind: SentimentKind::Happiness,
-                    relative: relative * pop_constants::TREND_HAPPINESS_SENTIMENT_RATE,
+                    relative: relative * config.trend_happiness_sentiment_rate,
                 });
                 mods.push(SentimentMod::Relative {
                     kind: SentimentKind::Hope,
-                    relative: relative * pop_constants::TREND_HOPE_SENTIMENT_RATE,
+                    relative: relative * config.trend_hope_sentiment_rate,
                 });
             } else {
-                let strength = relative * pop_constants::SENTIMENT_FALL_GAIN;
+                let _strength = relative * config.sentiment_fall_gain;
                 // falling: Extra Anger and Fear.
                 mods.push(SentimentMod::Relative {
                     kind: SentimentKind::Anger,
-                    relative: relative * pop_constants::TREND_ANGER_SENTIMENT_RATE,
+                    relative: relative * config.trend_anger_sentiment_rate,
                 });
                 mods.push(SentimentMod::Relative {
                     kind: SentimentKind::Fear,
-                    relative: relative * pop_constants::TREND_FEAR_SENTIMENT_RATE,
+                    relative: relative * config.trend_fear_sentiment_rate,
                 });
             }
         }
@@ -1200,7 +1239,7 @@ impl Pop {
         self.records.shop_fill = self.compute_shop_fill(market_history);
         self.records.push_wealth_history();
 
-        self.update_planning();
+        self.update_planning(&factuals.config.pop);
         self.rewrite_shop_and_save_targets(factuals, market_history);
     }
 
@@ -1247,35 +1286,29 @@ impl Pop {
     ///
     /// Lerp `risk_appetite`, `savings_ratio` (days of buffer), and
     /// `time_preference` toward sentiment / SOL targets. Does not spend them.
-    fn update_planning(&mut self) {
+    fn update_planning(&mut self, cfg: &crate::game::config::PopConfig) {
         let hope = self.sentiment.hope();
         let happiness = self.sentiment.happiness();
         let fear = self.sentiment.fear();
         let anger = self.sentiment.anger();
         let contentment = self.sentiment.contentment();
 
-        let mood = hope * pop_constants::RISK_HOPE_WEIGHT
-            + happiness * pop_constants::RISK_HAPPINESS_WEIGHT
-            - fear * pop_constants::RISK_FEAR_WEIGHT
-            - anger * pop_constants::RISK_ANGER_WEIGHT;
+        let mood = hope * cfg.risk_hope_weight
+            + happiness * cfg.risk_happiness_weight
+            - fear * cfg.risk_fear_weight
+            - anger * cfg.risk_anger_weight;
         let sol = self.records.living_standard.max(0.5);
         let trend_pull = (self.records.trend / sol).clamp(-1.0, 1.0);
         let target_risk = (mood
-            + pop_constants::RISK_TREND_WEIGHT * trend_pull
-            - pop_constants::RISK_CONTENTMENT_WEIGHT * contentment)
-            .clamp(
-                pop_constants::RISK_APPETITE_MIN,
-                pop_constants::RISK_APPETITE_MAX,
-            );
+            + cfg.risk_trend_weight * trend_pull
+            - cfg.risk_contentment_weight * contentment)
+            .clamp(cfg.risk_appetite_min, cfg.risk_appetite_max);
         self.records.risk_appetite = lerp(
             self.records.risk_appetite,
             target_risk,
-            pop_constants::PLANNING_LERP_RATE,
+            cfg.planning_lerp_rate,
         )
-        .clamp(
-            pop_constants::RISK_APPETITE_MIN,
-            pop_constants::RISK_APPETITE_MAX,
-        );
+        .clamp(cfg.risk_appetite_min, cfg.risk_appetite_max);
 
         let basic01 = if self.desires[0].is_empty() {
             1.0
@@ -1285,45 +1318,33 @@ impl Pop {
         .clamp(0.0, 1.0);
         let unmet_basic = 1.0 - basic01;
 
-        let mut target_savings = pop_constants::DEFAULT_SAVINGS_RATIO
-            - pop_constants::SAVINGS_RISK_WEIGHT * self.records.risk_appetite
-            + pop_constants::SAVINGS_FEAR_WEIGHT * fear
-            + pop_constants::SAVINGS_UNMET_BASIC_WEIGHT * unmet_basic;
+        let mut target_savings = cfg.default_savings_ratio
+            - cfg.savings_risk_weight * self.records.risk_appetite
+            + cfg.savings_fear_weight * fear
+            + cfg.savings_unmet_basic_weight * unmet_basic;
         if self.records.trend < 0.0 {
             let fall = (-self.records.trend / sol).min(1.0);
-            target_savings += pop_constants::SAVINGS_FALL_SOL_WEIGHT * fall;
+            target_savings += cfg.savings_fall_sol_weight * fall;
         }
-        target_savings = target_savings.clamp(
-            pop_constants::SAVINGS_RATIO_MIN,
-            pop_constants::SAVINGS_RATIO_MAX,
-        );
+        target_savings = target_savings.clamp(cfg.savings_ratio_min, cfg.savings_ratio_max);
         self.records.savings_ratio = lerp(
             self.records.savings_ratio,
             target_savings,
-            pop_constants::PLANNING_LERP_RATE,
+            cfg.planning_lerp_rate,
         )
-        .clamp(
-            pop_constants::SAVINGS_RATIO_MIN,
-            pop_constants::SAVINGS_RATIO_MAX,
-        );
+        .clamp(cfg.savings_ratio_min, cfg.savings_ratio_max);
 
-        let target_tp = (pop_constants::DEFAULT_TIME_PREFERENCE
-            + pop_constants::TIME_PREFERENCE_ANGER_WEIGHT * anger
-            + pop_constants::TIME_PREFERENCE_UNMET_BASIC_WEIGHT * unmet_basic
-            - pop_constants::TIME_PREFERENCE_CONTENTMENT_WEIGHT * contentment)
-            .clamp(
-                pop_constants::TIME_PREFERENCE_MIN,
-                pop_constants::TIME_PREFERENCE_MAX,
-            );
+        let target_tp = (cfg.default_time_preference
+            + cfg.time_preference_anger_weight * anger
+            + cfg.time_preference_unmet_basic_weight * unmet_basic
+            - cfg.time_preference_contentment_weight * contentment)
+            .clamp(cfg.time_preference_min, cfg.time_preference_max);
         self.records.time_preference = lerp(
             self.records.time_preference,
             target_tp,
-            pop_constants::PLANNING_LERP_RATE,
+            cfg.planning_lerp_rate,
         )
-        .clamp(
-            pop_constants::TIME_PREFERENCE_MIN,
-            pop_constants::TIME_PREFERENCE_MAX,
-        );
+        .clamp(cfg.time_preference_min, cfg.time_preference_max);
     }
 
     /// Post-growth / pre-migration size over the pre-growth size.
@@ -1342,12 +1363,12 @@ impl Pop {
 
     /// Inflates the savings pile with household growth. Does not shrink on
     /// decline (a smaller pop keeps the buffer to ride out the downturn).
-    fn savings_growth_buffer(&self) -> f64 {
+    fn savings_growth_buffer(&self, cfg: &crate::game::config::PopConfig) -> f64 {
         let growth_f = self.planning_growth_factor();
         if growth_f <= 1.0 {
             1.0
         } else {
-            1.0 + (growth_f - 1.0) * pop_constants::SAVINGS_GROWTH_BUFFER_WEIGHT
+            1.0 + (growth_f - 1.0) * cfg.savings_growth_buffer_weight
         }
     }
 
@@ -1459,11 +1480,11 @@ impl Pop {
     }
 
     /// Share of the savings pile that may be held as liquid AMV. Falls with Fear.
-    fn savings_substitutability(&self) -> f64 {
+    fn savings_substitutability(&self, cfg: &crate::game::config::PopConfig) -> f64 {
         let fear = self.sentiment.fear().clamp(0.0, 1.0);
         lerp(
-            pop_constants::SAVINGS_SUBSTITUTABILITY_CALM,
-            pop_constants::SAVINGS_SUBSTITUTABILITY_FEAR,
+            cfg.savings_substitutability_calm,
+            cfg.savings_substitutability_fear,
             fear,
         )
         .clamp(0.0, 1.0)
@@ -1512,9 +1533,9 @@ impl Pop {
             + Self::living_need_amv(&self.desires[1], factuals, market_history);
         let consume_scale = self.planning_growth_factor();
         let target_saved_amv =
-            (self.records.savings_ratio * daily_need_amv * self.savings_growth_buffer()).max(0.0);
+            (self.records.savings_ratio * daily_need_amv * self.savings_growth_buffer(&factuals.config.pop)).max(0.0);
 
-        let substitutability = self.savings_substitutability();
+        let substitutability = self.savings_substitutability(&factuals.config.pop);
         let liquid_amv = target_saved_amv * substitutability;
         let mut specific_amv = target_saved_amv - liquid_amv;
 
@@ -1755,7 +1776,7 @@ impl Pop {
         // get passive benefits from demographics
         result += self.demographic_resource_generation(factuals);
         // get SOL/Wealth, SOL Trend, and Mood special resources
-        result += self.wealth_and_mood_resources();
+        result += self.wealth_and_mood_resources(&factuals.config);
         // get bonus resources from desires effects.
         result += self.resources_from_desires();
         // get bonus resources from stored effects.
@@ -1770,8 +1791,8 @@ impl Pop {
     /// 
     /// Currently, this only effects Legitimacy, and Culture.
     /// Expanding this to Research is likely, Authority is not.
-    fn wealth_and_mood_resources(&self) -> PlayerResources {
-        use player_resource_constants as k;
+    fn wealth_and_mood_resources(&self, config: &GameConfig) -> PlayerResources {
+        let k = &config.player_resources;
         let mut out = PlayerResources::new();
 
         // Culture from living well: tier sat *sum* (empty tier is 0, not mood's 1.0).
@@ -1781,15 +1802,15 @@ impl Pop {
         // wealth_amv is recorded but not a yield yet (SOL sat is the culture source).
         let people = self.demographics.total_population();
         if people > 0.0 {
-            out.culture += self.common_living_well_mass() * k::COMMON_CULTURE_RATE * people;
+            out.culture += self.common_living_well_mass() * k.common_culture_rate * people;
             if !self.desires[2].is_empty() {
                 out.culture += self.records.tier_sat[2].max(0.0)
-                    * k::LUXURY_CULTURE_RATE
+                    * k.luxury_culture_rate
                     * people;
             }
         }
         // then get legitimacy bonuses.
-        out.legitimacy += self.legitimacy_from_sol_and_mood() * people.max(0.0);
+        out.legitimacy += self.legitimacy_from_sol_and_mood(config) * people.max(0.0);
         out
     }
 
@@ -1823,8 +1844,8 @@ impl Pop {
     /// Come back to ALL numbers to calibrate and balance things out.
     /// Consider adding a counterbalancing force like Potential or Political Will or 
     /// something that acts to create pressure on the player to adapt and help their people.
-    fn legitimacy_from_sol_and_mood(&self) -> f64 {
-        use player_resource_constants as k;
+    fn legitimacy_from_sol_and_mood(&self, config: &GameConfig) -> f64 {
+        let k = &config.player_resources;
         
         // Get total satisfaction, skipping empty desire tiers.
         let total_sat: f64 = (0..3)
@@ -1838,7 +1859,7 @@ impl Pop {
         let potential = if n == 0 {
             0.0
         } else {
-            k::FIRST_DESIRE_LEGITIMACY + k::EXTRA_DESIRE_LEGITIMACY * (n as f64 - 1.0)
+            k.first_desire_legitimacy + k.extra_desire_legitimacy * (n as f64 - 1.0)
         };
         // get the average satisfaction (unclamped above, floored at 0).
         // Low SOL does not produce negative sat-legitimacy; mood covers that.
@@ -1851,19 +1872,19 @@ impl Pop {
         // TODO, if needed, allow for negative legitimacy.
         let sat_legitimacy = potential * avg;
 
-        let mood = (self.sentiment.happiness() * k::HAPPINESS_LEGITIMACY_RATE
-            + self.sentiment.hope() * k::HOPE_LEGITIMACY_RATE
-            - self.sentiment.anger() * k::ANGER_LEGITIMACY_RATE
-            - self.sentiment.fear() * k::FEAR_LEGITIMACY_RATE) 
-            * potential * k::MOOD_POTENTIAL_MODIFIER;
+        let mood = (self.sentiment.happiness() * k.happiness_legitimacy_rate
+            + self.sentiment.hope() * k.hope_legitimacy_rate
+            - self.sentiment.anger() * k.anger_legitimacy_rate
+            - self.sentiment.fear() * k.fear_legitimacy_rate) 
+            * potential * k.mood_potential_modifier;
 
         let trend = self.records.trend;
-        let trend_term = if trend.abs() < pop_constants::SENTIMENT_TREND_DEADBAND {
+        let trend_term = if trend.abs() < config.pop.sentiment_trend_deadband {
             0.0
         } else if trend > 0.0 {
-            trend * k::TREND_LEGITIMACY_RISE * potential * k::TREND_POTENTIAL_MODIFIER
+            trend * k.trend_legitimacy_rise * potential * k.trend_potential_modifier
         } else {
-            trend * k::TREND_LEGITIMACY_FALL * potential * k::TREND_POTENTIAL_MODIFIER
+            trend * k.trend_legitimacy_fall * potential * k.trend_potential_modifier
         };
 
         sat_legitimacy + mood + trend_term
@@ -1986,6 +2007,7 @@ impl DealMaker for Pop {
             own_order,
             other_order,
             history,
+            factuals.config.deal.high_salability,
             |good| pop_tenderable(self, good, targeted_good, factuals),
             &live,
         )?;
@@ -2025,7 +2047,15 @@ impl DealMaker for Pop {
         if !deal_goods_tradeable(deal, factuals) {
             return DealResponse::Reject;
         }
-        evaluate_pop_amv(deal, role, history, |good| pop_uses_good(self, good))
+        evaluate_amv_floor(
+            deal,
+            role,
+            history,
+            factuals.config.deal.pop_amv_min_keep,
+            factuals.config.deal.pop_amv_min_keep,
+            false,
+            |good| pop_uses_good(self, good),
+        )
     }
 
     /// # Finalize
@@ -2295,6 +2325,21 @@ mod pop {
             assert_eq!(orders[0].target, 100); // should be the first good in the list
             assert_eq!(orders[0].target_amount, 10.0); // should be the first good in the list
             assert_eq!(orders[0].priority, market_priority::POP_START);
+        }
+
+        #[test]
+        fn uses_loaded_pop_start_priority() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.insert(500, PopPRow::new(5.0));
+
+            let mut factuals = make_default_factuals();
+            factuals.config.market_priority.pop_start = 4.25;
+            let market_history = make_default_market_history();
+
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
+            assert_eq!(orders[0].priority, 4.25);
         }
 
         #[test]
@@ -3148,6 +3193,7 @@ mod pop {
 
     mod update_sentiments_should {
         use super::*;
+        use crate::game::config::PopConfig;
         use crate::game::sentiment::SentimentKind;
 
         #[test]
@@ -3162,7 +3208,7 @@ mod pop {
             // satisfaction stays 0 → basic sum of success rates = 0.
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             assert_eq!(pop.records.tier_sat[0], 0.0);
             // Empty common/luxury count as fully satisfied (recorded as 1.0).
@@ -3170,6 +3216,22 @@ mod pop {
             assert!(pop.sentiment.anger() > 0.0);
             assert!(pop.sentiment.fear() > 0.0);
             assert!(pop.sentiment.is_valid());
+        }
+
+        #[test]
+        fn sentiment_rates_come_from_pop_config() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            let mut config = PopConfig::default();
+            config.anger_sentiment_rate = 0.0;
+            config.fear_sentiment_rate = 0.0;
+            pop.update_sentiments(&make_default_market_history(), &config);
+            assert_eq!(pop.sentiment.anger(), 0.0);
+            assert_eq!(pop.sentiment.fear(), 0.0);
         }
 
         #[test]
@@ -3191,7 +3253,7 @@ mod pop {
             pop.desires[0].push(desire);
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             // Bonus +0.20 hope * sat 1.0, plus small baseline hope from luxury empty=1.
             assert!(pop.sentiment.hope() > 0.15);
@@ -3216,7 +3278,7 @@ mod pop {
             });
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             assert!(pop.sentiment.anger() > 0.0);
             assert_eq!(pop.stored_effects.len(), 1);
@@ -3251,7 +3313,7 @@ mod pop {
             pop.desires[1].push(donor);
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             // Per-desire values unchanged.
             assert_eq!(pop.desires[1][0].satisfaction, 8.0);
@@ -3274,7 +3336,7 @@ mod pop {
             pop.desires[2].push(lux);
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             // Per-desire unchanged; recorded sum = 1.0 + 0.5 = 1.5.
             assert_eq!(pop.desires[2][0].satisfaction, 10.0);
@@ -3297,7 +3359,7 @@ mod pop {
             });
 
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
 
             // Desire unchanged; recorded sum = 0.5 + 0.3 = 0.8.
             assert_eq!(pop.desires[1][0].satisfaction, 5.0);
@@ -3317,7 +3379,7 @@ mod pop {
             history.prices.insert(100, 2.0);
             history.prices.insert(101, 4.0);
             // 10*2 + 5*4 = 40; per household count 10 → 4.0
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
             assert!((pop.records.wealth_amv - 40.0).abs() < 1e-9);
         }
 
@@ -3332,7 +3394,7 @@ mod pop {
             d.satisfaction = 7.0;
             pop.desires[0].push(d);
             let history = make_default_market_history();
-            pop.update_sentiments(&history);
+            pop.update_sentiments(&history, &PopConfig::default());
             assert!((pop.records.satisfaction_units_total - 7.0).abs() < 1e-9);
         }
 
@@ -4599,6 +4661,18 @@ mod pop {
         }
 
         #[test]
+        fn living_well_culture_uses_loaded_player_resource_config() {
+            let mut pop = make_pop();
+            one_common(&mut pop);
+            pop.records.tier_sat = [0.0, 1.0, 0.0];
+            let mut factuals = extract_factuals();
+            factuals.config.player_resources.common_culture_rate = 2.0;
+            let people = pop.demographics.total_population();
+            let bag = pop.extract_special_resources(&factuals);
+            assert!((bag.culture - 2.0 * people).abs() < 1e-12);
+        }
+
+        #[test]
         fn luxury_culture_is_uncapped() {
             let mut pop = make_pop();
             pop.desires[2].push(make_desire(
@@ -4978,6 +5052,16 @@ mod pop {
             let twice = pop.renew_buy(&once).expect("second retry");
             assert_eq!(twice.tries, 2);
             assert!(pop.renew_buy(&twice).is_none());
+        }
+
+        #[test]
+        fn renew_buy_with_limit_uses_caller_cap() {
+            let pop = make_pop();
+            let (own, _) = buy_and_offer();
+            assert!(pop.renew_buy_with_limit(&own, 0).is_none());
+            let once = pop.renew_buy_with_limit(&own, 1).expect("retry allowed");
+            assert_eq!(once.tries, 1);
+            assert!(pop.renew_buy_with_limit(&once, 1).is_none());
         }
 
         #[test]

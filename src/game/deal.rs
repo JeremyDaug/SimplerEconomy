@@ -270,12 +270,18 @@ pub trait DealMaker {
     /// [`market_constants::BUY_TRY_LIMIT`] retries; a further failure
     /// closes. Recalculating amounts is later.
     fn renew_buy(&self, order: &MarketOrder) -> Option<MarketOrder> {
+        self.renew_buy_with_limit(order, market_constants::BUY_TRY_LIMIT)
+    }
+
+    /// Returns a renewed copy of this failed buy/request with `tries`
+    /// incremented, or `None` once `tries` is at `buy_try_limit`.
+    fn renew_buy_with_limit(&self, order: &MarketOrder, buy_try_limit: u32) -> Option<MarketOrder> {
         let _ = self;
         debug_assert!(
             order.target_amount > 0.0,
             "renew_buy is for buy/request orders"
         );
-        if order.tries >= market_constants::BUY_TRY_LIMIT {
+        if order.tries >= buy_try_limit {
             return None;
         }
         let mut renewed = order.clone();
@@ -416,8 +422,8 @@ pub fn evaluate_firm_amv(
 /// Different target goods are a matcher bug (`debug_assert`); release still
 /// returns `None` so no mixed-good deal is built.
 /// Self-trade (`buyer` equals the sell origin) also returns `None`.
-/// Buyer `amv_target`, when set, is a unit-AMV ceiling: payment AMV per
-/// filled unit above it returns `None`.
+/// Buyer `amv_target` is recorded for settlement and is not a unit-AMV
+/// ceiling here; over-cap payment still proposes.
 ///
 /// Fill and payment quantities are whole units. A fractional shortfall
 /// is dropped; AMV (or a named counter) that is not a whole number of
@@ -439,6 +445,7 @@ pub fn form_buy_proposal(
     own_order: &MarketOrder,
     other_order: &MarketOrder,
     history: &MarketHistory,
+    high_salability: f64,
     tenderable: impl Fn(usize) -> f64,
     live_tenders: &[(usize, f64)],
 ) -> Option<ProposedDeal> {
@@ -486,7 +493,7 @@ pub fn form_buy_proposal(
         if have <= 0.0 || !listed.insert(good) {
             continue;
         }
-        if history.salability(good) >= deal_constants::HIGH_SALABILITY {
+        if history.salability(good) >= high_salability {
             preferred.push((good, have));
         } else {
             fallback.push((good, have));
@@ -525,11 +532,6 @@ pub fn form_buy_proposal(
         .with_good(targeted_good, -filled_units);
     for (good, qty) in tenders {
         deal = deal.with_good(good, qty);
-    }
-    if let Some(cap) = own_order.amv_target {
-        if deal_exceeds_buyer_unit_cap(&deal, targeted_good, cap, history) {
-            return None;
-        }
     }
     Some(deal)
 }
@@ -572,7 +574,7 @@ fn transport_fill_scale(
 ) -> Option<f64> {
     debug_assert!(friction.is_finite(), "friction must be finite");
     debug_assert!(on_hand.is_finite(), "on_hand must be finite");
-    let fee = market_constants::TRANSACTION_COST;
+    let fee = factuals.config.market.transaction_cost;
     let factor = friction.max(0.0);
     let bulk = deal_bulk(deal, factuals);
     let (given_t, rec_t) = deal_transport_legs(deal, factuals);
@@ -595,7 +597,7 @@ fn transport_fill_scale(
 }
 
 fn transport_needed_for(deal: &ProposedDeal, factuals: &Factuals, friction: f64) -> f64 {
-    market_constants::TRANSACTION_COST + deal_bulk(deal, factuals) * friction.max(0.0)
+    factuals.config.market.transaction_cost + deal_bulk(deal, factuals) * friction.max(0.0)
 }
 
 /// Caps the buy fill to what post-exchange transport can pay, then forms the
@@ -640,6 +642,7 @@ pub fn with_transport_budget(
             &capped,
             other_order,
             history,
+            factuals.config.deal.high_salability,
             tenderable,
             live_tenders,
         )?
@@ -649,6 +652,8 @@ pub fn with_transport_budget(
 }
 
 /// Returns true if payment AMV per unit of `targeted_good` is above `cap`.
+/// Guidestone query for later planning. Deal formation does not void on this.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn deal_exceeds_buyer_unit_cap(
     deal: &ProposedDeal,
     targeted_good: usize,
@@ -1048,7 +1053,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = unit_history();
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)])
             .expect("proposal");
         assert_eq!(deal.buyer, buyer);
         assert_eq!(deal.seller, Actor::Firm(2));
@@ -1075,6 +1080,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |g| if g == 3 { 10.0 } else { 0.0 },
             &[(2, 10.0)],
         )
@@ -1090,7 +1096,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = unit_history();
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 4.0, &[(2, 4.0)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 4.0, &[(2, 4.0)])
             .expect("proposal");
         // intended give is 8 (4 * 2 / 1); have 4 -> half fill
         assert!((deal.goods[&1] + 2.0).abs() < 1e-12);
@@ -1103,7 +1109,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = unit_history();
-        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 0.0, &[]).is_none());
+        assert!(form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 0.0, &[]).is_none());
     }
 
     #[test]
@@ -1119,6 +1125,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |_| 10.0,
             &[(2, 3.0), (3, 10.0)],
         )
@@ -1149,6 +1156,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |g| match g {
                 4 => 1.0,
                 2 => 10.0,
@@ -1173,6 +1181,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |_| 10.0,
             &[(2, 10.0), (4, 10.0)],
         )
@@ -1194,6 +1203,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |_| 10.0,
             &[(2, 3.0), (4, 10.0)],
         )
@@ -1222,6 +1232,7 @@ mod form_buy_proposal_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |g| if g == 4 { 10.0 } else { 0.0 },
             &[(2, 10.0)],
         )
@@ -1237,7 +1248,7 @@ mod form_buy_proposal_should {
         let own = request(actor, 1, 4.0);
         let other = offer(actor, 1, 4.0);
         let history = unit_history();
-        assert!(form_buy_proposal(actor, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+        assert!(form_buy_proposal(actor, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)]).is_none());
     }
 
     #[test]
@@ -1247,7 +1258,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 3, 4.0);
         let history = unit_history();
-        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+        assert!(form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)]).is_none());
     }
 
     fn priced_buy(
@@ -1270,7 +1281,7 @@ mod form_buy_proposal_should {
     }
 
     #[test]
-    fn returns_none_when_payment_unit_amv_exceeds_buyer_cap() {
+    fn still_proposes_when_payment_unit_amv_exceeds_buyer_cap() {
         let buyer = Actor::Firm(1);
         // Cap 1.5; seller named rate is 8 coin for 4 bread = 2.0 AMV/unit.
         let own = priced_buy(buyer, 1, 4.0, 1.5, 2, 6.0);
@@ -1284,7 +1295,11 @@ mod form_buy_proposal_should {
             market_priority::FIRM_PRODUCER,
         );
         let history = unit_history();
-        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)]).is_none());
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)])
+            .expect("proposal over cap");
+        assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
+        assert!((deal.goods[&2] - 8.0).abs() < 1e-12);
+        assert!(deal_exceeds_buyer_unit_cap(&deal, 1, 1.5, &history));
     }
 
     #[test]
@@ -1301,7 +1316,7 @@ mod form_buy_proposal_should {
             market_priority::FIRM_PRODUCER,
         );
         let history = unit_history();
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)])
             .expect("proposal at cap");
         assert!((deal.goods[&1] + 4.0).abs() < 1e-12);
         assert!((deal.goods[&2] - 6.0).abs() < 1e-12);
@@ -1315,7 +1330,7 @@ mod form_buy_proposal_should {
         let mut history = MarketHistory::new();
         history.prices.insert(1, 2.5);
         history.prices.insert(2, 1.0);
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)])
             .expect("proposal");
         // 2.5 AMV of coin for 1 bread becomes 3 coins paid.
         assert!((deal.goods[&1] + 1.0).abs() < 1e-12);
@@ -1328,7 +1343,7 @@ mod form_buy_proposal_should {
         let own = request(buyer, 1, 4.0);
         let other = offer(Actor::Firm(2), 1, 4.0);
         let history = unit_history();
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 2.7, &[(2, 2.7)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 2.7, &[(2, 2.7)])
             .expect("proposal");
         // 2.7 coins floors to 2; bread is 2 AMV so that buys 1 whole unit.
         assert!((deal.goods[&1] + 1.0).abs() < 1e-12);
@@ -1344,7 +1359,7 @@ mod form_buy_proposal_should {
         history.prices.insert(1, 2.5);
         history.prices.insert(2, 1.0);
         // 2 coins cannot cover ceil(2.5) for one bread.
-        assert!(form_buy_proposal(buyer, &own, &other, &history, |_| 2.0, &[(2, 2.0)]).is_none());
+        assert!(form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 2.0, &[(2, 2.0)]).is_none());
     }
 
     #[test]
@@ -1355,7 +1370,7 @@ mod form_buy_proposal_should {
         let mut history = MarketHistory::new();
         history.prices.insert(9, 2.0);
         history.prices.insert(2, 1.0);
-        let deal = form_buy_proposal(buyer, &own, &other, &history, |_| 10.0, &[(2, 10.0)])
+        let deal = form_buy_proposal(buyer, &own, &other, &history, deal_constants::HIGH_SALABILITY, |_| 10.0, &[(2, 10.0)])
             .expect("proposal");
         assert!((deal.goods[&9] + 4.0).abs() < 1e-12);
         assert!((deal.goods[&2] - 8.0).abs() < 1e-12);
@@ -1489,6 +1504,7 @@ mod with_transport_budget_should {
             &own,
             &other,
             &history,
+            deal_constants::HIGH_SALABILITY,
             |_| 10.0,
             &[(2, 10.0)],
         )

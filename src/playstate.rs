@@ -154,6 +154,10 @@ impl PlayState {
     }
 
     fn phase_production_and_planning(&mut self) {
+        // Production belongs here, before pop consume, so a firm that pays
+        // workers from today's output (not only post-shopping stock) has that
+        // work already on the ledger. Planning is after consume (and growth
+        // when wired); this stub is sequential, not one mixed pass.
         todo!("7. Firm/institution production and non-player planning")
     }
 
@@ -194,9 +198,10 @@ impl PlayState {
         self.rebuild_market_lookups();
         let empty = MarketHistory::new();
         let lookups = &self.market_lookups;
+        let pop_config = &self.factuals.config.pop;
         self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
             let history = lookups.history_for_pop(*id, &empty);
-            pop.update_sentiments(history);
+            pop.update_sentiments(history, pop_config);
         });
     }
 
@@ -214,7 +219,10 @@ impl PlayState {
 
     /// One history per market and pop-id -> market-id. Prices are day-static.
     fn rebuild_market_lookups(&mut self) {
-        self.market_lookups = MarketLookups::from_markets(&self.map_data.markets);
+        self.market_lookups = MarketLookups::from_markets_with(
+            &self.map_data.markets,
+            self.factuals.config.market.salability_default,
+        );
     }
 
     /// # Phase Pop Migration
@@ -351,9 +359,13 @@ impl PlayState {
                 });
             });
             s.spawn(|_| {
-                firms
-                    .par_iter_mut()
-                    .for_each(|(_, firm)| firm.record_keeping(factuals));
+                firms.par_iter_mut().for_each(|(_, firm)| {
+                    let history = lookups
+                        .histories
+                        .get(&firm.market)
+                        .unwrap_or(&empty);
+                    firm.record_keeping(factuals, history);
+                });
             });
             s.spawn(|_| {
                 institutions

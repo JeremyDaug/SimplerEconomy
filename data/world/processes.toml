@@ -1,0 +1,66 @@
+# World data: processes (factuals).
+# Human-editable. Live firm targets, stock, and prices are game state, not here.
+# Time (good 0) is 1 unit minimum plus a little extra per recipe.
+#
+# input type: destroyed | consumed | capital | factor  (default destroyed)
+# optional = true to skip if the good is missing.
+# outputs scale with bonuses unless fixed = true.
+
+[[processes]]
+id = 1
+name = "farm grain"
+inputs = [
+    { good = 0, amount = 3.0, type = "destroyed" },
+    { good = 2, amount = 1.0, type = "destroyed" },
+]
+outputs = [{ good = 1, amount = 6.0 }]
+
+[[processes]]
+id = 2
+name = "bake bread"
+inputs = [
+    { good = 0, amount = 2.0, type = "destroyed" },
+    { good = 1, amount = 1.0, type = "destroyed" },
+]
+outputs = [{ good = 3, amount = 1.2 }]
+
+[[processes]]
+id = 3
+name = "mine gold"
+inputs = [{ good = 0, amount = 4.0, type = "destroyed" }]
+outputs = [{ good = 4, amount = 1.0 }]
+
+[[processes]]
+id = 4
+name = "mint coin"
+inputs = [
+    { good = 0, amount = 2.0, type = "destroyed" },
+    { good = 4, amount = 1.0, type = "destroyed" },
+]
+outputs = [{ good = 5, amount = 40.0 }]
+
+[[processes]]
+id = 5
+name = "cut jewelry"
+inputs = [
+    { good = 0, amount = 3.0, type = "destroyed" },
+    { good = 4, amount = 3.0, type = "destroyed" },
+]
+outputs = [{ good = 6, amount = 5.0 }]
+
+[[processes]]
+id = 6
+name = "draw water"
+inputs = [{ good = 0, amount = 1.0, type = "destroyed" }]
+outputs = [{ good = 2, amount = 1.0 }]
+
+# Reverse of mint coin. 41 coin -> 1 gold so a mint-then-melt cycle
+# loses 1 coin. Backup when coin is cheap relative to gold.
+[[processes]]
+id = 7
+name = "melt coin"
+inputs = [
+    { good = 0, amount = 2.0, type = "destroyed" },
+    { good = 5, amount = 41.0, type = "destroyed" },
+]
+outputs = [{ good = 4, amount = 1.0 }]

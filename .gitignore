@@ -23,3 +23,6 @@ Cargo.lock
 # Added by cargo
 
 /target
+
+# Tester day-end price CSVs
+/data/logs/*.csv

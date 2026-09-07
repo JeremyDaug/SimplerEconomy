@@ -5,10 +5,10 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 
 use crate::game::actor::Actor;
-use crate::game::config::{market_constants, market_priority};
+use crate::game::config::{market_constants, market_priority, MarketConfig};
 use crate::game::deal::{DealMaker, DealResponse};
 use crate::game::firm::Firm;
-use crate::game::marketorder::{pop_priority_from_wealth, MarketOrder};
+use crate::game::marketorder::{priority_in_band, wealth_unit_rank, MarketOrder};
 use crate::game::pop::Pop;
 use crate::game::util::{lerp, whole_units};
 use crate::game::{actors::Actors, factuals::Factuals};
@@ -120,11 +120,16 @@ fn pick_weighted_index(weights: &[f64], mut roll: f64) -> usize {
 }
 
 /// Sell selection weight for this pick only.
-/// Matching `Some` counter-offer goods doubles the stored sell priority.
-fn sell_match_weight(buy: &MarketOrder, sell: &MarketOrder) -> f64 {
+/// Matching `Some` counter-offer goods multiplies stored sell priority by
+/// `coincidence_weight`.
+fn sell_match_weight_with(
+    buy: &MarketOrder,
+    sell: &MarketOrder,
+    coincidence_weight: f64,
+) -> f64 {
     let mut weight = sell.priority.max(0.0);
     if matching_counter_offers(buy, sell) {
-        weight *= market_priority::SELL_COINCIDENCE_WEIGHT;
+        weight *= coincidence_weight;
     }
     weight
 }
@@ -140,6 +145,7 @@ fn matching_counter_offers(buy: &MarketOrder, sell: &MarketOrder) -> bool {
 fn classify_sells(
     sells: &[MarketOrder],
     buy: &MarketOrder,
+    coincidence_weight: f64,
 ) -> (Vec<usize>, Vec<f64>, bool) {
     let start = sells.partition_point(|s| s.target < buy.target);
     let end = start + sells[start..].partition_point(|s| s.target == buy.target);
@@ -150,7 +156,7 @@ fn classify_sells(
             continue;
         }
         available.push(i);
-        weights.push(sell_match_weight(buy, &sells[i]));
+        weights.push(sell_match_weight_with(buy, &sells[i], coincidence_weight));
     }
     let had_other = !available.is_empty();
     (available, weights, had_other)
@@ -219,6 +225,62 @@ fn leftover_order(mut order: MarketOrder, filled: f64) -> Option<MarketOrder> {
     Some(order)
 }
 
+/// Returns on-hand quantity of `good` for `actor`, or 0 if missing.
+fn actor_on_hand(
+    pops: &HashMap<usize, Pop>,
+    firms: &HashMap<usize, Firm>,
+    actor: Actor,
+    good: usize,
+) -> f64 {
+    match actor {
+        Actor::Pop(id) => pops
+            .get(&id)
+            .and_then(|pop| pop.property.get(&good))
+            .map(|row| row.quantity)
+            .unwrap_or(0.0),
+        Actor::Firm(id) => firms
+            .get(&id)
+            .and_then(|firm| firm.property.get(&good))
+            .map(|row| row.quantity)
+            .unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// Shrinks leftover sell/offer orders so they do not exceed this actor's
+/// on-hand stock. A buy can tender a good that is also listed for sale;
+/// without this, the later sell still asks for the morning amount.
+fn clamp_sells_to_on_hand(
+    sells: &mut Vec<MarketOrder>,
+    actor: Actor,
+    pops: &HashMap<usize, Pop>,
+    firms: &HashMap<usize, Firm>,
+) {
+    let mut i = 0;
+    while i < sells.len() {
+        if sells[i].origin != actor {
+            i += 1;
+            continue;
+        }
+        let have = whole_units(actor_on_hand(pops, firms, actor, sells[i].target).max(0.0));
+        let listed = -sells[i].target_amount;
+        if have <= 0.0 {
+            sells.remove(i);
+            continue;
+        }
+        if listed > have {
+            match leftover_order(sells[i].clone(), listed - have) {
+                Some(order) => sells[i] = order,
+                None => {
+                    sells.remove(i);
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
 /// Charges the flat transport meeting fee from on-hand, pushes `sell_order`
 /// back onto `sells`, and asks the buyer to [`DealMaker::renew_buy`].
 /// Returns true if the buy was renewed.
@@ -232,9 +294,11 @@ fn wash_pair(
     sells: &mut Vec<MarketOrder>,
 ) -> bool {
     as_deal_maker_mut(pops, firms, buy_order.origin)
-        .pay_transport(market_constants::TRANSACTION_COST, factuals);
+        .pay_transport(factuals.config.market.transaction_cost, factuals);
     sells.push(sell_order);
-    if let Some(renewed) = as_deal_maker(pops, firms, buy_order.origin).renew_buy(&buy_order) {
+    if let Some(renewed) = as_deal_maker(pops, firms, buy_order.origin)
+        .renew_buy_with_limit(&buy_order, factuals.config.market.buy_try_limit)
+    {
         buys.push(renewed);
         true
     } else {
@@ -245,7 +309,7 @@ fn wash_pair(
 /// Flat wash fee when the world has transport-tagged goods, else 0.
 fn wash_transport(factuals: &Factuals) -> f64 {
     if factuals.goods.values().any(|good| good.is_transport()) {
-        market_constants::TRANSACTION_COST
+        factuals.config.market.transaction_cost
     } else {
         0.0
     }
@@ -291,11 +355,11 @@ fn as_deal_maker_mut<'a>(
     }
 }
 
-/// If `new` is inside the AMV dead zone, land `AMV_MIN_ABS` on the other side
+/// If `new` is inside the AMV dead zone, land `min_abs` on the other side
 /// of 0 from `old`. Otherwise return `new` unchanged.
-fn bounce_away_from_zero(old: f64, new: f64) -> f64 {
+fn bounce_away_from_zero(old: f64, new: f64, min_abs: f64) -> f64 {
     debug_assert!(new.is_finite(), "new must be finite");
-    let min_abs = market_constants::AMV_MIN_ABS;
+    debug_assert!(min_abs > 0.0, "min_abs must be > 0.0");
     if new.abs() >= min_abs {
         new
     } else if old >= 0.0 {
@@ -411,11 +475,11 @@ impl Market {
         self.unavailable_goods.clear();
         let mut report = MarketDayReport::default();
 
-        let history = self.history();
+        let history = self.history_with(&factuals.config.market);
         self.seed_amv_history();
         let (mut buys, mut sells) = self.collect_orders(&history, factuals, pops, firms);
         self.reset_day_exchange_stats();
-        self.collate_order_books(&buys, &sells);
+        self.collate_order_books(&buys, &sells, &factuals.config.market);
 
         let mut steps = 0usize;
         loop {
@@ -429,7 +493,12 @@ impl Market {
             });
             sells.sort_by_key(|order| order.target);
 
-            let batch = Self::match_orders(&buys, &sells, rng);
+            let batch = Self::match_orders_with_coincidence(
+                &buys,
+                &sells,
+                rng,
+                factuals.config.market_priority.sell_coincidence_weight,
+            );
             if batch.is_empty() {
                 break;
             }
@@ -482,11 +551,16 @@ impl Market {
                 .clear();
         }
 
-        self.update_salability();
-        self.record_amv_closes();
-
         report.leftover_buys = buys;
         report.leftover_sells = sells;
+        self.drift_amv_on_book_pressure(
+            &report.leftover_buys,
+            &report.leftover_sells,
+            &report.unmatched_buys,
+            &factuals.config.market,
+        );
+        self.update_salability(&factuals.config.market);
+        self.record_amv_closes();
         report
     }
 
@@ -508,8 +582,8 @@ impl Market {
 
     /// Lerps each good's salability toward `payment / tender` when it was
     /// offered as payment today. Goods with no tender are left alone.
-    fn update_salability(&mut self) {
-        let blend = market_constants::SALABILITY_BLEND;
+    fn update_salability(&mut self, cfg: &crate::game::config::MarketConfig) {
+        let blend = cfg.salability_blend;
         for good in self.goods.values_mut() {
             if good.tender <= 0.0 {
                 continue;
@@ -524,12 +598,18 @@ impl Market {
 
     /// Pulls AMV of the sold good and its tenders toward the midpoint of the
     /// basket totals. Uses live [`MarketGood::amv`], not the frozen history.
-    fn drift_amv_on_accept(&mut self, target: usize, filled: f64, goods: &HashMap<usize, f64>) {
+    fn drift_amv_on_accept(
+        &mut self,
+        target: usize,
+        filled: f64,
+        goods: &HashMap<usize, f64>,
+        cfg: &crate::game::config::MarketConfig,
+    ) {
         if filled <= 0.0 {
             return;
         }
-        let blend = market_constants::AMV_ACCEPT_BLEND;
-        let target_amv = self.market_good_mut(target).amv;
+        let blend = cfg.amv_accept_blend;
+        let target_amv = self.market_good_mut(target, cfg).amv;
         let given_total = filled * target_amv;
         if !given_total.is_finite() {
             return;
@@ -541,7 +621,7 @@ impl Market {
             if id == target || qty <= 0.0 {
                 continue;
             }
-            let amv = self.market_good_mut(id).amv;
+            let amv = self.market_good_mut(id, cfg).amv;
             pays.push((id, qty, amv));
             pay_total += qty * amv;
         }
@@ -551,43 +631,123 @@ impl Market {
 
         let mid = 0.5 * (given_total + pay_total);
         let new_target = lerp(target_amv, mid / filled, blend);
-        self.market_good_mut(target).set_amv(new_target);
+        self.market_good_mut(target, cfg).set_amv_min(new_target, cfg.amv_min_abs);
 
         let scale = mid / pay_total;
         for (id, _, amv) in pays {
             let implied = amv * scale;
-            self.market_good_mut(id).set_amv(lerp(amv, implied, blend));
+            self.market_good_mut(id, cfg)
+                .set_amv_min(lerp(amv, implied, blend), cfg.amv_min_abs);
         }
     }
 
     /// Raises the sought good's AMV and lowers each tender's AMV.
     /// Tender down-push scales with units offered per unit sought.
-    fn drift_amv_on_reject(&mut self, target: usize, goods: &HashMap<usize, f64>) {
+    fn drift_amv_on_reject(
+        &mut self,
+        target: usize,
+        goods: &HashMap<usize, f64>,
+        cfg: &crate::game::config::MarketConfig,
+    ) {
         let sought = goods.get(&target).copied().unwrap_or(0.0).abs();
         if sought <= 0.0 {
             return;
         }
-        let blend = market_constants::AMV_REJECT_BLEND;
-        let edge = market_constants::AMV_REJECT_DEMAND_EDGE;
-        let old = self.market_good_mut(target).amv;
-        self.market_good_mut(target).set_amv(lerp(old, old * edge, blend));
+        let blend = cfg.amv_reject_blend;
+        let edge = cfg.amv_reject_demand_edge;
+        let old = self.market_good_mut(target, cfg).amv;
+        self.market_good_mut(target, cfg)
+            .set_amv_min(lerp(old, old * edge, blend), cfg.amv_min_abs);
 
         for (&id, &qty) in goods {
             if id == target || qty <= 0.0 {
                 continue;
             }
             let down_blend = (blend * (qty / sought)).min(1.0);
-            let old = self.market_good_mut(id).amv;
-            self.market_good_mut(id).set_amv(lerp(old, old / edge, down_blend));
+            let old = self.market_good_mut(id, cfg).amv;
+            self.market_good_mut(id, cfg)
+                .set_amv_min(lerp(old, old / edge, down_blend), cfg.amv_min_abs);
         }
     }
 
     /// Raises the sought good's AMV when a meeting produced no basket.
-    fn drift_amv_on_no_proposal(&mut self, target: usize) {
-        let blend = market_constants::AMV_REJECT_BLEND;
-        let edge = market_constants::AMV_REJECT_DEMAND_EDGE;
-        let old = self.market_good_mut(target).amv;
-        self.market_good_mut(target).set_amv(lerp(old, old * edge, blend));
+    fn drift_amv_on_no_proposal(
+        &mut self,
+        target: usize,
+        cfg: &crate::game::config::MarketConfig,
+    ) {
+        let blend = cfg.amv_reject_blend;
+        let edge = cfg.amv_reject_demand_edge;
+        let old = self.market_good_mut(target, cfg).amv;
+        self.market_good_mut(target, cfg)
+            .set_amv_min(lerp(old, old * edge, blend), cfg.amv_min_abs);
+    }
+
+    /// Moves AMV from leftover and unmatched orders after the match loop.
+    /// Unsatisfied buys raise AMV; unsatisfied sells lower it. When both
+    /// books have leftover, the larger side wins. Blend is leftover_blend
+    /// times unsatisfied / (unsatisfied + purchased) so a small miss on a
+    /// busy book barely moves, and a book with no fills takes the full step.
+    fn drift_amv_on_book_pressure(
+        &mut self,
+        leftover_buys: &[MarketOrder],
+        leftover_sells: &[MarketOrder],
+        unmatched_buys: &[MarketOrder],
+        cfg: &MarketConfig,
+    ) {
+        let mut buy_left: HashMap<usize, f64> = HashMap::new();
+        let mut sell_left: HashMap<usize, f64> = HashMap::new();
+        for order in leftover_buys.iter().chain(unmatched_buys) {
+            let qty = order.target_amount.max(0.0);
+            if qty > 0.0 {
+                *buy_left.entry(order.target).or_insert(0.0) += qty;
+            }
+        }
+        for order in leftover_sells {
+            if order.target_amount >= 0.0 {
+                continue;
+            }
+            let qty = order.target_amount.abs();
+            if qty > 0.0 {
+                *sell_left.entry(order.target).or_insert(0.0) += qty;
+            }
+        }
+        let mut goods: HashSet<usize> = buy_left.keys().copied().collect();
+        goods.extend(sell_left.keys().copied());
+        let edge = cfg.amv_reject_demand_edge;
+        let band = cfg.amv_leftover_band;
+        for good in goods {
+            let buy_u = buy_left.get(&good).copied().unwrap_or(0.0);
+            let sell_u = sell_left.get(&good).copied().unwrap_or(0.0);
+            let unsat = buy_u + sell_u;
+            if unsat <= 0.0 {
+                continue;
+            }
+            if buy_u > 0.0 && sell_u > 0.0 {
+                let total = buy_u + sell_u;
+                if (buy_u - sell_u).abs() / total < band {
+                    continue;
+                }
+            }
+            let filled = self
+                .goods
+                .get(&good)
+                .map(|row| row.purchased.max(0.0))
+                .unwrap_or(0.0);
+            let share = unsat / (unsat + filled);
+            if !share.is_finite() || share <= 0.0 {
+                continue;
+            }
+            let net = buy_u - sell_u;
+            if net == 0.0 {
+                continue;
+            }
+            let blend = (cfg.amv_leftover_blend * share).clamp(0.0, 1.0);
+            let old = self.market_good_mut(good, cfg).amv;
+            let toward = if net > 0.0 { old * edge } else { old / edge };
+            self.market_good_mut(good, cfg)
+                .set_amv_min(lerp(old, toward, blend), cfg.amv_min_abs);
+        }
     }
 
     /// Emits pop and firm orders for this market and splits them into buy and
@@ -624,7 +784,12 @@ impl Market {
             let mut orders = pop.create_orders(history, factuals, &self.unavailable_goods);
             for order in &mut orders {
                 if order.target_amount > 0.0 {
-                    order.set_priority(pop_priority_from_wealth(per_household, max_wealth));
+                    let prio = &factuals.config.market_priority;
+                    order.set_priority(priority_in_band(
+                        prio.pop_start,
+                        prio.pop_end,
+                        wealth_unit_rank(per_household, max_wealth),
+                    ));
                 }
             }
             split_into_books(orders, &mut buys, &mut sells);
@@ -659,7 +824,12 @@ impl Market {
 
     /// Writes opening supply, demand, unique buyers, and unique suppliers
     /// from the current books onto [`MarketGood`] rows.
-    fn collate_order_books(&mut self, buys: &[MarketOrder], sells: &[MarketOrder]) {
+    fn collate_order_books(
+        &mut self,
+        buys: &[MarketOrder],
+        sells: &[MarketOrder],
+        cfg: &MarketConfig,
+    ) {
         let mut demand: HashMap<usize, f64> = HashMap::new();
         let mut supply: HashMap<usize, f64> = HashMap::new();
         let mut buyers: HashMap<usize, HashSet<Actor>> = HashMap::new();
@@ -679,7 +849,7 @@ impl Market {
 
         for (good, qty) in demand {
             let n = buyers.get(&good).map(|set| set.len() as f64).unwrap_or(0.0);
-            let row = self.market_good_mut(good);
+            let row = self.market_good_mut(good, cfg);
             row.set_demand(qty);
             row.set_buyers(n);
         }
@@ -688,7 +858,7 @@ impl Market {
                 .get(&good)
                 .map(|set| set.len() as f64)
                 .unwrap_or(0.0);
-            let row = self.market_good_mut(good);
+            let row = self.market_good_mut(good, cfg);
             row.set_supply(qty);
             row.set_suppliers(n);
         }
@@ -732,13 +902,13 @@ impl Market {
         let target = buy_order.target;
         let sought = buy_order.target_amount.min(-sell_order.target_amount);
         if sought > 0.0 {
-            self.add_requests(target, sought);
+            self.add_requests(target, sought, &factuals.config.market);
         }
 
         let Some(proposal) = as_deal_maker(pops, firms, buy_order.origin)
             .buy(&buy_order, &sell_order, history, factuals)
         else {
-            self.drift_amv_on_no_proposal(target);
+            self.drift_amv_on_no_proposal(target, &factuals.config.market);
             let transport = wash_transport(factuals);
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
@@ -754,7 +924,7 @@ impl Market {
         };
         for (&good, &qty) in &proposal.goods {
             if qty > 0.0 {
-                self.add_tender(good, qty);
+                self.add_tender(good, qty, &factuals.config.market);
             }
         }
 
@@ -763,7 +933,7 @@ impl Market {
         if verdict != DealResponse::Accept {
             // TODO: Counteroffer haggling. The rewrite is seller-approved; the
             // buyer would then evaluate it (or a close-out). Wash for now.
-            self.drift_amv_on_reject(target, &proposal.goods);
+            self.drift_amv_on_reject(target, &proposal.goods, &factuals.config.market);
             let transport = wash_transport(factuals);
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
@@ -798,13 +968,18 @@ impl Market {
         let payment_amv: f64 = proposal.goods.iter()
             .filter_map(|(&good, &qty)| (qty > 0.0).then_some(qty * history.price(good)))
             .sum();
-        self.record_fill(target, filled, payment_amv / filled);
+        self.record_fill(
+            target,
+            filled,
+            payment_amv / filled,
+            &factuals.config.market,
+        );
         for (&good, &qty) in &proposal.goods {
             if qty > 0.0 {
-                self.add_payment(good, qty);
+                self.add_payment(good, qty, &factuals.config.market);
             }
         }
-        self.drift_amv_on_accept(target, filled, &proposal.goods);
+        self.drift_amv_on_accept(target, filled, &proposal.goods, &factuals.config.market);
 
         as_deal_maker_mut(pops, firms, buy_order.origin).finalize(&proposal, history);
         as_deal_maker_mut(pops, firms, sell_order.origin).finalize(&proposal, history);
@@ -815,9 +990,13 @@ impl Market {
             buys.push(leftover);
         }
         if let Some(mut leftover) = leftover_order(sell_order, filled) {
-            leftover.add_sell_success_bonus();
+            leftover.add_successful_sell_bonus_amount(
+                factuals.config.market_priority.successful_sell_bonus,
+            );
             sells.push(leftover);
         }
+        clamp_sells_to_on_hand(sells, buy_snap.origin, pops, firms);
+        clamp_sells_to_on_hand(sells, sell_snap.origin, pops, firms);
 
         meetings.push(MarketMeeting {
             buy: buy_snap,
@@ -829,44 +1008,49 @@ impl Market {
         });
     }
 
-    /// Returns the row for `good`, inserting a default if it is new.
-    fn market_good_mut(&mut self, good: usize) -> &mut MarketGood {
-        self.goods.entry(good).or_insert_with(MarketGood::new)
+    /// Returns the row for `good`, inserting a config-default good if it is new.
+    fn market_good_mut(&mut self, good: usize, cfg: &MarketConfig) -> &mut MarketGood {
+        self.goods
+            .entry(good)
+            .or_insert_with(|| MarketGood::from_config(cfg))
     }
 
     /// Adds `qty` to this good's deal-request total.
-    fn add_requests(&mut self, good: usize, qty: f64) {
+    fn add_requests(&mut self, good: usize, qty: f64, cfg: &MarketConfig) {
         debug_assert!(qty >= 0.0, "qty must be >= 0.0");
-        let row = self.market_good_mut(good);
+        let row = self.market_good_mut(good, cfg);
         row.set_requests(row.requests + qty);
     }
 
     /// Adds `qty` to this good's offered-as-payment total.
-    fn add_tender(&mut self, good: usize, qty: f64) {
+    fn add_tender(&mut self, good: usize, qty: f64, cfg: &MarketConfig) {
         debug_assert!(qty >= 0.0, "qty must be >= 0.0");
-        let row = self.market_good_mut(good);
+        let row = self.market_good_mut(good, cfg);
         row.set_tender(row.tender + qty);
     }
 
     /// Adds `qty` to this good's accepted-as-payment total.
-    fn add_payment(&mut self, good: usize, qty: f64) {
+    fn add_payment(&mut self, good: usize, qty: f64, cfg: &MarketConfig) {
         debug_assert!(qty >= 0.0, "qty must be >= 0.0");
-        let row = self.market_good_mut(good);
+        let row = self.market_good_mut(good, cfg);
         row.set_payment(row.payment + qty);
     }
 
     /// Records a successful purchase of `qty` at `unit_price` on the target
     /// good (purchased and rolling average price). Volume is derived.
-    fn record_fill(&mut self, good: usize, qty: f64, unit_price: f64) {
+    fn record_fill(&mut self, good: usize, qty: f64, unit_price: f64, cfg: &MarketConfig) {
         debug_assert!(qty >= 0.0, "qty must be >= 0.0");
         debug_assert!(unit_price.is_finite(), "unit_price must be finite");
-        let row = self.market_good_mut(good);
+        let row = self.market_good_mut(good, cfg);
         let prev_qty = row.purchased;
         let prev_avg = row.average_price;
         let new_qty = prev_qty + qty;
         row.set_purchased(new_qty);
         if new_qty > 0.0 {
-            row.set_average_price((prev_avg * prev_qty + unit_price * qty) / new_qty);
+            row.set_average_price_min(
+                (prev_avg * prev_qty + unit_price * qty) / new_qty,
+                cfg.amv_min_abs,
+            );
         }
     }
 
@@ -885,6 +1069,21 @@ impl Market {
         buys: &[MarketOrder],
         sells: &[MarketOrder],
         rng: &mut R,
+    ) -> OrderMatchBatch {
+        Self::match_orders_with_coincidence(
+            buys,
+            sells,
+            rng,
+            market_priority::SELL_COINCIDENCE_WEIGHT,
+        )
+    }
+
+    /// One matching pass using a loaded coincidence-weight multiplier.
+    pub fn match_orders_with_coincidence<R: Rng + ?Sized>(
+        buys: &[MarketOrder],
+        sells: &[MarketOrder],
+        rng: &mut R,
+        coincidence_weight: f64,
     ) -> OrderMatchBatch {
         if buys.is_empty() {
             return OrderMatchBatch::empty();
@@ -912,7 +1111,8 @@ impl Market {
                 "buy target_amount must be > 0.0"
             );
 
-            let (available, weights, had_other) = classify_sells(sells, buy);
+            let (available, weights, had_other) =
+                classify_sells(sells, buy, coincidence_weight);
             if !had_other {
                 unmatched_buys.push(buy_index);
                 continue;
@@ -941,10 +1141,22 @@ impl Market {
     /// sentiment wealth. Readers default missing prices to 1.0 and missing
     /// salability to [`market_constants::SALABILITY_DEFAULT`].
     pub fn history(&self) -> MarketHistory {
+        self.history_with_salability(market_constants::SALABILITY_DEFAULT)
+    }
+
+    /// Snapshot using a loaded missing-salability default.
+    pub fn history_with(&self, cfg: &MarketConfig) -> MarketHistory {
+        self.history_with_salability(cfg.salability_default)
+    }
+
+    fn history_with_salability(&self, default_salability: f64) -> MarketHistory {
         let mut history = MarketHistory::new();
+        history.default_salability = default_salability;
         for (&good_id, good) in &self.goods {
             history.prices.insert(good_id, good.amv);
             history.salability.insert(good_id, good.salability);
+            history.purchased.insert(good_id, good.purchased);
+            history.amv_trails.insert(good_id, good.amv_trail());
         }
         history.friction = self.friction;
         history
@@ -954,7 +1166,7 @@ impl Market {
 /// # Market History
 /// 
 /// A saved record of minimal data for passing around.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarketHistory {
     /// Last known AMV price per good.
     pub prices: HashMap<usize, f64>,
@@ -962,6 +1174,18 @@ pub struct MarketHistory {
     pub salability: HashMap<usize, f64>,
     /// Market friction factor copied from [`Market::friction`].
     pub friction: f64,
+    /// Used when a good has no recorded salability. Default 0.4.
+    pub default_salability: f64,
+    /// Units purchased today as the sought good. Missing = unknown share.
+    pub purchased: HashMap<usize, f64>,
+    /// Oldest-to-newest AMV closes. Empty = unknown trend and volatility.
+    pub amv_trails: HashMap<usize, Vec<f64>>,
+}
+
+impl Default for MarketHistory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Per-market AMV snapshots plus pop-to-market membership.
@@ -979,10 +1203,20 @@ impl MarketLookups {
 
     /// One history per market, and each member pop id mapped to that market id.
     pub fn from_markets(markets: &HashMap<usize, Market>) -> Self {
+        Self::from_markets_with(markets, market_constants::SALABILITY_DEFAULT)
+    }
+
+    /// Same as [`Self::from_markets`], using a loaded missing-salability default.
+    pub fn from_markets_with(
+        markets: &HashMap<usize, Market>,
+        default_salability: f64,
+    ) -> Self {
         let mut histories = HashMap::new();
         let mut pop_to_market = HashMap::new();
         for market in markets.values() {
-            histories.insert(market.id, market.history());
+            let mut history = market.history();
+            history.default_salability = default_salability;
+            histories.insert(market.id, history);
             for &pop_id in &market.pops {
                 pop_to_market.insert(pop_id, market.id);
             }
@@ -1012,6 +1246,9 @@ impl MarketHistory {
             prices: HashMap::new(),
             salability: HashMap::new(),
             friction: 0.0,
+            default_salability: market_constants::SALABILITY_DEFAULT,
+            purchased: HashMap::new(),
+            amv_trails: HashMap::new(),
         }
     }
 
@@ -1020,12 +1257,12 @@ impl MarketHistory {
         self.prices.get(&good_id).copied().unwrap_or(1.0)
     }
 
-    /// Salability for `good_id`, or [`market_constants::SALABILITY_DEFAULT`] if missing.
+    /// Salability for `good_id`, or this snapshot's default if missing.
     pub fn salability(&self, good_id: usize) -> f64 {
         self.salability
             .get(&good_id)
             .copied()
-            .unwrap_or(market_constants::SALABILITY_DEFAULT)
+            .unwrap_or(self.default_salability)
     }
 }
 
@@ -1138,11 +1375,23 @@ impl MarketGood {
         Self::default()
     }
 
+    /// New row using loaded salability default. AMV still starts at 1.0.
+    pub fn from_config(cfg: &MarketConfig) -> Self {
+        let mut good = Self::new();
+        good.salability = cfg.salability_default.clamp(0.0, 1.0);
+        good
+    }
+
     /// Sets the current Abstract Market Value.
     /// Zero and |value| below [`market_constants::AMV_MIN_ABS`] bounce past 0
     /// from the previous sign (positive -> slightly negative, and vice versa).
     pub fn set_amv(&mut self, amv: f64) {
-        self.amv = bounce_away_from_zero(self.amv, amv);
+        self.set_amv_min(amv, market_constants::AMV_MIN_ABS);
+    }
+
+    /// Sets AMV using a loaded bounce floor.
+    pub fn set_amv_min(&mut self, amv: f64, min_abs: f64) {
+        self.amv = bounce_away_from_zero(self.amv, amv, min_abs);
     }
 
     /// Sets the current Abstract Market Value.
@@ -1351,7 +1600,12 @@ impl MarketGood {
     /// Zero and |value| below [`market_constants::AMV_MIN_ABS`] bounce past 0
     /// from the previous sign (positive -> slightly negative, and vice versa).
     pub fn set_average_price(&mut self, average_price: f64) {
-        self.average_price = bounce_away_from_zero(self.average_price, average_price);
+        self.set_average_price_min(average_price, market_constants::AMV_MIN_ABS);
+    }
+
+    /// Sets average price using a loaded bounce floor.
+    pub fn set_average_price_min(&mut self, average_price: f64, min_abs: f64) {
+        self.average_price = bounce_away_from_zero(self.average_price, average_price, min_abs);
     }
 
     /// Sets the average price the good traded for.
@@ -1689,9 +1943,10 @@ mod match_orders_should {
             1.5,
         );
         let no_counter = offer(4, 10, 2.0, 1.5);
-        assert!((sell_match_weight(&buy, &matching) - 3.0).abs() < 1e-12);
-        assert!((sell_match_weight(&buy, &other_pay) - 1.5).abs() < 1e-12);
-        assert!((sell_match_weight(&buy, &no_counter) - 1.5).abs() < 1e-12);
+        let w = market_priority::SELL_COINCIDENCE_WEIGHT;
+        assert!((sell_match_weight_with(&buy, &matching, w) - 3.0).abs() < 1e-12);
+        assert!((sell_match_weight_with(&buy, &other_pay, w) - 1.5).abs() < 1e-12);
+        assert!((sell_match_weight_with(&buy, &no_counter, w) - 1.5).abs() < 1e-12);
         assert_eq!(matching.priority, 1.5);
     }
 
@@ -1699,7 +1954,12 @@ mod match_orders_should {
     fn request_and_offer_without_counters_are_not_a_coincidence() {
         let buy = request(1, 10, 2.0, market_priority::POP_START);
         let sell = offer(2, 10, 2.0, 1.5);
-        assert!((sell_match_weight(&buy, &sell) - 1.5).abs() < 1e-12);
+        assert!(
+            (sell_match_weight_with(&buy, &sell, market_priority::SELL_COINCIDENCE_WEIGHT)
+                - 1.5)
+                .abs()
+                < 1e-12
+        );
     }
 
     #[test]
@@ -1726,6 +1986,7 @@ mod run_market_day_should {
 
     const GRAIN: usize = 1;
     const COIN: usize = 2;
+    const BREAD: usize = 3;
     const CARGO: usize = 9;
 
     fn rng() -> StdRng {
@@ -1844,10 +2105,64 @@ mod run_market_day_should {
         assert!((firms[&1].property[&GRAIN].sold - 4.0).abs() < 1e-12);
         assert!(pops[&1].current_orders.is_empty());
         // Even AMV basket: no accept drift. Coin fully accepted: salability stays 1.
-        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
+        // Leftover grain sell (6 of 10) pulls grain AMV down after the loop.
+        assert!(market.goods[&GRAIN].amv < 1.0);
         assert!((market.goods[&COIN].amv - 1.0).abs() < 1e-12);
         assert!((market.goods[&COIN].salability - 1.0).abs() < 1e-12);
         assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tendering_a_sell_good_does_not_overdraw_later_sell() {
+        let mut market = Market::new(1);
+        market.goods.insert(
+            GRAIN,
+            MarketGood::new().with_amv(1.0).with_salability(0.4),
+        );
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(1.0).with_salability(1.0),
+        );
+        market.goods.insert(
+            BREAD,
+            MarketGood::new().with_amv(1.0).with_salability(0.6),
+        );
+        market.pops.insert(1);
+        market.firms.insert(1);
+        market.firms.insert(2);
+
+        let mut pops = HashMap::new();
+        let mut pop = shopper(1, 20.0, 0.0);
+        pop.property
+            .insert(BREAD, PopPRow::new(0.0).with_target(12.0));
+        pops.insert(1, pop);
+
+        let mut firms = HashMap::new();
+        let mut farm_firm = farm(1, 10.0, 10.0);
+        farm_firm
+            .property
+            .insert(COIN, FirmPRow::new().with_quantity(1.0));
+        firms.insert(1, farm_firm);
+
+        let mut bakery = Firm::new(2, "bakery".into(), 1, hexx::Hex::new(0, 0));
+        bakery.property.insert(
+            BREAD,
+            FirmPRow::new().with_quantity(15.0).with_sell_target(12.0),
+        );
+        bakery.property.insert(
+            GRAIN,
+            FirmPRow::new().with_purchase_target(4.0),
+        );
+        firms.insert(2, bakery);
+
+        let factuals = Factuals::new()
+            .with_good(test_good(GRAIN, "grain"))
+            .with_good(test_good(COIN, "coin"))
+            .with_good(test_good(BREAD, "bread"));
+        market.run_market_day(&factuals, &mut pops, &mut firms, &mut rng());
+
+        assert!(firms[&2].property[&BREAD].quantity >= 0.0);
+        assert!(firms[&2].property[&GRAIN].quantity >= 0.0);
     }
 
     #[test]
@@ -1941,7 +2256,7 @@ mod run_market_day_should {
         assert_eq!(report.unmatched_buys.len(), 1);
         assert_eq!(report.unmatched_buys[0].target, GRAIN);
         assert!(report.meetings.is_empty());
-        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
+        assert!(market.goods[&GRAIN].amv > 1.0);
         assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
     }
 
@@ -2207,5 +2522,79 @@ mod run_market_day_should {
         assert_eq!(leftover.target_amount, 3.0);
         // 9 * 3/5 = 5.4, trunc to 5
         assert_eq!(leftover.counter_offer_amount, Some(-5.0));
+    }
+
+    #[test]
+    fn leftover_sell_with_no_buyers_lowers_amv() {
+        let mut market = priced_market();
+        market.firms.insert(1);
+        let mut pops = HashMap::new();
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        let report = market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+
+        assert!(report.leftover_sells.iter().any(|o| o.target == GRAIN));
+        assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
+        assert!(market.goods[&GRAIN].amv < 1.0);
+    }
+
+    #[test]
+    fn leftover_pressure_follows_the_larger_book() {
+        let mut market = priced_market();
+        let cfg = crate::game::config::MarketConfig::default();
+        let buys = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            GRAIN,
+            10.0,
+            4.0,
+        )];
+        let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -4.0, 1.5)];
+        market.drift_amv_on_book_pressure(&buys, &sells, &[], &cfg);
+        assert!(market.goods[&GRAIN].amv > 1.0);
+
+        let mut market = priced_market();
+        let buys = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            GRAIN,
+            4.0,
+            4.0,
+        )];
+        let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -10.0, 1.5)];
+        market.drift_amv_on_book_pressure(&buys, &sells, &[], &cfg);
+        assert!(market.goods[&GRAIN].amv < 1.0);
+    }
+
+    #[test]
+    fn leftover_pressure_is_damped_by_fills() {
+        let cfg = crate::game::config::MarketConfig::default();
+        let sells = vec![MarketOrder::offer_order(Actor::Firm(1), GRAIN, -6.0, 1.5)];
+
+        let mut dry = priced_market();
+        dry.drift_amv_on_book_pressure(&[], &sells, &[], &cfg);
+
+        let mut wet = priced_market();
+        wet.goods.get_mut(&GRAIN).unwrap().set_purchased(24.0);
+        wet.drift_amv_on_book_pressure(&[], &sells, &[], &cfg);
+
+        let dry_drop = 1.0 - dry.goods[&GRAIN].amv;
+        let wet_drop = 1.0 - wet.goods[&GRAIN].amv;
+        assert!(dry_drop > wet_drop, "dry {dry_drop} wet {wet_drop}");
+        assert!(wet_drop > 0.0);
+    }
+
+    #[test]
+    fn leftover_pressure_skips_a_near_tie() {
+        let mut market = priced_market();
+        let cfg = crate::game::config::MarketConfig::default();
+        let buys = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            GRAIN,
+            10.0,
+            4.0,
+        )];
+        let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -10.0, 1.5)];
+        market.drift_amv_on_book_pressure(&buys, &sells, &[], &cfg);
+        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
     }
 }

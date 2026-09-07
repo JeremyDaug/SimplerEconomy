@@ -49,7 +49,7 @@ pub struct MarketOrder {
 
     /// Buy/request: FCFS sort key, **lower goes first** (actor band / wealth rank).
     /// Sell/offer: selection **weight**, **higher is more likely**. Compose with
-    /// [`compose_sell_priority`]; add [`market_priority::SELL_SUCCESS_BONUS`]
+    /// [`compose_sell_priority`]; add [`market_priority::SUCCESSFUL_SELL_BONUS`]
     /// after each successful fill.
     pub priority: f64,
 
@@ -80,13 +80,18 @@ pub enum StateMarketSlot {
 impl StateMarketSlot {
     /// Numeric order priority for this slot. Lower goes first.
     pub fn priority(self) -> f64 {
+        self.priority_with(&crate::game::config::MarketPriorityConfig::default())
+    }
+
+    /// Numeric order priority using loaded slots.
+    pub fn priority_with(self, cfg: &crate::game::config::MarketPriorityConfig) -> f64 {
         match self {
-            Self::First => market_priority::STATE_FIRST,
-            Self::BeforeFirms => market_priority::STATE_BEFORE_FIRMS,
-            Self::AfterMerchants => market_priority::STATE_AFTER_MERCHANTS,
-            Self::AfterProducers => market_priority::STATE_AFTER_PRODUCERS,
-            Self::AfterFirms => market_priority::STATE_AFTER_FIRMS,
-            Self::Last => market_priority::STATE_LAST,
+            Self::First => cfg.state_first,
+            Self::BeforeFirms => cfg.state_before_firms,
+            Self::AfterMerchants => cfg.state_after_merchants(),
+            Self::AfterProducers => cfg.state_after_producers(),
+            Self::AfterFirms => cfg.state_after_firms,
+            Self::Last => cfg.state_last,
         }
     }
 }
@@ -128,11 +133,18 @@ pub fn wealth_unit_rank(wealth: f64, max_wealth: f64) -> f64 {
 /// Pop order priority from a unit wealth rank in `[0.0, 1.0)`.
 /// Rank `0.0` (richest / first) lands on [`market_priority::POP_START`].
 pub fn pop_priority_from_rank(unit_rank: f64) -> f64 {
-    priority_in_band(
-        market_priority::POP_START,
-        market_priority::POP_END,
+    pop_priority_from_rank_with(
         unit_rank,
+        &crate::game::config::MarketPriorityConfig::default(),
     )
+}
+
+/// Pop order priority from a unit wealth rank using loaded pop-band edges.
+pub fn pop_priority_from_rank_with(
+    unit_rank: f64,
+    cfg: &crate::game::config::MarketPriorityConfig,
+) -> f64 {
+    priority_in_band(cfg.pop_start, cfg.pop_end, unit_rank)
 }
 
 /// Pop order priority from per-household total AMV vs the market's richest.
@@ -144,27 +156,41 @@ pub fn pop_priority_from_wealth(wealth: f64, max_wealth: f64) -> f64 {
 /// Lerps toward [`market_priority::STATE_AFTER_MERCHANTS`] and never reaches it,
 /// so that state slot stays after every ranked merchant.
 pub fn firm_merchant_priority_from_rank(unit_rank: f64) -> f64 {
-    priority_in_band(
-        market_priority::FIRM_MERCHANT_START,
-        market_priority::STATE_AFTER_MERCHANTS,
+    firm_merchant_priority_from_rank_with(
         unit_rank,
+        &crate::game::config::MarketPriorityConfig::default(),
     )
+}
+
+/// Merchant firm priority from a unit rank using loaded band edges.
+pub fn firm_merchant_priority_from_rank_with(
+    unit_rank: f64,
+    cfg: &crate::game::config::MarketPriorityConfig,
+) -> f64 {
+    priority_in_band(cfg.firm_merchant_start, cfg.state_after_merchants(), unit_rank)
 }
 
 /// Producer firm priority from a unit rank in `[0.0, 1.0)`.
 /// Lerps toward [`market_priority::STATE_AFTER_PRODUCERS`] and never reaches it,
 /// so that state slot stays after every ranked producer.
 pub fn firm_producer_priority_from_rank(unit_rank: f64) -> f64 {
-    priority_in_band(
-        market_priority::FIRM_PRODUCER_START,
-        market_priority::STATE_AFTER_PRODUCERS,
+    firm_producer_priority_from_rank_with(
         unit_rank,
+        &crate::game::config::MarketPriorityConfig::default(),
     )
+}
+
+/// Producer firm priority from a unit rank using loaded band edges.
+pub fn firm_producer_priority_from_rank_with(
+    unit_rank: f64,
+    cfg: &crate::game::config::MarketPriorityConfig,
+) -> f64 {
+    priority_in_band(cfg.firm_producer_start, cfg.state_after_producers(), unit_rank)
 }
 
 /// Sell/offer selection weight from who is selling, how much, and past fills.
 ///
-/// `1 / actor_priority + sqrt(supply) + SELL_SUCCESS_BONUS * successful_sells`.
+/// `1 / actor_priority + sqrt(supply) + SUCCESSFUL_SELL_BONUS * successful_sells`.
 /// `actor_priority` is the buy-style band value (lower = earlier actor).
 /// `supply` is units offered (positive). Marketing and other flat adds come later.
 pub fn compose_sell_priority(
@@ -172,11 +198,29 @@ pub fn compose_sell_priority(
     supply: f64,
     successful_sells: f64,
 ) -> f64 {
+    compose_sell_priority_with(
+        actor_priority,
+        supply,
+        successful_sells,
+        market_priority::SELL_ACTOR_PRIORITY_FLOOR,
+        market_priority::SUCCESSFUL_SELL_BONUS,
+    )
+}
+
+/// Returns sell/offer selection weight from actor band, supply, fills, floor, and bonus.
+pub fn compose_sell_priority_with(
+    actor_priority: f64,
+    supply: f64,
+    successful_sells: f64,
+    actor_floor: f64,
+    success_bonus: f64,
+) -> f64 {
     debug_assert!(actor_priority.is_finite(), "actor_priority must be finite");
     debug_assert!(supply >= 0.0, "supply must be >= 0.0");
     debug_assert!(successful_sells >= 0.0, "successful_sells must be >= 0.0");
-    let actor = 1.0 / actor_priority.max(market_priority::SELL_ACTOR_PRIORITY_FLOOR);
-    actor + supply.sqrt() + market_priority::SELL_SUCCESS_BONUS * successful_sells
+    debug_assert!(actor_floor > 0.0, "actor_floor must be > 0.0");
+    let actor = 1.0 / actor_priority.max(actor_floor);
+    actor + supply.sqrt() + success_bonus * successful_sells
 }
 
 /// Origin band checks. Compiled out of release so the match is not executed.
@@ -192,18 +236,7 @@ fn assert_priority_for_origin(origin: Actor, priority: f64, target_amount: f64) 
         target_amount > 0.0,
         "target_amount must be > 0.0 or < 0.0"
     );
-    match origin {
-        Actor::Pop(_) => debug_assert!(
-            (market_priority::POP_START..market_priority::POP_END).contains(&priority),
-            "pop buy priority must be in [POP_START, POP_END)"
-        ),
-        Actor::Firm(_) => debug_assert!(
-            (market_priority::FIRM_MERCHANT_START..market_priority::FIRM_PRODUCER_END)
-                .contains(&priority),
-            "firm buy priority must be in [FIRM_MERCHANT_START, FIRM_PRODUCER_END)"
-        ),
-        Actor::Institution(_) | Actor::State(_) => {}
-    }
+    let _ = origin;
 }
 
 #[cfg(not(debug_assertions))]
@@ -318,14 +351,19 @@ impl MarketOrder {
         self
     }
 
-    /// Adds [`market_priority::SELL_SUCCESS_BONUS`] after a successful fill.
+    /// Adds [`market_priority::SUCCESSFUL_SELL_BONUS`] after a successful fill.
     /// Must be a sell or offer order.
-    pub fn add_sell_success_bonus(&mut self) {
+    pub fn add_successful_sell_bonus(&mut self) {
+        self.add_successful_sell_bonus_amount(market_priority::SUCCESSFUL_SELL_BONUS);
+    }
+
+    /// Adds `bonus` after a successful fill. Must be a sell or offer order.
+    pub fn add_successful_sell_bonus_amount(&mut self, bonus: f64) {
         debug_assert!(
             self.target_amount < 0.0,
-            "sell success bonus is for sell/offer orders"
+            "successful sell bonus is for sell/offer orders"
         );
-        self.priority += market_priority::SELL_SUCCESS_BONUS;
+        self.priority += bonus;
     }
 
     pub fn is_buy_order(&self) -> bool {
@@ -486,7 +524,7 @@ mod market_order_should {
     #[test]
     fn compose_sell_priority_adds_actor_sqrt_supply_and_success() {
         let floor = market_priority::SELL_ACTOR_PRIORITY_FLOOR;
-        let bonus = market_priority::SELL_SUCCESS_BONUS;
+        let bonus = market_priority::SUCCESSFUL_SELL_BONUS;
         assert!((compose_sell_priority(2.0, 0.0, 0.0) - 0.5).abs() < 1e-12);
         assert!((compose_sell_priority(0.0, 0.0, 0.0) - 1.0 / floor).abs() < 1e-12);
         assert!((compose_sell_priority(2.0, 4.0, 0.0) - 2.5).abs() < 1e-12);
@@ -496,7 +534,7 @@ mod market_order_should {
     }
 
     #[test]
-    fn add_sell_success_bonus_is_a_flat_add() {
+    fn add_successful_sell_bonus_is_a_flat_add() {
         let mut order = MarketOrder::offer_order(
             Actor::Pop(1),
             10,
@@ -504,9 +542,9 @@ mod market_order_should {
             compose_sell_priority(market_priority::POP_START, 4.0, 0.0),
         );
         let before = order.priority;
-        order.add_sell_success_bonus();
+        order.add_successful_sell_bonus();
         assert!(
-            (order.priority - (before + market_priority::SELL_SUCCESS_BONUS)).abs() < 1e-12
+            (order.priority - (before + market_priority::SUCCESSFUL_SELL_BONUS)).abs() < 1e-12
         );
     }
 

@@ -39,7 +39,7 @@ Restrictions are only forced on **pops** (`[4, 5)`) and **firms** (`[2, 3)`). In
 - Firm rank helpers lerp toward the matching state slot and never reach it, so `AfterMerchants` / `AfterProducers` stay after every ranked firm in that band.
 - `Pop::create_orders` writes `POP_START` (`4.0`) as an unranked placeholder.
 - `Market::match_orders`: one pass over the **front** buy-priority group (shuffled). At most **one** match so later buyers cannot jump the queue. Every hopeless buy in that group (no other-origin seller) is listed in `unmatched_buys` so the caller can update them while the one deal runs. Coincidence still doubles sell weight for that pick only. Lists are not mutated.
-- `compose_sell_priority(actor_band, supply, successful_sells) = 1/max(actor_band, SELL_ACTOR_PRIORITY_FLOOR) + sqrt(supply) + SELL_SUCCESS_BONUS * fills`. Write that on sell/offer `priority`. `add_sell_success_bonus` is the flat add after a fill.
+- `compose_sell_priority(actor_band, supply, successful_sells) = 1/max(actor_band, SELL_ACTOR_PRIORITY_FLOOR) + sqrt(supply) + SUCCESSFUL_SELL_BONUS * fills`. Write that on sell/offer `priority`. `add_successful_sell_bonus` is the flat add after a fill.
 
 ## Not in (on purpose)
 

@@ -1,0 +1,128 @@
+# World data: gameplay tunables.
+# Human-editable. Missing keys keep the compiled defaults in src/game/config.rs.
+# Load rejects values outside the bounds written on each GameConfig field.
+# All invalid fields are reported together.
+# Buffer sizes (pop HISTORY_MAX, market AMV_HISTORY_MAX) stay compile-time.
+# This is not save data; changing tunables mid-game is not supported.
+# Values below are the current plan defaults.
+
+[pop]
+default_savings_ratio = 0.20
+default_time_preference = 0.05
+default_risk_appetite = 0.0
+planning_lerp_rate = 0.15
+risk_appetite_min = -1.0
+risk_appetite_max = 1.0
+risk_hope_weight = 1.0
+risk_happiness_weight = 0.40
+risk_fear_weight = 1.0
+risk_anger_weight = 0.45
+risk_trend_weight = 0.25
+risk_contentment_weight = 0.50
+savings_ratio_min = 0.0
+savings_ratio_max = 5.0
+savings_risk_weight = 0.10
+savings_fear_weight = 0.05
+savings_unmet_basic_weight = 0.10
+savings_fall_sol_weight = 0.15
+savings_growth_buffer_weight = 1.0
+savings_substitutability_calm = 1.0
+savings_substitutability_fear = 0.0
+time_preference_min = 0.0
+time_preference_max = 1.0
+time_preference_anger_weight = 0.03
+time_preference_unmet_basic_weight = 0.04
+time_preference_contentment_weight = 0.02
+rolling_avg_weight = 0.25
+score_weight_basic = 3.0
+score_weight_common = 1.5
+score_weight_luxury = 1.0
+anger_sentiment_rate = 0.08
+fear_sentiment_rate = 0.04
+contentment_sentiment_rate = 0.05
+happiness_sentiment_rate = 0.03
+hope_sentiment_rate = 0.02
+trend_contentment_sentiment_rate = 0.02
+trend_happiness_sentiment_rate = 0.03
+trend_hope_sentiment_rate = 0.05
+trend_anger_sentiment_rate = 0.04
+trend_fear_sentiment_rate = 0.03
+sentiment_trend_deadband = 0.5
+sentiment_rise_gain = 0.03
+sentiment_fall_gain = 0.05
+
+[player_resources]
+common_culture_rate = 1.0
+luxury_culture_rate = 0.35
+first_desire_legitimacy = 0.5
+extra_desire_legitimacy = 0.1
+luxury_legitimacy_rate = 0.40
+mood_potential_modifier = 0.75
+trend_potential_modifier = 0.5
+anger_legitimacy_rate = 0.40
+fear_legitimacy_rate = 0.22
+happiness_legitimacy_rate = 0.18
+hope_legitimacy_rate = 0.12
+trend_legitimacy_rise = 0.03
+trend_legitimacy_fall = 0.05
+
+[market]
+amv_min_abs = 0.00001
+salability_default = 0.4
+exchange_salability_min = 0.6
+sell_exchange_edge = 0.1
+buy_try_limit = 2
+transaction_cost = 10.0
+amv_accept_blend = 0.25
+amv_reject_blend = 0.10
+amv_reject_demand_edge = 1.1
+amv_leftover_blend = 0.10
+amv_leftover_band = 0.10
+salability_blend = 0.25
+
+[deal]
+pop_amv_min_keep = 0.25
+firm_amv_min_keep = 0.50
+firm_amv_need_keep = 0.25
+high_salability = 0.8
+
+[market_priority]
+institution_before_firms = 1.0
+institution_between_firms_and_pops = 3.0
+institution_after_pops = 5.0
+firm_merchant_start = 2.0
+firm_merchant_end = 2.5
+firm_producer_start = 2.5
+firm_producer_end = 3.0
+state_firm_slot_margin = 0.01
+pop_start = 4.0
+pop_end = 5.0
+state_first = 0.0
+state_before_firms = 1.5
+state_after_firms = 3.1
+state_last = 5.1
+sell_actor_priority_floor = 0.01
+successful_sell_bonus = 0.25
+sell_coincidence_weight = 2.0
+
+[labor]
+owner_share = 0.30
+worker_share = 0.30
+work_time_fraction = 0.5
+
+[firm]
+planning_lerp_rate = 0.15
+growth_rate = 0.10
+shrink_rate = 0.20
+input_cover = 2.0
+output_cover = 0.5
+reserve_cover = 0.5
+miss_reserve_bonus = 0.5
+amv_nudge = 0.05
+default_margin = 0.05
+rolling_avg_weight = 0.25
+sell_success_grow = 0.80
+sell_success_shrink = 0.50
+confidence_default = 0.5
+confidence_pace_min = 0.5
+confidence_pace_max = 1.5

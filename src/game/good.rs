@@ -4,6 +4,10 @@ use std::hash::{Hash, Hasher};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+/// Foundational good id. Time is 0; other goods start at 1.
+/// Exception to "0 means none" for good ids.
+pub const TIME: usize = 0;
+
 /// # Good
 /// 
 /// Goods are things that are bought, sold, and traded in the economy.

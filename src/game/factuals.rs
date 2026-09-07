@@ -1,17 +1,87 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::game::{
-    culture::Culture, desire::{DemoDesire, Desire, DesireSource}, good::Good, household::DemographicRates, pop::DemoRow, process::Process, religion::Religion, species::Species,
+    config::{ConfigLoadError, GameConfig}, culture::Culture, desire::{DemoDesire, Desire, DesireSource}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
 };
 
-/// TOML world-data file of goods (factuals).
+/// TOML world-data file of goods and/or processes (factuals).
 #[derive(Debug, Deserialize)]
-struct GoodsFile {
+struct WorldFile {
+    #[serde(default)]
     goods: Vec<Good>,
+    #[serde(default)]
+    processes: Vec<ProcessFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessFile {
+    id: usize,
+    name: String,
+    #[serde(default)]
+    tech_source: usize,
+    #[serde(default)]
+    inputs: Vec<ProcessInputFile>,
+    #[serde(default)]
+    outputs: Vec<ProcessOutputFile>,
+    #[serde(default)]
+    effects: Vec<ProcessEffectFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessInputFile {
+    good: usize,
+    amount: f64,
+    #[serde(default)]
+    fixed: bool,
+    #[serde(default, rename = "type")]
+    kind: InputTypeFile,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    optional_effects: Vec<InputEffectFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessOutputFile {
+    good: usize,
+    amount: f64,
+    #[serde(default)]
+    fixed: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputTypeFile {
+    #[default]
+    Destroyed,
+    Consumed,
+    Capital,
+    Factor,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputEffectFile {
+    Throughput(f64),
+    Input(f64),
+    Output(f64),
+    ExtraOutput { good: usize, amount: f64 },
+    BirthRate(f64),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProcessEffectFile {
+    Research(f64),
+    Culture(f64),
+    Faith(f64),
+    Authority(f64),
+    Legitimacy(f64),
+    BirthRate(f64),
 }
 
 /// Failed to load factuals from a world-data file.
@@ -20,19 +90,140 @@ pub enum FactualsLoadError {
     Io(std::io::Error),
     Toml(toml::de::Error),
     DuplicateGood(usize),
+    DuplicateProcess(usize),
+    DuplicateProcessInput { process: usize, good: usize },
+    InvalidProcess(String),
+    Config(ConfigLoadError),
 }
 
 impl fmt::Display for FactualsLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(err) => write!(f, "read world goods: {err}"),
-            Self::Toml(err) => write!(f, "parse world goods: {err}"),
-            Self::DuplicateGood(id) => write!(f, "duplicate good id {id} in world goods"),
+            Self::Io(err) => write!(f, "read world data: {err}"),
+            Self::Toml(err) => write!(f, "parse world data: {err}"),
+            Self::DuplicateGood(id) => write!(f, "duplicate good id {id} in world data"),
+            Self::DuplicateProcess(id) => write!(f, "duplicate process id {id} in world data"),
+            Self::DuplicateProcessInput { process, good } => {
+                write!(f, "process {process} repeats input good {good}")
+            }
+            Self::InvalidProcess(msg) => write!(f, "{msg}"),
+            Self::Config(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl std::error::Error for FactualsLoadError {}
+
+impl ProcessFile {
+    fn into_process(self, factuals: &Factuals) -> Result<Process, FactualsLoadError> {
+        let id = self.id;
+        let mut seen_inputs = HashSet::new();
+        let mut process = Process::new(id, self.name, self.tech_source);
+        for input in self.inputs {
+            if !seen_inputs.insert(input.good) {
+                return Err(FactualsLoadError::DuplicateProcessInput {
+                    process: id,
+                    good: input.good,
+                });
+            }
+            process = process.with_input(input.into_input(id, factuals)?);
+        }
+        for output in self.outputs {
+            process = process.with_output(output.into_output(id, factuals)?);
+        }
+        for effect in self.effects {
+            process = process.with_effect(effect.into());
+        }
+        Ok(process)
+    }
+}
+
+impl ProcessInputFile {
+    fn into_input(self, process: usize, factuals: &Factuals) -> Result<ProcessInput, FactualsLoadError> {
+        check_process_amount(process, "input", self.amount)?;
+        check_process_good(process, self.good, factuals)?;
+        let optional = self.optional || !self.optional_effects.is_empty();
+        let mut input = ProcessInput::new(
+            self.good,
+            self.amount,
+            self.fixed,
+            self.kind.into(),
+            optional,
+        );
+        for effect in self.optional_effects {
+            input = input.with_optional(effect.into());
+        }
+        Ok(input)
+    }
+}
+
+impl ProcessOutputFile {
+    fn into_output(self, process: usize, factuals: &Factuals) -> Result<ProcessOutput, FactualsLoadError> {
+        check_process_amount(process, "output", self.amount)?;
+        check_process_good(process, self.good, factuals)?;
+        Ok(ProcessOutput::new(self.good, self.amount, self.fixed))
+    }
+}
+
+fn check_process_amount(process: usize, kind: &str, amount: f64) -> Result<(), FactualsLoadError> {
+    if amount > 0.0 && amount.is_finite() {
+        Ok(())
+    } else {
+        Err(FactualsLoadError::InvalidProcess(format!(
+            "process {process} {kind} amount must be finite and > 0"
+        )))
+    }
+}
+
+fn check_process_good(
+    process: usize,
+    good: usize,
+    factuals: &Factuals,
+) -> Result<(), FactualsLoadError> {
+    if factuals.goods.is_empty() || factuals.goods.contains_key(&good) {
+        Ok(())
+    } else {
+        Err(FactualsLoadError::InvalidProcess(format!(
+            "process {process} references missing good {good}"
+        )))
+    }
+}
+
+impl From<InputTypeFile> for InputType {
+    fn from(kind: InputTypeFile) -> Self {
+        match kind {
+            InputTypeFile::Destroyed => InputType::Destroyed,
+            InputTypeFile::Consumed => InputType::Consumed,
+            InputTypeFile::Capital => InputType::Capital,
+            InputTypeFile::Factor => InputType::Factor,
+        }
+    }
+}
+
+impl From<InputEffectFile> for InputEffect {
+    fn from(effect: InputEffectFile) -> Self {
+        match effect {
+            InputEffectFile::Throughput(v) => InputEffect::Throughput(v),
+            InputEffectFile::Input(v) => InputEffect::Input(v),
+            InputEffectFile::Output(v) => InputEffect::Output(v),
+            InputEffectFile::ExtraOutput { good, amount } => InputEffect::ExtraOutput(good, amount),
+            InputEffectFile::BirthRate(v) => InputEffect::BirthRate(v),
+        }
+    }
+}
+
+impl From<ProcessEffectFile> for ProcessEffect {
+    fn from(effect: ProcessEffectFile) -> Self {
+        match effect {
+            ProcessEffectFile::Research(v) => ProcessEffect::Research(v),
+            ProcessEffectFile::Culture(v) => ProcessEffect::Culture(v),
+            ProcessEffectFile::Faith(v) => ProcessEffect::Faith(v),
+            ProcessEffectFile::Authority(v) => ProcessEffect::Authority(v),
+            ProcessEffectFile::Legitimacy(v) => ProcessEffect::Legitimacy(v),
+            ProcessEffectFile::BirthRate(v) => ProcessEffect::BirthRate(v),
+        }
+    }
+}
 
 /// # Factuals
 /// 
@@ -51,6 +242,8 @@ pub struct Factuals {
     pub species: HashMap<usize, Species>,
     pub cultures: HashMap<usize, Culture>,
     pub religion: HashMap<usize, Religion>,
+    /// Gameplay tunables. Loaded from `config.toml` when reading a world folder.
+    pub config: GameConfig,
 }
 
 impl Factuals {
@@ -64,27 +257,71 @@ impl Factuals {
             cultures: HashMap::new(),
             species: HashMap::new(),
             religion: HashMap::new(),
+            config: GameConfig::default(),
         }
     }
 
-    /// Loads goods from a TOML world-data file into an empty [`Factuals`].
-    /// Processes, species, cultures, and religions stay empty.
+    /// Loads world data from `path`.
+    ///
+    /// A directory loads `goods.toml`, `processes.toml` if present, and
+    /// `config.toml` if present. A file is treated as a single TOML document
+    /// (goods and/or processes). Species, cultures, and religions stay empty.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, FactualsLoadError> {
-        let text = std::fs::read_to_string(path.as_ref()).map_err(FactualsLoadError::Io)?;
-        Self::load_from_toml(&text)
+        let path = path.as_ref();
+        if path.is_dir() {
+            Self::load_from_dir(path)
+        } else {
+            let text = std::fs::read_to_string(path).map_err(FactualsLoadError::Io)?;
+            Self::load_from_toml(&text)
+        }
     }
 
-    /// Loads goods from TOML text into an empty [`Factuals`].
-    pub fn load_from_toml(text: &str) -> Result<Self, FactualsLoadError> {
-        let file: GoodsFile = toml::from_str(text).map_err(FactualsLoadError::Toml)?;
-        let mut factuals = Factuals::new();
-        for good in file.goods {
-            if factuals.goods.contains_key(&good.id) {
-                return Err(FactualsLoadError::DuplicateGood(good.id));
-            }
-            factuals.goods.insert(good.id, good);
+    /// Loads `goods.toml` plus optional `processes.toml` from a world-data folder.
+    fn load_from_dir(dir: &Path) -> Result<Self, FactualsLoadError> {
+        let goods_path = dir.join("goods.toml");
+        let text = std::fs::read_to_string(&goods_path).map_err(FactualsLoadError::Io)?;
+        let mut factuals = Self::load_from_toml(&text)?;
+        let processes_path = dir.join("processes.toml");
+        if processes_path.exists() {
+            let text = std::fs::read_to_string(&processes_path).map_err(FactualsLoadError::Io)?;
+            factuals.insert_world_file(&text)?;
+        }
+        let config_path = dir.join("config.toml");
+        if config_path.exists() {
+            factuals.config =
+                GameConfig::load_from_path(&config_path).map_err(FactualsLoadError::Config)?;
         }
         Ok(factuals)
+    }
+
+    /// Loads goods and processes from TOML text into an empty [`Factuals`].
+    pub fn load_from_toml(text: &str) -> Result<Self, FactualsLoadError> {
+        let mut factuals = Factuals::new();
+        factuals.insert_world_file(text)?;
+        Ok(factuals)
+    }
+
+    fn insert_world_file(&mut self, text: &str) -> Result<(), FactualsLoadError> {
+        let file: WorldFile = toml::from_str(text).map_err(FactualsLoadError::Toml)?;
+        for good in file.goods {
+            if self.goods.contains_key(&good.id) {
+                return Err(FactualsLoadError::DuplicateGood(good.id));
+            }
+            self.goods.insert(good.id, good);
+        }
+        for process in file.processes {
+            self.insert_process_file(process)?;
+        }
+        Ok(())
+    }
+
+    fn insert_process_file(&mut self, file: ProcessFile) -> Result<(), FactualsLoadError> {
+        if self.processes.contains_key(&file.id) {
+            return Err(FactualsLoadError::DuplicateProcess(file.id));
+        }
+        let process = file.into_process(self)?;
+        self.processes.insert(process.id, process);
+        Ok(())
     }
 
     /// Adds a good; panics if its ID is already present.
@@ -252,12 +489,19 @@ impl Factuals {
 #[cfg(test)]
 mod factuals_should {
     use super::*;
+    use crate::game::config::GameConfig;
+    use crate::game::effects::ProcessEffect;
     use crate::game::good::GoodTag;
+    use crate::game::process::InputType;
     use crate::game::{culture::Culture, religion::Religion, species::Species};
     use std::path::PathBuf;
 
     fn repo_goods_file() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/goods.toml")
+    }
+
+    fn repo_world_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world")
     }
 
     #[test]
@@ -301,13 +545,122 @@ tags = ["untradeable", { transport = 2.0 }]
     #[test]
     fn load_from_path_reads_the_world_goods_file() {
         let factuals = Factuals::load_from_path(repo_goods_file()).expect("world goods");
-        assert_eq!(factuals.goods.len(), 6);
+        assert_eq!(factuals.goods.len(), 7);
+        assert_eq!(factuals.find_good(0).name, "time");
+        assert!((factuals.find_good(0).decay_rate - 1.0).abs() < 1e-12);
+        assert!((factuals.find_good(0).transport_efficiency() - 1.0).abs() < 1e-12);
+        assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
         assert_eq!(factuals.find_good(2).name, "water");
         assert_eq!(factuals.find_good(3).name, "bread");
         assert_eq!(factuals.find_good(4).name, "gold");
         assert_eq!(factuals.find_good(5).name, "coin");
+        assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
         assert_eq!(factuals.find_good(6).name, "jewelry");
+    }
+
+    #[test]
+    fn load_from_path_reads_world_dir_goods_and_processes() {
+        let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
+        assert_eq!(factuals.goods.len(), 7);
+        assert_eq!(factuals.processes.len(), 7);
+        let farm = factuals.processes.get(&1).expect("farm grain");
+        assert_eq!(farm.name, "farm grain");
+        assert_eq!(farm.inputs.len(), 2);
+        assert_eq!(farm.inputs[0].good, 0);
+        assert_eq!(farm.inputs[0].amount, 3.0);
+        assert_eq!(farm.inputs[1].good, 2);
+        assert_eq!(farm.inputs[1].amount, 1.0);
+        assert!(matches!(farm.inputs[1].input_type, InputType::Destroyed));
+        assert_eq!(farm.outputs.len(), 1);
+        assert_eq!(farm.outputs[0].good, 1);
+        assert_eq!(farm.outputs[0].amount, 6.0);
+        let mine = factuals.processes.get(&3).expect("mine gold");
+        assert_eq!(mine.inputs.len(), 1);
+        assert_eq!(mine.inputs[0].good, 0);
+        assert_eq!(mine.outputs[0].good, 4);
+        let mint = factuals.processes.get(&4).expect("mint coin");
+        assert_eq!(mint.inputs[0].good, 0);
+        assert_eq!(mint.inputs[1].good, 4);
+        assert_eq!(mint.outputs[0].amount, 40.0);
+        let melt = factuals.processes.get(&7).expect("melt coin");
+        assert_eq!(melt.inputs[0].good, 0);
+        assert_eq!(melt.inputs[1].good, 5);
+        assert_eq!(melt.inputs[1].amount, 41.0);
+        assert_eq!(melt.outputs[0].good, 4);
+        let jewelry = factuals.processes.get(&5).expect("cut jewelry");
+        assert_eq!(jewelry.inputs[0].good, 0);
+        assert_eq!(jewelry.inputs[1].good, 4);
+        assert_eq!(jewelry.inputs[1].amount, 3.0);
+        assert_eq!(jewelry.outputs[0].amount, 5.0);
+        assert_eq!(factuals.config, GameConfig::default());
+        assert_eq!(factuals.config.labor.worker_share, 0.30);
+    }
+
+    #[test]
+    fn load_from_toml_reads_a_process() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 10
+name = "test mill"
+tech_source = 2
+inputs = [{ good = 1, amount = 2.0, type = "consumed", optional = true }]
+outputs = [{ good = 3, amount = 1.0, fixed = true }]
+effects = [{ research = 4.0 }]
+"#,
+        )
+        .expect("toml");
+        let mill = factuals.processes.get(&10).expect("mill");
+        assert_eq!(mill.name, "test mill");
+        assert_eq!(mill.tech_source, 2);
+        assert!(mill.inputs[0].is_optional());
+        assert!(matches!(mill.inputs[0].input_type, InputType::Consumed));
+        assert!(mill.outputs[0].fixed);
+        assert!(matches!(mill.effects[0], ProcessEffect::Research(v) if v == 4.0));
+    }
+
+    #[test]
+    fn load_from_toml_errors_on_duplicate_process_id() {
+        let err = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 1
+name = "a"
+outputs = [{ good = 1, amount = 1.0 }]
+
+[[processes]]
+id = 1
+name = "b"
+outputs = [{ good = 1, amount = 1.0 }]
+"#,
+        )
+        .expect_err("duplicate");
+        match err {
+            FactualsLoadError::DuplicateProcess(1) => {}
+            other => panic!("expected DuplicateProcess(1), got {other}"),
+        }
+    }
+
+    #[test]
+    fn load_from_toml_errors_on_duplicate_process_input() {
+        let err = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 1
+name = "a"
+inputs = [
+  { good = 1, amount = 1.0 },
+  { good = 1, amount = 2.0 },
+]
+outputs = [{ good = 2, amount = 1.0 }]
+"#,
+        )
+        .expect_err("duplicate input");
+        match err {
+            FactualsLoadError::DuplicateProcessInput { process: 1, good: 1 } => {}
+            other => panic!("expected DuplicateProcessInput, got {other}"),
+        }
     }
 
     #[test]

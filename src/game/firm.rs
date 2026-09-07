@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor, config::{labor_constants, market_constants, market_priority}, contract::Contract, deal::{
-        deal_exceeds_buyer_unit_cap, deal_goods_tradeable, evaluate_firm_amv, form_buy_proposal,
+    actor::Actor, config::{firm_constants, FirmConfig, GameConfig, MarketConfig}, contract::Contract, deal::{
+        deal_goods_tradeable, evaluate_amv_floor, form_buy_proposal,
         with_transport_budget, sort_tenders_by_salability, DealMaker, DealResponse, DealRole,
         ProposedDeal,
-    }, factuals::Factuals, firmorganization::FirmOrganization, good::GoodTag, market::{Market, MarketHistory}, marketorder::{compose_sell_priority, MarketOrder}, pop::{Pop, PopPRow}, process::ProcessEffect, util::{lerp, whole_units, whole_units_up}, workforce::Workforce,
+    }, factuals::Factuals, firmorganization::FirmOrganization, good::{GoodTag, TIME}, market::{Market, MarketHistory}, marketorder::{compose_sell_priority_with, MarketOrder}, pop::Pop, process::{InputType, ProcessEffect, ProcessInput}, util::{lerp, whole_units, whole_units_up}, workforce::{LaborSettlement, Workforce},
 };
 
 /// # Firm 
@@ -81,6 +81,75 @@ pub struct Firm {
     /// Production lines are ordered by priority, those first in the list get run
     /// first. This should be noted for production lines that feed into each other.
     pub production_line: Vec<ProductionLine>,
+
+    /// Day snapshots and the confidence planning variable. Written in
+    /// [`Firm::record_keeping`], read by [`Firm::plan`].
+    pub records: FirmRecords,
+}
+
+/// # Firm Records
+///
+/// Firm-wide memory for planning. Property rows still hold per-good flows;
+/// this is the rolled-up picture plus how fast the firm will move its plan.
+///
+/// `profit_ratio` is realized (sold AMV / cost of goods sold), not process
+/// AMV-out / AMV-in. `confidence` is 0 (cautious, small steps) to 1
+/// (aggressive, faster price and production changes).
+#[derive(Debug, Clone)]
+pub struct FirmRecords {
+    /// Total AMV received from sales today.
+    pub sold_amv: f64,
+    /// Total AMV spent on purchases today.
+    pub bought_amv: f64,
+    /// Cost basis of units sold today (`sold * average_cost` per row).
+    pub sold_cost_amv: f64,
+    /// Realized profit today: `sold_amv / sold_cost_amv`. 1.0 if unknown.
+    pub profit_ratio: f64,
+    /// EMA of [`Self::profit_ratio`].
+    pub profit_avg: f64,
+    /// Firm-wide sell success today (`sold / sell_target` over rows with a sell plan).
+    pub sell_success: f64,
+    /// EMA of [`Self::sell_success`].
+    pub sell_success_avg: f64,
+    /// How hard the firm will move production and quotes. 0..=1.
+    pub confidence: f64,
+}
+
+impl Default for FirmRecords {
+    fn default() -> Self {
+        Self {
+            sold_amv: 0.0,
+            bought_amv: 0.0,
+            sold_cost_amv: 0.0,
+            profit_ratio: 1.0,
+            profit_avg: 1.0,
+            sell_success: 1.0,
+            sell_success_avg: 1.0,
+            confidence: firm_constants::CONFIDENCE_DEFAULT,
+        }
+    }
+}
+
+impl FirmRecords {
+    /// Neutral records: unknown profit/success 1.0, default confidence.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets confidence. Must be in 0..=1.
+    pub fn with_confidence(mut self, confidence: f64) -> Self {
+        debug_assert!(
+            (0.0..=1.0).contains(&confidence),
+            "confidence must be in 0.0..=1.0"
+        );
+        self.confidence = confidence;
+        self
+    }
+
+    /// Residual profit AMV from the last snapshot (`sold - cost`, floored at 0).
+    pub fn yesterday_profit_amv(&self) -> f64 {
+        (self.sold_amv - self.sold_cost_amv).max(0.0)
+    }
 }
 
 impl Firm {
@@ -105,6 +174,9 @@ impl Firm {
     /// whole units. Owners are paid first; workers split what remains of
     /// their share.
     ///
+    /// A producer with no process inputs (mine, well) pays the whole till,
+    /// split in the same owner:worker ratio, so coin does not pool there.
+    ///
     /// Owner `Actor::Pop(0)` (none / blank) or a missing owner pop is not
     /// paid and does not drain the till. Worker pops missing from `pops`
     /// are skipped and that slice stays in the firm. Credits
@@ -114,6 +186,7 @@ impl Firm {
         pops: &mut HashMap<usize, Pop>,
         coin: usize,
         coin_amv: f64,
+        config: &GameConfig,
     ) -> WagePayout {
         let coinage = self
             .property
@@ -125,17 +198,18 @@ impl Firm {
             return payout;
         }
 
-        let owner_want = whole_units_up(coinage * labor_constants::OWNER_SHARE);
-        let worker_want = whole_units_up(coinage * labor_constants::WORKER_SHARE);
+        let (owner_frac, worker_frac) = self.wage_share_fracs(config);
+        let owner_want = whole_units_up(coinage * owner_frac);
+        let worker_want = whole_units_up(coinage * worker_frac);
         let mut remaining = coinage;
 
         let owner_pay = owner_want.min(remaining);
         if owner_pay > 0.0 {
-            if let Some(pop_id) = owner_pop_id(self.owners.owner) {
+            if let Some(pop_id) = self.owners.pop_id() {
                 if let Some(pop) = pops.get_mut(&pop_id) {
                     remaining -= owner_pay;
                     payout.owner_amount = owner_pay;
-                    credit_pop_good(pop, coin, owner_pay, coin_amv);
+                    pop.credit_good(coin, owner_pay, coin_amv);
                     payout.owner_credited = true;
                 }
             }
@@ -167,7 +241,7 @@ impl Firm {
                     }
                     left -= share;
                     if let Some(pop) = pops.get_mut(&pop_id) {
-                        credit_pop_good(pop, coin, share, coin_amv);
+                        pop.credit_good(coin, share, coin_amv);
                         payout.workers.push((pop_id, share));
                     }
                 }
@@ -184,11 +258,435 @@ impl Firm {
         payout
     }
 
-    /// End-of-day bookkeeping for this firm (production stats, costs, …).
-    /// Only external input is factuals.
-    pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Firm record keeping")
+    /// # Settle Labor Contracts
+    ///
+    /// Delegates to [`LaborSettlement::settle`].
+    pub fn settle_labor_contracts(
+        &mut self,
+        pops: &mut HashMap<usize, Pop>,
+        history: &MarketHistory,
+        config: &GameConfig,
+    ) -> LaborSettlement {
+        LaborSettlement::settle(self, pops, history, config)
+    }
+
+    /// Pushes one workforce row.
+    pub fn with_workforce(mut self, worker: Workforce) -> Self {
+        self.workforce.push(worker);
+        self
+    }
+
+    /// Sets the owner's profit-share fraction of yesterday's profit AMV.
+    /// Must be in 0..=1.
+    pub fn with_owner_profit_share(mut self, profit_share: f64) -> Self {
+        debug_assert!(
+            (0.0..=1.0).contains(&profit_share),
+            "profit_share must be in 0.0..=1.0"
+        );
+        self.owners.profit_share = profit_share;
+        self
+    }
+
+    /// # Record Keeping
+    ///
+    /// Writes each row's `rolling_average`, snapshots [`FirmRecords`],
+    /// then calls [`Firm::plan`].
+    /// Do not also call [`Firm::plan`] on the same day until
+    /// snapshot work is split out.
+    pub fn record_keeping(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        self.update_rolling_averages(&factuals.config.firm);
+        self.update_records(&factuals.config.firm);
+        self.plan(factuals, history);
+    }
+
+    /// Sets `rolling_average` on every property row to a lerp toward `quantity`.
+    fn update_rolling_averages(&mut self, cfg: &FirmConfig) {
+        for row in self.property.values_mut() {
+            row.rolling_average = lerp(
+                row.rolling_average,
+                row.quantity.max(0.0),
+                cfg.rolling_avg_weight,
+            );
+        }
+    }
+
+    /// Writes firm-wide sold/bought AMV, realized profit, sell success, and
+    /// lerps `confidence` toward today's evidence. Also lerps each selling
+    /// row's `average_price` toward today's unit sale AMV.
+    fn update_records(&mut self, cfg: &FirmConfig) {
+        let mut sold_amv = 0.0;
+        let mut bought_amv = 0.0;
+        let mut sold_cost = 0.0;
+        let mut sold_units = 0.0;
+        let mut sell_plan = 0.0;
+        for row in self.property.values_mut() {
+            sold_amv += row.sold_amv;
+            bought_amv += row.bought_amv;
+            if row.sold > 0.0 {
+                sold_cost += row.sold * row.average_cost.max(0.0);
+                let today = row.sold_unit_amv();
+                if row.average_price == 0.0 {
+                    row.average_price = today;
+                } else {
+                    row.average_price =
+                        lerp(row.average_price, today, cfg.rolling_avg_weight);
+                }
+            }
+            if row.sell_target > 0.0 {
+                sold_units += row.sold.max(0.0);
+                sell_plan += row.sell_target;
+            }
+        }
+        let missing = self
+            .production_line
+            .iter()
+            .any(|line| !line.last_missing_goods.is_empty());
+
+        let profit = if sold_cost > 0.0 {
+            (sold_amv / sold_cost).max(0.0)
+        } else if sold_amv > 0.0 {
+            2.0
+        } else if sell_plan > 0.0 {
+            0.0
+        } else {
+            1.0
+        };
+        let success = if sell_plan > 0.0 {
+            (sold_units / sell_plan).max(0.0)
+        } else {
+            1.0
+        };
+
+        self.records.sold_amv = sold_amv;
+        self.records.bought_amv = bought_amv;
+        self.records.sold_cost_amv = sold_cost;
+        self.records.profit_ratio = profit;
+        self.records.sell_success = success;
+        self.records.profit_avg = lerp(self.records.profit_avg, profit, cfg.rolling_avg_weight);
+        self.records.sell_success_avg =
+            lerp(self.records.sell_success_avg, success, cfg.rolling_avg_weight);
+
+        let mut evidence: f64 = 0.5;
+        if success >= cfg.sell_success_grow {
+            evidence += 0.25;
+        } else if success < cfg.sell_success_shrink {
+            evidence -= 0.25;
+        }
+        if profit > firm_constants::PROFIT_HIGH {
+            evidence += 0.25;
+        } else if profit < firm_constants::PROFIT_LOW {
+            evidence -= 0.25;
+        }
+        if missing {
+            evidence -= 0.25;
+        }
+        self.records.confidence = lerp(
+            self.records.confidence,
+            evidence.clamp(0.0, 1.0),
+            cfg.planning_lerp_rate,
+        )
+        .clamp(0.0, 1.0);
+    }
+
+    /// # Plan
+    ///
+    /// Gathers line and market facts, then writes production-line `target`s,
+    /// output `sell_target` / `amv_target`, and input use/stock/purchase
+    /// fields. Does not run production or emit orders.
+    ///
+    /// 1. [`Self::gather_plan_info`]: profitability, sell success, turnover,
+    ///    stockpile, decay loss, market AMV, and optional share / volume /
+    ///    volatility / trend. Competitor quotes are `None` until other firms
+    ///    are passed in.
+    /// 2. [`Self::apply_plan_adjustments`]: from a quiet baseline, nudge sell
+    ///    plan, own quote, and line targets. Then align production to the sell
+    ///    plan, weighted by profitability. A line at 0 that is starting snaps
+    ///    to at least 1 iteration (a full recipe) so the day's output can be
+    ///    sold under whole-unit exchange.
+    /// 3. [`Self::rewrite_property_targets`]: input use/stock/purchase/reserve,
+    ///    AMV bounds, merchant restock.
+    pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        let cfg = factuals.config.firm;
+        let info = self.gather_plan_info(factuals, history);
+        self.apply_plan_adjustments(&info, history, &cfg);
+        self.rewrite_property_targets(factuals, history, &cfg);
+    }
+
+    /// Builds a read-only snapshot of line and output-good facts for planning.
+    fn gather_plan_info(&self, factuals: &Factuals, history: &MarketHistory) -> PlanGather {
+        let mut lines = Vec::with_capacity(self.production_line.len());
+        let mut goods: HashMap<usize, GoodFacts> = HashMap::new();
+
+        for (i, line) in self.production_line.iter().enumerate() {
+            let process = factuals
+                .processes
+                .get(&line.process)
+                .expect("Process not found!");
+            let mut outputs = Vec::new();
+            for output in &process.outputs {
+                outputs.push((output.good, output.amount));
+                let facts = goods.entry(output.good).or_insert_with(|| {
+                    good_facts_from_row(output.good, self.property.get(&output.good), factuals, history)
+                });
+                facts.maker_lines.push(i);
+                facts.planned_output += planned_iterations(line) * output.amount;
+            }
+            lines.push(LineFacts {
+                index: i,
+                target: line.target,
+                last_iterations: line.last_iterations,
+                last_success_rate: line.last_success_rate,
+                profitability: line_profit_ratio(line),
+                missing_inputs: !line.last_missing_goods.is_empty(),
+                cold: line.last_iterations == 0.0
+                    && line.last_success_rate == 0.0
+                    && line.last_missing_goods.is_empty(),
+                outputs,
+            });
+        }
+
+        PlanGather { lines, goods }
+    }
+
+    /// Writes line `target`s and output `sell_target` / `amv_target` from
+    /// gathered facts. Leaves `target: None` unchanged. Cold-start lines keep
+    /// their current target. Missing inputs do not shrink.
+    fn apply_plan_adjustments(
+        &mut self,
+        info: &PlanGather,
+        history: &MarketHistory,
+        cfg: &FirmConfig,
+    ) {
+        let n = self.production_line.len();
+        let confidence = self.records.confidence;
+        let pace = plan_pace(confidence, cfg);
+        let mut desired_sell: HashMap<usize, f64> = HashMap::new();
+        let mut desired_amv: HashMap<usize, f64> = HashMap::new();
+        let mut desired_line: Vec<Option<f64>> = vec![None; n];
+
+        for line in &info.lines {
+            desired_line[line.index] = line.target;
+        }
+
+        for good in info.goods.values() {
+            if good.maker_lines.is_empty() {
+                continue;
+            }
+            let all_cold = good.maker_lines.iter().all(|&i| {
+                info.lines.get(i).map(|l| l.cold).unwrap_or(true)
+            });
+            if all_cold {
+                let sell = if good.sell_target > 0.0 {
+                    good.sell_target
+                } else {
+                    good.planned_output.max(good.sold)
+                };
+                desired_sell.insert(good.good, sell.max(0.0));
+                desired_amv.insert(good.good, good.own_amv);
+                continue;
+            }
+            let (sell, amv) = good_plan_nudge(good, cfg, confidence);
+            desired_sell.insert(good.good, sell.max(0.0));
+            desired_amv.insert(good.good, amv);
+
+            let planned = good.planned_output.max(0.0);
+            let gap = sell - planned;
+            let measured = good.sell_target > 0.0 || good.produced > 0.0 || good.sold > 0.0;
+            let strong = measured && good.sell_success >= cfg.sell_success_grow;
+            equalize_line_peers(&mut desired_line, &info.lines, &good.maker_lines);
+            let increase = gap > 0.0;
+            if increase && !strong {
+                continue;
+            }
+            if gap.abs() > planned * firm_constants::TURNOVER_BAND
+                && gap.abs() > sell * firm_constants::TURNOVER_BAND
+            {
+                align_lines_to_sell(
+                    &mut desired_line,
+                    &info.lines,
+                    &good.maker_lines,
+                    sell,
+                    increase,
+                    cfg,
+                    confidence,
+                );
+            }
+        }
+
+        for line in &info.lines {
+            if line.target.is_none() {
+                continue;
+            }
+            if line.cold {
+                desired_line[line.index] = line.target;
+                continue;
+            }
+            if line.missing_inputs {
+                if let (Some(cur), Some(want)) = (line.target, desired_line[line.index]) {
+                    desired_line[line.index] = Some(want.max(cur));
+                }
+            }
+        }
+
+        for (line, want) in self.production_line.iter_mut().zip(desired_line) {
+            if let (Some(current), Some(target)) = (line.target, want) {
+                line.target = Some(next_line_target(current, target, pace));
+            }
+            if line.last_amv_consumed > 0.0 {
+                let now = line.last_amv_produced / line.last_amv_consumed;
+                line.historical_productivity = lerp(
+                    line.historical_productivity,
+                    now,
+                    pace,
+                );
+            }
+        }
+
+        for (good_id, sell) in desired_sell {
+            let row = self.property.entry(good_id).or_insert_with(FirmPRow::new);
+            if row.sell_target <= 0.0 {
+                row.sell_target = sell;
+            } else {
+                row.sell_target = lerp(row.sell_target, sell, pace).max(0.0);
+            }
+            if let Some(&amv) = desired_amv.get(&good_id) {
+                let market = history.price(good_id);
+                let current = if row.amv_target != 0.0 {
+                    row.amv_target
+                } else {
+                    market
+                };
+                let bound = row.amv_bound;
+                let mut target = lerp(current, amv, pace);
+                if let Some(cap) = bound.maximum() {
+                    target = target.min(cap);
+                }
+                if let Some(floor) = bound.minimum() {
+                    target = target.max(floor);
+                }
+                row.amv_target = target;
+            }
+        }
+    }
+
+    /// Sets `use_target`, `stock_target`, `purchase_target`, `sell_target`,
+    /// `reserve_target`, `amv_bound`, `amv_target`, and `margin` on property
+    /// rows from current production-line targets and today's bought / sold.
+    fn rewrite_property_targets(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        cfg: &FirmConfig,
+    ) {
+        let pace = plan_pace(self.records.confidence, cfg);
+        let (use_qty, make_qty) = recipe_flows(&self.production_line, factuals);
+        let bounds = recipe_bounds(&self.production_line, factuals, history);
+
+        let mut goods: HashSet<usize> = self.property.keys().copied().collect();
+        goods.extend(use_qty.keys().copied());
+        goods.extend(make_qty.keys().copied());
+
+        for good_id in goods {
+            let used = use_qty.get(&good_id).copied().unwrap_or(0.0);
+            let made = make_qty.get(&good_id).copied().unwrap_or(0.0);
+            let bound = bounds.get(&good_id).copied().unwrap_or(FirmAmvBound::None);
+            let tradeable = factuals
+                .goods
+                .get(&good_id)
+                .map(|g| g.is_buyable())
+                .unwrap_or(true);
+
+            let row = self.property.entry(good_id).or_insert_with(FirmPRow::new);
+            let qty = row.quantity.max(0.0);
+            let old_purchase = row.purchase_target;
+            let old_sell = row.sell_target;
+            let bought = row.bought;
+            let sold = row.sold;
+            let merchant = used <= 0.0
+                && made <= 0.0
+                && old_purchase > 0.0
+                && old_sell > 0.0;
+
+            if merchant {
+                if sold > 0.0 {
+                    row.purchase_target =
+                        lerp(old_purchase, sold, pace).max(0.0);
+                }
+                row.sell_target = lerp(old_sell, qty, pace).max(0.0);
+                let market = history.price(good_id);
+                let current = if row.amv_target != 0.0 {
+                    row.amv_target
+                } else {
+                    market
+                };
+                // Own quote. Do not lerp onto live market AMV.
+                // Later: inventory pressure, rival quotes, strategy.
+                row.amv_target = current;
+                if row.margin == 0.0 {
+                    row.margin = cfg.default_margin;
+                }
+                row.amv_bound = FirmAmvBound::None;
+                row.sync_reserve();
+                continue;
+            }
+
+            if used <= 0.0 && made <= 0.0 {
+                continue;
+            }
+
+            row.use_target = used;
+            if used > 0.0 {
+                row.stock_target = used * cfg.input_cover;
+                row.purchase_target = if tradeable {
+                    (row.stock_target - qty).max(0.0)
+                } else {
+                    0.0
+                };
+                let miss = if old_purchase > 0.0 {
+                    (1.0 - (bought / old_purchase).clamp(0.0, 1.0)).max(0.0)
+                } else {
+                    0.0
+                };
+                let desired_reserve =
+                    used * cfg.reserve_cover * (1.0 + cfg.miss_reserve_bonus * miss);
+                row.reserve_target =
+                    lerp(row.reserve_target, desired_reserve, pace).max(0.0);
+            } else {
+                row.stock_target = 0.0;
+                row.purchase_target = 0.0;
+            }
+
+            if made <= 0.0 && used > 0.0 {
+                row.sell_target = row.free_for_market();
+            }
+
+            row.amv_bound = bound;
+            if made > 0.0 {
+                let current = row.amv_target;
+                if let Some(cap) = bound.maximum() {
+                    row.amv_target = current.min(cap);
+                }
+                if let Some(floor) = bound.minimum() {
+                    row.amv_target = row.amv_target.max(floor);
+                }
+            } else if used > 0.0 && old_purchase > 0.0 && bought < old_purchase {
+                let market = history.price(good_id);
+                let current = if row.amv_target != 0.0 {
+                    row.amv_target
+                } else {
+                    market
+                };
+                row.amv_target = lerp(
+                    current,
+                    current * (1.0 + cfg.amv_nudge),
+                    pace,
+                );
+            }
+            if row.purchase_target > 0.0 && row.sell_target > 0.0 && row.margin == 0.0 {
+                row.margin = cfg.default_margin;
+            }
+            row.sync_reserve();
+        }
     }
 
     /// # Decay Goods
@@ -294,7 +792,14 @@ impl Firm {
             contracts: vec![],
             property: HashMap::new(),
             production_line: vec![],
+            records: FirmRecords::new(),
         }
+    }
+
+    /// Sets the owning actor. `Actor::Pop(0)` is none and is not paid.
+    pub fn with_owner(mut self, owner: Actor) -> Self {
+        self.owners.owner = owner;
+        self
     }
 
     /// # Create Orders
@@ -325,11 +830,12 @@ impl Firm {
     ///
     /// Buys stop when spendable AMV is exhausted; the last buy may overdraw.
     /// AMV on priced orders is recorded (`amv_target`) for later settlement.
-    /// Matching does not use it yet. [`FirmPRow::amv_bound`] clamps that AMV:
-    /// buy AMV is never above the buy cap, sell AMV is never below the sell
-    /// floor. If market AMV is already above the buy cap, no buy/request is
-    /// emitted for that good. `None` bounds leave bid/ask unchanged. This does
-    /// not compute residual WTP; planning writes the bound.
+    /// Matching does not use it yet. [`FirmPRow::amv_bound`] is a planning
+    /// guidestone (residual WTP / input-cost rollup), not a trade gate:
+    /// `create_orders` still posts the row's own bid/ask and does not skip a
+    /// buy when market AMV is above the cap. Deal formation does not void a
+    /// basket against the bound either. This does not compute residual WTP;
+    /// planning writes the bound.
     /// Buy order priority is the merchant band if any row is merchant-like
     /// (purchase and sell, no use), otherwise the producer band. Sells use
     /// [`compose_sell_priority`].
@@ -337,6 +843,17 @@ impl Firm {
     /// Posted buy/sell/offer amounts are whole units. Named counters ceil to
     /// the next whole payment unit so a 2.5 AMV cost is posted as 3 coins.
     /// Bid and ask AMV stay fractional.
+    /// Sell orders name a barter shortcut: the most valuable process input
+    /// the firm still needs, else the market's most salable money good (at
+    /// or above the exchange floor), even if not on-hand. Tied money
+    /// salability prefers the lower id. Buy orders still name an on-hand
+    /// exchange good.
+    /// 
+    /// TODO: Ideally, a firm should have counteroffer goods that it wants
+    /// to recieve for it's inputs. It should prioritize getting up to 1 day's 
+    /// worth of inputs for each produciton line, focusing on the most valuable
+    /// first. Once itt has 1 day for all of it's needs, it defaults to highest
+    /// salability good instead.
     pub fn create_orders(
         &self,
         history: &MarketHistory,
@@ -365,10 +882,8 @@ impl Firm {
             let salability = history.salability(good);
             let market_amv = history.price(good);
             let mid = row.mid_amv(market_amv);
-            let split = classify_on_hand(row, salability);
+            let split = classify_on_hand(row, salability, &factuals.config.market);
             let buy_qty = whole_units(if unavailable.contains(&good) {
-                0.0
-            } else if row.amv_bound.market_above_buy_cap(market_amv) {
                 0.0
             } else {
                 row.purchase_qty()
@@ -401,17 +916,18 @@ impl Firm {
                 exchange_qty,
                 liquidate_qty,
                 use_target: row.use_target,
-                bid: row.amv_bound.clamp_bid(row.bid_amv(mid)),
-                ask: row.amv_bound.clamp_ask(row.ask_amv(mid)),
+                bid: row.bid_amv(mid),
+                ask: row.ask_amv(mid),
                 salability,
                 line_rank: line_rank.get(&good).copied().unwrap_or(usize::MAX),
             });
         }
 
+        let prio = &factuals.config.market_priority;
         let buy_band = if merchant_like {
-            market_priority::FIRM_MERCHANT
+            prio.firm_merchant()
         } else {
-            market_priority::FIRM_PRODUCER
+            prio.firm_producer()
         };
 
         let mut exchange_goods: Vec<(usize, f64, f64)> = plans
@@ -449,7 +965,13 @@ impl Firm {
             } else {
                 (plan.sell_qty, false)
             };
-            let weight = compose_sell_priority(buy_band, qty, 0.0);
+            let weight = compose_sell_priority_with(
+                buy_band,
+                qty,
+                0.0,
+                prio.sell_actor_priority_floor,
+                prio.successful_sell_bonus,
+            );
             if liquidate {
                 orders.push(MarketOrder::offer_order(
                     Actor::Firm(self.id),
@@ -458,7 +980,15 @@ impl Firm {
                     weight,
                 ));
             } else if let Some((pay_good, pay_price)) =
-                counter_good(&exchange_goods, plan.good)
+                needed_input_counter(self, history, plan.good)
+                    .or_else(|| {
+                        sell_pay_good(
+                            history,
+                            plan.good,
+                            factuals.config.market.exchange_salability_min,
+                        )
+                    })
+                    .or_else(|| counter_good(&exchange_goods, plan.good))
             {
                 let pay = whole_units_up(qty * plan.ask / pay_price);
                 if pay > 0.0 {
@@ -587,6 +1117,11 @@ impl Firm {
                 panic!("Process not found!");
             };
 
+            // Skip idle lines (target 0). `do_process` requires a positive target when Some.
+            if matches!(line.target, Some(t) if t <= 0.0) {
+                continue;
+            }
+
             // Snapshot of available goods from this firm's property only
             let available: HashMap<usize, f64> = self
                 .property
@@ -712,13 +1247,24 @@ pub struct Owners {
     /// If the owner is a State or Institution, they may override the market priority 
     /// of the firm.
     pub priority_override: Option<f64>,
+    /// Share of yesterday's profit AMV paid after wages and growth retain. 0..=1.
+    pub profit_share: f64,
 }
 
 impl Owners {
     pub fn empty() -> Self {
         Owners {
             owner: Actor::Pop(0),
-            priority_override: None
+            priority_override: None,
+            profit_share: 0.0,
+        }
+    }
+
+    /// Living pop id for this owner, or `None` for blank / non-pop owners.
+    pub fn pop_id(&self) -> Option<usize> {
+        match self.owner {
+            Actor::Pop(id) if id != 0 => Some(id),
+            _ => None,
         }
     }
 }
@@ -754,26 +1300,113 @@ impl WagePayout {
     }
 }
 
-/// Returns a living pop id for this owner, or `None` for blank / non-pop owners.
-fn owner_pop_id(owner: Actor) -> Option<usize> {
-    match owner {
-        Actor::Pop(id) if id != 0 => Some(id),
-        _ => None,
+impl Firm {
+    /// True if this firm uses any process input (`use_target` or line inputs).
+    fn has_process_inputs(&self) -> bool {
+        self.property.values().any(|row| row.use_target > 0.0)
+            || self
+                .production_line
+                .iter()
+                .any(|line| !line.inputs.is_empty())
     }
-}
 
-/// Adds `qty` of `good` to the pop and records wage AMV.
-fn credit_pop_good(pop: &mut Pop, good: usize, qty: f64, unit_amv: f64) {
-    debug_assert!(qty.is_finite() && qty >= 0.0, "credit qty must be finite and >= 0");
-    debug_assert!(unit_amv.is_finite(), "coin AMV must be finite");
-    if qty == 0.0 {
-        return;
+    /// True if this firm produces but needs no inputs (mine, well).
+    fn is_input_free_producer(&self) -> bool {
+        !self.production_line.is_empty() && !self.has_process_inputs()
     }
-    pop.property
-        .entry(good)
-        .or_insert_with(|| PopPRow::new(0.0))
-        .quantity += qty;
-    pop.records.income_amv += qty * unit_amv;
+
+    /// Owner and worker fractions of on-hand coin for [`Firm::pay_wage_shares`].
+    /// Input-free producers split the whole till in the configured ratio.
+    fn wage_share_fracs(&self, config: &GameConfig) -> (f64, f64) {
+        let owner = config.labor.owner_share;
+        let worker = config.labor.worker_share;
+        if !self.is_input_free_producer() {
+            return (owner, worker);
+        }
+        let sum = owner + worker;
+        if sum <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            (owner / sum, worker / sum)
+        }
+    }
+
+    /// Subtracts `qty` from a property row and syncs the stockpile reserve.
+    pub fn debit_good(&mut self, good: usize, qty: f64) {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "debit qty must be finite and >= 0");
+        if qty <= 0.0 {
+            return;
+        }
+        if let Some(row) = self.property.get_mut(&good) {
+            row.quantity = (row.quantity - qty).max(0.0);
+            row.sync_reserve();
+        }
+    }
+
+    /// Adds committed Time and earmarks it for production (not sale).
+    pub fn credit_time(&mut self, qty: f64) {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "time qty must be finite and >= 0");
+        if qty <= 0.0 {
+            return;
+        }
+        let row = self.property.entry(TIME).or_insert_with(FirmPRow::new);
+        row.quantity += qty;
+        row.reserve = (row.reserve + qty).min(row.quantity);
+        row.use_target = row.use_target.max(row.quantity);
+    }
+
+    /// Spends leftover till (above stock and growth) toward `want_amv`, high salability first.
+    pub fn pay_profit_share_amv(
+        &mut self,
+        pop: &mut Pop,
+        want_amv: f64,
+        history: &MarketHistory,
+    ) -> (f64, HashMap<usize, f64>) {
+        if want_amv <= 0.0 {
+            return (0.0, HashMap::new());
+        }
+        let mut goods: Vec<usize> = self
+            .property
+            .keys()
+            .copied()
+            .filter(|&good| good != TIME)
+            .collect();
+        goods.sort_by(|a, b| {
+            history
+                .salability(*b)
+                .partial_cmp(&history.salability(*a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(b))
+        });
+        let mut remaining = want_amv;
+        let mut paid_amv = 0.0;
+        let mut paid: HashMap<usize, f64> = HashMap::new();
+        for good in goods {
+            if remaining <= 0.0 {
+                break;
+            }
+            let price = history.price(good);
+            if price <= 0.0 {
+                continue;
+            }
+            let spendable = self
+                .property
+                .get(&good)
+                .map(FirmPRow::profit_spendable)
+                .unwrap_or(0.0);
+            let give = whole_units((remaining / price).min(spendable));
+            if give <= 0.0 {
+                continue;
+            }
+            self.debit_good(good, give);
+            pop.credit_good(good, give, price);
+            *paid.entry(good).or_insert(0.0) += give;
+            let got = give * price;
+            paid_amv += got;
+            remaining -= got;
+        }
+        (paid_amv, paid)
+    }
 }
 
 /// # Production Line
@@ -812,10 +1445,10 @@ pub struct ProductionLine {
 /// # Firm AMV Bound
 /// Recipe-derived AMV bounds for a [`FirmPRow`] (planning).
 ///
-/// Not filled by [`Firm::create_orders`] or deal evaluate yet. Planning will
-/// write these from process recipes: residual WTP as a buy cap on inputs,
-/// input-cost rollup as a sell floor on outputs. Headroom vs market AMV is
-/// a later growth / margin read.
+/// Planning writes these from process recipes: residual WTP as a buy cap
+/// on inputs, input-cost rollup as a sell floor on outputs. They are
+/// guidestones for later growth / margin reads, not a gate on posting or
+/// settling trades. Headroom vs market AMV is a later growth / margin read.
 ///
 /// [`FirmAmvBound::None`] is exchange-only stock (barter, till, merchant
 /// restock) that is not a process input or output here.
@@ -852,7 +1485,7 @@ impl FirmAmvBound {
     }
 
     /// Caps `bid` to this bound's buy cap when one is set; otherwise returns `bid`.
-    /// Used when writing AMV on a buy order so they do not post above the cap.
+    /// Planning helper. Order emission does not clamp posted AMV.
     pub fn clamp_bid(self, bid: f64) -> f64 {
         match self.maximum() {
             Some(cap) => bid.min(cap),
@@ -861,7 +1494,7 @@ impl FirmAmvBound {
     }
 
     /// Raises `ask` to this bound's sell floor when one is set; otherwise returns `ask`.
-    /// Used when writing AMV on a sell order so they do not post below the floor.
+    /// Planning helper. Order emission does not clamp posted AMV.
     pub fn clamp_ask(self, ask: f64) -> f64 {
         match self.minimum() {
             Some(floor) => ask.max(floor),
@@ -870,13 +1503,602 @@ impl FirmAmvBound {
     }
 
     /// Returns true if this bound has a buy cap and `market_amv` is above it.
-    /// `create_orders` skips the buy when this is true.
+    /// Planning query. `create_orders` does not skip the buy when this is true.
     pub fn market_above_buy_cap(self, market_amv: f64) -> bool {
         match self.maximum() {
             Some(cap) => market_amv > cap,
             None => false,
         }
     }
+
+    /// Returns [`FirmAmvBound::None`], [`FirmAmvBound::Minimum`],
+    /// [`FirmAmvBound::Maximum`], or [`FirmAmvBound::MinMax`] from an optional
+    /// sell floor and optional buy cap.
+    pub fn from_parts(minimum: Option<f64>, maximum: Option<f64>) -> Self {
+        match (minimum, maximum) {
+            (None, None) => Self::None,
+            (Some(min), None) => Self::Minimum(min),
+            (None, Some(max)) => Self::Maximum(max),
+            (Some(min), Some(max)) => Self::MinMax(min, max),
+        }
+    }
+}
+
+/// Snapshot of line and output-good facts for [`Firm::plan`].
+struct PlanGather {
+    lines: Vec<LineFacts>,
+    goods: HashMap<usize, GoodFacts>,
+}
+
+struct LineFacts {
+    index: usize,
+    target: Option<f64>,
+    #[allow(dead_code)]
+    last_iterations: f64,
+    last_success_rate: f64,
+    profitability: f64,
+    missing_inputs: bool,
+    cold: bool,
+    outputs: Vec<(usize, f64)>,
+}
+
+struct GoodFacts {
+    good: usize,
+    sell_target: f64,
+    sold: f64,
+    produced: f64,
+    planned_output: f64,
+    #[allow(dead_code)]
+    post_shop: f64,
+    sell_success: f64,
+    /// Sold unit AMV / average cost. 0 if we meant to sell and didn't.
+    realized_profit: f64,
+    #[allow(dead_code)]
+    turnover: f64,
+    stockpile: f64,
+    decay_rate: f64,
+    #[allow(dead_code)]
+    decay_loss_amv: f64,
+    own_amv: f64,
+    market_amv: f64,
+    market_share: Option<f64>,
+    #[allow(dead_code)]
+    market_volume: Option<f64>,
+    market_volatility: Option<f64>,
+    market_trend: Option<f64>,
+    /// Mean rival quote. `None` until other firms are passed into plan.
+    competitor_amv: Option<f64>,
+    maker_lines: Vec<usize>,
+}
+
+/// Fills per-good facts from the property row and market snapshot.
+fn good_facts_from_row(
+    good: usize,
+    row: Option<&FirmPRow>,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> GoodFacts {
+    let sold = row.map(|r| r.sold).unwrap_or(0.0);
+    let produced = row.map(|r| r.produced).unwrap_or(0.0);
+    let sell_target = row.map(|r| r.sell_target).unwrap_or(0.0);
+    let post_shop = row.map(post_shop_stock).unwrap_or(0.0);
+    let market_amv = history.price(good);
+    let own_amv = row.map(|r| r.amv_target).filter(|v| *v != 0.0).unwrap_or(market_amv);
+    let decay_rate = factuals.goods.get(&good).map(|g| g.decay_rate).unwrap_or(0.0);
+    let purchased = history.purchased.get(&good).copied();
+    let trail = history.amv_trails.get(&good);
+    GoodFacts {
+        good,
+        sell_target,
+        sold,
+        produced,
+        planned_output: 0.0,
+        post_shop,
+        sell_success: sell_success_of(sold, sell_target, produced),
+        realized_profit: realized_profit_of(row),
+        turnover: if produced > 0.0 { sold / produced } else { 1.0 },
+        stockpile: post_shop,
+        decay_rate,
+        decay_loss_amv: post_shop * decay_rate * market_amv,
+        own_amv,
+        market_amv,
+        market_share: purchased.filter(|p| *p > 0.0).map(|p| (sold / p).clamp(0.0, 1.0)),
+        market_volume: purchased,
+        market_volatility: trail.and_then(|t| trail_volatility(t)),
+        market_trend: trail.and_then(|t| trail_trend(t)),
+        competitor_amv: None,
+        maker_lines: Vec::new(),
+    }
+}
+
+/// Returns `(desired_sell, desired_amv)` from baseline-relative nudges.
+/// Pressures add, then clamp to one step, so several loud signals cannot
+/// stack past `growth_rate` / `shrink_rate` (scaled by confidence).
+fn good_plan_nudge(good: &GoodFacts, cfg: &FirmConfig, confidence: f64) -> (f64, f64) {
+    let mut sell = if good.sell_target > 0.0 {
+        good.sell_target
+    } else {
+        good.planned_output.max(good.sold)
+    };
+    let mut amv = good.own_amv;
+    let profit = good.realized_profit;
+    let prefer_price = price_cut_share(profit, good.decay_rate, good.own_amv, good.market_amv);
+
+    // Firm strategy (later): scale prefer_price (aggressive up, defensive down).
+
+    let vol_boost = good
+        .market_volatility
+        .filter(|v| *v > firm_constants::VOLATILITY_LOW)
+        .map(|v| 1.0 + v)
+        .unwrap_or(1.0);
+
+    let mut volume = 0.0;
+    let mut price = 0.0;
+
+    if let Some(trend) = good.market_trend {
+        if trend > firm_constants::TREND_DEADBAND {
+            add_pressures(&mut volume, &mut price, 1.0, prefer_price);
+        } else if trend < -firm_constants::TREND_DEADBAND {
+            add_pressures(&mut volume, &mut price, -1.0, prefer_price);
+        }
+    }
+
+    let measured = good.sell_target > 0.0 || good.produced > 0.0 || good.sold > 0.0;
+    let strong = measured && good.sell_success >= cfg.sell_success_grow;
+    let miss = measured && good.sell_success < cfg.sell_success_shrink;
+
+    if profit < firm_constants::PROFIT_LOW {
+        volume -= 1.0;
+    } else if profit > firm_constants::PROFIT_HIGH && strong {
+        volume += 1.0;
+    }
+
+    if strong {
+        add_pressures(&mut volume, &mut price, 1.0, prefer_price);
+    } else if miss {
+        add_pressures(&mut volume, &mut price, -1.0, prefer_price);
+    }
+
+    let baseline_stock = good.planned_output.max(good.produced)
+        * cfg.output_cover
+        * (1.0 - good.decay_rate).max(0.0)
+        * vol_boost;
+    if baseline_stock > 0.0 {
+        let ratio = good.stockpile / baseline_stock;
+        if (ratio - 1.0).abs() > firm_constants::STOCKPILE_BAND {
+            if ratio > 1.0 {
+                volume += 1.0 - prefer_price.clamp(0.0, 1.0);
+                price -= prefer_price.clamp(0.0, 1.0);
+            } else {
+                volume -= 1.0 - prefer_price.clamp(0.0, 1.0);
+                price += prefer_price.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    if let Some(share) = good.market_share {
+        if share < firm_constants::SHARE_LOW {
+            add_pressures(&mut volume, &mut price, -1.0, prefer_price);
+        } else if share > firm_constants::SHARE_HIGH {
+            price += 1.0;
+        }
+    }
+
+    if good.market_amv > 0.0 {
+        let rel = good.own_amv / good.market_amv;
+        if rel > 1.0 + firm_constants::PRICE_BAND {
+            add_pressures(&mut volume, &mut price, -1.0, prefer_price);
+        } else if rel < 1.0 - firm_constants::PRICE_BAND {
+            add_pressures(&mut volume, &mut price, 1.0, prefer_price);
+        }
+    }
+
+    // Competitor quotes (later): if rival mean is set and outside +/- 10%,
+    // nudge toward competing or holding margin.
+    if let Some(rival) = good.competitor_amv {
+        if rival > 0.0 {
+            let rel = good.own_amv / rival;
+            if rel > 1.0 + firm_constants::PRICE_BAND {
+                add_pressures(&mut volume, &mut price, -1.0, prefer_price);
+            } else if rel < 1.0 - firm_constants::PRICE_BAND {
+                add_pressures(&mut volume, &mut price, 1.0, prefer_price);
+            }
+        }
+    }
+
+    volume = volume.clamp(-1.0, 1.0);
+    price = price.clamp(-1.0, 1.0);
+    let vol_base = if volume < 0.0 {
+        cfg.shrink_rate
+    } else {
+        cfg.growth_rate
+    };
+    sell = (sell * (1.0 + volume * plan_step(confidence, vol_base, cfg))).max(0.0);
+    amv *= 1.0 + price * plan_step(confidence, cfg.growth_rate, cfg);
+    (sell, amv)
+}
+
+/// Adds a signed volume/price split into the day's pressure totals.
+fn add_pressures(volume: &mut f64, price: &mut f64, sign: f64, prefer_price: f64) {
+    let p = prefer_price.clamp(0.0, 1.0);
+    *volume += sign * (1.0 - p);
+    *price += sign * p;
+}
+
+/// Returns the lerp/step scale for this confidence: slower when cautious,
+/// faster when confident. Mid confidence keeps `planning_lerp_rate`.
+/// Walks `current` toward `target` by `pace`. A line at 0 that is starting
+/// snaps to at least 1 iteration so the day's output is a whole recipe.
+fn next_line_target(current: f64, target: f64, pace: f64) -> f64 {
+    let next = lerp(current, target, pace).max(0.0);
+    if current <= 0.0 && next > 0.0 {
+        next.max(1.0)
+    } else {
+        next
+    }
+}
+
+fn plan_pace(confidence: f64, cfg: &FirmConfig) -> f64 {
+    let t = confidence.clamp(0.0, 1.0);
+    let mul = lerp(cfg.confidence_pace_min, cfg.confidence_pace_max, t);
+    (cfg.planning_lerp_rate * mul).clamp(0.0, 1.0)
+}
+
+/// Returns `base` scaled by the same confidence multiplier as [`plan_pace`].
+fn plan_step(confidence: f64, base: f64, cfg: &FirmConfig) -> f64 {
+    let t = confidence.clamp(0.0, 1.0);
+    let mul = lerp(cfg.confidence_pace_min, cfg.confidence_pace_max, t);
+    (base * mul).clamp(0.0, 1.0)
+}
+
+/// Sets maker line targets so total output walks toward `sell`.
+/// Increase: more-profitable lines get a larger raise. Decrease: less-profitable
+/// lines get a larger cut.
+fn align_lines_to_sell(
+    desired: &mut [Option<f64>],
+    lines: &[LineFacts],
+    makers: &[usize],
+    sell: f64,
+    increase: bool,
+    cfg: &FirmConfig,
+    confidence: f64,
+) {
+    let mut total = 0.0;
+    let mut weights = Vec::new();
+    for &i in makers {
+        let line = &lines[i];
+        let Some(t) = desired[i].or(line.target) else {
+            weights.push(0.0);
+            continue;
+        };
+        let out: f64 = line.outputs.iter().map(|(_, a)| t * *a).sum();
+        total += out;
+        let p = line.profitability.max(0.0);
+        let w = if increase { p } else { 1.0 / (p + 0.1) };
+        weights.push(w);
+    }
+    if total <= 0.0 && sell <= 0.0 {
+        return;
+    }
+    let gap = sell - total;
+    let sum_w: f64 = weights.iter().sum();
+    if sum_w <= 0.0 {
+        return;
+    }
+    let base = if increase {
+        cfg.growth_rate
+    } else {
+        cfg.shrink_rate
+    };
+    let step = plan_pace(confidence, cfg).max(plan_step(confidence, base, cfg));
+    let move_out = gap * step;
+    for (k, &i) in makers.iter().enumerate() {
+        let line = &lines[i];
+        let Some(t) = desired[i].or(line.target) else {
+            continue;
+        };
+        let per = line.outputs.iter().map(|(_, a)| *a).sum::<f64>().max(1e-9);
+        let add_units = move_out * (weights[k] / sum_w);
+        desired[i] = Some((t + add_units / per).max(0.0));
+    }
+}
+
+/// Shifts output toward more profitable (and more successful) lines without
+/// changing total output much.
+fn equalize_line_peers(desired: &mut [Option<f64>], lines: &[LineFacts], makers: &[usize]) {
+    if makers.len() < 2 {
+        return;
+    }
+    let mean_p: f64 = makers.iter().map(|&i| lines[i].profitability).sum::<f64>()
+        / makers.len() as f64;
+    let mean_s: f64 = makers.iter().map(|&i| lines[i].last_success_rate).sum::<f64>()
+        / makers.len() as f64;
+    if mean_p <= 0.0 {
+        return;
+    }
+    let band = firm_constants::PROFIT_PEER_BAND;
+    let mut total = 0.0;
+    let mut next = Vec::new();
+    for &i in makers {
+        let line = &lines[i];
+        let t = desired[i].or(line.target).unwrap_or(0.0);
+        let mut scale = 1.0;
+        if (line.profitability - mean_p).abs() > band * mean_p {
+            scale += ((line.profitability - mean_p) / mean_p).clamp(-0.5, 0.5);
+        }
+        if mean_s > 0.0 && (line.last_success_rate - mean_s).abs() > band {
+            scale += (line.last_success_rate - mean_s).clamp(-0.5, 0.5);
+        }
+        let out = t * scale;
+        total += out;
+        next.push((i, out, t));
+    }
+    let old_total: f64 = makers
+        .iter()
+        .map(|&i| desired[i].or(lines[i].target).unwrap_or(0.0))
+        .sum();
+    if total <= 0.0 || old_total <= 0.0 {
+        return;
+    }
+    let restore = old_total / total;
+    for (i, out, t) in next {
+        if t <= 0.0 {
+            desired[i] = Some(0.0);
+            continue;
+        }
+        desired[i] = Some((out * restore).max(0.0));
+    }
+}
+
+/// Returns relative stdev of consecutive AMV changes, or `None` if too short.
+fn trail_volatility(trail: &[f64]) -> Option<f64> {
+    if trail.len() < 3 {
+        return None;
+    }
+    let mut rets = Vec::new();
+    for w in trail.windows(2) {
+        if w[0].abs() < 1e-12 {
+            continue;
+        }
+        rets.push((w[1] - w[0]) / w[0].abs());
+    }
+    if rets.len() < 2 {
+        return None;
+    }
+    let mean = rets.iter().sum::<f64>() / rets.len() as f64;
+    let var = rets.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / rets.len() as f64;
+    Some(var.sqrt())
+}
+
+/// Returns (last - first) / first from an AMV trail, or `None` if unusable.
+fn trail_trend(trail: &[f64]) -> Option<f64> {
+    let first = trail.first().copied().filter(|v| v.abs() > 1e-12)?;
+    let last = trail.last().copied()?;
+    if trail.len() < 2 {
+        return None;
+    }
+    Some((last - first) / first.abs())
+}
+
+/// Returns stock after shopping, before this afternoon's production:
+/// `quantity - produced`, floored at 0. Selling runs before production, so
+/// evening `quantity` is high even after a good sales day.
+fn post_shop_stock(row: &FirmPRow) -> f64 {
+    (row.quantity - row.produced).max(0.0)
+}
+
+/// Returns `sold / sell_target`, or `sold / produced` when `sell_target` is 0.
+/// Returns 1.0 when there is no plan and nothing was produced.
+fn sell_success_of(sold: f64, sell_target: f64, produced: f64) -> f64 {
+    if sell_target > 0.0 {
+        (sold / sell_target).max(0.0)
+    } else if produced > 0.0 {
+        (sold / produced).max(0.0)
+    } else {
+        1.0
+    }
+}
+
+/// Returns sold unit AMV / average cost. Returns 0.0 when the row produced
+/// or planned to sell and sold nothing. Returns 1.0 when there is no signal
+/// (no row, or sold with no price and no cost recorded).
+fn realized_profit_of(row: Option<&FirmPRow>) -> f64 {
+    let Some(row) = row else {
+        return 1.0;
+    };
+    if row.sold > 0.0 {
+        let unit_price = row.sold_unit_amv();
+        if row.average_cost.abs() > 1e-12 {
+            if unit_price == 0.0 {
+                return 1.0;
+            }
+            return (unit_price / row.average_cost).max(0.0);
+        }
+        if unit_price > 0.0 {
+            return 2.0;
+        }
+        return 1.0;
+    }
+    if row.produced > 0.0 || row.sell_target > 0.0 {
+        0.0
+    } else {
+        1.0
+    }
+}
+
+/// Returns AMV-out / AMV-in for the last run. No-input lines return 2.0.
+/// Unknown (no AMV recorded) returns 1.0.
+fn line_profit_ratio(line: &ProductionLine) -> f64 {
+    if line.last_amv_consumed > 0.0 {
+        line.last_amv_produced / line.last_amv_consumed
+    } else if line.last_amv_produced > 0.0 {
+        2.0
+    } else {
+        1.0
+    }
+}
+
+/// Returns how much of undersell pressure goes to cutting price (`0..=1`).
+/// The rest goes to cutting volume.
+///
+/// High profit raises this (more willing to slip the quote). Profit at or
+/// below 1.0 floors it. Own quote above market AMV raises it; at or below
+/// market, failed sales look like a volume problem. Decay raises it (move
+/// goods before they rot).
+///
+/// Market share (later): high share lowers this -- cut volume, protect the
+/// quote, approaching monopoly.
+/// Previous market AMV (later): a falling market raises this.
+/// Competitor quotes (later): cheaper rivals raise this if profit allows.
+/// Firm strategy (later): aggressive adds (keep-out pricing even with high
+/// share); defensive subtracts.
+fn price_cut_share(profit: f64, decay: f64, own_amv: f64, market_amv: f64) -> f64 {
+    let mut share = if profit > 1.0 {
+        ((profit - 1.0) / 1.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if own_amv > 0.0 && market_amv > 0.0 {
+        if own_amv > market_amv {
+            share = (share + 0.25).min(1.0);
+        } else {
+            share *= 0.5;
+        }
+    }
+    (share + decay.clamp(0.0, 1.0) * 0.5).clamp(0.0, 1.0)
+}
+
+/// Returns `line.target` when it is `Some`, otherwise `line.last_iterations`.
+/// Floors at 0.0.
+fn planned_iterations(line: &ProductionLine) -> f64 {
+    match line.target {
+        Some(target) => target.max(0.0),
+        None => line.last_iterations.max(0.0),
+    }
+}
+
+/// Returns true if `input` counts toward this line's use: required non-factor
+/// inputs, plus optional inputs listed in `line.inputs`. Returns false for
+/// factors and for optionals not selected.
+fn line_counts_input(line: &ProductionLine, input: &ProcessInput) -> bool {
+    if matches!(input.input_type, InputType::Factor) {
+        return false;
+    }
+    if input.is_optional() {
+        return line.inputs.contains(&input.good);
+    }
+    true
+}
+
+/// Returns true if `input` is Destroyed or Consumed (included in recipe AMV cost).
+fn is_cost_input(input: &ProcessInput) -> bool {
+    matches!(
+        input.input_type,
+        InputType::Destroyed | InputType::Consumed
+    )
+}
+
+/// Returns `(use_qty, make_qty)`: per-good input units and output units for
+/// `lines` at [`planned_iterations`].
+fn recipe_flows(
+    lines: &[ProductionLine],
+    factuals: &Factuals,
+) -> (HashMap<usize, f64>, HashMap<usize, f64>) {
+    let mut use_qty: HashMap<usize, f64> = HashMap::new();
+    let mut make_qty: HashMap<usize, f64> = HashMap::new();
+    for line in lines {
+        let process = factuals
+            .processes
+            .get(&line.process)
+            .expect("Process not found!");
+        let iters = planned_iterations(line);
+        if iters <= 0.0 {
+            continue;
+        }
+        for input in &process.inputs {
+            if !line_counts_input(line, input) {
+                continue;
+            }
+            *use_qty.entry(input.good).or_insert(0.0) += input.amount * iters;
+        }
+        for output in &process.outputs {
+            *make_qty.entry(output.good).or_insert(0.0) += output.amount * iters;
+        }
+    }
+    (use_qty, make_qty)
+}
+
+/// Returns a [`FirmAmvBound`] per good used or made by `lines`.
+/// Output goods get [`FirmAmvBound::Minimum`] (consumed-input AMV allocated by
+/// output AMV share). Input goods get [`FirmAmvBound::Maximum`] (residual WTP:
+/// output AMV minus other cost inputs). Goods that are both get [`FirmAmvBound::MinMax`].
+fn recipe_bounds(
+    lines: &[ProductionLine],
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> HashMap<usize, FirmAmvBound> {
+    let mut floors: HashMap<usize, f64> = HashMap::new();
+    let mut caps: HashMap<usize, f64> = HashMap::new();
+    for line in lines {
+        // Idle backup lines (target 0) do not write floors or caps.
+        if planned_iterations(line) <= 0.0 {
+            continue;
+        }
+        let process = factuals
+            .processes
+            .get(&line.process)
+            .expect("Process not found!");
+        let mut input_amv = 0.0;
+        for input in &process.inputs {
+            if !line_counts_input(line, input) || !is_cost_input(input) {
+                continue;
+            }
+            input_amv += input.amount * history.price(input.good);
+        }
+        let mut output_amv = 0.0;
+        for output in &process.outputs {
+            output_amv += output.amount * history.price(output.good);
+        }
+        if input_amv > 0.0 {
+            for output in &process.outputs {
+                if output.amount <= 0.0 {
+                    continue;
+                }
+                let cost_per = if output_amv > 0.0 {
+                    input_amv * history.price(output.good) / output_amv
+                } else {
+                    input_amv / output.amount
+                };
+                floors
+                    .entry(output.good)
+                    .and_modify(|floor| *floor = floor.max(cost_per))
+                    .or_insert(cost_per);
+            }
+        }
+        for input in &process.inputs {
+            if !line_counts_input(line, input) || !is_cost_input(input) {
+                continue;
+            }
+            if input.amount <= 0.0 {
+                continue;
+            }
+            let others = input_amv - input.amount * history.price(input.good);
+            let wtp = ((output_amv - others) / input.amount).max(0.0);
+            caps.entry(input.good)
+                .and_modify(|cap| *cap = cap.max(wtp))
+                .or_insert(wtp);
+        }
+    }
+    let mut bounds = HashMap::new();
+    let mut goods: HashSet<usize> = floors.keys().copied().collect();
+    goods.extend(caps.keys().copied());
+    for good in goods {
+        bounds.insert(
+            good,
+            FirmAmvBound::from_parts(floors.get(&good).copied(), caps.get(&good).copied()),
+        );
+    }
+    bounds
 }
 
 /// # Firm Property Row
@@ -913,6 +2135,9 @@ pub struct FirmPRow {
     /// success of reaching purchase, sell, and use targets, modulated by the firm's
     /// uncertainty.
     pub reserve_target: f64,
+    /// Extra units above stock to retain for expansion. Wages may raid this;
+    /// owner and worker profit shares may not.
+    pub growth_target: f64,
     /// Recipe-derived buy cap / sell floor. See [`FirmAmvBound`]. Planning data;
     /// default [`FirmAmvBound::None`].
     pub amv_bound: FirmAmvBound,
@@ -1026,6 +2251,14 @@ impl FirmPRow {
     pub fn with_reserve_target(mut self, reserve_target: f64) -> Self {
         debug_assert!(reserve_target >= 0.0, "reserve_target must be >= 0.0");
         self.reserve_target = reserve_target;
+        self
+    }
+
+    /// Sets units kept for growth after wages, above the stock fence.
+    /// Must be `>= 0.0`.
+    pub fn with_growth_target(mut self, growth_target: f64) -> Self {
+        debug_assert!(growth_target >= 0.0, "growth_target must be >= 0.0");
+        self.growth_target = growth_target;
         self
     }
 
@@ -1225,6 +2458,23 @@ impl FirmPRow {
     }
 }
 
+impl FirmPRow {
+    /// Units that must stay for stock; never paid as wages or profit share.
+    pub fn stock_fence(&self) -> f64 {
+        self.stock_target.max(self.reserve_target).max(0.0)
+    }
+
+    /// On-hand units above the stock fence (growth may be raided for wages).
+    pub fn wage_spendable(&self) -> f64 {
+        (self.quantity - self.stock_fence()).max(0.0)
+    }
+
+    /// On-hand units above stock and growth; profit share may not raid growth.
+    pub fn profit_spendable(&self) -> f64 {
+        (self.quantity - self.stock_fence() - self.growth_target.max(0.0)).max(0.0)
+    }
+}
+
 /// Per-row shopping plan built by [`Firm::create_orders`].
 struct RowPlan {
     good: usize,
@@ -1258,7 +2508,7 @@ impl OnHandSplit {
 
 /// Split free on-hand stock into sell, exchange, and/or liquidate.
 /// Production-fenced units are already excluded by [`FirmPRow::free_for_market`].
-fn classify_on_hand(row: &FirmPRow, salability: f64) -> OnHandSplit {
+fn classify_on_hand(row: &FirmPRow, salability: f64, market: &MarketConfig) -> OnHandSplit {
     let free = row.free_for_market();
     if free <= 0.0 {
         return OnHandSplit::empty();
@@ -1267,7 +2517,7 @@ fn classify_on_hand(row: &FirmPRow, salability: f64) -> OnHandSplit {
     let trading = row.purchase_target > 0.0
         || row.sell_target > 0.0
         || row.use_target > 0.0;
-    let can_exchange = salability >= market_constants::EXCHANGE_SALABILITY_MIN;
+    let can_exchange = salability >= market.exchange_salability_min;
 
     if !trading {
         if can_exchange {
@@ -1286,13 +2536,13 @@ fn classify_on_hand(row: &FirmPRow, salability: f64) -> OnHandSplit {
 
     let can_sell = row.sell_target > 0.0;
     if can_sell && can_exchange {
-        let span = 1.0 - market_constants::EXCHANGE_SALABILITY_MIN;
+        let span = 1.0 - market.exchange_salability_min;
         let t = if span > 0.0 {
-            ((salability - market_constants::EXCHANGE_SALABILITY_MIN) / span).clamp(0.0, 1.0)
+            ((salability - market.exchange_salability_min) / span).clamp(0.0, 1.0)
         } else {
             1.0
         };
-        let edge = market_constants::SELL_EXCHANGE_EDGE;
+        let edge = market.sell_exchange_edge;
         let exchange_frac = lerp(edge, 1.0 - edge, t);
         let mut exchange_qty = round_units(free * exchange_frac).clamp(0.0, free);
         let mut sell_qty = free - exchange_qty;
@@ -1328,7 +2578,72 @@ fn round_units(amount: f64) -> f64 {
     (amount + 0.5).floor()
 }
 
-/// First exchange tender that is not `exclude`, as (good id, unit price).
+/// Returns the most valuable process input this firm still needs, as
+/// (good id, unit price). Value is `max(purchase shortfall, use_target)`
+/// times market AMV. Skips `exclude` and non-positive prices.
+fn needed_input_counter(
+    firm: &Firm,
+    history: &MarketHistory,
+    exclude: usize,
+) -> Option<(usize, f64)> {
+    let mut best: Option<(usize, f64, f64)> = None;
+    for (&good, row) in &firm.property {
+        if good == exclude || row.use_target <= 0.0 {
+            continue;
+        }
+        let price = history.price(good);
+        if price <= 0.0 {
+            continue;
+        }
+        let need = row.purchase_qty().max(row.use_target);
+        let value = need * price;
+        let take = match best {
+            None => true,
+            Some((id, best_val, _)) => value > best_val || (value == best_val && good < id),
+        };
+        if take {
+            best = Some((good, value, price));
+        }
+    }
+    best.map(|(good, _, price)| (good, price))
+}
+
+/// Returns the market's most salable money good to ask as payment on a sell.
+/// Skips `exclude`, non-positive prices, and goods below `min_sal`. Tied
+/// salability prefers the lower good id. Does not require the firm to hold
+/// the good.
+fn sell_pay_good(
+    history: &MarketHistory,
+    exclude: usize,
+    min_sal: f64,
+) -> Option<(usize, f64)> {
+    let mut goods: HashSet<usize> = history.prices.keys().copied().collect();
+    goods.extend(history.salability.keys().copied());
+    let mut best: Option<(usize, f64, f64)> = None;
+    for good in goods {
+        if good == exclude {
+            continue;
+        }
+        let price = history.price(good);
+        if price <= 0.0 {
+            continue;
+        }
+        let sal = history.salability(good);
+        if sal < min_sal {
+            continue;
+        }
+        let take = match best {
+            None => true,
+            Some((id, best_sal, _)) => sal > best_sal || (sal == best_sal && good < id),
+        };
+        if take {
+            best = Some((good, sal, price));
+        }
+    }
+    best.map(|(good, _, price)| (good, price))
+}
+
+/// First on-hand exchange tender that is not `exclude`, as (good id, unit price).
 /// Skips non-positive AMV so counter amounts keep the buy/sell sign.
 fn counter_good(exchange_goods: &[(usize, f64, f64)], exclude: usize) -> Option<(usize, f64)> {
     exchange_goods.iter().find_map(|&(good, _, price)| {
@@ -1349,9 +2664,10 @@ impl DealMaker for Firm {
     /// (any salability), then other free stock by salability. Highly
     /// salable goods (and that counter) cover the fill first; lower
     /// salability only if those cannot. Shrinks the fill if still short.
-    /// Does not tender units `create_orders` would put on sell or offer.
-    /// Request orders with no `amv_target` still honor the row buy cap.
-    /// Does not move stock.
+    /// Does not tender units `create_orders` would put on sell or offer
+    /// (current classify: sell and liquidate slices). Exchange leftover on
+    /// a sell-plan good is still tenderable. AMV bounds do not void the
+    /// basket. Does not move stock.
     fn buy(
         &self,
         own_order: &MarketOrder,
@@ -1367,6 +2683,7 @@ impl DealMaker for Firm {
             own_order,
             other_order,
             history,
+            factuals.config.deal.high_salability,
             |good| firm_tenderable(self, good, targeted_good, factuals, history),
             &live,
         )?;
@@ -1381,17 +2698,6 @@ impl DealMaker for Firm {
             &live,
             firm_transport_on_hand(self, factuals),
         )?;
-        if own_order.amv_target.is_none() {
-            if let Some(cap) = self
-                .property
-                .get(&targeted_good)
-                .and_then(|row| row.amv_bound.maximum())
-            {
-                if deal_exceeds_buyer_unit_cap(&deal, targeted_good, cap, history) {
-                    return None;
-                }
-            }
-        }
         Some(deal)
     }
 
@@ -1424,9 +2730,15 @@ impl DealMaker for Firm {
                 .get(&good)
                 .is_some_and(|row| row.purchase_target > 0.0 || row.use_target > 0.0)
         });
-        evaluate_firm_amv(deal, role, history, needs_received, |good| {
-            firm_uses_good(self, good)
-        })
+        evaluate_amv_floor(
+            deal,
+            role,
+            history,
+            factuals.config.deal.firm_amv_min_keep,
+            factuals.config.deal.firm_amv_need_keep,
+            needs_received,
+            |good| firm_uses_good(self, good),
+        )
     }
 
     /// # Finalize
@@ -1449,7 +2761,14 @@ impl DealMaker for Firm {
             let price = history.price(good);
             let row = self.property.entry(good).or_insert_with(FirmPRow::new);
             row.quantity += delta;
-            debug_assert!(row.quantity >= 0.0, "quantity must be >= 0.0");
+            debug_assert!(
+                row.quantity >= 0.0,
+                "quantity must be >= 0.0 (firm {} good {} qty {} delta {})",
+                self.id,
+                good,
+                row.quantity - delta,
+                delta
+            );
             if delta > 0.0 {
                 row.blend_average_cost(delta, price);
                 if role == DealRole::Buyer {
@@ -1537,7 +2856,11 @@ fn firm_tenderable(
     let Some(row) = firm.property.get(&good) else {
         return 0.0;
     };
-    let split = classify_on_hand(row, history.salability(good));
+    // Tender the exchange slice only. Sell/liquidate stay for those orders.
+    // A sell-plan good with no proven money still needs that leftover as
+    // payment. Morning sell qty plus a later reclassify can overdraw if
+    // salability rose; freeze the morning split later if that bites.
+    let split = classify_on_hand(row, history.salability(good), &factuals.config.market);
     (row.free_for_market() - split.sell - split.liquidate).max(0.0)
 }
 
@@ -1682,6 +3005,30 @@ mod firm {
             assert_eq!(line.last_iterations, 5.0);
             assert_eq!(line.last_amv_consumed, 50.0);
             assert_eq!(line.last_amv_produced, 60.0);
+        }
+
+        #[test]
+        fn skips_a_zero_target_line() {
+            let process = Process::new(1, "sawmill", 0)
+                .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Idle mill".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(10, FirmPRow::new().with_quantity(10.0));
+            let mut line = empty_production_line(1);
+            line.target = Some(0.0);
+            firm.production_line.push(line);
+
+            let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0)]);
+            let effects = firm.run_production(&factuals, &market);
+
+            assert!(effects.is_empty());
+            assert_eq!(firm.property[&10].quantity, 10.0);
+            assert!(!firm.property.contains_key(&20));
+            assert_eq!(firm.production_line[0].last_iterations, 0.0);
         }
 
         #[test]
@@ -2376,6 +3723,23 @@ mod firm {
         }
 
         #[test]
+        fn amv_bound_from_parts_matches_the_four_shapes() {
+            assert_eq!(FirmAmvBound::from_parts(None, None), FirmAmvBound::None);
+            assert_eq!(
+                FirmAmvBound::from_parts(Some(2.0), None),
+                FirmAmvBound::Minimum(2.0)
+            );
+            assert_eq!(
+                FirmAmvBound::from_parts(None, Some(3.0)),
+                FirmAmvBound::Maximum(3.0)
+            );
+            assert_eq!(
+                FirmAmvBound::from_parts(Some(2.0), Some(3.0)),
+                FirmAmvBound::MinMax(2.0, 3.0)
+            );
+        }
+
+        #[test]
         fn amv_bound_clamps_bid_down_and_ask_up() {
             let cap = FirmAmvBound::Maximum(22.5);
             assert_eq!(cap.clamp_bid(40.0), 22.5);
@@ -2498,6 +3862,333 @@ mod firm {
         }
     }
 
+    mod plan_should {
+        use super::*;
+        use crate::game::good::GoodTag;
+        use crate::game::market::MarketHistory;
+
+        fn make_history(entries: &[(usize, f64)]) -> MarketHistory {
+            let mut history = MarketHistory::new();
+            for &(id, price) in entries {
+                history.prices.insert(id, price);
+            }
+            history
+        }
+
+        fn miller_world() -> (Factuals, MarketHistory) {
+            let process = Process::new(1, "mill", 0)
+                .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+            factuals.config.firm.planning_lerp_rate = 1.0;
+            (factuals, make_history(&[(10, 1.0), (20, 5.0)]))
+        }
+
+        fn miller_firm(target: f64) -> Firm {
+            let mut firm = Firm::new(1, "mill".into(), 42, hexx::Hex::new(0, 0));
+            let mut line = empty_production_line(1);
+            line.target = Some(target);
+            firm.production_line.push(line);
+            firm.property.insert(10, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(20, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(5, FirmPRow::new().with_quantity(50.0));
+            firm
+        }
+
+        fn mark_hit(firm: &mut Firm, sold: f64, produced: f64, sell_target: f64) {
+            let line = &mut firm.production_line[0];
+            line.last_success_rate = 1.0;
+            line.last_iterations = line.target.unwrap_or(0.0);
+            line.last_amv_consumed = 8.0;
+            line.last_amv_produced = 20.0;
+            if let Some(row) = firm.property.get_mut(&20) {
+                row.sold = sold;
+                row.produced = produced;
+                row.sell_target = sell_target;
+            }
+        }
+
+        #[test]
+        fn cold_start_keeps_target_and_rolls_up_recipe() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.plan(&factuals, &history);
+
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+            let wood = &firm.property[&10];
+            assert_eq!(wood.use_target, 8.0);
+            assert_eq!(wood.stock_target, 16.0);
+            assert_eq!(wood.purchase_target, 6.0);
+            assert_eq!(wood.amv_bound, FirmAmvBound::Maximum(2.5));
+            let plank = &firm.property[&20];
+            assert_eq!(plank.use_target, 0.0);
+            assert_eq!(plank.sell_target, 4.0);
+            assert_eq!(plank.amv_bound, FirmAmvBound::Minimum(2.0));
+            let coin = &firm.property[&5];
+            assert_eq!(coin.purchase_target, 0.0);
+            assert_eq!(coin.sell_target, 0.0);
+            assert_eq!(coin.amv_bound, FirmAmvBound::None);
+        }
+
+        #[test]
+        fn starting_a_line_from_zero_snaps_to_one_iteration() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(0.0);
+            mark_hit(&mut firm, 4.0, 0.0, 4.0);
+            firm.production_line[0].last_iterations = 4.0;
+            firm.plan(&factuals, &history);
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got >= 1.0, "got {got}");
+        }
+
+        #[test]
+        fn idle_line_stays_at_zero() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(0.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(0.0));
+        }
+
+        #[test]
+        fn quiet_baseline_keeps_the_line_target() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            let line = &mut firm.production_line[0];
+            line.last_success_rate = 1.0;
+            line.last_iterations = 4.0;
+            line.last_amv_consumed = 10.0;
+            line.last_amv_produced = 10.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            // sell success 0.6 sits in the shrink..grow band; leftover matches output_cover.
+            plank.sold = 2.4;
+            plank.produced = 4.0;
+            plank.sell_target = 4.0;
+            plank.quantity = 6.0;
+            plank.amv_target = 5.0;
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+            assert_eq!(firm.property[&20].sell_target, 4.0);
+        }
+
+        #[test]
+        fn missing_inputs_do_not_shrink_the_line() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.production_line[0].last_success_rate = 0.0;
+            firm.production_line[0].last_iterations = 0.0;
+            firm.production_line[0].last_missing_goods = vec![10];
+            firm.property.get_mut(&10).unwrap().quantity = 0.0;
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+            assert_eq!(firm.property[&10].purchase_target, 16.0);
+        }
+
+        #[test]
+        fn sell_above_output_raises_both_lines() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(10.0);
+            let mut second = empty_production_line(1);
+            second.target = Some(10.0);
+            second.last_success_rate = 1.0;
+            second.last_iterations = 10.0;
+            second.last_amv_consumed = 10.0;
+            second.last_amv_produced = 11.0;
+            firm.production_line.push(second);
+            firm.production_line[0].last_success_rate = 1.0;
+            firm.production_line[0].last_iterations = 10.0;
+            firm.production_line[0].last_amv_consumed = 10.0;
+            firm.production_line[0].last_amv_produced = 11.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.sell_target = 40.0;
+            plank.sold = 40.0;
+            plank.produced = 20.0;
+            plank.quantity = 40.0;
+            plank.amv_target = 5.0;
+            firm.plan(&factuals, &history);
+            let a = firm.production_line[0].target.unwrap();
+            let b = firm.production_line[1].target.unwrap();
+            assert!(a > 10.0 && b > 10.0, "got {a} {b}");
+        }
+
+        #[test]
+        fn unequal_profit_shifts_output_to_the_better_line() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(10.0);
+            let mut second = empty_production_line(1);
+            second.target = Some(10.0);
+            second.last_success_rate = 1.0;
+            second.last_iterations = 10.0;
+            second.last_amv_consumed = 10.0;
+            second.last_amv_produced = 10.0;
+            firm.production_line.push(second);
+            firm.production_line[0].last_success_rate = 1.0;
+            firm.production_line[0].last_iterations = 10.0;
+            firm.production_line[0].last_amv_consumed = 10.0;
+            firm.production_line[0].last_amv_produced = 11.9;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.sell_target = 20.0;
+            plank.sold = 12.0;
+            plank.produced = 20.0;
+            plank.quantity = 30.0;
+            plank.amv_target = 5.0;
+            firm.plan(&factuals, &history);
+            let better = firm.production_line[0].target.unwrap();
+            let worse = firm.production_line[1].target.unwrap();
+            assert!(better > worse, "got {better} {worse}");
+            assert!((better + worse - 20.0).abs() < 1e-6, "sum {}", better + worse);
+        }
+
+        #[test]
+        fn undersell_with_a_high_quote_cuts_own_amv_not_to_market() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 0.0, 4.0, 8.0);
+            firm.property.get_mut(&20).unwrap().quantity = 8.0;
+            firm.property.get_mut(&20).unwrap().amv_target = 6.0;
+            firm.plan(&factuals, &history);
+            let amv = firm.property[&20].amv_target;
+            assert!(amv < 6.0, "got {amv}");
+            assert_ne!(amv, history.price(20));
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+        }
+
+        #[test]
+        fn unlimited_target_stays_none_and_uses_last_iterations() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.production_line[0].target = None;
+            firm.production_line[0].last_iterations = 3.0;
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, None);
+            assert_eq!(firm.property[&10].use_target, 6.0);
+        }
+
+        #[test]
+        fn merchant_row_restocks_what_sold() {
+            let (factuals, history) = miller_world();
+            let mut firm = Firm::new(2, "trader".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(4.0)
+                    .with_purchase_target(10.0)
+                    .with_sell_target(10.0)
+                    .with_sold(6.0)
+                    .with_amv_target(5.0),
+            );
+            firm.plan(&factuals, &history);
+            let row = &firm.property[&20];
+            assert_eq!(row.purchase_target, 6.0);
+            assert_eq!(row.sell_target, 4.0);
+            assert_eq!(row.use_target, 0.0);
+            assert_eq!(row.amv_bound, FirmAmvBound::None);
+            assert_eq!(row.margin, factuals.config.firm.default_margin);
+        }
+
+        #[test]
+        fn untradeable_input_gets_use_but_no_purchase() {
+            let (mut factuals, history) = miller_world();
+            factuals.goods.get_mut(&10).unwrap().tags.insert(GoodTag::Untradeable);
+            let mut firm = miller_firm(4.0);
+            firm.plan(&factuals, &history);
+            let wood = &firm.property[&10];
+            assert_eq!(wood.use_target, 8.0);
+            assert_eq!(wood.purchase_target, 0.0);
+        }
+
+        #[test]
+        fn record_keeping_updates_rolling_average_then_plans() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.property.get_mut(&10).unwrap().rolling_average = 0.0;
+            firm.record_keeping(&factuals, &history);
+            assert_eq!(firm.property[&10].rolling_average, 2.5);
+            assert_eq!(firm.property[&10].use_target, 8.0);
+            assert_eq!(firm.records.profit_ratio, 1.0);
+            assert_eq!(firm.records.sell_success, 1.0);
+        }
+
+        #[test]
+        fn missed_purchase_raises_reserve_target() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.property.get_mut(&10).unwrap().purchase_target = 8.0;
+            firm.property.get_mut(&10).unwrap().bought = 0.0;
+            firm.property.get_mut(&10).unwrap().quantity = 0.0;
+            firm.plan(&factuals, &history);
+            // use 8 * reserve_cover 0.5 * (1 + 0.5 miss) = 6.0, lerp 1.0
+            assert_eq!(firm.property[&10].reserve_target, 6.0);
+        }
+
+        #[test]
+        fn unsold_output_does_not_raise_the_line() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 0.0, 4.0, 8.0);
+            firm.property.get_mut(&20).unwrap().quantity = 8.0;
+            firm.property.get_mut(&20).unwrap().amv_target = 5.0;
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+            assert!(
+                firm.property[&20].sell_target < 8.0,
+                "got {}",
+                firm.property[&20].sell_target
+            );
+        }
+
+        #[test]
+        fn strong_sales_above_cost_raise_sell_target() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 4.0, 4.0, 4.0);
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.quantity = 6.0;
+            plank.amv_target = 5.0;
+            plank.sold_amv = 40.0;
+            plank.average_cost = 5.0;
+            firm.plan(&factuals, &history);
+            assert!(
+                firm.property[&20].sell_target > 4.0,
+                "got {}",
+                firm.property[&20].sell_target
+            );
+        }
+
+        #[test]
+        fn record_keeping_raises_confidence_on_a_hit() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 4.0, 4.0, 4.0);
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.sold_amv = 40.0;
+            plank.average_cost = 5.0;
+            let before = firm.records.confidence;
+            firm.record_keeping(&factuals, &history);
+            assert!(
+                firm.records.confidence > before,
+                "got {} from {before}",
+                firm.records.confidence
+            );
+            assert_eq!(firm.records.profit_ratio, 2.0);
+            assert_eq!(firm.records.sell_success, 1.0);
+        }
+
+        #[test]
+        fn plan_pace_is_faster_at_high_confidence() {
+            let cfg = crate::game::config::FirmConfig::default();
+            let slow = super::super::plan_pace(0.0, &cfg);
+            let mid = super::super::plan_pace(
+                crate::game::config::firm_constants::CONFIDENCE_DEFAULT,
+                &cfg,
+            );
+            let fast = super::super::plan_pace(1.0, &cfg);
+            assert!(slow < mid && mid < fast, "got {slow} {mid} {fast}");
+            assert!((mid - cfg.planning_lerp_rate).abs() < 1e-12);
+        }
+    }
+
     mod create_orders_should {
         use super::*;
         use crate::game::actor::Actor;
@@ -2556,9 +4247,10 @@ mod firm {
             let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
             assert_eq!(orders.len(), 2);
-            assert!(orders[0].is_offer_order());
+            assert!(orders[0].is_sell_order());
             assert_eq!(orders[0].target, 20);
             assert_eq!(orders[0].target_amount, -12.0);
+            assert_eq!(orders[0].counter_offer, Some(10));
             assert_eq!(
                 orders[0].priority,
                 compose_sell_priority(market_priority::FIRM_PRODUCER, 12.0, 0.0)
@@ -2905,7 +4597,63 @@ mod firm {
         }
 
         #[test]
-        fn buy_cap_clamps_order_bid() {
+        fn sell_asks_for_market_money_not_on_hand_barter() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                6,
+                FirmPRow::new().with_quantity(4.0),
+            );
+            firm.property.insert(
+                4,
+                FirmPRow::new()
+                    .with_quantity(8.0)
+                    .with_sell_target(4.0)
+                    .with_amv_target(8.0),
+            );
+            let factuals = make_factuals_goods(&[4, 5, 6]);
+            let history = make_history(&[
+                (4, 8.0, 0.7),
+                (5, 0.21, 1.0),
+                (6, 15.0, 1.0),
+            ]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
+            assert_eq!(sell.target, 4);
+            assert_eq!(sell.counter_offer, Some(5));
+        }
+
+        #[test]
+        fn sell_asks_for_needed_input_before_money() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                2,
+                FirmPRow::new()
+                    .with_purchase_target(8.0)
+                    .with_use_target(5.0)
+                    .with_stock_target(10.0),
+            );
+            firm.property.insert(
+                1,
+                FirmPRow::new()
+                    .with_quantity(12.0)
+                    .with_sell_target(12.0)
+                    .with_amv_target(1.2),
+            );
+            firm.property.insert(5, FirmPRow::new().with_quantity(40.0));
+            let factuals = make_factuals_goods(&[1, 2, 5]);
+            let history = make_history(&[
+                (1, 1.2, 0.5),
+                (2, 0.2, 0.35),
+                (5, 0.21, 1.0),
+            ]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
+            assert_eq!(sell.target, 1);
+            assert_eq!(sell.counter_offer, Some(2));
+        }
+
+        #[test]
+        fn buy_posts_unclamped_bid_above_cap() {
             let mut firm = empty_firm();
             firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
             firm.property.insert(
@@ -2922,11 +4670,11 @@ mod firm {
             let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             let buy = orders.iter().find(|o| o.is_buy_order()).expect("buy");
             assert_eq!(buy.target, 10);
-            assert_eq!(buy.amv_target, Some(22.5));
+            assert_eq!(buy.amv_target, Some(40.0));
         }
 
         #[test]
-        fn buy_cap_skips_when_market_is_above_cap() {
+        fn buy_posts_when_market_is_above_cap() {
             let mut firm = empty_firm();
             firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
             firm.property.insert(
@@ -2940,11 +4688,14 @@ mod firm {
             let factuals = make_factuals_goods(&[1, 10]);
             let history = make_history(&[(1, 1.0, 0.9), (10, 30.0, 0.4)]);
             let orders = firm.create_orders(&history, &factuals, &HashSet::new());
-            assert!(orders.iter().all(|o| o.target != 10 || o.target_amount <= 0.0));
+            let buy = orders.iter().find(|o| o.target == 10 && o.target_amount > 0.0)
+                .expect("buy");
+            assert_eq!(buy.target_amount, 4.0);
+            assert_eq!(buy.amv_target, Some(30.0));
         }
 
         #[test]
-        fn sell_floor_raises_order_ask() {
+        fn sell_posts_unclamped_ask_below_floor() {
             let mut firm = empty_firm();
             firm.property.insert(1, FirmPRow::new().with_quantity(50.0));
             firm.property.insert(
@@ -2960,7 +4711,7 @@ mod firm {
             let orders = firm.create_orders(&history, &factuals, &HashSet::new());
             let sell = orders.iter().find(|o| o.is_sell_order()).expect("sell");
             assert_eq!(sell.target, 20);
-            assert_eq!(sell.amv_target, Some(25.0));
+            assert_eq!(sell.amv_target, Some(20.0));
         }
 
         #[test]
@@ -3400,7 +5151,7 @@ mod firm {
         }
 
         #[test]
-        fn buy_returns_none_when_request_exceeds_row_buy_cap() {
+        fn buy_proposes_when_request_exceeds_row_buy_cap() {
             let mut firm = empty_firm();
             firm.property.insert(1, FirmPRow::new().with_quantity(20.0));
             firm.property.insert(
@@ -3426,13 +5177,16 @@ mod firm {
                 8.0,
                 market_priority::FIRM_PRODUCER,
             );
-            assert!(firm.buy(&own, &other, &history, &factuals).is_none());
+            let deal = firm.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert!((deal.goods[&20] + 4.0).abs() < 1e-12);
+            assert!((deal.goods[&1] - 8.0).abs() < 1e-12);
         }
     }
 
     mod pay_wage_shares_should {
         use super::*;
         use crate::game::actor::Actor;
+        use crate::game::config::GameConfig;
         use crate::game::household::Household;
         use crate::game::pop::{DemoRow, Pop, PopRecords};
         use crate::game::sentiment::Sentiment;
@@ -3474,7 +5228,7 @@ mod firm {
             firm.workforce.push(worker(2));
             let mut pops = HashMap::from([(2, make_pop(2))]);
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert_eq!(payout.coinage, 10.0);
             assert_eq!(payout.owner_amount, 0.0);
@@ -3493,7 +5247,7 @@ mod firm {
             firm.owners.owner = Actor::Pop(3);
             let mut pops = HashMap::from([(3, make_pop(3))]);
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert!(payout.owner_credited);
             assert_eq!(payout.owner_amount, 3.0);
@@ -3510,7 +5264,7 @@ mod firm {
             firm.workforce.push(worker(2));
             let mut pops = HashMap::from([(2, make_pop(2)), (3, make_pop(3))]);
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert!(payout.owner_credited);
             assert_eq!(payout.owner_amount, 3.0);
@@ -3528,7 +5282,7 @@ mod firm {
             firm.workforce.push(worker(2));
             let mut pops = HashMap::from([(2, make_pop(2))]);
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert_eq!(payout.owner_amount, 0.0);
             assert_eq!(payout.worker_amount, 1.0);
@@ -3545,7 +5299,7 @@ mod firm {
             firm.workforce.push(worker(3));
             let mut pops = HashMap::from([(2, make_pop(2)), (3, make_pop(3))]);
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert_eq!(payout.owner_amount, 0.0);
             assert_eq!(payout.worker_amount, 6.0);
@@ -3562,11 +5316,31 @@ mod firm {
             firm.workforce.push(worker(9));
             let mut pops = HashMap::new();
 
-            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0);
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
 
             assert_eq!(payout.owner_amount, 0.0);
             assert_eq!(payout.worker_amount, 0.0);
             assert_eq!(firm.property[&COIN].quantity, 10.0);
+        }
+
+        #[test]
+        fn input_free_producer_pays_out_the_whole_till() {
+            let mut firm = Firm::new(1, "mine".into(), 1, hexx::Hex::new(0, 0));
+            firm.production_line.push(super::empty_production_line(3));
+            firm.property.insert(COIN, FirmPRow::new().with_quantity(10.0));
+            firm.owners.owner = Actor::Pop(3);
+            firm.workforce.push(worker(2));
+            let mut pops = HashMap::from([(2, make_pop(2)), (3, make_pop(3))]);
+
+            let payout = firm.pay_wage_shares(&mut pops, COIN, 1.0, &GameConfig::default());
+
+            assert!(payout.owner_credited);
+            assert_eq!(payout.owner_amount, 5.0);
+            assert_eq!(payout.worker_amount, 5.0);
+            assert_eq!(payout.workers, vec![(2, 5.0)]);
+            assert_eq!(firm.property[&COIN].quantity, 0.0);
+            assert_eq!(pops[&3].property[&COIN].quantity, 5.0);
+            assert_eq!(pops[&2].property[&COIN].quantity, 5.0);
         }
     }
 }

@@ -16,11 +16,10 @@ When reviewing commits, a branch, a PR, or local changes:
 
 ---
 
-**Last updated:** 2026-08-30 — implemented mixed-good / self-trade `None`,
-buyer unit-AMV cap, firm sell/offer earmark on tenders, and pop tender
-helper comment style. Leftover salability TODO and tester roster-count nit
-still open.
-**Open items:** 0 bugs, 1 suggestion, 1 nit.
+**Last updated:** 2026-09-06 — AMV bounds are planning guidestones (no
+trade skip/clamp/void), tester Lord pop owns all firms, sell-plan goods
+can tender their exchange slice again.
+**Open items:** 0 bugs, 1 suggestion, 0 nits.
 
 ---
 
@@ -38,6 +37,4 @@ still open.
 
 ## Open nits
 
-- `examples/market_tester.rs:4` — module docs say "3 pops, 5 producer firms".
-  The roster builds six firms (farm, bakery, mine, mint, jeweler, well).
-  Say 6 firms (or 6 producers).
+(none)

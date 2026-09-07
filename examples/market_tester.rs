@@ -1,37 +1,39 @@
 //! CLI box for probing a market day.
 //!
-//! Startup loads goods from `data/world/goods.toml`, builds a small living
-//! roster (3 pops, 6 producer firms) and a price/salability snapshot, then
-//! loads books from
-//! [`Pop::create_orders`] / [`Firm::create_orders`]. `day` / `day N` runs a
-//! short calendar loop: wage shares, [`Market::run_market_day`], consume
-//! firm inputs and restock outputs, pop consume, sentiments, record
-//! keeping (coin save capped at 1), and decay.
-//! `amv` reprints the AMV trail. `match` is still a read-only matcher pass
-//! on the on-screen books.
+//! Startup loads goods, processes, and config from `data/world/`, builds a
+//! small living roster (4 pops, 5 producer firms), and loads books from
+//! [`Pop::create_orders`] / [`Firm::create_orders`]. The home screen is a
+//! short summary. `stock`, `orders`, and `processes` open full pages.
+//! `day` / `day N` runs the calendar loop, including firm `record_keeping`
+//! (rolling average, records, [`Firm::plan`]) after production and pop
+//! consume. Each day appends price CSVs under `data/logs/` (market close,
+//! firm quotes, settled trades). `csv` shows the files; `csv <name>`
+//! changes the stem.
 //!
 //! ```text
 //! cargo run --example market_tester
 //! ```
 //!
 //! ```text
-//!   shop
 //!   day
+//!   stock
+//!   orders
+//!   processes
 //!   day 5
-//!   amv
-//!   match
-//!   request laborers grain 3
+//!   csv
 //! ```
 
 use std::collections::{HashMap, HashSet};
+use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use hexx::Hex;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use simpler_economy::game::actor::Actor;
-use simpler_economy::game::config::{labor_constants, market_priority};
+use simpler_economy::game::config::{pop_constants, MarketPriorityConfig, PopConfig};
+use simpler_economy::game::good::TIME;
 use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::firm::{Firm, FirmAmvBound, FirmPRow, ProductionLine, WagePayout};
@@ -41,7 +43,7 @@ use simpler_economy::game::household::Household;
 use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MarketMeeting, MeetingOutcome, WashReason,
 };
-use simpler_economy::game::marketorder::{compose_sell_priority, MarketOrder};
+use simpler_economy::game::marketorder::{compose_sell_priority_with, MarketOrder};
 use simpler_economy::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::game::sentiment::Sentiment;
@@ -65,12 +67,16 @@ const GOLD: usize = 4;
 const COIN: usize = 5;
 const JEWELRY: usize = 6;
 
-/// Tester coin is 10x units at 1/10 AMV so one coin is a small chip, not a loaf.
-const COIN_AMV: f64 = 0.1;
+/// Tester coin is 10x units. Opening AMV is 0.1 * 2.1 so gold 8 / coin
+/// sits near the 40-coin mint recipe (8 / 0.21 ~ 38).
+const COIN_AMV: f64 = 0.21;
 /// Overnight coin save cap (units). Leaves the rest tenderable.
 const COIN_SAVE_UNITS: f64 = 1.0;
+/// Default CSV stem under `data/logs/` (`prices_market.csv`, …).
+const CSV_STEM_DEFAULT: &str = "prices";
 
 const PREFAB_GOODS: &[NamedGood] = &[
+    NamedGood { id: TIME, name: "time" },
     NamedGood { id: GRAIN, name: "grain" },
     NamedGood { id: WATER, name: "water" },
     NamedGood { id: BREAD, name: "bread" },
@@ -83,25 +89,12 @@ const PREFAB_ACTORS: &[NamedActor] = &[
     NamedActor { actor: Actor::Pop(1), name: "farmers" },
     NamedActor { actor: Actor::Pop(2), name: "laborers" },
     NamedActor { actor: Actor::Pop(3), name: "townsfolk" },
+    NamedActor { actor: Actor::Pop(4), name: "lord" },
     NamedActor { actor: Actor::Firm(1), name: "farm" },
     NamedActor { actor: Actor::Firm(2), name: "bakery" },
     NamedActor { actor: Actor::Firm(3), name: "mine" },
-    NamedActor { actor: Actor::Firm(4), name: "mint" },
     NamedActor { actor: Actor::Firm(5), name: "jeweler" },
     NamedActor { actor: Actor::Firm(6), name: "well" },
-];
-
-/// Intended buy/sell roles for the roster table (not live order amounts).
-const ROSTER: &[(&str, &str, &str)] = &[
-    ("farmers", "water, bread", "-"),
-    ("laborers", "grain, water, bread", "-"),
-    ("townsfolk", "grain, water, bread", "-"),
-    ("farm", "water", "grain"),
-    ("bakery", "grain", "bread"),
-    ("mine", "-", "gold"),
-    ("mint", "gold", "coin"),
-    ("jeweler", "gold", "jewelry"),
-    ("well", "-", "water"),
 ];
 
 struct Session {
@@ -110,7 +103,7 @@ struct Session {
     rng: StdRng,
     seed: Option<u64>,
     log: String,
-    /// When true, the screen is the last log (a day report) instead of the roster.
+    /// When true, the screen is the last requested page instead of home.
     focus_log: bool,
     /// Completed calendar days in this session.
     day: u32,
@@ -119,6 +112,8 @@ struct Session {
     factuals: Factuals,
     history: MarketHistory,
     market: Market,
+    /// Basename for day-end CSVs in `data/logs/` (`{stem}_market.csv`, …).
+    csv_stem: String,
 }
 
 struct Tokens<'a> {
@@ -161,6 +156,7 @@ fn main() {
         factuals,
         history,
         market,
+        csv_stem: CSV_STEM_DEFAULT.to_string(),
     };
     session.log = shop_from_actors(&mut session);
 
@@ -168,14 +164,7 @@ fn main() {
     if tty {
         draw_ui(&session);
     } else {
-        println!("=== market tester ===");
-        println!("Living roster loaded via create_orders. Type help for commands.");
-        println!("`day` / `day N` runs the calendar loop. `match` is read-only.\n");
-        print_legend(&session);
-        println!();
-        list_books(&session);
-        println!();
-        println!("{}", session.log.trim_end());
+        print!("{}", format_home(&session));
     }
 
     let stdin = io::stdin();
@@ -223,22 +212,15 @@ fn clear_screen() {
 
 fn draw_ui(session: &Session) {
     clear_screen();
-    println!("=== market tester ===");
     if session.focus_log {
+        println!("=== market tester ===");
         println!("{}", rng_line(session));
-        println!("shop / cls  restores the roster.");
+        println!("home  back to summary.");
         println!();
         println!("{}", session.log.trim_end());
         return;
     }
-    print_legend(session);
-    println!();
-    list_books(session);
-    if !session.log.is_empty() {
-        println!();
-        println!("---");
-        println!("{}", session.log.trim_end());
-    }
+    print!("{}", format_home(session));
 }
 
 enum CmdResult {
@@ -250,11 +232,12 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let cmd = tokens[0].to_ascii_lowercase();
     let rest = &tokens[1..];
-    session.focus_log = cmd == "day" || cmd == "d" || cmd == "days";
+    session.focus_log = is_page_command(&cmd);
     let msg = match cmd.as_str() {
         "help" | "?" | "h" => help_text(),
-        "legend" | "ids" | "prefabs" | "roster" | "cls" | "list" | "ls" | "l" => {
-            "header already shows roster, goods, and books.".into()
+        "home" | "cls" => {
+            session.focus_log = false;
+            String::new()
         }
         "quit" | "exit" | "q" => return CmdResult::Quit,
         "clear" => {
@@ -263,11 +246,15 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
             "books cleared.".into()
         }
         "shop" => shop_from_actors(session),
+        "stock" | "inv" => format_stock_page(session),
+        "orders" | "books" | "book" => format_orders_page(session),
+        "processes" | "process" | "recipes" => format_processes_page(session),
         "day" | "d" | "days" => match parse_day_count(rest) {
             Ok(n) => run_days(session, n),
             Err(err) => err,
         },
         "amv" | "prices" => format_amv_trail(session).trim_end().to_string(),
+        "csv" | "log" => handle_csv_command(session, rest),
         "seed" => match parse_seed(rest) {
             Ok(seed) => {
                 session.rng = StdRng::seed_from_u64(seed);
@@ -281,19 +268,19 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
             session.seed = None;
             "rng back to os entropy.".into()
         }
-        "request" | "req" => match parse_simple_order(rest, true) {
+        "request" | "req" => match parse_simple_order(rest, true, &session.factuals.config.market_priority) {
             Ok(order) => add_buy(session, order),
             Err(err) => err,
         },
-        "offer" => match parse_simple_order(rest, false) {
+        "offer" => match parse_simple_order(rest, false, &session.factuals.config.market_priority) {
             Ok(order) => add_sell(session, order),
             Err(err) => err,
         },
-        "buy" => match parse_exchange_order(rest, true) {
+        "buy" => match parse_exchange_order(rest, true, &session.factuals.config.market_priority) {
             Ok(order) => add_buy(session, order),
             Err(err) => err,
         },
-        "sell" => match parse_exchange_order(rest, false) {
+        "sell" => match parse_exchange_order(rest, false, &session.factuals.config.market_priority) {
             Ok(order) => add_sell(session, order),
             Err(err) => err,
         },
@@ -348,53 +335,123 @@ fn insert_order(session: &mut Session, order: MarketOrder) {
     }
 }
 
-fn print_legend(session: &Session) {
-    println!("goods  (id  name  amv  sal  trail old->new)");
-    println!("  --  --------  ------  ----  ----------------");
-    for good in PREFAB_GOODS {
-        let amv = session.history.price(good.id);
-        let sal = session.history.salability(good.id);
-        let trail = session
-            .market
-            .goods
-            .get(&good.id)
-            .map(fmt_amv_history)
-            .unwrap_or_else(|| "-".into());
-        println!(
-            "  {:>2}  {:<8}  {:>6}  {:>4}  {}",
-            good.id,
-            good.name,
-            fmt_num(amv),
-            fmt_num(sal),
-            trail
-        );
-    }
-    println!();
-    println!("roster  (pops request only; firms buy/sell from create_orders)");
-    println!("  {:<10}  {:<32} | {}", "actor", "buying", "selling");
-    println!("  {:-<10}  {:-<32}-+-{:-<16}", "", "", "");
-    for (name, buying, selling) in ROSTER {
-        println!("  {:<10}  {:<32} | {}", name, buying, selling);
-    }
-    println!();
-    print_firm_bounds(session);
-    println!();
-    print_live_stock(session);
-    println!();
-    println!("Type a name, or kind+id / raw good id.  shop  reloads actor orders.");
-    println!("  day [N]  runs N calendar days (wages, market, consume, records).");
-    println!("  request laborers grain 3");
-    println!();
-    println!("Buy order priority: lower goes first. Defaults:");
-    println!("  firm 2.5 (producer)   pop 4");
-    println!("Sell/offer priority: higher is more likely. Default is compose_sell_priority.");
+fn is_page_command(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "day"
+            | "d"
+            | "days"
+            | "stock"
+            | "inv"
+            | "orders"
+            | "books"
+            | "book"
+            | "processes"
+            | "process"
+            | "recipes"
+            | "amv"
+            | "prices"
+            | "help"
+            | "?"
+            | "h"
+            | "match"
+            | "m"
+    )
 }
 
-fn print_firm_bounds(session: &Session) {
-    println!("firm bounds  (min = sell floor, max = buy cap)");
-    println!("  shop skips a buy when market AMV is already above max.");
-    println!("  {:<10}  {:<8}  {}", "actor", "good", "bound");
-    println!("  {:-<10}  {:-<8}  {:-<16}", "", "", "");
+fn format_home(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("=== market tester ===\n");
+    out.push_str(&rng_line(session));
+    out.push('\n');
+    out.push_str("goods  (amv  sal)\n");
+    out.push_str("  --  --------  ------  ----\n");
+    for good in PREFAB_GOODS {
+        out.push_str(&format!(
+            "  {:>2}  {:<8}  {:>6}  {:>4}\n",
+            good.id,
+            good.name,
+            fmt_num(session.history.price(good.id)),
+            fmt_num(session.history.salability(good.id))
+        ));
+    }
+    let pops: Vec<&str> = PREFAB_ACTORS
+        .iter()
+        .filter(|a| matches!(a.actor, Actor::Pop(_)))
+        .map(|a| a.name)
+        .collect();
+    let firms: Vec<&str> = PREFAB_ACTORS
+        .iter()
+        .filter(|a| matches!(a.actor, Actor::Firm(_)))
+        .map(|a| a.name)
+        .collect();
+    out.push('\n');
+    out.push_str(&format!("pops   {}\n", pops.join("  ")));
+    out.push_str(&format!("firms  {}\n", firms.join("  ")));
+    out.push_str(&format!(
+        "books  {} buys / {} sells\n",
+        session.buys.len(),
+        session.sells.len()
+    ));
+    out.push_str(&format!(
+        "csv    {}/{{market,firms,trades}}.csv\n",
+        csv_stem_dir_display(session)
+    ));
+    out.push_str("\nstock  orders  processes  day  amv  csv  help\n");
+    if !session.log.is_empty() {
+        out.push_str("\n---\n");
+        out.push_str(session.log.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+fn format_stock_page(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Stock  (live on-hand)\n");
+    out.push_str(&format!("  {:<10}", "actor"));
+    for good in PREFAB_GOODS {
+        out.push_str(&format!("  {:>8}", good.name));
+    }
+    out.push('\n');
+    out.push_str(&format!("  {:-<10}", ""));
+    for _ in PREFAB_GOODS {
+        out.push_str(&format!("  {:-<8}", ""));
+    }
+    out.push('\n');
+    for pop in &session.pops {
+        out.push_str(&format!("  {:<10}", fmt_actor(Actor::Pop(pop.id))));
+        for good in PREFAB_GOODS {
+            out.push_str(&format!(
+                "  {:>8}",
+                stock_cell(pop.property.get(&good.id).map(|r| r.quantity))
+            ));
+        }
+        out.push('\n');
+    }
+    for firm in &session.firms {
+        out.push_str(&format!("  {:<10}", fmt_actor(Actor::Firm(firm.id))));
+        for good in PREFAB_GOODS {
+            out.push_str(&format!(
+                "  {:>8}",
+                stock_cell(firm.property.get(&good.id).map(|r| r.quantity))
+            ));
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&format_firm_bounds(session));
+    out.push('\n');
+    out.push_str(&format_firm_quotes(session));
+    out
+}
+
+fn format_firm_bounds(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Firm bounds  (min = sell floor, max = buy cap)\n");
+    out.push_str("  planning guidestones; they do not skip or void trades.\n");
+    out.push_str(&format!("  {:<10}  {:<8}  {}\n", "actor", "good", "bound"));
+    out.push_str(&format!("  {:-<10}  {:-<8}  {:-<16}\n", "", "", ""));
     let mut any = false;
     for firm in &session.firms {
         let mut rows: Vec<_> = firm.property.iter().collect();
@@ -404,48 +461,224 @@ fn print_firm_bounds(session: &Session) {
                 continue;
             }
             any = true;
-            println!(
-                "  {:<10}  {:<8}  {}",
+            out.push_str(&format!(
+                "  {:<10}  {:<8}  {}\n",
                 fmt_actor(Actor::Firm(firm.id)),
                 fmt_good(good),
                 fmt_bound(row.amv_bound)
-            );
+            ));
         }
     }
     if !any {
-        println!("  (none)");
+        out.push_str("  (none)\n");
     }
+    out
 }
 
-fn print_live_stock(session: &Session) {
-    println!("stock  (live on-hand)");
-    print!("  {:<10}", "actor");
-    for good in PREFAB_GOODS {
-        print!("  {:>8}", good.name);
-    }
-    println!();
-    print!("  {:-<10}", "");
-    for _ in PREFAB_GOODS {
-        print!("  {:-<8}", "");
-    }
-    println!();
-    for pop in &session.pops {
-        print!("  {:<10}", fmt_actor(Actor::Pop(pop.id)));
-        for good in PREFAB_GOODS {
-            print!("  {:>8}", stock_cell(pop.property.get(&good.id).map(|r| r.quantity)));
-        }
-        println!();
+fn format_firm_records(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Firm records  (confidence 0 cautious .. 1 aggressive)\n");
+    out.push_str(&format!(
+        "  {:<10} {:>6} {:>7} {:>8} {:>8}\n",
+        "firm", "conf", "profit", "success", "sold AMV"
+    ));
+    out.push_str(&format!(
+        "  {:-<10} {:-<6} {:-<7} {:-<8} {:-<8}\n",
+        "", "", "", "", ""
+    ));
+    if session.firms.is_empty() {
+        out.push_str("  (none)\n");
+        return out;
     }
     for firm in &session.firms {
-        print!("  {:<10}", fmt_actor(Actor::Firm(firm.id)));
-        for good in PREFAB_GOODS {
-            print!(
-                "  {:>8}",
-                stock_cell(firm.property.get(&good.id).map(|r| r.quantity))
-            );
-        }
-        println!();
+        out.push_str(&format!(
+            "  {:<10} {:>6} {:>7} {:>8} {:>8}\n",
+            fmt_actor(Actor::Firm(firm.id)),
+            fmt_num(firm.records.confidence),
+            fmt_num(firm.records.profit_ratio),
+            fmt_num(firm.records.sell_success),
+            fmt_qty(firm.records.sold_amv)
+        ));
     }
+    out
+}
+
+fn format_firm_quotes(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Firm quotes  (next-day sell / own AMV)\n");
+    out.push_str(&format!(
+        "  {:<10} {:<8} {:>6} {:>7} {:>7}\n",
+        "firm", "good", "sell", "quote", "cost"
+    ));
+    out.push_str(&format!(
+        "  {:-<10} {:-<8} {:-<6} {:-<7} {:-<7}\n",
+        "", "", "", "", ""
+    ));
+    let mut any = false;
+    for firm in &session.firms {
+        if let Some((good, row)) = firm_primary_output(session, firm) {
+            any = true;
+            out.push_str(&format!(
+                "  {:<10} {:<8} {:>6} {:>7} {:>7}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                fmt_good(good),
+                fmt_qty(row.sell_target),
+                fmt_num(row.amv_target),
+                fmt_num(row.average_cost)
+            ));
+        }
+    }
+    if !any {
+        out.push_str("  (none)\n");
+    }
+    out
+}
+
+/// First process output row, or the first row with a sell target.
+fn firm_primary_output<'a>(session: &Session, firm: &'a Firm) -> Option<(usize, &'a FirmPRow)> {
+    for line in &firm.production_line {
+        if let Some(process) = session.factuals.processes.get(&line.process) {
+            if let Some(output) = process.outputs.first() {
+                if let Some(row) = firm.property.get(&output.good) {
+                    return Some((output.good, row));
+                }
+            }
+        }
+    }
+    let mut rows: Vec<_> = firm
+        .property
+        .iter()
+        .filter(|(_, row)| row.sell_target > 0.0)
+        .collect();
+    rows.sort_by_key(|(id, _)| *id);
+    rows.into_iter().next().map(|(&id, row)| (id, row))
+}
+
+fn format_orders_page(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str(&format_order_table(
+        session,
+        "Buys  (priority, lowest first)",
+        &session.buys,
+    ));
+    out.push('\n');
+    out.push_str(&format_order_table(
+        session,
+        "Sells  (target good id)",
+        &session.sells,
+    ));
+    out
+}
+
+fn format_order_table(session: &Session, title: &str, orders: &[MarketOrder]) -> String {
+    let mut out = String::new();
+    out.push_str(title);
+    out.push('\n');
+    out.push_str(&order_header());
+    out.push('\n');
+    out.push_str(&order_rule());
+    out.push('\n');
+    if orders.is_empty() {
+        out.push_str("  (empty)\n");
+    } else {
+        for (i, order) in orders.iter().enumerate() {
+            out.push_str(&order_row(session, i, order));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn format_processes_page(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Processes  (world recipes)\n");
+    out.push_str(&format!("  {:>3}  {:<14}  {}\n", "id", "name", "recipe"));
+    out.push_str(&format!("  {:->3}  {:-<14}  {:-<28}\n", "", "", ""));
+    let mut ids: Vec<usize> = session.factuals.processes.keys().copied().collect();
+    ids.sort_unstable();
+    if ids.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for id in ids {
+            let process = &session.factuals.processes[&id];
+            out.push_str(&format!(
+                "  {:>3}  {:<14}  {}\n",
+                process.id,
+                process.name,
+                fmt_recipe(process)
+            ));
+        }
+    }
+    out.push('\n');
+    out.push_str(&format_firm_records(session));
+    out.push('\n');
+    out.push_str("Firm lines\n");
+    out.push_str(&format!(
+        "  {:<10} {:<14} {:>6} {:>6}  {}\n",
+        "firm", "process", "did", "want", "missing"
+    ));
+    out.push_str(&format!(
+        "  {:-<10} {:-<14} {:-<6} {:-<6}  {:-<16}\n",
+        "", "", "", "", ""
+    ));
+    let mut any = false;
+    for firm in &session.firms {
+        for line in &firm.production_line {
+            any = true;
+            let name = session
+                .factuals
+                .processes
+                .get(&line.process)
+                .map(|p| p.name.as_str())
+                .unwrap_or("?");
+            let missing = if line.last_missing_goods.is_empty() {
+                "-".into()
+            } else {
+                line.last_missing_goods
+                    .iter()
+                    .copied()
+                    .map(fmt_good)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!(
+                "  {:<10} {:<14} {:>6} {:>6}  {}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                name,
+                fmt_qty(line.last_iterations),
+                fmt_qty(line.target.unwrap_or(0.0)),
+                missing
+            ));
+        }
+    }
+    if !any {
+        out.push_str("  (none)\n");
+    }
+    out
+}
+
+fn fmt_recipe(process: &simpler_economy::game::process::Process) -> String {
+    let inputs: Vec<String> = process
+        .inputs
+        .iter()
+        .map(|input| format!("{} {}", fmt_qty(input.amount), fmt_good(input.good)))
+        .collect();
+    let outputs: Vec<String> = process
+        .outputs
+        .iter()
+        .map(|output| format!("{} {}", fmt_qty(output.amount), fmt_good(output.good)))
+        .collect();
+    let left = if inputs.is_empty() {
+        "-".into()
+    } else {
+        inputs.join(" + ")
+    };
+    let right = if outputs.is_empty() {
+        "-".into()
+    } else {
+        outputs.join(" + ")
+    };
+    format!("{left} -> {right}")
 }
 
 fn stock_cell(qty: Option<f64>) -> String {
@@ -458,9 +691,16 @@ fn stock_cell(qty: Option<f64>) -> String {
 fn help_text() -> String {
     "\
 commands
-  shop                  reload books from pop and firm create_orders
   day [N]               run N calendar days (default 1)
-  amv                   print AMV trail (old -> new)
+  stock                 live on-hand + firm AMV bounds and quotes
+  orders                current buy/sell books
+  processes             world recipes + firm records and lines
+  amv                   AMV trail (old -> new)
+  csv                   show day-end price CSV paths
+  csv <name>            write under data/logs/<name>_*.csv
+  csv reset             wipe current CSVs and rewrite headers
+  shop                  reload books from create_orders
+  home                  back to the summary
   request <actor> <good> <amount> [priority]
   offer   <actor> <good> <amount> [priority]
   buy     <actor> <good> <amount> <amv> <pay-good> <pay-amount> [priority]
@@ -470,34 +710,28 @@ commands
   drop sell <i>
   seed <n>              deterministic rng from n
   unseed                os rng again
-  clear                 empty the books (not the screen)
-  cls                   redraw
+  clear                 empty the books
   help
   quit
 
-The screen clears and redraws after each command. Empty enter also redraws.
-Startup runs shop once. Pops emit requests; firms emit buy/sell/offer.
-`day` pays wage shares (30% living owners / 30% workers, ceil; no owner
-drain), runs the market, consumes firm inputs and restocks outputs (no
-real processes), pops consume, then sentiments / record keeping (coin save
-capped at 1) / decay. Repeat `day` or `day 5` to keep going.
-On-screen books reload from current stock after a day.
-Firm rows may carry an AMV bound (min sell floor / max buy cap). create_orders
-clamps order AMV to that bound and skips buys when market AMV is above max.
-actor: prefab name (farmers, bakery, ...) or kind id (pop 1, firm 2)
-good:  prefab name (grain, coin, jewelry) or id (1, 5, 6)
-amounts: type positives. request/buy store +amount, offer/sell store -amount.
+Home is a short summary. stock / orders / processes / day / amv / help
+open a page; home returns. Each `day` appends one-row-per-day CSVs in
+data/logs/ (market quotes, firm quotes, trade candles).
+Startup runs shop once. `day` grants Time, pays wage shares, runs the
+market, runs each firm's process, pops consume, then pop and firm
+record keeping (firm plan; coin save capped at 1) / decay.
+actor: prefab name (farmers, lord, bakery, ...) or kind id (pop 1, firm 2)
+good:  prefab name (time, grain, coin, jewelry) or id (0, 1, 5, 6)
 
 examples
-  shop
   day
+  stock
+  orders
+  processes
   day 5
-  amv
-  match
-  request laborers grain 3
-  offer farm grain 4
-  buy bakery grain 5 1.0 coin 5
-  sell farm grain 5 1.0 coin 5"
+  csv
+  csv run1
+  request laborers grain 3"
         .into()
 }
 
@@ -530,7 +764,11 @@ fn parse_seed(rest: &[&str]) -> Result<u64, String> {
 }
 
 /// request / offer: actor good amount [priority]
-fn parse_simple_order(rest: &[&str], is_buy: bool) -> Result<MarketOrder, String> {
+fn parse_simple_order(
+    rest: &[&str],
+    is_buy: bool,
+    cfg: &MarketPriorityConfig,
+) -> Result<MarketOrder, String> {
     let kind = if is_buy { "request" } else { "offer" };
     let usage = format!("usage: {kind} <actor> <good> <amount> [priority]");
     let mut tok = Tokens::new(rest);
@@ -541,14 +779,20 @@ fn parse_simple_order(rest: &[&str], is_buy: bool) -> Result<MarketOrder, String
         Some(raw) => parse_f64(raw, "priority")?,
         None => {
             if is_buy {
-                default_buy_priority(actor)
+                default_buy_priority(actor, cfg)
             } else {
-                compose_sell_priority(default_buy_priority(actor), amount, 0.0)
+                compose_sell_priority_with(
+                    default_buy_priority(actor, cfg),
+                    amount,
+                    0.0,
+                    cfg.sell_actor_priority_floor,
+                    cfg.successful_sell_bonus,
+                )
             }
         }
     };
     tok.expect_empty()?;
-    check_priority(actor, priority, is_buy)?;
+    check_priority(actor, priority, is_buy, cfg)?;
     if is_buy {
         Ok(MarketOrder::request_order(actor, good, amount, priority))
     } else {
@@ -557,7 +801,11 @@ fn parse_simple_order(rest: &[&str], is_buy: bool) -> Result<MarketOrder, String
 }
 
 /// buy / sell: actor good amount amv other-good other-amount [priority]
-fn parse_exchange_order(rest: &[&str], is_buy: bool) -> Result<MarketOrder, String> {
+fn parse_exchange_order(
+    rest: &[&str],
+    is_buy: bool,
+    cfg: &MarketPriorityConfig,
+) -> Result<MarketOrder, String> {
     let kind = if is_buy { "buy" } else { "sell" };
     let usage = format!(
         "usage: {kind} <actor> <good> <amount> <amv> <other-good> <other-amount> [priority]"
@@ -573,14 +821,20 @@ fn parse_exchange_order(rest: &[&str], is_buy: bool) -> Result<MarketOrder, Stri
         Some(raw) => parse_f64(raw, "priority")?,
         None => {
             if is_buy {
-                default_buy_priority(actor)
+                default_buy_priority(actor, cfg)
             } else {
-                compose_sell_priority(default_buy_priority(actor), amount, 0.0)
+                compose_sell_priority_with(
+                    default_buy_priority(actor, cfg),
+                    amount,
+                    0.0,
+                    cfg.sell_actor_priority_floor,
+                    cfg.successful_sell_bonus,
+                )
             }
         }
     };
     tok.expect_empty()?;
-    check_priority(actor, priority, is_buy)?;
+    check_priority(actor, priority, is_buy, cfg)?;
     if is_buy {
         Ok(MarketOrder::buy_order(
             actor,
@@ -665,16 +919,21 @@ fn parse_positive_amount(raw: &str) -> Result<f64, String> {
     Ok(v)
 }
 
-fn default_buy_priority(actor: Actor) -> f64 {
+fn default_buy_priority(actor: Actor, cfg: &MarketPriorityConfig) -> f64 {
     match actor {
-        Actor::Pop(_) => market_priority::POP_START,
-        Actor::Firm(_) => market_priority::FIRM_PRODUCER,
-        Actor::Institution(_) => market_priority::INSTITUTION_BEFORE_FIRMS,
-        Actor::State(_) => market_priority::STATE_FIRST,
+        Actor::Pop(_) => cfg.pop_start,
+        Actor::Firm(_) => cfg.firm_producer(),
+        Actor::Institution(_) => cfg.institution_before_firms,
+        Actor::State(_) => cfg.state_first,
     }
 }
 
-fn check_priority(actor: Actor, priority: f64, is_buy: bool) -> Result<(), String> {
+fn check_priority(
+    actor: Actor,
+    priority: f64,
+    is_buy: bool,
+    cfg: &MarketPriorityConfig,
+) -> Result<(), String> {
     if !priority.is_finite() {
         return Err("priority must be finite".into());
     }
@@ -686,22 +945,18 @@ fn check_priority(actor: Actor, priority: f64, is_buy: bool) -> Result<(), Strin
     }
     match actor {
         Actor::Pop(_) => {
-            if !(market_priority::POP_START..market_priority::POP_END).contains(&priority) {
+            if !(cfg.pop_start..cfg.pop_end).contains(&priority) {
                 return Err(format!(
                     "pop buy priority must be in [{}, {})",
-                    market_priority::POP_START,
-                    market_priority::POP_END
+                    cfg.pop_start, cfg.pop_end
                 ));
             }
         }
         Actor::Firm(_) => {
-            if !(market_priority::FIRM_MERCHANT_START..market_priority::FIRM_PRODUCER_END)
-                .contains(&priority)
-            {
+            if !(cfg.firm_merchant_start..cfg.firm_producer_end).contains(&priority) {
                 return Err(format!(
                     "firm buy priority must be in [{}, {})",
-                    market_priority::FIRM_MERCHANT_START,
-                    market_priority::FIRM_PRODUCER_END
+                    cfg.firm_merchant_start, cfg.firm_producer_end
                 ));
             }
         }
@@ -757,29 +1012,15 @@ fn rng_line(session: &Session) -> String {
     format!("calendar day {}   {rng}", session.day)
 }
 
-fn list_books(session: &Session) {
-    println!("{}", rng_line(session));
-    println!();
-    print_order_table(session, "buys  (priority, lowest first)", &session.buys);
-    println!();
-    print_order_table(session, "sells  (target good id)", &session.sells);
-}
 
-fn print_order_table(session: &Session, title: &str, orders: &[MarketOrder]) {
-    println!("{title}");
-    println!("{}", order_header());
-    println!("{}", order_rule());
-    if orders.is_empty() {
-        println!("  (empty)");
-    } else {
-        for (i, order) in orders.iter().enumerate() {
-            println!("{}", order_row(session, i, order));
-        }
-    }
-}
 
 fn run_match(session: &mut Session) -> String {
-    let batch = Market::match_orders(&session.buys, &session.sells, &mut session.rng);
+    let batch = Market::match_orders_with_coincidence(
+        &session.buys,
+        &session.sells,
+        &mut session.rng,
+        session.factuals.config.market_priority.sell_coincidence_weight,
+    );
     if batch.is_empty() {
         return "empty batch (no buys, or nothing to deal / update).\nbooks unchanged.".into();
     }
@@ -852,6 +1093,10 @@ fn run_days(session: &mut Session, n: u32) -> String {
     }
     for _ in 0..n {
         let (report, wages) = run_one_day(session);
+        match append_price_log(session, &report) {
+            Ok(()) => {}
+            Err(err) => out.push_str(&format!("csv write failed: {err}\n")),
+        }
         if n > 1 {
             out.push_str(&format!(
                 "day {}  {}\n",
@@ -871,13 +1116,18 @@ fn run_days(session: &mut Session, n: u32) -> String {
     out
 }
 
-/// Runs one tester calendar day: wages, market, output restock, consume, records.
+/// Runs one tester calendar day: wages, market, production, consume,
+/// pop and firm record keeping (firm plan), decay.
 fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayout)>) {
     let mut pops: HashMap<usize, Pop> = session.pops.drain(..).map(|pop| (pop.id, pop)).collect();
     let mut firms: HashMap<usize, Firm> =
         session.firms.drain(..).map(|firm| (firm.id, firm)).collect();
 
     for pop in pops.values_mut() {
+        pop.start_day(&vec![(
+            TIME,
+            ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
+        )]);
         pop.records.income_amv = 0.0;
         pop.initial_reservations_and_update_satisfaction();
     }
@@ -889,12 +1139,12 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
     let mut wages = Vec::new();
     let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
     firm_ids.sort_unstable();
-    for id in firm_ids {
+    for id in &firm_ids {
         let payout = firms
-            .get_mut(&id)
+            .get_mut(id)
             .expect("firm id from keys")
-            .pay_wage_shares(&mut pops, COIN, coin_amv);
-        wages.push((id, payout));
+            .pay_wage_shares(&mut pops, COIN, coin_amv, &session.factuals.config);
+        wages.push((*id, payout));
     }
 
     let report = session.market.run_market_day(
@@ -905,16 +1155,23 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
     );
 
     for firm in firms.values_mut() {
-        consume_inputs(firm);
-        restock_outputs(firm);
+        let _effects = firm.run_production(&session.factuals, &session.market);
     }
 
     let closing = session.market.history();
     for pop in pops.values_mut() {
         pop.consume();
-        pop.update_sentiments(&closing);
+        pop.update_sentiments(&closing, &session.factuals.config.pop);
         pop.record_keeping(&session.factuals, &closing);
         cap_coin_save(pop);
+    }
+    for id in &firm_ids {
+        firms
+            .get_mut(id)
+            .expect("firm id from keys")
+            .record_keeping(&session.factuals, &closing);
+    }
+    for pop in pops.values_mut() {
         pop.decay_goods(&session.factuals);
     }
     for firm in firms.values_mut() {
@@ -932,30 +1189,394 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
     (report, wages)
 }
 
-/// Removes up to `use_target` of each input. Tester stand-in for production.
-fn consume_inputs(firm: &mut Firm) {
-    for row in firm.property.values_mut() {
-        if row.use_target <= 0.0 {
-            continue;
+fn csv_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/logs")
+}
+
+fn csv_path(stem: &str, kind: &str) -> PathBuf {
+    csv_dir().join(format!("{stem}_{kind}.csv"))
+}
+
+fn csv_stem_dir_display(session: &Session) -> String {
+    format!("data/logs/{}", session.csv_stem)
+}
+
+fn csv_status_line(session: &Session) -> String {
+    format!(
+        "logged  {}_{{market,firms,trades}}.csv",
+        csv_stem_dir_display(session)
+    )
+}
+
+fn csv_status(session: &Session) -> String {
+    let stem = &session.csv_stem;
+    format!(
+        "CSV directory  data/logs/\n  {stem}_market.csv   one row/day; good blocks: amv, salability, average_price\n  {stem}_firms.csv    one row/day; firm conf/profit/success, then good blocks: qty, targets, bid, ask, costs, sold, produced\n  {stem}_trades.csv   one row/day; good candles: open, high, low, close, volume\ncsv <name>  changes the stem.  csv reset  wipes these files. Header mismatch (old layout) needs reset or a new stem."
+    )
+}
+
+fn handle_csv_command(session: &mut Session, rest: &[&str]) -> String {
+    if rest.is_empty() {
+        return csv_status(session);
+    }
+    if rest.len() == 1 && rest[0].eq_ignore_ascii_case("reset") {
+        return match reset_price_log(session) {
+            Ok(()) => format!("wiped CSVs.\n{}", csv_status(session)),
+            Err(err) => format!("csv reset failed: {err}"),
+        };
+    }
+    if rest.len() != 1 {
+        return "usage: csv [name]  or  csv reset".into();
+    }
+    match sanitize_csv_stem(rest[0]) {
+        Ok(stem) => {
+            session.csv_stem = stem;
+            csv_status(session)
         }
-        let take = row.quantity.min(row.use_target);
-        if take <= 0.0 {
-            continue;
-        }
-        row.quantity -= take;
-        row.consumed += take;
-        row.sync_reserve();
+        Err(err) => err,
     }
 }
 
-/// Refills output-only rows up to `sell_target`. Tester stand-in for production.
-fn restock_outputs(firm: &mut Firm) {
-    for row in firm.property.values_mut() {
-        if row.sell_target > 0.0 && row.use_target == 0.0 && row.quantity < row.sell_target {
-            row.quantity = row.sell_target;
-            row.sync_reserve();
+fn sanitize_csv_stem(raw: &str) -> Result<String, String> {
+    if raw.is_empty() || raw.len() > 40 {
+        return Err("csv name must be 1 to 40 characters".into());
+    }
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("csv name may use letters, digits, _ and - only".into());
+    }
+    if raw == "reset" {
+        return Err("csv name 'reset' is reserved. Use csv reset to wipe.".into());
+    }
+    Ok(raw.to_string())
+}
+
+fn reset_price_log(session: &Session) -> Result<(), String> {
+    fs::create_dir_all(csv_dir()).map_err(|err| format!("create data/logs: {err}"))?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "market"),
+        &market_csv_header(session),
+        &[],
+        true,
+    )?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "firms"),
+        &firm_csv_header(session),
+        &[],
+        true,
+    )?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "trades"),
+        &trade_csv_header(session),
+        &[],
+        true,
+    )?;
+    Ok(())
+}
+
+const MARKET_CSV_FIELDS: &[&str] = &["amv", "salability", "average_price"];
+const FIRM_RECORD_FIELDS: &[&str] = &["confidence", "profit", "sell_success"];
+const FIRM_CSV_FIELDS: &[&str] = &[
+    "quantity",
+    "sell_target",
+    "amv_target",
+    "bid",
+    "ask",
+    "average_cost",
+    "average_price",
+    "sold",
+    "produced",
+];
+const TRADE_CSV_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
+
+fn append_price_log(session: &Session, report: &MarketDayReport) -> Result<(), String> {
+    fs::create_dir_all(csv_dir()).map_err(|err| format!("create data/logs: {err}"))?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "market"),
+        &market_csv_header(session),
+        &[market_csv_row(session)],
+        false,
+    )?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "firms"),
+        &firm_csv_header(session),
+        &[firm_csv_row(session)],
+        false,
+    )?;
+    write_csv_file(
+        &csv_path(&session.csv_stem, "trades"),
+        &trade_csv_header(session),
+        &[trade_csv_row(session, report)],
+        false,
+    )?;
+    Ok(())
+}
+
+fn write_csv_file(
+    path: &Path,
+    header: &str,
+    rows: &[String],
+    reset: bool,
+) -> Result<(), String> {
+    if reset {
+        let mut text = String::from(header);
+        text.push('\n');
+        for row in rows {
+            text.push_str(row);
+            text.push('\n');
+        }
+        return fs::write(path, text).map_err(|err| format!("write {}: {err}", path.display()));
+    }
+    let need_header = match fs::read_to_string(path) {
+        Ok(text) if text.is_empty() => true,
+        Ok(text) => {
+            let existing = text.lines().next().unwrap_or("");
+            if existing != header {
+                return Err(format!(
+                    "{} header does not match (old layout?). Run `csv reset` or `csv <newname>`.",
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("csv")
+                ));
+            }
+            false
+        }
+        Err(_) => true,
+    };
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| format!("open {}: {err}", path.display()))?;
+    if need_header {
+        writeln!(file, "{header}").map_err(|err| format!("write {}: {err}", path.display()))?;
+    }
+    for row in rows {
+        writeln!(file, "{row}").map_err(|err| format!("write {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn csv_num(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value}")
+    } else {
+        String::new()
+    }
+}
+
+fn market_csv_goods(session: &Session) -> Vec<usize> {
+    let mut ids: Vec<usize> = PREFAB_GOODS.iter().map(|good| good.id).collect();
+    let mut extra: Vec<usize> = session
+        .market
+        .goods
+        .keys()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    extra.sort_unstable();
+    ids.extend(extra);
+    ids
+}
+
+fn csv_good_col(id: usize) -> String {
+    fmt_good(id)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+fn market_csv_header(session: &Session) -> String {
+    let mut cols = vec!["day".to_string()];
+    for id in market_csv_goods(session) {
+        let name = csv_good_col(id);
+        for field in MARKET_CSV_FIELDS {
+            cols.push(format!("{name}_{field}"));
         }
     }
+    cols.join(",")
+}
+
+fn market_csv_row(session: &Session) -> String {
+    let mut cells = vec![session.day.to_string()];
+    for id in market_csv_goods(session) {
+        match session.market.goods.get(&id) {
+            Some(row) => {
+                cells.push(csv_num(row.amv));
+                cells.push(csv_num(row.salability));
+                if row.purchased > 0.0 {
+                    cells.push(csv_num(row.average_price));
+                } else {
+                    cells.push(String::new());
+                }
+            }
+            None => {
+                for _ in MARKET_CSV_FIELDS {
+                    cells.push(String::new());
+                }
+            }
+        }
+    }
+    cells.join(",")
+}
+
+fn csv_actor_col(actor: Actor) -> String {
+    fmt_actor(actor)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+fn firm_csv_header(session: &Session) -> String {
+    let mut cols = vec!["day".to_string()];
+    let goods = market_csv_goods(session);
+    for firm in &session.firms {
+        let firm_name = csv_actor_col(Actor::Firm(firm.id));
+        for field in FIRM_RECORD_FIELDS {
+            cols.push(format!("{firm_name}_{field}"));
+        }
+        for id in &goods {
+            let good_name = csv_good_col(*id);
+            for field in FIRM_CSV_FIELDS {
+                cols.push(format!("{firm_name}_{good_name}_{field}"));
+            }
+        }
+    }
+    cols.join(",")
+}
+
+fn firm_csv_row(session: &Session) -> String {
+    let mut cells = vec![session.day.to_string()];
+    let goods = market_csv_goods(session);
+    for firm in &session.firms {
+        cells.push(csv_num(firm.records.confidence));
+        cells.push(csv_num(firm.records.profit_ratio));
+        cells.push(csv_num(firm.records.sell_success));
+        for id in &goods {
+            match firm.property.get(id) {
+                Some(row) => {
+                    let market_amv = session.history.price(*id);
+                    let mid = row.mid_amv(market_amv);
+                    cells.push(csv_num(row.quantity));
+                    cells.push(csv_num(row.sell_target));
+                    cells.push(csv_num(row.amv_target));
+                    cells.push(csv_num(row.bid_amv(mid)));
+                    cells.push(csv_num(row.ask_amv(mid)));
+                    cells.push(csv_num(row.average_cost));
+                    cells.push(csv_num(row.average_price));
+                    cells.push(csv_num(row.sold));
+                    cells.push(csv_num(row.produced));
+                }
+                None => {
+                    for _ in FIRM_CSV_FIELDS {
+                        cells.push(String::new());
+                    }
+                }
+            }
+        }
+    }
+    cells.join(",")
+}
+
+fn trade_csv_header(session: &Session) -> String {
+    let mut cols = vec!["day".to_string()];
+    for id in market_csv_goods(session) {
+        let name = csv_good_col(id);
+        for field in TRADE_CSV_FIELDS {
+            cols.push(format!("{name}_{field}"));
+        }
+    }
+    cols.join(",")
+}
+
+struct DayCandle {
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    volume: f64,
+    seen: bool,
+}
+
+impl DayCandle {
+    fn new() -> Self {
+        Self {
+            open: 0.0,
+            high: 0.0,
+            low: 0.0,
+            close: 0.0,
+            volume: 0.0,
+            seen: false,
+        }
+    }
+
+    fn push(&mut self, unit_amv: f64, qty: f64) {
+        if !unit_amv.is_finite() || qty <= 0.0 {
+            return;
+        }
+        if !self.seen {
+            self.open = unit_amv;
+            self.high = unit_amv;
+            self.low = unit_amv;
+            self.close = unit_amv;
+            self.volume = qty;
+            self.seen = true;
+        } else {
+            self.high = self.high.max(unit_amv);
+            self.low = self.low.min(unit_amv);
+            self.close = unit_amv;
+            self.volume += qty;
+        }
+    }
+}
+
+fn trade_csv_row(session: &Session, report: &MarketDayReport) -> String {
+    let goods = market_csv_goods(session);
+    let mut candles: HashMap<usize, DayCandle> = goods
+        .iter()
+        .map(|id| (*id, DayCandle::new()))
+        .collect();
+    for meeting in &report.meetings {
+        let MeetingOutcome::Traded { goods: basket, .. } = &meeting.outcome else {
+            continue;
+        };
+        let sought = meeting.buy.target;
+        let qty = basket.get(&sought).copied().unwrap_or(0.0).abs();
+        let pay_amv: f64 = basket
+            .iter()
+            .filter(|(id, q)| **id != sought && **q > 0.0)
+            .map(|(id, q)| *q * session.history.price(*id))
+            .sum();
+        if qty <= 0.0 {
+            continue;
+        }
+        let unit_amv = pay_amv / qty;
+        if let Some(candle) = candles.get_mut(&sought) {
+            candle.push(unit_amv, qty);
+        }
+    }
+    let mut cells = vec![session.day.to_string()];
+    for id in goods {
+        match candles.get(&id) {
+            Some(candle) if candle.seen => {
+                cells.push(csv_num(candle.open));
+                cells.push(csv_num(candle.high));
+                cells.push(csv_num(candle.low));
+                cells.push(csv_num(candle.close));
+                cells.push(csv_num(candle.volume));
+            }
+            _ => {
+                cells.push(String::new());
+                cells.push(String::new());
+                cells.push(String::new());
+                cells.push(String::new());
+                cells.push(csv_num(0.0));
+            }
+        }
+    }
+    cells.join(",")
 }
 
 /// Caps coin save/shop at [`COIN_SAVE_UNITS`] so leftover coin stays excess.
@@ -991,14 +1612,25 @@ fn day_digest(
             .sum::<f64>()
             / session.pops.len() as f64
     };
+    let conf: f64 = if session.firms.is_empty() {
+        0.0
+    } else {
+        session
+            .firms
+            .iter()
+            .map(|firm| firm.records.confidence)
+            .sum::<f64>()
+            / session.firms.len() as f64
+    };
     format!(
-        "{} trade{}  {} wash{}  wages {} coin  SOL {}",
+        "{} trade{}  {} wash{}  wages {} coin  SOL {}  conf {}",
         n_trade,
         if n_trade == 1 { "" } else { "s" },
         n_wash,
         if n_wash == 1 { "" } else { "es" },
         fmt_qty(wage_coin),
-        fmt_num(sol)
+        fmt_num(sol),
+        fmt_num(conf)
     )
 }
 
@@ -1189,19 +1821,22 @@ fn format_day_report(
         out.push_str(&format!("unavailable  {}\n", names.join(", ")));
     }
     out.push('\n');
-    out.push_str(&format_wage_report(wages));
+    out.push_str(&format_wage_report(session, wages));
+    out.push_str(&format_production_report(session));
+    out.push_str(&format_plan_report(session));
     out.push_str(&format_pop_report(session));
     out.push_str(&format_amv_trail(session));
-    out.push_str("shop reloaded from current stock.");
+    out.push_str("shop reloaded from current stock.\n");
+    out.push_str(&csv_status_line(session));
     out
 }
 
-fn format_wage_report(wages: &[(usize, WagePayout)]) -> String {
+fn format_wage_report(session: &Session, wages: &[(usize, WagePayout)]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "Wages  (owners {:.0}% / workers {:.0}%, ceil, owners first)\n",
-        labor_constants::OWNER_SHARE * 100.0,
-        labor_constants::WORKER_SHARE * 100.0
+        session.factuals.config.labor.owner_share * 100.0,
+        session.factuals.config.labor.worker_share * 100.0
     ));
     out.push_str(&format!(
         "  {:<10} {:>6} {:>7} {:>8}  {}\n",
@@ -1247,6 +1882,112 @@ fn format_wage_report(wages: &[(usize, WagePayout)]) -> String {
             fmt_qty(payout.owner_amount),
             fmt_qty(payout.worker_amount),
             dest.join(", ")
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+fn format_production_report(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Production  (did today; want is next-day after plan)\n");
+    out.push_str(&format!(
+        "  {:<10} {:>6} {:>6}  {}\n",
+        "firm", "did", "want", "flows / missing"
+    ));
+    out.push_str(&format!(
+        "  {:-<10} {:-<6} {:-<6}  {:-<28}\n",
+        "", "", "", ""
+    ));
+    if session.firms.is_empty() {
+        out.push_str("  (none)\n\n");
+        return out;
+    }
+    for firm in &session.firms {
+        if firm.production_line.is_empty() {
+            continue;
+        }
+        for (idx, line) in firm.production_line.iter().enumerate() {
+            let want = line.target.unwrap_or(0.0);
+            let mut bits: Vec<String> = Vec::new();
+            // Property flows are firm-wide; print them once on the first line.
+            if idx == 0 {
+                let mut ids: Vec<usize> = firm.property.keys().copied().collect();
+                ids.sort_unstable();
+                for id in ids {
+                    let row = &firm.property[&id];
+                    if row.produced > 0.0 {
+                        bits.push(format!("+{} {}", fmt_qty(row.produced), fmt_good(id)));
+                    }
+                    if row.consumed > 0.0 {
+                        bits.push(format!("-{} {}", fmt_qty(row.consumed), fmt_good(id)));
+                    }
+                }
+            }
+            if !line.last_missing_goods.is_empty() {
+                let missing: Vec<String> = line
+                    .last_missing_goods
+                    .iter()
+                    .copied()
+                    .map(fmt_good)
+                    .collect();
+                bits.push(format!("missing {}", missing.join(", ")));
+            }
+            if bits.is_empty() {
+                bits.push("-".into());
+            }
+            out.push_str(&format!(
+                "  {:<10} {:>6} {:>6}  {}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                fmt_qty(line.last_iterations),
+                fmt_qty(want),
+                bits.join("  ")
+            ));
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn format_plan_report(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("Plans  (after firm record keeping)\n");
+    out.push_str(&format!(
+        "  {:<10} {:>6} {:>7} {:>8} {:>6} {:>6} {:<8} {:>7}\n",
+        "firm", "conf", "profit", "success", "want", "sell", "good", "quote"
+    ));
+    out.push_str(&format!(
+        "  {:-<10} {:-<6} {:-<7} {:-<8} {:-<6} {:-<6} {:-<8} {:-<7}\n",
+        "", "", "", "", "", "", "", ""
+    ));
+    if session.firms.is_empty() {
+        out.push_str("  (none)\n\n");
+        return out;
+    }
+    for firm in &session.firms {
+        let want = firm
+            .production_line
+            .first()
+            .and_then(|line| line.target)
+            .unwrap_or(0.0);
+        let (good_name, sell, quote) = match firm_primary_output(session, firm) {
+            Some((good, row)) => (
+                fmt_good(good),
+                fmt_qty(row.sell_target),
+                fmt_num(row.amv_target),
+            ),
+            None => ("-".into(), "-".into(), "-".into()),
+        };
+        out.push_str(&format!(
+            "  {:<10} {:>6} {:>7} {:>8} {:>6} {:>6} {:<8} {:>7}\n",
+            fmt_actor(Actor::Firm(firm.id)),
+            fmt_num(firm.records.confidence),
+            fmt_num(firm.records.profit_ratio),
+            fmt_num(firm.records.sell_success),
+            fmt_qty(want),
+            sell,
+            good_name,
+            quote
         ));
     }
     out.push('\n');
@@ -1576,37 +2317,40 @@ fn order_row(session: &Session, idx: usize, order: &MarketOrder) -> String {
 
 // --- living roster ----------------------------------------------------------
 
-fn world_goods_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/goods.toml")
+fn world_data_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world")
 }
 
 fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
-    let factuals = Factuals::load_from_path(world_goods_path())
-        .unwrap_or_else(|err| panic!("load {}: {err}", world_goods_path().display()));
+    let factuals = Factuals::load_from_path(world_data_path())
+        .unwrap_or_else(|err| panic!("load {}: {err}", world_data_path().display()));
 
     let mut history = MarketHistory::default();
+    history.default_salability = factuals.config.market.salability_default;
     // AMV spread: staples cheap, metals dear, jewelry dearest.
     // Coins are money (sal 1.0); jewelry is liquid-ish (0.8); rest stay below
     // the 0.6 exchange floor unless noted (gold 0.7 can be tender).
+    set_quote(&mut history, TIME, 1.0, 0.40);
     set_quote(&mut history, GRAIN, 1.0, 0.50);
-    set_quote(&mut history, WATER, 0.3, 0.35);
+    set_quote(&mut history, WATER, 0.20, 0.35);
     set_quote(&mut history, BREAD, 2.2, 0.45);
     set_quote(&mut history, GOLD, 8.0, 0.70);
     set_quote(&mut history, COIN, COIN_AMV, 1.00);
     set_quote(&mut history, JEWELRY, 15.0, 0.80);
 
     let pops = vec![
-        make_farmers_pop(),
-        make_laborers_pop(),
-        make_townsfolk_pop(),
+        make_farmers_pop(&factuals.config.pop),
+        make_laborers_pop(&factuals.config.pop),
+        make_townsfolk_pop(&factuals.config.pop),
+        make_lord_pop(&factuals.config.pop),
     ];
+    let lord = Actor::Pop(4);
     let firms = vec![
-        with_worker(make_farm(), 1),
-        with_worker(make_bakery(), 3),
-        with_worker(make_mine(), 2),
-        with_worker(make_mint(), 3),
-        with_worker(make_jeweler(), 3),
-        with_worker(make_well(), 1),
+        with_worker(make_farm().with_owner(lord), 1),
+        with_worker(make_bakery().with_owner(lord), 3),
+        with_worker(make_mine().with_owner(lord), 2),
+        with_worker(make_jeweler().with_owner(lord), 3),
+        with_worker(make_well().with_owner(lord), 1),
     ];
     (pops, firms, factuals, history)
 }
@@ -1618,6 +2362,10 @@ fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, salability: f64
 
 fn consume_target(good: usize) -> DesireTarget {
     DesireTarget::new(good, DesireTargetType::Consume, 1.0)
+}
+
+fn consume_target_eff(good: usize, eff: f64) -> DesireTarget {
+    DesireTarget::new(good, DesireTargetType::Consume, eff)
 }
 
 fn make_desire(id: usize, good: usize, amount: f64) -> Desire {
@@ -1634,15 +2382,33 @@ fn make_desire(id: usize, good: usize, amount: f64) -> Desire {
     }
 }
 
-/// Staple spread on every pop: grain+water basic, bread common. No luxury yet.
+/// Basic food: grain at 1.0 or bread at 1.5 so bread is the cheaper sat.
+fn make_food_desire(id: usize, amount: f64) -> Desire {
+    Desire {
+        source: DesireSource::Species(0, id),
+        priority: id as isize,
+        target: vec![
+            consume_target_eff(GRAIN, 1.0),
+            consume_target_eff(BREAD, 1.5),
+        ],
+        amount,
+        satisfaction: 0.0,
+        category: Some("food".into()),
+        effect: vec![],
+        scalar: ScalingFactor::Household(1.0),
+        decay: 0.0,
+    }
+}
+
+/// Staple spread: food (grain/bread) + water basic, bread common.
 fn with_need_spread(mut pop: Pop) -> Pop {
-    pop.desires[0].push(make_desire(0, GRAIN, 8.0));
+    pop.desires[0].push(make_food_desire(0, 8.0));
     pop.desires[0].push(make_desire(1, WATER, 6.0));
     pop.desires[1].push(make_desire(2, BREAD, 4.0));
     pop
 }
 
-fn empty_pop(id: usize) -> Pop {
+fn empty_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
     Pop {
         id,
         job: 0,
@@ -1659,12 +2425,12 @@ fn empty_pop(id: usize) -> Pop {
         current_orders: vec![],
         stored_effects: vec![],
         sentiment: Sentiment::new(),
-        records: PopRecords::default(),
+        records: PopRecords::from_config(pop_cfg),
     }
 }
 
-fn make_farmers_pop() -> Pop {
-    let mut pop = with_need_spread(empty_pop(1));
+fn make_farmers_pop(pop_cfg: &PopConfig) -> Pop {
+    let mut pop = with_need_spread(empty_pop(1, pop_cfg));
     // Grain surplus funds water/bread requests. No grain shop shortfall.
     pop.property.insert(GRAIN, PopPRow::new(24.0).with_target(4.0));
     pop.property.insert(WATER, PopPRow::new(1.0).with_target(6.0));
@@ -1673,8 +2439,8 @@ fn make_farmers_pop() -> Pop {
     pop
 }
 
-fn make_laborers_pop() -> Pop {
-    let mut pop = with_need_spread(empty_pop(2));
+fn make_laborers_pop(pop_cfg: &PopConfig) -> Pop {
+    let mut pop = with_need_spread(empty_pop(2, pop_cfg));
     pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(8.0));
     pop.property.insert(WATER, PopPRow::new(0.0).with_target(6.0));
     pop.property.insert(BREAD, PopPRow::new(0.0).with_target(4.0));
@@ -1682,12 +2448,29 @@ fn make_laborers_pop() -> Pop {
     pop
 }
 
-fn make_townsfolk_pop() -> Pop {
-    let mut pop = with_need_spread(empty_pop(3));
+fn make_townsfolk_pop(pop_cfg: &PopConfig) -> Pop {
+    let mut pop = with_need_spread(empty_pop(3, pop_cfg));
     pop.property.insert(GRAIN, PopPRow::new(4.0).with_target(6.0));
     pop.property.insert(WATER, PopPRow::new(2.0).with_target(4.0));
     pop.property.insert(BREAD, PopPRow::new(1.0).with_target(6.0));
     pop.property.insert(COIN, PopPRow::new(400.0));
+    pop
+}
+
+/// One-household owner. Staples stay small; jewelry is the luxury sink.
+/// Starting AMV is about 20x townsfolk wealth per household (~4.7 -> ~93).
+fn make_lord_pop(pop_cfg: &PopConfig) -> Pop {
+    let mut pop = empty_pop(4, pop_cfg);
+    pop.demographics.household = Household::with_count(1.0);
+    pop.desires[0].push(make_food_desire(0, 1.0));
+    pop.desires[0].push(make_desire(1, WATER, 1.0));
+    pop.desires[1].push(make_desire(2, BREAD, 1.0));
+    pop.desires[2].push(make_desire(3, JEWELRY, 2.0));
+    pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(1.0));
+    pop.property.insert(WATER, PopPRow::new(1.0).with_target(1.0));
+    pop.property.insert(BREAD, PopPRow::new(1.0).with_target(1.0));
+    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(2.0));
+    pop.property.insert(COIN, PopPRow::new(900.0));
     pop
 }
 
@@ -1717,31 +2500,34 @@ fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine
 
 fn make_farm() -> Firm {
     let mut firm = Firm::new(1, "farm".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(1, 30.0, vec![WATER]));
+    firm.production_line.push(dummy_line(1, 5.0, vec![TIME, WATER]));
+    // Stock matches plan's input_cover * use (2 * 5). Start a little short so
+    // a water buy posts on day 1. Bid 0.45 clears the well's 0.20 ask.
     firm.property.insert(
         WATER,
         FirmPRow::new()
-            .with_quantity(2.0)
+            .with_quantity(8.0)
             .with_purchase_target(8.0)
             .with_use_target(5.0)
             .with_stock_target(10.0)
-            .with_amv_bound(FirmAmvBound::Maximum(1.0)),
+            .with_amv_target(0.45)
+            .with_amv_bound(FirmAmvBound::Maximum(2.5)),
     );
     firm.property.insert(
         GRAIN,
         FirmPRow::new()
             .with_quantity(45.0)
             .with_sell_target(30.0)
-            .with_amv_target(1.0)
-            .with_amv_bound(FirmAmvBound::Minimum(1.2)),
+            .with_amv_target(1.2)
+            .with_amv_bound(FirmAmvBound::Minimum(1.0)),
     );
-    firm.property.insert(COIN, FirmPRow::new().with_quantity(60.0));
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(120.0));
     firm
 }
 
 fn make_bakery() -> Firm {
     let mut firm = Firm::new(2, "bakery".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(2, 10.0, vec![GRAIN]));
+    firm.production_line.push(dummy_line(2, 10.0, vec![TIME, GRAIN]));
     firm.property.insert(
         GRAIN,
         FirmPRow::new()
@@ -1760,13 +2546,13 @@ fn make_bakery() -> Firm {
             .with_amv_target(2.2)
             .with_amv_bound(FirmAmvBound::Minimum(1.8)),
     );
-    firm.property.insert(COIN, FirmPRow::new().with_quantity(80.0));
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(250.0));
     firm
 }
 
 fn make_mine() -> Firm {
     let mut firm = Firm::new(3, "mine".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(3, 5.0, vec![]));
+    firm.production_line.push(dummy_line(3, 8.0, vec![TIME]));
     firm.property.insert(
         GOLD,
         FirmPRow::new()
@@ -1779,40 +2565,21 @@ fn make_mine() -> Firm {
     firm
 }
 
-fn make_mint() -> Firm {
-    let mut firm = Firm::new(4, "mint".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(4, 10.0, vec![GOLD]));
-    firm.property.insert(
-        GOLD,
-        FirmPRow::new()
-            .with_quantity(2.0)
-            .with_purchase_target(6.0)
-            .with_use_target(5.0)
-            .with_stock_target(8.0)
-            .with_amv_bound(FirmAmvBound::Maximum(12.0)),
-    );
-    firm.property.insert(
-        COIN,
-        FirmPRow::new()
-            .with_quantity(200.0)
-            .with_sell_target(150.0)
-            .with_amv_target(COIN_AMV)
-            .with_amv_bound(FirmAmvBound::Minimum(0.08)),
-    );
-    firm
-}
-
 fn make_jeweler() -> Firm {
     let mut firm = Firm::new(5, "jeweler".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(5, 2.0, vec![GOLD]));
+    firm.production_line.push(dummy_line(5, 1.0, vec![TIME, GOLD]));
+    firm.production_line.push(dummy_line(4, 1.0, vec![TIME, GOLD]));
+    // Reverse mint stays idle so it does not eat the till at opening prices.
+    firm.production_line.push(dummy_line(7, 0.0, vec![TIME, COIN]));
+    // 8 gold covers jewelry (3) plus mint (1) on day 1 with slack to restock.
     firm.property.insert(
         GOLD,
         FirmPRow::new()
-            .with_quantity(1.0)
+            .with_quantity(8.0)
             .with_purchase_target(4.0)
-            .with_use_target(3.0)
-            .with_stock_target(5.0)
-            .with_amv_bound(FirmAmvBound::Maximum(7.0)),
+            .with_use_target(4.0)
+            .with_stock_target(8.0)
+            .with_amv_bound(FirmAmvBound::Maximum(12.0)),
     );
     firm.property.insert(
         JEWELRY,
@@ -1822,20 +2589,29 @@ fn make_jeweler() -> Firm {
             .with_amv_target(15.0)
             .with_amv_bound(FirmAmvBound::Minimum(12.0)),
     );
-    firm.property.insert(COIN, FirmPRow::new().with_quantity(100.0));
+    firm.property.insert(
+        COIN,
+        FirmPRow::new()
+            .with_quantity(300.0)
+            .with_sell_target(150.0)
+            .with_amv_target(COIN_AMV)
+            .with_amv_bound(FirmAmvBound::Minimum(0.168)),
+    );
     firm
 }
 
 fn make_well() -> Firm {
     let mut firm = Firm::new(6, "well".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(6, 20.0, vec![]));
+    // 40/day covers pop water shop (~18) plus the farm restock (~12) with slack.
+    // Ask at market (0.20); floor 0.15 so leftover-AMV cheapening can still sell.
+    firm.production_line.push(dummy_line(6, 40.0, vec![TIME]));
     firm.property.insert(
         WATER,
         FirmPRow::new()
-            .with_quantity(25.0)
-            .with_sell_target(20.0)
-            .with_amv_target(0.3)
-            .with_amv_bound(FirmAmvBound::Minimum(0.4)),
+            .with_quantity(80.0)
+            .with_sell_target(40.0)
+            .with_amv_target(0.20)
+            .with_amv_bound(FirmAmvBound::Minimum(0.15)),
     );
     firm.property.insert(COIN, FirmPRow::new().with_quantity(40.0));
     firm

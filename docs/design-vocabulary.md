@@ -316,8 +316,8 @@ does not apply growth arms or bonus goods.
 **Avoid:** save (that is a running game), init / scenario (that is kickoff state)
 
 **Meaning:** Mostly fixed definitions for a whole game, meant to be human-readable
-and moddable. Today this is **factuals** (goods first). Later: overlapping mod
-folders with ids, dependencies, and exclusivity.
+and moddable. Today this is **factuals** (goods, processes, gameplay config).
+Later: overlapping mod folders with ids, dependencies, and exclusivity.
 
 **Code:** `data/world/`, `Factuals::load_from_path`
 
@@ -341,7 +341,15 @@ that was used. Not loaded yet.
 **Meaning:** Mostly static world definitions (goods, processes, species, cultures,
 religions). The "Facts" of the world the game is taking place in.
 **Not:** current prices, stocks, actors.  
-**Code:** `Factuals`, `Factuals::load_from_path` (`data/world/goods.toml`)
+**Code:** `Factuals`, `Factuals::load_from_path` (`data/world/` goods.toml, processes.toml, config.toml)
+
+### Gameplay config
+**Preferred:** gameplay config, world config  
+**Avoid:** init (that's scenario kickoff), save (that's a running game)
+
+**Meaning:** Tunables loaded with world data: wage shares, AMV keep, order-priority bands, sentiment rates, player-resource yields, and related rates. Missing TOML keys keep the compiled defaults in `src/game/config.rs`. Buffer sizes (`HISTORY_MAX`, `AMV_HISTORY_MAX`) stay compile-time. Not save data; changing tunables mid-game is not supported.
+
+**Code:** `GameConfig` on `Factuals.config`, `data/world/config.toml`. Live paths with factuals read `factuals.config`. Load validates stated bounds. Buffer sizes stay compile-time. No-argument helpers (`DealMaker::renew_buy`, `Market::match_orders`, `MarketGood::set_amv`) keep compiled defaults for tests. Firm planning tunables live in `factuals.config.firm` (`firm_constants`).
 
 ### Game state
 **Preferred:** game state, play state
@@ -393,13 +401,26 @@ Per-good warehouse ledger. Groups: stock, planning targets, exchange, production
 | **reserve target** | Policy floor for the stockpile guarantee. Planning raises or lowers it from missed purchase/sell/use targets | `reserve_target` |
 | **purchase target** / **sell target** | Units to buy / sell today. Independent so merchants can buy-for-resale | `purchase_target`, `sell_target` |
 | **use target** | Sum of production-line targets for this good (rollup, not a budget). Lines budget themselves | `use_target` |
+| **full line** | One complete process iteration (the recipe as written). A line starting from 0 snaps to at least 1 so the day's output can be sold under whole-unit exchange | `next_line_target` in `Firm::plan` |
 | **average cost** | Inventory cost basis (AMV of purchases and of goods that went into producing the stock). Not today's unit buy price | `average_cost` |
 | **average price** | Realized average sale AMV | `average_price` |
 | **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
-| **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask | `amv_target` |
-| **AMV bound** | Recipe-derived planning bound. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `create_orders` clamps bid/ask written on the order to the bound and skips buys when market AMV is above the cap. `form_buy_proposal` returns `None` if payment unit AMV is above the buyer's order `amv_target`; `Firm::buy` also applies the row cap on request orders. Planning does not compute the numbers yet | `amv_bound`, `FirmAmvBound` |
+| **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask. `Firm::plan` nudges this as the firm's own quote (not a lerp onto live market AMV). Confidence scales how fast it moves | `amv_target` |
+| **AMV bound** | Recipe-derived planning guidestone. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `Firm::plan` writes residual WTP as the buy cap and input-cost rollup as the sell floor. Bounds do **not** skip, clamp, or void trades: `create_orders` posts the row's own bid/ask even when market AMV is above the cap, and `form_buy_proposal` / `Firm::buy` still form a basket when payment AMV is above the bound. Later: headroom vs market for shrinking a line | `amv_bound`, `FirmAmvBound` |
 | **available** (firm) | `quantity - reserve` | `FirmPRow::available` |
 | **sellable** | `quantity - max(reserve, reserve_target)`, floored at 0 | `FirmPRow::sellable` |
+| **sell success** | How much of today's sell plan sold: `sold / sell_target`. If `sell_target` is 0, `sold / produced`. Not an order **fill**. Not `SUCCESSFUL_SELL_BONUS` (that is a sell-weight add after a matched sell). At or above `sell_success_grow` (0.80) is strong demand (may grow sell/production). Below `sell_success_shrink` (0.50) is a miss. Between the two is quiet | `sell_success` local and `FirmRecords.sell_success`; tunables `sell_success_grow` / `sell_success_shrink` |
+
+### Firm records
+**Preferred:** firm records  
+**Code:** `FirmRecords` on `Firm.records`
+
+Rolled-up day memory for planning, written in `Firm::record_keeping` before `Firm::plan`. Property rows still hold per-good flows.
+
+| Preferred | Meaning | Code |
+|-----------|---------|------|
+| **realized profit** | Sold AMV vs cost of what sold: firm-wide `sold_amv / sold_cost_amv`, per-good `sold_unit_amv / average_cost`. 0 if the row meant to sell and sold nothing. Not process AMV-out / AMV-in (that is **productivity**, used to rank peer lines) | `profit_ratio`, `profit_avg`; `realized_profit_of` |
+| **confidence** | How aggressively the firm moves production and quotes. **0** cautious (half the advertised lerp/step), **0.5** advertised pace, **1** one-and-a-half times. Nudged from sell success, realized profit, and missing inputs | `FirmRecords.confidence`; tunables `confidence_default` / `confidence_pace_min` / `confidence_pace_max` |
 
 Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs are recorded as **produced** on the result goods. Capital is recorded as **used**, not consumed. Factors are not moved.
 
@@ -457,6 +478,48 @@ is still whole units.
 **Code:** `util::whole_units`, `util::whole_units_up`, `MarketOrder` amounts,
 `ProposedDeal.goods`
 
+### Time (good)
+**Preferred:** time  
+**Code:** `good::TIME` (`0`), `data/world/goods.toml`
+
+Foundational good. **Id 0** on purpose (exception to "0 means none" for
+goods). Transport tag efficiency 1.0 (friction cover per unit). Decays
+100% at day end into nothing. Pops receive `TIME_PER_LABOR` (48) times
+household labor each morning via `Pop::start_day` (`ScalingFactor::Labor`).
+Adult labor 1.0, elder 0.7, child 0.3. Recipes spend time as a destroyed
+input (1 unit minimum plus a little extra). **Untradeable** (and still
+transport 1.0): pops cannot buy extra person-days. Labor contracts move
+Time from pop to firm at morning settle.
+
+### Labor contract
+**Preferred:** labor contract, employment, workforce row  
+**Avoid:** labor-time good, labor order, labor market (the goods book)
+
+**Meaning:** Standing roster slot on a firm (`Workforce`): one pop, one
+employer, claimed **hours** (Time units), a goods-first wage basket, optional
+profit share. Settled in the morning by [`LaborSettlement::settle`]:
+pay the basket, move Time, reserve it for production. Not a `MarketOrder`.
+Generic [`Contract`] is firm-firm / institution promises, including contractors
+as secondary labor.
+
+**Hours** are Time units claimed. Scaling payment is per time unit; **flat**
+payment is a lump for the shift (paid last). Short till: never spend the
+**stock fence** (`stock_target` / `reserve_target`); wages may raid
+**growth target**; profit share is cut first. Partial pay withholds Time
+linearly in AMV paid / AMV promised.
+
+**Work time fraction:** default share of on-hand Time a pop may commit
+(0.5 = 12 of 24 hours). Not a live daily negotiation yet.
+
+**Work hours cap:** Culture, class, religion, and laws should set how much
+Time a pop is allowed to work. Prefer those as **caps** on committed hours,
+not a fixed daily grant, so hours can still move underneath (leisure,
+overwork, wage pressure). Global `work_time_fraction` is the stand-in cap
+until those sources exist.
+
+**Code:** `Workforce`, `PaymentTerm`, `LaborSettlement::settle`,
+`labor_constants::WORK_TIME_FRACTION`
+
 ### Take good
 **Preferred:** take good
 **Avoid:** clear good (sounds like zeroing the row in place)
@@ -498,11 +561,17 @@ evaluate still read the opening `MarketHistory` snapshot. A successful basket
 lerps both sides toward the midpoint of sold-AMV vs payment-AMV. A seller
 reject raises the sought good (demand edge 1.1) and lowers each tender,
 harder when more units were offered per unit sought. No-proposal raises the
-sought good only. Unmatched (no seller) does not move AMV.
+sought good only. After the match loop, leftover and unmatched orders
+still move AMV: unsatisfied buys raise it, unsatisfied sells lower it,
+in the direction of the larger leftover book. The step is
+`leftover_blend * unsatisfied / (unsatisfied + purchased)` so a small
+miss on a busy book barely moves, and a book with no fills takes the
+full leftover blend toward the demand edge (1.1 up, 1/1.1 down).
 
 **Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
-`drift_amv_on_no_proposal`, `market_constants::AMV_ACCEPT_BLEND`,
-`AMV_REJECT_BLEND`, `AMV_REJECT_DEMAND_EDGE`
+`drift_amv_on_no_proposal`, `drift_amv_on_book_pressure`,
+`market_constants::AMV_ACCEPT_BLEND`, `AMV_REJECT_BLEND`,
+`AMV_REJECT_DEMAND_EDGE`, `AMV_LEFTOVER_BLEND`, `AMV_LEFTOVER_BAND`
 
 ### AMV history
 **Preferred:** AMV history, AMV trail
@@ -545,7 +614,7 @@ windfalls (`keep >= 1.0`); they do not seek a more equitable split.
 **Preferred:** order priority, market priority  
 **Avoid:** priority alone (conflicts with **desire priority**), purchase order (ambiguous with `MarketOrder`)
 
-**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SELL_SUCCESS_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
+**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SUCCESSFUL_SELL_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
 **Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
 **Deferred detail:** `docs/proposals/market-order-priority.md`
 
@@ -584,7 +653,7 @@ If the world has no transport-tagged goods, the bill is 0.
 **Preferred:** write, set  
 **Avoid:** stamp, restamp (except a **stamped deal**: market marks an accepted exchange complete)
 
-**Meaning:** Filling in a field on an order or property row is not a final act. Say **write** or **set** AMV, counter, or order priority on create. Say **update** or **edit** when changing an order already in the books (remaining amount, sell success bonus). **Stamp** is reserved for closing a deal.
+**Meaning:** Filling in a field on an order or property row is not a final act. Say **write** or **set** AMV, counter, or order priority on create. Say **update** or **edit** when changing an order already in the books (remaining amount, successful sell bonus). **Stamp** is reserved for closing a deal.
 
 ### Player resources
 **Preferred:** player resources  
@@ -601,6 +670,7 @@ If the world has no transport-tagged goods, the bill is 0.
 |----------------------|----------------|
 | ratio (alone) | **desire sat**, **tier sat** |
 | tier fill / fill (for completeness) | **tier sat** / **desire sat** |
+| sell fill | **sell success** (`sold / sell_target`). **Fill** is for matching an order |
 | satisfaction rate | **desire sat** or **satisfaction units** (pick one) |
 | mood (for the struct) | **sentiment** |
 | level (for desire tier) | **tier** (basic/common/luxury) |

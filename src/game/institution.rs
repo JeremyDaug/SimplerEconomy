@@ -88,12 +88,16 @@ impl MarketSlot {
     /// [`MarketSlot::Custom`] has no mapping yet and uses the between-firms-and-pops
     /// value as a placeholder.
     pub fn priority(self) -> f64 {
-        use crate::game::config::market_priority as p;
+        self.priority_with(&crate::game::config::MarketPriorityConfig::default())
+    }
+
+    /// Numeric order priority using loaded institution slots.
+    pub fn priority_with(self, cfg: &crate::game::config::MarketPriorityConfig) -> f64 {
         match self {
-            Self::BeforeFirms => p::INSTITUTION_BEFORE_FIRMS,
-            Self::BetweenFirmsAndPops => p::INSTITUTION_BETWEEN_FIRMS_AND_POPS,
-            Self::AfterPops => p::INSTITUTION_AFTER_POPS,
-            Self::Custom(_) => p::INSTITUTION_BETWEEN_FIRMS_AND_POPS,
+            Self::BeforeFirms => cfg.institution_before_firms,
+            Self::BetweenFirmsAndPops => cfg.institution_between_firms_and_pops,
+            Self::AfterPops => cfg.institution_after_pops,
+            Self::Custom(_) => cfg.institution_between_firms_and_pops,
         }
     }
 }

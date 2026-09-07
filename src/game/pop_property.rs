@@ -3,7 +3,7 @@
 use bevy::utils::default;
 use circular_buffer::CircularBuffer;
 
-use crate::game::config::pop_constants;
+use crate::game::config::{pop_constants, PopConfig};
 use crate::game::household::Household;
 use crate::game::util::lerp;
 
@@ -243,17 +243,27 @@ impl Default for PopRecords {
 }
 
 impl PopRecords {
+    /// Planning defaults from loaded pop config. Histories empty, sat full.
+    pub fn from_config(cfg: &PopConfig) -> Self {
+        let mut records = Self::default();
+        records.savings_ratio = cfg.default_savings_ratio;
+        records.time_preference = cfg.default_time_preference;
+        records.risk_appetite = cfg.default_risk_appetite;
+        records
+    }
+
     /// # Update Living Standard
     /// 
     /// Given the current `tier_sat`, update `self.living_standard` to 
     /// reflect the weighted sum of `tier_sat` values.
     /// 
     /// Current formula is `living_stardard = 3.0*basic + 1.5*Common + 1.0*Luxury`.
-    pub fn update_living_standard(&mut self) {
+    /// `config` supplies the three score weights.
+    pub fn update_living_standard(&mut self, config: &PopConfig) {
         self.living_standard = 
-            self.tier_sat[0] * pop_constants::SCORE_WEIGHT_BASIC +
-            self.tier_sat[1] * pop_constants::SCORE_WEIGHT_COMMON +
-            self.tier_sat[2] * pop_constants::SCORE_WEIGHT_LUXURY;
+            self.tier_sat[0] * config.score_weight_basic +
+            self.tier_sat[1] * config.score_weight_common +
+            self.tier_sat[2] * config.score_weight_luxury;
     }
 
     /// # Update Trend
@@ -264,7 +274,8 @@ impl PopRecords {
     /// Updates `sol_avg`, `trend`, and `sol_history` based on the current state of the pop.
     /// 
     /// Should be called during `process_satisfaciton` after `update_living_standard`.
-    pub fn update_trend(&mut self) {
+    /// `config.rolling_avg_weight` is the EMA blend toward today's living standard.
+    pub fn update_trend(&mut self, config: &PopConfig) {
         // if first day just set the average and trend and move on.
         if self.sol_history.len() == 0 {
             self.sol_avg = self.living_standard;
@@ -275,7 +286,7 @@ impl PopRecords {
         // update the average using EMA method.
         let prev_avg = self.sol_avg;
         // weighted rolling average
-        self.sol_avg = lerp(self.sol_avg, self.living_standard, pop_constants::ROLLING_AVG_WEIGHT);
+        self.sol_avg = lerp(self.sol_avg, self.living_standard, config.rolling_avg_weight);
         // update the trend based on the change in living standard and the average.
         self.trend = self.living_standard - prev_avg;
         // push the current living standard to the history.
