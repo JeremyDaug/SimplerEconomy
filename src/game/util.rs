@@ -26,6 +26,12 @@ pub fn is_whole_unit(qty: f64) -> bool {
     qty.is_finite() && qty == qty.trunc()
 }
 
+/// Rounds a non-negative unit count half-up to a whole number (`4.5` -> `5`).
+pub fn round_units(amount: f64) -> f64 {
+    debug_assert!(amount >= 0.0, "amount must be >= 0.0");
+    (amount + 0.5).floor()
+}
+
 #[cfg(test)]
 mod util_should {
     use super::*;
@@ -52,5 +58,13 @@ mod util_should {
         assert!(is_whole_unit(-4.0));
         assert!(!is_whole_unit(2.5));
         assert!(!is_whole_unit(f64::NAN));
+    }
+
+    #[test]
+    fn round_units_rounds_half_up() {
+        assert_eq!(round_units(4.5), 5.0);
+        assert_eq!(round_units(4.4), 4.0);
+        assert_eq!(round_units(2.0), 2.0);
+        assert_eq!(round_units(0.0), 0.0);
     }
 }

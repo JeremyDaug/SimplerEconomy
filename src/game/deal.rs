@@ -788,6 +788,73 @@ pub fn sort_tenders_by_salability(mut rows: Vec<(usize, f64, f64)>) -> Vec<(usiz
     rows.into_iter().map(|(good, _, qty)| (good, qty)).collect()
 }
 
+/// Sum of friction cover from `(good_id, on-hand qty)` rows.
+pub fn transport_cover_on_hand(
+    rows: impl IntoIterator<Item = (usize, f64)>,
+    factuals: &Factuals,
+) -> f64 {
+    rows.into_iter()
+        .map(|(id, qty)| factuals.find_good(id).transport_cover(qty.max(0.0)))
+        .sum()
+}
+
+/// Returns `(good_id, qty_to_subtract)` to spend `amount` of friction cover.
+/// Lowest transport good id first. Leftover unpaid is dropped.
+pub fn transport_spend_plan(
+    mut amount: f64,
+    factuals: &Factuals,
+    on_hand: impl IntoIterator<Item = (usize, f64)>,
+) -> Vec<(usize, f64)> {
+    if amount <= 0.0 {
+        return Vec::new();
+    }
+    let mut rows: Vec<(usize, f64)> = on_hand
+        .into_iter()
+        .filter(|&(id, _)| factuals.find_good(id).is_transport())
+        .collect();
+    rows.sort_by_key(|(id, _)| *id);
+    let mut plan = Vec::new();
+    for (id, qty) in rows {
+        if amount <= 0.0 {
+            break;
+        }
+        let qty = qty.max(0.0);
+        let cover = factuals.find_good(id).transport_cover(qty);
+        if cover <= 0.0 {
+            continue;
+        }
+        if cover >= amount {
+            let eff = factuals.find_good(id).transport_efficiency();
+            plan.push((id, amount / eff));
+            amount = 0.0;
+        } else {
+            plan.push((id, qty));
+            amount -= cover;
+        }
+    }
+    plan
+}
+
+/// Builds a salability-sorted tender list from property keys and a qty callback.
+pub fn collect_tenders(
+    goods: impl IntoIterator<Item = usize>,
+    history: &MarketHistory,
+    mut qty_of: impl FnMut(usize) -> f64,
+) -> Vec<(usize, f64)> {
+    let mut rows = Vec::new();
+    for good in goods {
+        let qty = qty_of(good);
+        if qty <= 0.0 {
+            continue;
+        }
+        if history.price(good) <= 0.0 {
+            continue;
+        }
+        rows.push((good, history.salability(good), qty));
+    }
+    sort_tenders_by_salability(rows)
+}
+
 /// Returns tender qty of `give` for `targeted_units` of `targeted_good`.
 /// Uses the order's named counter amount if that good matches, otherwise
 /// market AMV.

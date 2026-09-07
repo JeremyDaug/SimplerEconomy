@@ -9,8 +9,21 @@ and `docs/proposals/`.
 
 1. Prefer the **Preferred** term in new docs, comments, and discussion.
 2. Do not invent near-synonyms without updating this file.
-3. Put formulas and “not this” here; put essays in proposals / the vault.
+3. Put formulas and "not this" here; put essays in proposals / the vault.
 4. Code identifiers may lag; when they do, note them under **Code**.
+5. **Grep** `###` headings or the jump list. Do not read this file cover to cover.
+
+**Jump** (grep the heading; skip the rest):
+
+| Section | Terms |
+|---------|-------|
+| Desire hierarchy | platonic desire, demo desire, pop desire, tier, target / bucket |
+| Pop consumption patterns | ascetic, affluent |
+| Satisfaction and fill | desire sat, tier sat, SOL, sat units, sat boost, common surplus, luxury oversat |
+| Sentiment | sentiment, axes, sentiment shift |
+| Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, update sentiments, stored effects |
+| World data | world data, init data, save data, factuals, gameplay config, game state, actor, pop, household, institution, firm, firm property row, firm records, state |
+| Exchange | deal, take tenders, whole units, Time, labor contract, take good, make change, deal response, AMV drift, AMV history, salability update, AMV keep, order priority, friction / transport, order tries, write / set, player resources |
 
 ---
 
@@ -687,6 +700,7 @@ If the world has no transport-tagged goods, the bill is 0.
 | `docs/proposals/institution-draft.md` | Institutions v0 |
 | `docs/proposals/market-order-priority.md` | Order priority numbers vs deferred ranking / matching |
 | `STYLE.md` | Code style |
-| `AGENTS.md` | Agent rules + vault paths |
+| `AGENTS.md` | Agent rules, session start, vault when |
+| `docs/agent-handoff.md` | Session router (then only the matching `docs/handoff/` topic) |
 | `TODO.md` | Working focus list |
 | `reviewlog.md` | Open review debt only |

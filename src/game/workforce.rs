@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::config::GameConfig;
 use crate::game::firm::{Firm, FirmPRow};
-use crate::game::good::TIME;
+
 use crate::game::market::MarketHistory;
 use crate::game::pop::Pop;
 use crate::game::util::{whole_units, whole_units_up};
@@ -489,6 +489,7 @@ mod settle_labor_contracts_should {
     use crate::game::actor::Actor;
     use crate::game::config::GameConfig;
     use crate::game::firm::FirmPRow;
+    use crate::game::good::TIME;
     use crate::game::household::Household;
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::sentiment::Sentiment;

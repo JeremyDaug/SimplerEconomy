@@ -6,6 +6,10 @@ when older code predates a rule; do not drive-by reformat unrelated modules.
 Project rules, design vault paths, and agent workflow live in `AGENTS.md`. This
 document is the **coding style** authority.
 
+**Fast path:** most edits only need §4 builders, §5 comments, §6 asserts, §9
+tests, and §11 what not to do. Read the other sections when the edit actually
+touches that topic.
+
 ---
 
 ## 1. Philosophy
@@ -282,9 +286,10 @@ docs/proposals/          # short design drafts (trim when implemented)
 
 | Doc | Role |
 |-----|------|
-| `AGENTS.md` | Agent/project rules, vault paths, build commands, reviewlog |
+| `AGENTS.md` | Agent/project rules, session start, vault when, build, reviewlog |
+| `docs/agent-handoff.md` | Session router (then only the matching `docs/handoff/` topic) |
 | `STYLE.md` (this file) | Coding style and structural conventions |
-| `docs/design-vocabulary.md` | Canonical design terms (tier sat, sentiment, …) |
+| `docs/design-vocabulary.md` | Canonical design terms — grep, do not read cover to cover |
 | `reviewlog.md` | Working backlog of review findings only |
 | `docs/proposals/*` | Short design drafts; trim after implementation |
 | EconCiv Obsidian vault | Authoritative long-form design |
