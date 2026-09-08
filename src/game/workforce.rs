@@ -278,6 +278,16 @@ impl Workforce {
             .sum()
     }
 
+    /// Wage AMV per claimed Time unit (0 if hours are 0).
+    pub fn hourly_wage_amv(&self, history: &MarketHistory) -> f64 {
+        let hours = self.hours.max(0.0);
+        if hours <= 0.0 {
+            0.0
+        } else {
+            self.promised_amv(hours, history) / hours
+        }
+    }
+
     /// Scales every payment term amount by `factor`.
     /// Factor must be `>= 0.0`.
     pub fn scale_payments(&mut self, factor: f64) {
@@ -576,7 +586,11 @@ impl Firm {
                 1.0 / n
             };
             let want = hours_want_total * share;
-            self.workforce[i].hours = round_units(want.max(0.0));
+            let mut hours = round_units(want.max(0.0));
+            if factuals.config.firm.keep_alive && hours < 1.0 {
+                hours = 1.0;
+            }
+            self.workforce[i].hours = hours;
         }
 
         for &i in &idxs {
@@ -1361,6 +1375,15 @@ mod budget_labor_should {
             "{:?}",
             firm.workforce[0].payment
         );
+    }
+
+    #[test]
+    fn hourly_wage_amv_is_promised_over_hours() {
+        let worker = Workforce::new(2)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let history = history_coin();
+        assert!((worker.hourly_wage_amv(&history) - 1.0).abs() < 1e-12);
     }
 
     #[test]

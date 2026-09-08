@@ -2,7 +2,8 @@
 
 Read this only for the tester, `day`, CSV logs, or the living roster.
 **Paused.** Do not add pages, commands, or extra CSV series unless asked. Do
-not invent a second shopping model.
+not invent a second shopping model. `keep_alive on|off` is the emergency
+firm subsidy toggle (`firm.keep_alive`, default off).
 
 ```bash
 cargo run --example market_tester
@@ -11,6 +12,8 @@ cargo run --example market_tester
 **Code / source of truth:** `examples/market_tester/` (`main`, `roster`,
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml`. Starting
 AMV/sal, desires, ownership, and bounds: `roster.rs` — do not copy them here.
+Living roster bulk is `ROSTER_SCALE` (100): households, line targets, hours,
+and starting stocks. Per-household desire amounts and AMV/sal are unscaled.
 
 Home is a short summary. Pages: `stock` / `orders` / `processes` / `amv` /
 `day`. `home` / `cls` back. `shop` reloads books from `create_orders`. `match`
@@ -20,16 +23,18 @@ is **read-only** (does not move stock). `main.rs` is still the Bevy hex stub.
 
 1. `Pop::start_day` (Time grant). Zero `income_amv`, reservations, firm
    `clear_day_flows`.
-2. `LaborSettlement::settle` (via `Firm::settle_labor_contracts`). Hours, wage
+2. `Market::settle_labor` (pays contracts, stamps Time AMV). Hours, wage
    basket, and one-employer roster: `labor.md`. Time moves pop -> firm here.
-3. `Market::run_market_day`. Time is untradeable transport.
+3. `Market::run_market_day`. Time is untradeable transport; Time AMV is not
+   leftover-book drift.
 4. `Firm::run_production` on **already-loaded** factuals. Do not reload
    `processes.toml`. A line starting from 0 snaps to 1.
 5. Pop `consume`, `update_sentiments`, `record_keeping`. Coin save/shop
    come from that rewrite (no tester cap).
 6. Firm `record_keeping` (`plan`) from the closing `MarketHistory`. Do not call
    pop `record_keeping` again.
-7. `Firm::budget_labor` (hours and wage amounts; `budget_interval`, default 1).
+7. `Market::budget_labor` (hours and wage amounts; Time AMV restamp;
+   `budget_interval`, default 1).
 8. Pop/firm `decay_goods`.
 
 Prints a `MarketDayReport` plus wages, production, plans, post-consume pop

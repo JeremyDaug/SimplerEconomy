@@ -6,8 +6,10 @@
 //! short summary. `stock`, `orders`, and `processes` open full pages.
 //! `day` / `day N` runs the calendar loop, including firm `record_keeping`
 //! (rolling average, records, [`Firm::plan`]) after production and pop
-//! consume. Each day appends core market CSVs under `data/logs/` (close
-//! quotes and trade candles). Pops and firms are logged only when flagged
+//! consume. Labor settle and budget go through [`Market`] so Time AMV is
+//! stamped from contracts. Each day appends core market CSVs under
+//! `data/logs/` (close quotes and trade candles). Pops and firms are logged
+//! only when flagged
 //! (`csv on <actor>`). `csv` shows the files; `csv <name>` changes the stem.
 //!
 //! ```text
@@ -223,6 +225,25 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
         },
         "amv" | "prices" => format_amv_trail(session).trim_end().to_string(),
         "csv" | "log" => handle_csv_command(session, rest),
+        "keep_alive" | "keepalive" => match rest.first().map(|s| s.to_ascii_lowercase()) {
+            None => format!(
+                "keep_alive {} (keep_alive on|off).",
+                if session.factuals.config.firm.keep_alive {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+            Some(ref s) if s == "on" || s == "true" || s == "1" => {
+                session.factuals.config.firm.keep_alive = true;
+                "keep_alive on. Collapsed firms get coin, inputs, and a 1-iteration floor.".into()
+            }
+            Some(ref s) if s == "off" || s == "false" || s == "0" => {
+                session.factuals.config.firm.keep_alive = false;
+                "keep_alive off.".into()
+            }
+            Some(s) => format!("keep_alive on|off (got {s})."),
+        },
         "seed" => match parse_seed(rest) {
             Ok(seed) => {
                 session.rng = StdRng::seed_from_u64(seed);
@@ -459,20 +480,7 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         firm.clear_day_flows();
     }
 
-    let mut wages = Vec::new();
-    let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
-    firm_ids.sort_unstable();
-    for id in &firm_ids {
-        let settlement = firms
-            .get_mut(id)
-            .expect("firm id from keys")
-            .settle_labor_contracts(
-                &mut pops,
-                &session.history,
-                &session.factuals.config,
-            );
-        wages.push((*id, settlement));
-    }
+    let wages = session.market.settle_labor(&mut pops, &mut firms, &session.factuals);
 
     let report = session.market.run_market_day(
         &session.factuals,
@@ -491,6 +499,8 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         pop.update_sentiments(&closing, &session.factuals.config.pop);
         pop.record_keeping(&session.factuals, &closing);
     }
+    let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
+    firm_ids.sort_unstable();
     for id in &firm_ids {
         firms
             .get_mut(id)
@@ -498,12 +508,9 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
             .record_keeping(&session.factuals, &closing);
     }
     let budget_day = session.day + 1;
-    for id in &firm_ids {
-        firms
-            .get_mut(id)
-            .expect("firm id from keys")
-            .budget_labor(&session.factuals, &closing, &pops, budget_day);
-    }
+    session
+        .market
+        .budget_labor(&pops, &mut firms, &session.factuals, budget_day);
     for pop in pops.values_mut() {
         pop.decay_goods(&session.factuals);
     }
@@ -517,7 +524,7 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     session.firms.sort_by_key(|firm| firm.id);
     session.buys.clear();
     session.sells.clear();
-    session.history = closing;
+    session.history = session.market.history();
     session.day += 1;
     (report, wages)
 }
@@ -553,11 +560,11 @@ mod day_should {
         let (_report, wages) = run_one_day(&mut session);
         let haul = session.factuals.config.market.transaction_cost;
         let expected = [
-            (1, 15.0 + haul),
-            (2, 28.0 + haul),
-            (3, 32.0),
-            (5, 5.0 + haul),
-            (6, 30.0),
+            (1, 15.0 * ROSTER_SCALE + haul),
+            (2, 28.0 * ROSTER_SCALE + haul),
+            (3, 32.0 * ROSTER_SCALE),
+            (5, 5.0 * ROSTER_SCALE + haul),
+            (6, 30.0 * ROSTER_SCALE),
         ];
         for (id, hours) in expected {
             let settle = wages
@@ -585,22 +592,23 @@ mod day_should {
             .iter()
             .find(|firm| firm.id == 3)
             .expect("mine");
-        assert!((mine.production_line[0].last_iterations - 8.0).abs() < 1e-9);
+        assert!((mine.production_line[0].last_iterations - 8.0 * ROSTER_SCALE).abs() < 1e-9);
         let well = session
             .firms
             .iter()
             .find(|firm| firm.id == 6)
             .expect("well");
-        assert!((well.production_line[0].last_iterations - 30.0).abs() < 1e-9);
+        assert!((well.production_line[0].last_iterations - 30.0 * ROSTER_SCALE).abs() < 1e-9);
         let farm = session
             .firms
             .iter()
             .find(|firm| firm.id == 1)
             .expect("farm");
         assert!(
-            (farm.production_line[0].last_iterations - 5.0).abs() < 1e-9,
-            "farm did {} want 5 missing {:?}",
+            (farm.production_line[0].last_iterations - 5.0 * ROSTER_SCALE).abs() < 1e-9,
+            "farm did {} want {} missing {:?}",
             farm.production_line[0].last_iterations,
+            5.0 * ROSTER_SCALE,
             farm.production_line[0].last_missing_goods
         );
     }

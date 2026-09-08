@@ -386,6 +386,7 @@ commands
   match                 one match_orders pass; does not remove anything
   drop buy <i>          remove buy at list index
   drop sell <i>
+  keep_alive [on|off]   emergency: feed collapsed firms (default off)
   seed <n>              deterministic rng from n
   unseed                os rng again
   clear                 empty the books

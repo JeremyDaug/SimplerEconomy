@@ -8,9 +8,11 @@ use crate::game::actor::Actor;
 use crate::game::config::{market_constants, market_priority, MarketConfig};
 use crate::game::deal::{DealMaker, DealResponse};
 use crate::game::firm::Firm;
+use crate::game::good::TIME;
 use crate::game::marketorder::{priority_in_band, wealth_unit_rank, MarketOrder};
 use crate::game::pop::Pop;
 use crate::game::util::{lerp, whole_units};
+use crate::game::workforce::LaborSettlement;
 use crate::game::{actors::Actors, factuals::Factuals};
 
 /// One buy/sell pair from [`Market::match_orders`].
@@ -580,6 +582,170 @@ impl Market {
         }
     }
 
+    /// Morning labor settle for member firms. Does not post Time on the
+    /// goods book. Stamps Time AMV as hours-weighted paid wage AMV / Time
+    /// given, plus demand (claimed hours) and supply (work-fraction of
+    /// on-hand Time).
+    pub fn settle_labor(
+        &mut self,
+        pops: &mut HashMap<usize, Pop>,
+        firms: &mut HashMap<usize, Firm>,
+        factuals: &Factuals,
+    ) -> Vec<(usize, LaborSettlement)> {
+        let history = self.history_with(&factuals.config.market);
+        let work_fraction = factuals.config.labor.work_time_fraction.clamp(0.0, 1.0);
+        let mut firm_ids: Vec<usize> = self.firms.iter().copied().collect();
+        firm_ids.sort_unstable();
+
+        let mut demand = 0.0;
+        let mut supply = 0.0;
+        let mut buyers = 0.0;
+        let mut suppliers: HashSet<usize> = HashSet::new();
+        for &id in &firm_ids {
+            let Some(firm) = firms.get(&id) else {
+                continue;
+            };
+            let mut firm_claims = false;
+            for worker in &firm.workforce {
+                if worker.id == 0 {
+                    continue;
+                }
+                let Some(pop) = pops.get(&worker.id) else {
+                    continue;
+                };
+                demand += worker.hours.max(0.0);
+                supply += work_fraction * pop.on_hand_time().max(0.0);
+                suppliers.insert(worker.id);
+                firm_claims = true;
+            }
+            if firm_claims {
+                buyers += 1.0;
+            }
+        }
+
+        let mut wages = Vec::new();
+        for &id in &firm_ids {
+            let Some(firm) = firms.get_mut(&id) else {
+                continue;
+            };
+            let settlement = firm.settle_labor_contracts(pops, &history, &factuals.config);
+            wages.push((id, settlement));
+        }
+
+        let mut paid_amv = 0.0;
+        let mut time_given = 0.0;
+        for (_, settlement) in &wages {
+            for row in &settlement.workers {
+                paid_amv += row.paid_amv;
+                time_given += row.time_given;
+            }
+        }
+        let unit = if time_given > 0.0 {
+            paid_amv / time_given
+        } else {
+            0.0
+        };
+        self.stamp_time_from_labor(
+            unit,
+            demand,
+            supply,
+            buyers,
+            suppliers.len() as f64,
+            Some(time_given),
+            &factuals.config.market,
+        );
+        wages
+    }
+
+    /// Labor budget for member firms. Restamps Time AMV from the new
+    /// standing baskets. Wages do not follow Time AMV yet.
+    pub fn budget_labor(
+        &mut self,
+        pops: &HashMap<usize, Pop>,
+        firms: &mut HashMap<usize, Firm>,
+        factuals: &Factuals,
+        day: u32,
+    ) {
+        let history = self.history_with(&factuals.config.market);
+        let mut firm_ids: Vec<usize> = self.firms.iter().copied().collect();
+        firm_ids.sort_unstable();
+        for &id in &firm_ids {
+            let Some(firm) = firms.get_mut(&id) else {
+                continue;
+            };
+            firm.budget_labor(factuals, &history, pops, day);
+        }
+
+        let work_fraction = factuals.config.labor.work_time_fraction.clamp(0.0, 1.0);
+        let mut wage_amv = 0.0;
+        let mut hours = 0.0;
+        let mut demand = 0.0;
+        let mut supply = 0.0;
+        let mut buyers = 0.0;
+        let mut suppliers: HashSet<usize> = HashSet::new();
+        for &id in &firm_ids {
+            let Some(firm) = firms.get(&id) else {
+                continue;
+            };
+            let mut firm_claims = false;
+            for worker in &firm.workforce {
+                if worker.id == 0 {
+                    continue;
+                }
+                let h = worker.hours.max(0.0);
+                hours += h;
+                demand += h;
+                wage_amv += worker.promised_amv(h, &history);
+                firm_claims = true;
+                suppliers.insert(worker.id);
+                if let Some(pop) = pops.get(&worker.id) {
+                    supply += work_fraction * pop.on_hand_time().max(0.0);
+                }
+            }
+            if firm_claims {
+                buyers += 1.0;
+            }
+        }
+        let unit = if hours > 0.0 { wage_amv / hours } else { 0.0 };
+        self.stamp_time_from_labor(
+            unit,
+            demand,
+            supply,
+            buyers,
+            suppliers.len() as f64,
+            None,
+            &factuals.config.market,
+        );
+    }
+
+    /// Writes Time's AMV and labor book (demand = claimed hours, supply =
+    /// work-fraction Time). Leaves AMV unchanged when `unit_amv` is 0.
+    /// `purchased` is Some at settle (Time given); None at budget keeps
+    /// this morning's fill.
+    fn stamp_time_from_labor(
+        &mut self,
+        unit_amv: f64,
+        demand: f64,
+        supply: f64,
+        buyers: f64,
+        suppliers: f64,
+        purchased: Option<f64>,
+        cfg: &MarketConfig,
+    ) {
+        let row = self.market_good_mut(TIME, cfg);
+        if unit_amv > 0.0 {
+            row.set_amv_min(unit_amv, cfg.amv_min_abs);
+            row.set_average_price_min(unit_amv, cfg.amv_min_abs);
+        }
+        row.set_demand(demand.max(0.0));
+        row.set_supply(supply.max(0.0));
+        row.set_buyers(buyers.max(0.0));
+        row.set_suppliers(suppliers.max(0.0));
+        if let Some(qty) = purchased {
+            row.set_purchased(qty.max(0.0));
+        }
+    }
+
     /// Lerps each good's salability toward `payment / tender` when it was
     /// offered as payment today. Goods with no tender are left alone.
     fn update_salability(&mut self, cfg: &crate::game::config::MarketConfig) {
@@ -685,11 +851,10 @@ impl Market {
 
     /// Moves AMV from leftover and unmatched orders after the match loop.
     /// Unsatisfied buys raise AMV; unsatisfied sells lower it. When both
-    /// books have leftover, the larger side wins. Factor is
-    /// `1 + leftover_blend * miss / purchased` on the winning side (empty
-    /// fill counts as 1 whole unit). Demand: `AMV * factor`. Supply:
-    /// `AMV / factor`. Each leftover multiple of today's volume adds one
-    /// leftover_blend to the multiplier.
+    /// books have leftover, the larger side wins. Step is leftover_blend
+    /// times unsatisfied / (unsatisfied + purchased). Demand: `AMV * (1 +
+    /// step)`. Supply: `AMV * (1 - step)`. A dry book moves leftover_blend
+    /// (10%). No lerp to the reject demand edge.
     fn drift_amv_on_book_pressure(
         &mut self,
         leftover_buys: &[MarketOrder],
@@ -718,6 +883,9 @@ impl Market {
         goods.extend(sell_left.keys().copied());
         let band = cfg.amv_leftover_band;
         for good in goods {
+            if good == TIME {
+                continue;
+            }
             let buy_u = buy_left.get(&good).copied().unwrap_or(0.0);
             let sell_u = sell_left.get(&good).copied().unwrap_or(0.0);
             let unsat = buy_u + sell_u;
@@ -735,22 +903,20 @@ impl Market {
                 .get(&good)
                 .map(|row| row.purchased.max(0.0))
                 .unwrap_or(0.0);
+            let share = unsat / (unsat + filled);
+            if share <= 0.0 {
+                continue;
+            }
             let net = buy_u - sell_u;
             if net == 0.0 {
                 continue;
             }
-            let miss = if net > 0.0 { buy_u } else { sell_u };
-            if miss <= 0.0 {
-                continue;
-            }
-            let denom = if filled > 0.0 { filled } else { 1.0 };
-            let factor = 1.0 + cfg.amv_leftover_blend * miss / denom;
-            debug_assert!(factor >= 1.0, "leftover AMV factor must be >= 1");
+            let step = (cfg.amv_leftover_blend * share).clamp(0.0, 1.0);
             let old = self.market_good_mut(good, cfg).amv;
             let new = if net > 0.0 {
-                old * factor
+                old * (1.0 + step)
             } else {
-                old / factor
+                old * (1.0 - step)
             };
             self.market_good_mut(good, cfg)
                 .set_amv_min(new, cfg.amv_min_abs);
@@ -817,7 +983,10 @@ impl Market {
     /// Zeros today's exchange counters on every recorded good. Leaves AMV,
     /// salability, average price, stock, production, consumption, and imports.
     fn reset_day_exchange_stats(&mut self) {
-        for good in self.goods.values_mut() {
+        for (&id, good) in self.goods.iter_mut() {
+            if id == TIME {
+                continue;
+            }
             good.set_supply(0.0);
             good.set_suppliers(0.0);
             good.set_demand(0.0);
@@ -1984,7 +2153,8 @@ mod run_market_day_should {
     use crate::game::config::market_constants;
     use crate::game::factuals::Factuals;
     use crate::game::firm::{Firm, FirmPRow};
-    use crate::game::good::Good;
+    use crate::game::good::{Good, TIME};
+    use crate::game::workforce::{PaymentTerm, Workforce};
     use crate::game::household::Household;
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::sentiment::Sentiment;
@@ -2605,8 +2775,7 @@ mod run_market_day_should {
             4.0,
         )];
         market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
-        // Empty fill counts as 1 unit: 1 + 0.10 * 10 / 1 = 2.
-        let want = 1.0 * (1.0 + cfg.amv_leftover_blend * 10.0);
+        let want = 1.0 * (1.0 + cfg.amv_leftover_blend);
         assert!((market.goods[&GRAIN].amv - want).abs() < 1e-12);
     }
 
@@ -2616,12 +2785,12 @@ mod run_market_day_should {
         let cfg = crate::game::config::MarketConfig::default();
         let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -10.0, 1.5)];
         market.drift_amv_on_book_pressure(&[], &sells, &[], &cfg);
-        let factor = 1.0 + cfg.amv_leftover_blend * 10.0;
-        assert!((market.goods[&GRAIN].amv - 1.0 / factor).abs() < 1e-12);
+        let want = 1.0 * (1.0 - cfg.amv_leftover_blend);
+        assert!((market.goods[&GRAIN].amv - want).abs() < 1e-12);
     }
 
     #[test]
-    fn leftover_miss_over_purchased_scales_the_factor() {
+    fn leftover_share_is_unsat_over_unsat_plus_filled() {
         let mut market = priced_market();
         market.goods.get_mut(&GRAIN).unwrap().set_purchased(5.0);
         let cfg = crate::game::config::MarketConfig::default();
@@ -2632,8 +2801,8 @@ mod run_market_day_should {
             4.0,
         )];
         market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
-        // 1 + 0.10 * 10 / 5 = 1.2
-        let want = 1.0 * (1.0 + cfg.amv_leftover_blend * 10.0 / 5.0);
+        let share = 10.0 / (10.0 + 5.0);
+        let want = 1.0 * (1.0 + cfg.amv_leftover_blend * share);
         assert!((market.goods[&GRAIN].amv - want).abs() < 1e-12);
     }
 
@@ -2650,5 +2819,56 @@ mod run_market_day_should {
         let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -10.0, 1.5)];
         market.drift_amv_on_book_pressure(&buys, &sells, &[], &cfg);
         assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn settle_labor_stamps_time_amv_from_paid_wages() {
+        let mut market = Market::new(1);
+        market.pops.insert(2);
+        market.firms.insert(1);
+        market.goods.insert(TIME, MarketGood::new().with_amv(1.0));
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(0.21).with_salability(1.0),
+        );
+
+        let worker = Workforce::new(2)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_workforce(worker);
+        firm.property
+            .insert(COIN, FirmPRow::new().with_quantity(100.0));
+        let mut pop = shopper(2, 0.0, 0.0);
+        pop.property.insert(TIME, PopPRow::new(48.0));
+
+        let mut pops = HashMap::from([(2, pop)]);
+        let mut firms = HashMap::from([(1, firm)]);
+        let mut facts = factuals();
+        facts = facts.with_good(test_good(TIME, "time"));
+
+        let wages = market.settle_labor(&mut pops, &mut firms, &facts);
+        assert_eq!(wages.len(), 1);
+        assert!((wages[0].1.workers[0].time_given - 10.0).abs() < 1e-12);
+        let time = &market.goods[&TIME];
+        assert!((time.amv - 0.21).abs() < 1e-9, "time amv {}", time.amv);
+        assert!((time.purchased - 10.0).abs() < 1e-12);
+        assert!(time.demand > 0.0);
+        assert!(time.supply > 0.0);
+    }
+
+    #[test]
+    fn leftover_pressure_skips_time() {
+        let mut market = Market::new(1);
+        market.goods.insert(TIME, MarketGood::new().with_amv(1.0));
+        let cfg = crate::game::config::MarketConfig::default();
+        let unmatched = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            TIME,
+            50.0,
+            4.0,
+        )];
+        market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
+        assert!((market.goods[&TIME].amv - 1.0).abs() < 1e-12);
     }
 }

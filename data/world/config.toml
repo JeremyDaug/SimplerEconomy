@@ -76,7 +76,7 @@ transaction_cost = 1.0
 amv_accept_blend = 0.25
 amv_reject_blend = 0.10
 amv_reject_demand_edge = 1.1
-amv_leftover_blend = 0.05
+amv_leftover_blend = 0.10
 amv_leftover_band = 0.10
 salability_blend = 0.25
 
@@ -127,3 +127,4 @@ sell_success_shrink = 0.50
 confidence_default = 0.5
 confidence_pace_min = 0.5
 confidence_pace_max = 1.5
+keep_alive = false

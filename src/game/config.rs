@@ -175,8 +175,8 @@ pub mod market_constants {
     pub const AMV_REJECT_BLEND: f64 = 0.10;
     /// Sought-good up-push is this times the tender down-push (demand edge).
     pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
-    /// Day-end leftover-book AMV added per leftover-to-volume multiple.
-    /// Factor is `1 + blend * miss / purchased` (empty fill = 1 unit).
+    /// Day-end leftover-book AMV fraction, before leftover/fill scaling.
+    /// 0 = no move, 1 = double or zero AMV on a dry book.
     pub const AMV_LEFTOVER_BLEND: f64 = 0.10;
     /// Skip leftover AMV when both books have leftover and
     /// `|buy - sell| / (buy + sell)` is below this (0.10 = 10%).
@@ -331,6 +331,9 @@ pub mod firm_constants {
     /// Plan-pace multiplier at confidence 1 (one and a half times the advertised lerp/step).
     /// Mid confidence (0.5) keeps multiplier 1.0.
     pub const CONFIDENCE_PACE_MAX: f64 = 1.5;
+    /// Emergency: keep collapsed firms at 1 iteration and feed coin/inputs.
+    /// Default off.
+    pub const KEEP_ALIVE: bool = false;
 
     /// Peer band: line profit ratios within this fraction are "comparable".
     pub const PROFIT_PEER_BAND: f64 = 0.05;
@@ -845,8 +848,8 @@ pub struct MarketConfig {
     pub amv_reject_blend: f64,
     /// Sought-good up-push vs tender down-push. Default 1.1. Must be > 0.
     pub amv_reject_demand_edge: f64,
-    /// Day-end leftover AMV added per leftover-to-volume multiple. Default 0.10.
-    /// Bound 0..=1. Factor is `1 + blend * miss / purchased`.
+    /// Day-end leftover-book AMV fraction, before leftover/fill scaling. Default 0.10.
+    /// Bound 0..=1. Applied as a direct raise/cut, not a lerp to the demand edge.
     pub amv_leftover_blend: f64,
     /// Skip leftover AMV when both sides leftover and the imbalance is below this.
     /// Default 0.10. Bound 0..=1.
@@ -1190,6 +1193,9 @@ pub struct FirmConfig {
     pub confidence_pace_min: f64,
     /// Plan-pace multiplier at confidence 1. Default 1.5. Must be >= `confidence_pace_min`.
     pub confidence_pace_max: f64,
+    /// Emergency keep-alive: floor collapsed lines at 1 iteration and feed
+    /// missing inputs plus coin. Default false.
+    pub keep_alive: bool,
 }
 
 impl Default for FirmConfig {
@@ -1210,6 +1216,7 @@ impl Default for FirmConfig {
             confidence_default: firm_constants::CONFIDENCE_DEFAULT,
             confidence_pace_min: firm_constants::CONFIDENCE_PACE_MIN,
             confidence_pace_max: firm_constants::CONFIDENCE_PACE_MAX,
+            keep_alive: firm_constants::KEEP_ALIVE,
         }
     }
 }

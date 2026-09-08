@@ -10,6 +10,7 @@ realized profit, confidence, AMV bound). Do not copy them here.
 |-------|--------|
 | `FirmPRow` + helpers | Landed |
 | `run_production` | Landed + tests. Tester `day` calls it. PlayState production still `todo!()` |
+| Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
 | `record_keeping` | Rolling average + `FirmRecords` (incl. **confidence**), then `plan` |
 | `create_orders` | Landed + tests. Used by `run_market_day`, not PlayState |

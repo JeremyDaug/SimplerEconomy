@@ -415,6 +415,7 @@ Per-good warehouse ledger. Groups: stock, planning targets, exchange, production
 | **purchase target** / **sell target** | Units to buy / sell today. Independent so merchants can buy-for-resale | `purchase_target`, `sell_target` |
 | **use target** | Sum of production-line targets for this good (rollup, not a budget). Lines budget themselves | `use_target` |
 | **full line** | One complete process iteration (the recipe as written). A line starting from 0 snaps to at least 1 so the day's output can be sold under whole-unit exchange | `next_line_target` in `Firm::plan` |
+| **keep-alive** | Emergency subsidy: collapsed lines floor at 1 iteration; missing recipe inputs and a coin float are credited. Default off (`firm.keep_alive` / tester `keep_alive on`) | `Firm::apply_keep_alive` |
 | **average cost** | Inventory cost basis (AMV of purchases and of goods that went into producing the stock). Not today's unit buy price | `average_cost` |
 | **average price** | Realized average sale AMV | `average_price` |
 | **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
@@ -502,7 +503,10 @@ household labor each morning via `Pop::start_day` (`ScalingFactor::Labor`).
 Adult labor 1.0, elder 0.7, child 0.3. Recipes spend time as a destroyed
 input (1 unit minimum plus a little extra). **Untradeable** (and still
 transport 1.0): pops cannot buy extra person-days. Labor contracts move
-Time from pop to firm at morning settle.
+Time from pop to firm at morning settle. Time **AMV** is the hours-weighted
+average wage AMV from those contracts (`Market::settle_labor` /
+`Market::budget_labor`), not a matched goods-book price. Time stays
+untradeable.
 
 ### Labor contract
 **Preferred:** labor contract, employment, workforce row  
@@ -543,6 +547,7 @@ pop pressure (anger+fear) writes **flat** 1-unit lumps (in-kind they still
 want, else salable). Fat flats fold into hourly when `flat / hours >= 1`.
 Calm unprofitable firms trim flats; profit 1.0..=1.15 holds; richer profit
 may add product in-kind. Hourly rates never below 1. Short till is settle.
+Wages do not yet track market Time AMV (pops cannot move or resize).
 `budget_interval` is days between rewrites (**1 = every day**, 0 skips).
 
 **Code:** `Firm::budget_labor`, `labor.budget_interval`
@@ -605,10 +610,10 @@ reject raises the sought good (demand edge 1.1) and lowers each tender,
 harder when more units were offered per unit sought. No-proposal raises the
 sought good only. After the match loop, leftover and unmatched orders
 still move AMV: unsatisfied buys raise it, unsatisfied sells lower it,
-in the direction of the larger leftover book. The factor is
-`1 + leftover_blend * miss / purchased` on the winning side (empty fill
-counts as 1 whole unit). Demand multiplies AMV by that factor; supply
-divides. Each leftover multiple of today's volume adds one leftover_blend.
+in the direction of the larger leftover book. The step is
+`leftover_blend * unsatisfied / (unsatisfied + purchased)` applied as
+a direct raise or cut (`AMV * (1 ± step)`). A dry book moves 10%. Not a
+lerp to the reject demand edge.
 
 **Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
 `drift_amv_on_no_proposal`, `drift_amv_on_book_pressure`,

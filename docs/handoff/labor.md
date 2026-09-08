@@ -10,7 +10,9 @@ are skipped on purpose.
 ## Time (good id 0)
 
 Id 0 on purpose (exception to "0 means none" for goods). Transport 1.0.
-**Untradeable.** Decays 100%/day into nothing. Pops receive `TIME_PER_LABOR`
+**Untradeable.** Not on `MarketOrder`s. Time AMV is stamped from labor
+contracts (hours-weighted wage AMV), not leftover book pressure. Decays
+100%/day into nothing. Pops receive `TIME_PER_LABOR`
 (48) * household labor at `Pop::start_day` (adult 1.0, elder 0.7, child 0.3).
 Every world process spends a little time as a destroyed input. Pops cannot buy
 extra person-days.
@@ -21,8 +23,8 @@ extra person-days.
 
 [`LaborSettlement::settle`] (thin [`Firm::settle_labor_contracts`] wrapper)
 pays each basket (scaling first, then flat; whole units), moves Time pop ->
-firm, and reserves it for production. Tester `day` calls it. PlayState labor
-fire is still a stub.
+firm, and reserves it for production. Tester `day` calls [`Market::settle_labor`].
+PlayState labor fire is still a stub.
 
 - One pop, one employer. A firm may have several worker pops.
 - Hours are Time units. Scaling pay is per time unit; **flat** is a lump paid
@@ -42,21 +44,24 @@ class / religion / law). Prefer caps over a fixed daily grant.
 ## Labor budget
 
 [`Firm::budget_labor`] rewrites hours and the wage **basket** after `plan`.
-Does not hire, fire, or move pops. Hours **snap** to recipe Time plus today's
-`transport_spent + 1` (extra `transaction_cost` if purchase targets are much
-above today's buys). Hours are **not** cut to fit the till. Wages: angry/fearful
-pops get a 1-unit flat (in-kind they still want, else salable). Calm +
-unprofitable trims flats. Calm + profit in 1.0..=1.15 holds. Calm + richer
-profit adds a product flat only if they still want that kind. Fat flats fold
-into hourly when `flat / hours >= 1`. Hourly rates never below 1.
+Tester calls [`Market::budget_labor`], which stamps Time AMV then runs each
+member firm. Does not hire, fire, or move pops. Hours **snap** to recipe Time
+plus today's `transport_spent + 1` (extra `transaction_cost` if purchase
+targets are much above today's buys). Hours are **not** cut to fit the till.
+Wages: angry/fearful pops get a 1-unit flat (in-kind they still want, else
+salable). Calm + unprofitable trims flats. Calm + profit in 1.0..=1.15 holds.
+Calm + richer profit adds a product flat only if they still want that kind.
+Fat flats fold into hourly when `flat / hours >= 1`. Hourly rates never below 1.
+Firms do **not** rewrite wages from Time AMV yet.
 `labor.budget_interval` is **1 (every day)** in world config; **0 skips**.
-Tester calls it every day. PlayState does not.
+PlayState does not.
 
-**Code:** `src/game/workforce.rs`; tunables `factuals.config.labor`.
+**Code:** `src/game/workforce.rs`, `Market::settle_labor` /
+`Market::budget_labor`; tunables `factuals.config.labor`.
 
 ## Tester
 
-Tester `day` calls [`LaborSettlement::settle`] and [`Firm::budget_labor`].
+Tester `day` calls [`Market::settle_labor`] and [`Market::budget_labor`].
 Roster hours are day-1 recipe
 Time (farm 15, bakery 28, mine 32, jeweler 5, well 30); buying firms add one
 `transaction_cost` of Time so a restock meeting does not starve production.
@@ -73,4 +78,5 @@ it is not wired into the tester.
 ## Later (do not start)
 
 Skill copy / experience, make-change on wages, pop payment preferences,
-work-hours cap from demographics/law, `growth_target` from `plan`, hiring.
+work-hours cap from demographics/law, `growth_target` from `plan`, hiring,
+wage vs Time AMV (until pops can move or resize).

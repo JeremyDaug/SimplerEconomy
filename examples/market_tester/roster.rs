@@ -16,6 +16,14 @@ use simpler_economy::game::workforce::{PaymentTerm, Workforce};
 
 use super::*;
 
+/// Bulk scale for the living roster. Households, line targets, hours, and
+/// starting stocks are multiplied. AMV, salability, and per-household desire
+/// amounts are not.
+pub(crate) const ROSTER_SCALE: f64 = 100.0;
+
+fn qty(n: f64) -> f64 {
+    n * ROSTER_SCALE
+}
 
 pub(crate) fn world_data_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world")
@@ -51,11 +59,11 @@ pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
     // for firms that buy inputs (buyer pays `transaction_cost`).
     let haul = factuals.config.market.transaction_cost;
     let firms = vec![
-        with_worker(make_farm().with_owner(lord), 1, 15.0 + haul),
-        with_worker(make_bakery().with_owner(lord), 3, 28.0 + haul),
-        with_worker(make_mine().with_owner(lord), 2, 32.0),
-        with_worker(make_jeweler().with_owner(lord), 5, 5.0 + haul),
-        with_worker(make_well().with_owner(lord), 6, 30.0),
+        with_worker(make_farm().with_owner(lord), 1, qty(15.0) + haul),
+        with_worker(make_bakery().with_owner(lord), 3, qty(28.0) + haul),
+        with_worker(make_mine().with_owner(lord), 2, qty(32.0)),
+        with_worker(make_jeweler().with_owner(lord), 5, qty(5.0) + haul),
+        with_worker(make_well().with_owner(lord), 6, qty(30.0)),
     ];
     (pops, firms, factuals, history)
 }
@@ -122,7 +130,7 @@ pub(crate) fn empty_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         desires: vec![vec![]; 3],
         working_desires: vec![],
         demographics: DemoRow {
-            household: Household::with_count(10.0),
+            household: Household::with_count(qty(10.0)),
             species: 0,
             culture: 0,
             class: 0,
@@ -138,31 +146,31 @@ pub(crate) fn empty_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
 pub(crate) fn make_farmers_pop(pop_cfg: &PopConfig) -> Pop {
     let mut pop = with_need_spread(empty_pop(1, pop_cfg));
     // Grain surplus funds water/bread requests. No grain shop shortfall.
-    pop.property.insert(GRAIN, PopPRow::new(24.0).with_target(4.0));
-    pop.property.insert(WATER, PopPRow::new(1.0).with_target(6.0));
-    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(5.0));
-    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(COIN, PopPRow::new(80.0));
+    pop.property.insert(GRAIN, PopPRow::new(qty(24.0)).with_target(qty(4.0)));
+    pop.property.insert(WATER, PopPRow::new(qty(1.0)).with_target(qty(6.0)));
+    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(qty(5.0)));
+    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(COIN, PopPRow::new(qty(80.0)));
     pop
 }
 
 pub(crate) fn make_laborers_pop(pop_cfg: &PopConfig) -> Pop {
     let mut pop = with_need_spread(empty_pop(2, pop_cfg));
-    pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(8.0));
-    pop.property.insert(WATER, PopPRow::new(0.0).with_target(6.0));
-    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(4.0));
-    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(COIN, PopPRow::new(160.0));
+    pop.property.insert(GRAIN, PopPRow::new(qty(1.0)).with_target(qty(8.0)));
+    pop.property.insert(WATER, PopPRow::new(0.0).with_target(qty(6.0)));
+    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(qty(4.0)));
+    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(COIN, PopPRow::new(qty(160.0)));
     pop
 }
 
 pub(crate) fn make_townsfolk_pop(pop_cfg: &PopConfig) -> Pop {
     let mut pop = with_need_spread(empty_pop(3, pop_cfg));
-    pop.property.insert(GRAIN, PopPRow::new(4.0).with_target(6.0));
-    pop.property.insert(WATER, PopPRow::new(2.0).with_target(4.0));
-    pop.property.insert(BREAD, PopPRow::new(1.0).with_target(6.0));
-    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(COIN, PopPRow::new(400.0));
+    pop.property.insert(GRAIN, PopPRow::new(qty(4.0)).with_target(qty(6.0)));
+    pop.property.insert(WATER, PopPRow::new(qty(2.0)).with_target(qty(4.0)));
+    pop.property.insert(BREAD, PopPRow::new(qty(1.0)).with_target(qty(6.0)));
+    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(COIN, PopPRow::new(qty(400.0)));
     pop
 }
 
@@ -170,18 +178,18 @@ pub(crate) fn make_townsfolk_pop(pop_cfg: &PopConfig) -> Pop {
 /// Starting AMV is about 20x townsfolk wealth per household (~4.7 -> ~93).
 pub(crate) fn make_lord_pop(pop_cfg: &PopConfig) -> Pop {
     let mut pop = empty_pop(4, pop_cfg);
-    pop.demographics.household = Household::with_count(1.0);
+    pop.demographics.household = Household::with_count(qty(10.0));
     pop.desires[0].push(make_food_desire(0, 1.0));
     pop.desires[0].push(make_desire(1, WATER, 1.0));
     pop.desires[1].push(make_desire(2, BREAD, 1.0));
     pop.desires[1].push(make_desire(4, GOLD, 1.0));
     pop.desires[2].push(make_desire(3, JEWELRY, 2.0));
-    pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(1.0));
-    pop.property.insert(WATER, PopPRow::new(1.0).with_target(1.0));
-    pop.property.insert(BREAD, PopPRow::new(1.0).with_target(1.0));
-    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(2.0));
-    pop.property.insert(COIN, PopPRow::new(900.0));
+    pop.property.insert(GRAIN, PopPRow::new(qty(1.0)).with_target(qty(1.0)));
+    pop.property.insert(WATER, PopPRow::new(qty(1.0)).with_target(qty(1.0)));
+    pop.property.insert(BREAD, PopPRow::new(qty(1.0)).with_target(qty(1.0)));
+    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(JEWELRY, PopPRow::new(0.0).with_target(qty(2.0)));
+    pop.property.insert(COIN, PopPRow::new(qty(900.0)));
     pop
 }
 
@@ -197,16 +205,16 @@ pub(crate) fn make_wellhands_pop(pop_cfg: &PopConfig) -> Pop {
 
 fn small_worker_pop(id: usize, pop_cfg: &PopConfig, coin: f64) -> Pop {
     let mut pop = empty_pop(id, pop_cfg);
-    pop.demographics.household = Household::with_count(1.0);
+    pop.demographics.household = Household::with_count(qty(1.0));
     pop.desires[0].push(make_food_desire(0, 1.0));
     pop.desires[0].push(make_desire(1, WATER, 1.0));
     pop.desires[1].push(make_desire(2, BREAD, 1.0));
     pop.desires[1].push(make_desire(3, GOLD, 1.0));
-    pop.property.insert(GRAIN, PopPRow::new(1.0).with_target(1.0));
-    pop.property.insert(WATER, PopPRow::new(1.0).with_target(1.0));
-    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(1.0));
-    pop.property.insert(COIN, PopPRow::new(coin));
+    pop.property.insert(GRAIN, PopPRow::new(qty(1.0)).with_target(qty(1.0)));
+    pop.property.insert(WATER, PopPRow::new(qty(1.0)).with_target(qty(1.0)));
+    pop.property.insert(BREAD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(GOLD, PopPRow::new(0.0).with_target(qty(1.0)));
+    pop.property.insert(COIN, PopPRow::new(qty(coin)));
     pop
 }
 
@@ -224,7 +232,7 @@ pub(crate) fn with_worker(mut firm: Firm, pop_id: usize, hours: f64) -> Firm {
     coin.growth_target = coin.growth_target.max(hours);
     firm.with_workforce(
         Workforce::new(pop_id)
-            .with_workers(10.0, 10.0)
+            .with_workers(qty(10.0), qty(10.0))
             .with_hours(hours)
             .with_payment(PaymentTerm::new(COIN, 1.0)),
     )
@@ -247,50 +255,50 @@ pub(crate) fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> Pro
 
 pub(crate) fn make_farm() -> Firm {
     let mut firm = Firm::new(1, "farm".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(1, 5.0, vec![TIME, WATER]));
+    firm.production_line.push(dummy_line(1, qty(5.0), vec![TIME, WATER]));
     // Stock matches plan's input_cover * use (2 * 5). Start a little short so
     // a water buy posts on day 1. Bid 0.45 clears the well's 0.20 ask.
     firm.property.insert(
         WATER,
         FirmPRow::new()
-            .with_quantity(8.0)
-            .with_purchase_target(8.0)
-            .with_use_target(5.0)
-            .with_stock_target(10.0)
+            .with_quantity(qty(8.0))
+            .with_purchase_target(qty(8.0))
+            .with_use_target(qty(5.0))
+            .with_stock_target(qty(10.0))
             .with_amv_target(0.60)
             .with_amv_bound(FirmAmvBound::Maximum(2.5)),
     );
     firm.property.insert(
         GRAIN,
         FirmPRow::new()
-            .with_quantity(45.0)
-            .with_sell_target(30.0)
+            .with_quantity(qty(45.0))
+            .with_sell_target(qty(30.0))
             .with_amv_target(1.2)
             .with_amv_bound(FirmAmvBound::Minimum(1.0)),
     );
-    firm.property.insert(COIN, FirmPRow::new().with_quantity(120.0));
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(qty(120.0)));
     firm
 }
 
 pub(crate) fn make_bakery() -> Firm {
     let mut firm = Firm::new(2, "bakery".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(2, 14.0, vec![TIME, GRAIN]));
+    firm.production_line.push(dummy_line(2, qty(14.0), vec![TIME, GRAIN]));
     // Two days of grain on the stock fence so day 1 need not buy to bake.
     firm.property.insert(
         GRAIN,
         FirmPRow::new()
-            .with_quantity(28.0)
-            .with_purchase_target(16.0)
-            .with_use_target(14.0)
-            .with_stock_target(28.0)
+            .with_quantity(qty(28.0))
+            .with_purchase_target(qty(16.0))
+            .with_use_target(qty(14.0))
+            .with_stock_target(qty(28.0))
             .with_amv_target(2.0)
             .with_amv_bound(FirmAmvBound::Maximum(1.5)),
     );
     firm.property.insert(
         BREAD,
         FirmPRow::new()
-            .with_quantity(24.0)
-            .with_sell_target(16.0)
+            .with_quantity(qty(24.0))
+            .with_sell_target(qty(16.0))
             .with_amv_target(2.5)
             .with_amv_bound(FirmAmvBound::Minimum(1.8)),
     );
@@ -298,62 +306,62 @@ pub(crate) fn make_bakery() -> Firm {
     firm.property.insert(
         COIN,
         FirmPRow::new()
-            .with_quantity(400.0)
-            .with_growth_target(90.0),
+            .with_quantity(qty(400.0))
+            .with_growth_target(qty(90.0)),
     );
     firm
 }
 
 pub(crate) fn make_mine() -> Firm {
     let mut firm = Firm::new(3, "mine".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(3, 8.0, vec![TIME]));
+    firm.production_line.push(dummy_line(3, qty(8.0), vec![TIME]));
     firm.property.insert(
         GOLD,
         FirmPRow::new()
-            .with_quantity(24.0)
-            .with_sell_target(16.0)
+            .with_quantity(qty(24.0))
+            .with_sell_target(qty(16.0))
             .with_amv_target(4.0)
             .with_amv_bound(FirmAmvBound::Minimum(3.0)),
     );
     firm.property.insert(
         COIN,
         FirmPRow::new()
-            .with_quantity(120.0)
-            .with_growth_target(96.0),
+            .with_quantity(qty(120.0))
+            .with_growth_target(qty(96.0)),
     );
     firm
 }
 
 pub(crate) fn make_jeweler() -> Firm {
     let mut firm = Firm::new(5, "jeweler".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(5, 1.0, vec![TIME, GOLD]));
-    firm.production_line.push(dummy_line(4, 1.0, vec![TIME, GOLD]));
+    firm.production_line.push(dummy_line(5, qty(1.0), vec![TIME, GOLD]));
+    firm.production_line.push(dummy_line(4, qty(1.0), vec![TIME, GOLD]));
     // Reverse mint stays idle so it does not eat the till at opening prices.
     firm.production_line.push(dummy_line(7, 0.0, vec![TIME, COIN]));
     // 16 gold covers jewelry (3) plus mint (1) for several days without a buy.
     firm.property.insert(
         GOLD,
         FirmPRow::new()
-            .with_quantity(16.0)
-            .with_purchase_target(4.0)
-            .with_use_target(4.0)
-            .with_stock_target(16.0)
+            .with_quantity(qty(16.0))
+            .with_purchase_target(qty(4.0))
+            .with_use_target(qty(4.0))
+            .with_stock_target(qty(16.0))
             .with_amv_bound(FirmAmvBound::Maximum(6.0)),
     );
     firm.property.insert(
         JEWELRY,
         FirmPRow::new()
-            .with_quantity(12.0)
-            .with_sell_target(8.0)
+            .with_quantity(qty(12.0))
+            .with_sell_target(qty(8.0))
             .with_amv_target(60.0)
             .with_amv_bound(FirmAmvBound::Minimum(48.0)),
     );
     firm.property.insert(
         COIN,
         FirmPRow::new()
-            .with_quantity(400.0)
-            .with_sell_target(150.0)
-            .with_growth_target(150.0)
+            .with_quantity(qty(400.0))
+            .with_sell_target(qty(150.0))
+            .with_growth_target(qty(150.0))
             .with_amv_target(COIN_AMV)
             .with_amv_bound(FirmAmvBound::Minimum(0.168)),
     );
@@ -364,16 +372,16 @@ pub(crate) fn make_well() -> Firm {
     let mut firm = Firm::new(6, "well".into(), 1, Hex::new(0, 0));
     // 40/day covers pop water shop (~18) plus the farm restock (~12) with slack.
     // Ask at market (0.20); floor 0.15 so leftover-AMV cheapening can still sell.
-    firm.production_line.push(dummy_line(6, 30.0, vec![TIME]));
+    firm.production_line.push(dummy_line(6, qty(30.0), vec![TIME]));
     firm.property.insert(
         WATER,
         FirmPRow::new()
-            .with_quantity(60.0)
-            .with_sell_target(30.0)
+            .with_quantity(qty(60.0))
+            .with_sell_target(qty(30.0))
             .with_amv_target(0.50)
             .with_amv_bound(FirmAmvBound::Minimum(0.40)),
     );
-    firm.property.insert(COIN, FirmPRow::new().with_quantity(40.0));
+    firm.property.insert(COIN, FirmPRow::new().with_quantity(qty(40.0)));
     firm
 }
 

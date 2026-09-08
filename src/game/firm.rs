@@ -459,8 +459,15 @@ impl Firm {
     /// Panics if good or process is not found in factuals.
     pub fn run_production(&mut self, factuals: &Factuals, market: &Market) -> Vec<ProcessEffect> {
         let mut effects = Vec::new();
+        if factuals.config.firm.keep_alive {
+            self.apply_keep_alive_float(factuals);
+        }
 
-        for line in &mut self.production_line {
+        for i in 0..self.production_line.len() {
+            if factuals.config.firm.keep_alive {
+                self.apply_keep_alive_line(factuals, i);
+            }
+            let line = &mut self.production_line[i];
             // if process is not found, panic
             let Some(process) = factuals.processes.get(&line.process) else {
                 panic!("Process not found!");
@@ -562,6 +569,89 @@ impl Firm {
         }
 
         effects
+    }
+
+    /// Emergency keep-alive wage float: floor hours at 1 and credit coin.
+    /// Off unless `firm.keep_alive`.
+    fn apply_keep_alive_float(&mut self, factuals: &Factuals) {
+        let hours: f64 = self
+            .workforce
+            .iter()
+            .filter(|w| w.id != 0)
+            .map(|w| w.hours.max(0.0))
+            .sum();
+        if hours < 1.0 {
+            for worker in &mut self.workforce {
+                if worker.id != 0 && worker.hours < 1.0 {
+                    worker.hours = 1.0;
+                }
+            }
+        }
+        if let Some(coin) = factuals
+            .goods
+            .values()
+            .find(|good| good.name.eq_ignore_ascii_case("coin"))
+            .map(|good| good.id)
+        {
+            let have = self
+                .property
+                .get(&coin)
+                .map(|row| row.quantity)
+                .unwrap_or(0.0);
+            let want = hours.max(1.0) + 10.0;
+            if have < want {
+                self.grant_keep_alive_good(coin, want - have);
+            }
+        }
+    }
+
+    /// Floor a collapsed line at 1 iteration and credit missing inputs for
+    /// that iteration. Called immediately before the line runs so a later
+    /// line still gets its own inputs after an earlier line consumed stock.
+    /// Idle never-run lines (`target` 0, no missing, no iterations) stay idle.
+    fn apply_keep_alive_line(&mut self, factuals: &Factuals, i: usize) {
+        let process_id = self.production_line[i].process;
+        let Some(process) = factuals.processes.get(&process_id) else {
+            return;
+        };
+        let target = self.production_line[i].target.unwrap_or(0.0);
+        let collapsed = self.production_line[i].last_iterations <= 0.0
+            && (!self.production_line[i].last_missing_goods.is_empty() || target > 0.0);
+        if target <= 0.0 && !collapsed {
+            return;
+        }
+        if target < 1.0 {
+            self.production_line[i].target = Some(1.0);
+        }
+        for req in process.requirements() {
+            let need = req.amount;
+            if need <= 0.0 {
+                continue;
+            }
+            let have = self
+                .property
+                .get(&req.good)
+                .map(|row| row.quantity)
+                .unwrap_or(0.0);
+            if have < need {
+                self.grant_keep_alive_good(req.good, need - have);
+            }
+        }
+    }
+
+    /// Adds `qty` of `good` with no cost basis (keep-alive subsidy).
+    fn grant_keep_alive_good(&mut self, good: usize, qty: f64) {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "keep-alive qty must be finite and >= 0");
+        if qty <= 0.0 {
+            return;
+        }
+        if good == TIME {
+            self.credit_time(qty);
+            return;
+        }
+        let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+        row.quantity += qty;
+        row.sync_reserve();
     }
 }
 
@@ -1634,6 +1724,112 @@ mod firm {
             assert_eq!(firm.property[&10].quantity, 6.0);
             assert_eq!(firm.property[&10].reserve, 6.0);
             assert_eq!(firm.property[&10].consumed, 4.0);
+        }
+
+        #[test]
+        fn keep_alive_feeds_inputs_and_runs_one_iteration() {
+            let process = Process::new(2, "limited_craft", 0)
+                .with_input(ProcessInput::new(30, 3.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(40, 1.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(30, make_good(30, "wood", HashMap::new()));
+            factuals.goods.insert(40, make_good(40, "plank", HashMap::new()));
+            factuals.goods.insert(5, make_good(5, "coin", HashMap::new()));
+            factuals.config.firm.keep_alive = true;
+
+            let mut firm = Firm::new(2, "Starved Shop".into(), 42, hexx::Hex::new(0, 0));
+            firm.production_line.push(empty_production_line(2));
+            firm.production_line[0].target = Some(4.0);
+            let market = make_market_with_amvs(&[(30, 1.0), (40, 1.0), (5, 0.21)]);
+            firm.run_production(&factuals, &market);
+
+            assert!(
+                firm.production_line[0].last_iterations >= 1.0,
+                "iters {}",
+                firm.production_line[0].last_iterations
+            );
+            assert!(firm.property.get(&40).map(|r| r.quantity).unwrap_or(0.0) >= 1.0);
+            assert!(firm.property.get(&5).map(|r| r.quantity).unwrap_or(0.0) >= 10.0);
+        }
+
+        #[test]
+        fn keep_alive_off_does_not_feed_starved_line() {
+            let process = Process::new(2, "limited_craft", 0)
+                .with_input(ProcessInput::new(30, 3.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(40, 1.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(30, make_good(30, "wood", HashMap::new()));
+            factuals.goods.insert(40, make_good(40, "plank", HashMap::new()));
+            factuals.goods.insert(5, make_good(5, "coin", HashMap::new()));
+
+            let mut firm = Firm::new(2, "Starved Shop".into(), 42, hexx::Hex::new(0, 0));
+            firm.production_line.push(empty_production_line(2));
+            firm.production_line[0].target = Some(4.0);
+            let market = make_market_with_amvs(&[(30, 1.0), (40, 1.0), (5, 0.21)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[0].last_iterations, 0.0);
+            assert!(!firm.property.contains_key(&40));
+            assert!(!firm.property.contains_key(&5));
+        }
+
+        #[test]
+        fn keep_alive_leaves_never_run_idle_line_alone() {
+            let process = Process::new(2, "limited_craft", 0)
+                .with_input(ProcessInput::new(30, 3.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(40, 1.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(30, make_good(30, "wood", HashMap::new()));
+            factuals.goods.insert(40, make_good(40, "plank", HashMap::new()));
+            factuals.goods.insert(5, make_good(5, "coin", HashMap::new()));
+            factuals.config.firm.keep_alive = true;
+
+            let mut firm = Firm::new(2, "Idle Shop".into(), 42, hexx::Hex::new(0, 0));
+            firm.production_line.push(empty_production_line(2));
+            firm.production_line[0].target = Some(0.0);
+            let market = make_market_with_amvs(&[(30, 1.0), (40, 1.0), (5, 0.21)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[0].target, Some(0.0));
+            assert_eq!(firm.production_line[0].last_iterations, 0.0);
+            assert!(!firm.property.contains_key(&40));
+        }
+
+        #[test]
+        fn keep_alive_runs_each_collapsed_line_when_they_share_an_input() {
+            let cut = Process::new(5, "cut jewelry", 0)
+                .with_input(ProcessInput::new(4, 3.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(6, 5.0, true));
+            let mint = Process::new(4, "mint coin", 0)
+                .with_input(ProcessInput::new(4, 1.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(5, 40.0, true));
+            let mut factuals = make_factuals_with_process(cut);
+            factuals.processes.insert(4, mint);
+            factuals.goods.insert(4, make_good(4, "gold", HashMap::new()));
+            factuals.goods.insert(5, make_good(5, "coin", HashMap::new()));
+            factuals.goods.insert(6, make_good(6, "jewelry", HashMap::new()));
+            factuals.config.firm.keep_alive = true;
+
+            let mut firm = Firm::new(5, "Starved Jeweler".into(), 42, hexx::Hex::new(0, 0));
+            firm.production_line.push(empty_production_line(5));
+            firm.production_line[0].target = Some(1.0);
+            firm.production_line.push(empty_production_line(4));
+            firm.production_line[1].target = Some(1.0);
+            let market = make_market_with_amvs(&[(4, 4.0), (5, 0.21), (6, 60.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert!(
+                firm.production_line[0].last_iterations >= 1.0,
+                "cut iters {}",
+                firm.production_line[0].last_iterations
+            );
+            assert!(
+                firm.production_line[1].last_iterations >= 1.0,
+                "mint iters {}",
+                firm.production_line[1].last_iterations
+            );
+            assert!(firm.property.get(&6).map(|r| r.quantity).unwrap_or(0.0) >= 5.0);
+            assert!(firm.property.get(&5).map(|r| r.quantity).unwrap_or(0.0) >= 40.0);
         }
 
         #[test]

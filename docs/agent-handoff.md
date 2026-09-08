@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -20,25 +20,28 @@ invariants and traps, not a substitute for the code.
   success, confidence). Own quote, not lerp-to-market.
 - Time is good id 0 (untradeable, transport 1.0). Pops get 48 * household labor
   at `Pop::start_day`.
-- Labor **operates** (`LaborSettlement::settle`). Tester `day` calls it.
-  Owner **remainder** vs limited **profit share**. [`Firm::budget_labor`]
-  snaps hours to the plan and negotiates the wage basket (flats, in-kind,
-  salable) after plan. PlayState labor fire is still a stub.
+- Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
+  [`Market::budget_labor`]. Time AMV is stamped from contracts (hours-weighted
+  wage AMV), not goods matching. Firms do **not** rewrite wages from Time AMV
+  yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`.
-- Tester CLI is **paused** unless asked. Desire amounts do not rise with success.
+- Tester CLI is **paused** unless asked. Living roster is 100x (`ROSTER_SCALE`)
+  on households, lines, hours, and stocks. `keep_alive on` is an emergency
+  firm subsidy (1-iteration floor + coin/inputs); default off.
+  Desire amounts do not rise with success.
   Luxury shop_target adds an extra level and leftover liquid above save.
-  Day-end leftover AMV uses `1 + leftover_blend * miss / purchased` (empty fill
-  = 1 unit). Last 30-day tester run exploded AMVs; do not retune leftover AMV
-  unless asked. CSV is market + trades always; pops/firms only when flagged
-  (`csv on`).
+  Day-end leftover AMV is `AMV * (1 ± leftover_blend * unsat / (unsat +
+  purchased))` with leftover_blend 0.10 (no lerp). Miss/purchased was tried
+  (even at 0.01) and still ran away; do not retune leftover AMV unless asked.
+  CSV is market + trades always; pops/firms only when flagged (`csv on`).
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
 
 **Live day (tester / intended lib order):**
-`start_day` -> wages -> `run_market_day` -> `run_production` -> pop consume /
-sentiments / records -> firm `record_keeping` (`plan`) -> `budget_labor` ->
-decay.
+`start_day` -> `Market::settle_labor` -> `run_market_day` -> `run_production`
+-> pop consume / sentiments / records -> firm `record_keeping` (`plan`) ->
+`Market::budget_labor` -> decay.
 
 ---
 
