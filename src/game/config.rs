@@ -165,8 +165,8 @@ pub mod market_constants {
     pub const BUY_TRY_LIMIT: u32 = 2;
 
     /// Flat transport units charged per meeting (success or wash).
-    /// Tune down if 10 is too heavy. Not AMV.
-    pub const TRANSACTION_COST: f64 = 10.0;
+    /// 1 for the current town scale. Later: scale with size. Not AMV.
+    pub const TRANSACTION_COST: f64 = 1.0;
 
     /// How hard a successful exchange pulls both sides' AMV toward the
     /// midpoint of the basket (0 = no move, 1 = snap).
@@ -175,8 +175,8 @@ pub mod market_constants {
     pub const AMV_REJECT_BLEND: f64 = 0.10;
     /// Sought-good up-push is this times the tender down-push (demand edge).
     pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
-    /// Day-end leftover-book AMV pull, before scaling by unsatisfied /
-    /// (unsatisfied + filled). 0 = no move, 1 = snap to the demand edge.
+    /// Day-end leftover-book AMV added per leftover-to-volume multiple.
+    /// Factor is `1 + blend * miss / purchased` (empty fill = 1 unit).
     pub const AMV_LEFTOVER_BLEND: f64 = 0.10;
     /// Skip leftover AMV when both books have leftover and
     /// `|buy - sell| / (buy + sell)` is below this (0.10 = 10%).
@@ -286,6 +286,15 @@ pub mod labor_constants {
     /// Default share of a pop's on-hand Time that may be committed to wage hours.
     /// 0.5 is 12 work hours of a 24-hour (48 Time) grant.
     pub const WORK_TIME_FRACTION: f64 = 0.5;
+    /// Days between labor-budget rewrites. 1 = every day. 0 skips.
+    pub const BUDGET_INTERVAL: u32 = 1;
+    /// Lowest whole wage-term amount after a labor budget rewrite. Never 0.
+    pub const WAGE_AMOUNT_MIN: f64 = 1.0;
+    /// Anger+fear share that lets the pop push the wage basket.
+    pub const WAGE_PRESSURE_BAR: f64 = 0.25;
+    /// Inclusive top of the "barely profitable" hold band. Above this, a calm
+    /// firm may add a product bonus. Below 1.0 is unprofitable (trim flats).
+    pub const WAGE_HOLD_MAX: f64 = 1.15;
 }
 
 /// Firm production-plan rewrite (end of day / planning phase).
@@ -828,7 +837,7 @@ pub struct MarketConfig {
     pub sell_exchange_edge: f64,
     /// Failed-deal retries a buy/request may take. Default 2. `tries` starts at 0.
     pub buy_try_limit: u32,
-    /// Flat transport units charged per meeting. Default 10.0. Must be >= 0. Not AMV.
+    /// Flat transport units charged per meeting. Default 1.0. Must be >= 0. Not AMV.
     pub transaction_cost: f64,
     /// Successful-exchange AMV pull toward basket midpoint. Default 0.25. Bound 0..=1.
     pub amv_accept_blend: f64,
@@ -836,8 +845,8 @@ pub struct MarketConfig {
     pub amv_reject_blend: f64,
     /// Sought-good up-push vs tender down-push. Default 1.1. Must be > 0.
     pub amv_reject_demand_edge: f64,
-    /// Day-end leftover-book AMV pull, before leftover/fill scaling. Default 0.10.
-    /// Bound 0..=1.
+    /// Day-end leftover AMV added per leftover-to-volume multiple. Default 0.10.
+    /// Bound 0..=1. Factor is `1 + blend * miss / purchased`.
     pub amv_leftover_blend: f64,
     /// Skip leftover AMV when both sides leftover and the imbalance is below this.
     /// Default 0.10. Bound 0..=1.
@@ -1109,6 +1118,9 @@ pub struct LaborConfig {
     /// Bound 0..=1. Caps [`crate::game::workforce::Workforce::hours`] at settle.
     /// Stand-in until culture, class, religion, and laws supply this as a cap.
     pub work_time_fraction: f64,
+    /// Days between [`crate::game::firm::Firm::budget_labor`] rewrites.
+    /// 1 = every day. 0 skips. No hire/fire; hours and wage amounts only.
+    pub budget_interval: u32,
 }
 
 impl Default for LaborConfig {
@@ -1117,6 +1129,7 @@ impl Default for LaborConfig {
             owner_share: labor_constants::OWNER_SHARE,
             worker_share: labor_constants::WORKER_SHARE,
             work_time_fraction: labor_constants::WORK_TIME_FRACTION,
+            budget_interval: labor_constants::BUDGET_INTERVAL,
         }
     }
 }

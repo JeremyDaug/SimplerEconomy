@@ -11,7 +11,7 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 |-------|--------|
 | `run_market_day` | Live lib loop. Tester `day` calls it. PlayState intramarket is `todo!()` |
 | `match_orders` | One success per pass, front buy-priority group only |
-| AMV drift + leftover book pressure | Live `MarketGood.amv`; intra-day evaluate uses frozen `history()` |
+| AMV drift + leftover book pressure | Live. Leftover factor is `1 + leftover_blend * miss / purchased` (empty fill = 1). Intra-day evaluate uses frozen `history()` |
 | Salability day-end | Lerp toward `payment / tender` when tender > 0 |
 | AMV history ring | Seed opening AMV; push close after salability. Cap 16 |
 | Institution / state orders | Not collected |
@@ -78,8 +78,10 @@ salability `0.4`; missing prices `1.0`.
 `history()`. Accept: both sides lerp toward basket midpoint. Reject: sought
 * 1.1 up, tenders down by units offered per unit sought. No-proposal: sought
 up only. End of day: leftover buys raise, leftover sells lower, larger leftover
-wins, scaled by `unsatisfied / (unsatisfied + purchased)`. `set_amv` does not
-push the ring.
+wins, `AMV * (1 + leftover_blend * miss / purchased)` or `/` that factor.
+Empty fill counts as 1 unit. Dry unmatched qty therefore compounds hard
+(tester 30-day run hit trillion AMV). Do not add another shortage factor
+unless asked. `set_amv` does not push the ring.
 
 **Code:** `market.rs`, `marketorder.rs`; tunables `factuals.config.market` /
 `market_priority`.

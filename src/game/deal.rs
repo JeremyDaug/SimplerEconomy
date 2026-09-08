@@ -1554,7 +1554,7 @@ mod with_transport_budget_should {
             .with_good(2, 8.0);
         let own = request(4.0);
         let other = offer(4.0);
-        assert!(budget(deal, &factuals, 0.0, 5.0, &own, &other).is_none());
+        assert!(budget(deal, &factuals, 0.0, 0.0, &own, &other).is_none());
     }
 
     #[test]
@@ -1576,7 +1576,7 @@ mod with_transport_budget_should {
             &[(2, 10.0)],
         )
         .expect("probe");
-        // bulk = 4*1 + 8*1 = 12, F = 1, T = 10, coef = 12, on_hand = 16, k = 0.5
+        // bulk = 4*1 + 8*1 = 12, F = 1, T = 1, coef = 12, on_hand = 7, k = 0.5
         let out = with_transport_budget(
             deal,
             Actor::Pop(1),
@@ -1586,12 +1586,12 @@ mod with_transport_budget_should {
             &factuals,
             |_| 10.0,
             &[(2, 10.0)],
-            16.0,
+            7.0,
         )
         .expect("reformed");
         assert!((out.goods[&1] + 2.0).abs() < 1e-12);
         assert!((out.goods[&2] - 4.0).abs() < 1e-12);
-        assert!((out.transport_needed - 16.0).abs() < 1e-12);
+        assert!((out.transport_needed - 7.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1647,9 +1647,9 @@ mod with_transport_budget_should {
             .with_good(2, 8.0);
         let own = request(4.0);
         let other = offer(4.0);
-        // bulk 12 * 0.125 + TRANSACTION_COST 10 = 11.5
+        // bulk 12 * 0.125 + TRANSACTION_COST 1 = 2.5
         let out = budget(deal, &factuals, 0.125, 20.0, &own, &other).expect("cover");
-        assert!((out.transport_needed - 11.5).abs() < 1e-12);
+        assert!((out.transport_needed - 2.5).abs() < 1e-12);
         assert!((out.goods[&1] + 4.0).abs() < 1e-12);
         assert!((out.goods[&2] - 8.0).abs() < 1e-12);
     }

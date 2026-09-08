@@ -15,7 +15,7 @@ ratio, reserved, sentiment). Household primer:
 | `extract_special_resources` | First pass exists. Yield is **not** routed onto `State.resources` |
 | `next_shopping_trip` | `todo!()` |
 | Pop offers | Not generated |
-| Shop ambition / looping luxury | Not started. Staple `Desire.amount` stays fixed |
+| Shop ambition / looping luxury | Record keeping adds one extra luxury level and leftover liquid above save onto luxury shop. Staple `Desire.amount` stays fixed. `create_orders` still one luxury pass. `next_shopping_trip` still `todo!()` |
 | Class demographics | Unimplemented (vault: park this) |
 | Migration leaves | Orchestrator exists; leaves are `todo!()` |
 
@@ -32,8 +32,9 @@ demographic ids only. Do not reopen the household-rates model.
 - Savings ratio is **days of buffer**, not a share of leftover liquid wealth.
   Save pile does not shrink on decline.
 - Reserved is never negative. Extra luxury consume eats unreserved stock.
-- Shop ambition does **not** scale with wealth or shop fill. `create_orders`
-  does not loop extra staple buys.
+- Shop ambition: luxury shop gets one extra level plus leftover on-hand AMV
+  above need+save (cheapest luxury good). `Desire.amount` does not rise.
+  `create_orders` still one luxury pass (posts that shop). No extra staple buys.
 - `create_orders` passes: desire shop, parked non-desire shop, opportunistic
   extra. Skip amounts `< 1` and `unavailable` goods.
 - Planning only lerps savings ratio / time preference / risk appetite.

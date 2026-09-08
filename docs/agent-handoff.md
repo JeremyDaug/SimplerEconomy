@@ -20,17 +20,25 @@ invariants and traps, not a substitute for the code.
   success, confidence). Own quote, not lerp-to-market.
 - Time is good id 0 (untradeable, transport 1.0). Pops get 48 * household labor
   at `Pop::start_day`.
-- Labor **operates** (`LaborSettlement::settle`) but is **not** wired into the
-  tester or PlayState. Tester still `pay_wage_shares`.
+- Labor **operates** (`LaborSettlement::settle`). Tester `day` calls it.
+  Owner **remainder** vs limited **profit share**. [`Firm::budget_labor`]
+  snaps hours to the plan and negotiates the wage basket (flats, in-kind,
+  salable) after plan. PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`.
 - Tester CLI is **paused** unless asked. Desire amounts do not rise with success.
+  Luxury shop_target adds an extra level and leftover liquid above save.
+  Day-end leftover AMV uses `1 + leftover_blend * miss / purchased` (empty fill
+  = 1 unit). Last 30-day tester run exploded AMVs; do not retune leftover AMV
+  unless asked. CSV is market + trades always; pops/firms only when flagged
+  (`csv on`).
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
 
 **Live day (tester / intended lib order):**
 `start_day` -> wages -> `run_market_day` -> `run_production` -> pop consume /
-sentiments / records -> firm `record_keeping` (`plan`) -> decay.
+sentiments / records -> firm `record_keeping` (`plan`) -> `budget_labor` ->
+decay.
 
 ---
 
@@ -78,14 +86,13 @@ Nearby leftovers are traps, not implied scope: multimatch; `sell` rewrite /
 haggling / make-change; PlayState intramarket or production wire (unless that
 **is** the task); tester pages / extra CSV; species-culture-religion TOML;
 init/save data; class demographics; capital amortization; AMV as a matching
-weight; `next_shopping_trip` / re-emit after fill; pop offers; shop ambition /
-looping luxury; stale comments (notify, do not rewrite); repo-wide function
-comments.
+weight; `next_shopping_trip` / re-emit after fill; pop offers; intra-day luxury
+loop (`create_orders` still one luxury pass); leftover AMV further retune;
+stale comments (notify, do not rewrite); repo-wide function comments.
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": wire `LaborSettlement::settle` into the tester, or
-wire PlayState `phase_intra_market_day` to `run_market_day`. Hiring/creation is
-skipped on purpose.
+If they ask "what's next": wire PlayState `phase_intra_market_day` to
+`run_market_day`. Hiring/creation is skipped on purpose.
 
 ---
 

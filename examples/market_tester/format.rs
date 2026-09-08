@@ -4,7 +4,7 @@ use simpler_economy::game::actor::Actor;
 use simpler_economy::game::firm::{Firm, FirmAmvBound, FirmPRow};
 use simpler_economy::game::market::{MarketGood, MarketMeeting, WashReason};
 use simpler_economy::game::marketorder::MarketOrder;
-use simpler_economy::game::pop::Pop;
+use simpler_economy::game::workforce::LaborSettlement;
 
 use super::*;
 
@@ -67,8 +67,10 @@ pub(crate) fn format_home(session: &Session) -> String {
         session.sells.len()
     ));
     out.push_str(&format!(
-        "csv    {}/{{market,firms,trades}}.csv\n",
-        csv_stem_dir_display(session)
+        "csv    {}_{}.csv{}\n",
+        csv_stem_dir_display(session),
+        csv_kind_brace(session),
+        csv_flag_suffix(session)
     ));
     out.push_str("\nstock  orders  processes  day  amv  csv  help\n");
     if !session.log.is_empty() {
@@ -369,9 +371,12 @@ commands
   orders                current buy/sell books
   processes             world recipes + firm records and lines
   amv                   AMV trail (old -> new)
-  csv                   show day-end price CSV paths
+  csv                   show day-end CSV paths and flags
   csv <name>            write under data/logs/<name>_*.csv
   csv reset             wipe current CSVs and rewrite headers
+  csv on <actor>...     log those pops/firms (market/trades always)
+  csv off <actor>...    stop logging those actors
+  csv off               clear pop/firm flags
   shop                  reload books from create_orders
   home                  back to the summary
   request <actor> <good> <amount> [priority]
@@ -389,10 +394,10 @@ commands
 
 Home is a short summary. stock / orders / processes / day / amv / help
 open a page; home returns. Each `day` appends one-row-per-day CSVs in
-data/logs/ (market quotes, firm quotes, trade candles).
-Startup runs shop once. `day` grants Time, pays wage shares, runs the
+data/logs/ (market quotes and trade candles always; flagged pops/firms).
+Startup runs shop once. `day` grants Time, settles labor contracts, runs the
 market, runs each firm's process, pops consume, then pop and firm
-record keeping (firm plan; coin save capped at 1) / decay.
+record keeping (firm plan), labor budget / decay.
 actor: prefab name (farmers, lord, bakery, ...) or kind id (pop 1, firm 2)
 good:  prefab name (time, grain, coin, jewelry) or id (0, 1, 5, 6)
 
@@ -404,21 +409,15 @@ examples
   day 5
   csv
   csv run1
+  csv on farm laborers
   request laborers grain 3"
         .into()
-}
-
-pub(crate) fn cap_coin_save(pop: &mut Pop) {
-    if let Some(row) = pop.property.get_mut(&COIN) {
-        row.save_target = COIN_SAVE_UNITS;
-        row.shop_target = COIN_SAVE_UNITS;
-    }
 }
 
 pub(crate) fn day_digest(
     session: &Session,
     report: &MarketDayReport,
-    wages: &[(usize, WagePayout)],
+    wages: &[(usize, LaborSettlement)],
 ) -> String {
     let n_trade = report
         .meetings
@@ -426,10 +425,7 @@ pub(crate) fn day_digest(
         .filter(|m| matches!(m.outcome, MeetingOutcome::Traded { .. }))
         .count();
     let n_wash = report.meetings.len() - n_trade;
-    let wage_coin: f64 = wages
-        .iter()
-        .map(|(_, p)| p.owner_amount + p.worker_amount)
-        .sum();
+    let wage_coin: f64 = wages.iter().map(|(_, s)| labor_coin_paid(s)).sum();
     let sol: f64 = if session.pops.is_empty() {
         0.0
     } else {
@@ -465,7 +461,7 @@ pub(crate) fn day_digest(
 pub(crate) fn format_day_report(
     session: &Session,
     report: &MarketDayReport,
-    wages: &[(usize, WagePayout)],
+    wages: &[(usize, LaborSettlement)],
 ) -> String {
     let n_trade = report
         .meetings
@@ -659,58 +655,94 @@ pub(crate) fn format_day_report(
     out
 }
 
-pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, WagePayout)]) -> String {
+fn labor_coin_paid(settle: &LaborSettlement) -> f64 {
+    let workers: f64 = settle
+        .workers
+        .iter()
+        .map(|w| w.paid.get(&COIN).copied().unwrap_or(0.0))
+        .sum();
+    let owner = settle
+        .owner
+        .as_ref()
+        .map(|o| o.paid.get(&COIN).copied().unwrap_or(0.0))
+        .unwrap_or(0.0);
+    workers + owner
+}
+
+fn format_paid_map(paid: &HashMap<usize, f64>) -> String {
+    let mut parts: Vec<(usize, f64)> = paid
+        .iter()
+        .filter(|(_, qty)| **qty > 0.0)
+        .map(|(good, qty)| (*good, *qty))
+        .collect();
+    parts.sort_by_key(|(good, _)| *good);
+    if parts.is_empty() {
+        return "-".into();
+    }
+    parts
+        .iter()
+        .map(|(good, qty)| format!("{} {}", fmt_qty(*qty), fmt_good(*good)))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettlement)]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "Wages  (owners {:.0}% / workers {:.0}%, ceil, owners first)\n",
-        session.factuals.config.labor.owner_share * 100.0,
-        session.factuals.config.labor.worker_share * 100.0
+        "Labor  (settle; work-time cap {:.0}%)\n",
+        session.factuals.config.labor.work_time_fraction * 100.0
     ));
     out.push_str(&format!(
-        "  {:<10} {:>6} {:>7} {:>8}  {}\n",
-        "firm", "till", "owners", "workers", "to"
+        "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+        "firm", "who", "hours", "time", "paid"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<6} {:-<7} {:-<8}  {:-<24}\n",
+        "  {:-<10} {:-<10} {:-<6} {:-<6}  {:-<24}\n",
         "", "", "", "", ""
     ));
     if wages.is_empty() {
         out.push_str("  (none)\n\n");
         return out;
     }
-    for (firm_id, payout) in wages {
-        let mut dest = Vec::new();
-        if payout.owner_amount > 0.0 {
-            if payout.owner_credited {
-                dest.push(format!(
-                    "owner {} {}",
-                    fmt_actor(payout.owner),
-                    fmt_qty(payout.owner_amount)
-                ));
-            } else if matches!(payout.owner, Actor::Pop(0)) {
-                dest.push(format!("unowned {}", fmt_qty(payout.owner_amount)));
+    for (firm_id, settle) in wages {
+        let firm_name = fmt_actor(Actor::Firm(*firm_id));
+        if settle.workers.is_empty() && settle.owner.is_none() {
+            out.push_str(&format!(
+                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                firm_name, "-", "-", "-", "-"
+            ));
+            continue;
+        }
+        for worker in &settle.workers {
+            out.push_str(&format!(
+                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                firm_name,
+                fmt_actor(Actor::Pop(worker.pop)),
+                fmt_qty(worker.time_claimed),
+                fmt_qty(worker.time_given),
+                format_paid_map(&worker.paid)
+            ));
+        }
+        if let Some(owner) = &settle.owner {
+            let paid = format_paid_map(&owner.paid);
+            let paid = if owner.remainder {
+                if paid == "-" {
+                    "remainder".into()
+                } else {
+                    format!("remainder {paid}")
+                }
             } else {
-                dest.push(format!(
-                    "hyp {} {}",
-                    fmt_actor(payout.owner),
-                    fmt_qty(payout.owner_amount)
-                ));
-            }
+                paid
+            };
+            out.push_str(&format!(
+                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                firm_name,
+                format!("owner {}", fmt_actor(Actor::Pop(owner.pop))),
+                "-",
+                "-",
+                paid
+            ));
         }
-        for (pop_id, qty) in &payout.workers {
-            dest.push(format!("{} {}", fmt_actor(Actor::Pop(*pop_id)), fmt_qty(*qty)));
-        }
-        if dest.is_empty() {
-            dest.push("-".into());
-        }
-        out.push_str(&format!(
-            "  {:<10} {:>6} {:>7} {:>8}  {}\n",
-            fmt_actor(Actor::Firm(*firm_id)),
-            fmt_qty(payout.coinage),
-            fmt_qty(payout.owner_amount),
-            fmt_qty(payout.worker_amount),
-            dest.join(", ")
-        ));
     }
     out.push('\n');
     out

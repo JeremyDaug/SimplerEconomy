@@ -72,11 +72,11 @@ salability_default = 0.4
 exchange_salability_min = 0.6
 sell_exchange_edge = 0.1
 buy_try_limit = 2
-transaction_cost = 10.0
+transaction_cost = 1.0
 amv_accept_blend = 0.25
 amv_reject_blend = 0.10
 amv_reject_demand_edge = 1.1
-amv_leftover_blend = 0.10
+amv_leftover_blend = 0.05
 amv_leftover_band = 0.10
 salability_blend = 0.25
 
@@ -109,6 +109,7 @@ sell_coincidence_weight = 2.0
 owner_share = 0.30
 worker_share = 0.30
 work_time_fraction = 0.5
+budget_interval = 1
 
 [firm]
 planning_lerp_rate = 0.15

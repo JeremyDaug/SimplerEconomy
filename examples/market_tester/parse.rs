@@ -9,7 +9,7 @@ pub(crate) struct Tokens<'a> {
 }
 
 impl<'a> Tokens<'a> {
-    fn new(rest: &'a [&'a str]) -> Self {
+    pub(crate) fn new(rest: &'a [&'a str]) -> Self {
         Self { rest }
     }
 
@@ -25,6 +25,10 @@ impl<'a> Tokens<'a> {
         } else {
             Err(format!("unexpected extra tokens: {}", self.rest.join(" ")))
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rest.is_empty()
     }
 }
 

@@ -533,6 +533,35 @@ until those sources exist.
 **Code:** `Workforce`, `PaymentTerm`, `LaborSettlement::settle`,
 `labor_constants::WORK_TIME_FRACTION`
 
+### Labor budget
+**Preferred:** labor budget, budget hours and wages  
+**Avoid:** renegotiate (two-sided bargain), hiring, labor market
+
+**Meaning:** Firm rewrites standing workforce `hours` and the wage basket
+after plan. Does not hire, fire, or move pops. Hours snap to recipe Time plus today's transport spend + 1. Firm owns hours;
+pop pressure (anger+fear) writes **flat** 1-unit lumps (in-kind they still
+want, else salable). Fat flats fold into hourly when `flat / hours >= 1`.
+Calm unprofitable firms trim flats; profit 1.0..=1.15 holds; richer profit
+may add product in-kind. Hourly rates never below 1. Short till is settle.
+`budget_interval` is days between rewrites (**1 = every day**, 0 skips).
+
+**Code:** `Firm::budget_labor`, `labor.budget_interval`
+
+### Owner remainder
+**Preferred:** remainder, residual claim  
+**Avoid:** unlimited profit (stock fence and growth still hold), trigger
+
+**Meaning:** Flag on [`Owners`] (`remainder`). The living owner pop takes
+leftover till after wages, worker profit shares, **stock fence**, and
+**growth target**. Direct owner-operator. Distinct from **profit share**
+(`profit_share` 0..=1 of yesterday `sold_amv - sold_cost_amv`): a limited
+dividend / partial owner / LLC, where the firm keeps the rest. Remainder
+runs even when yesterday's profit is 0. Paid high salability first, skipping
+Time. `Firm::plan` does not write `growth_target` yet.
+
+**Code:** `Owners.remainder`, `Firm::with_owner_remainder`,
+`LaborSettlement::settle`
+
 ### Take good
 **Preferred:** take good
 **Avoid:** clear good (sounds like zeroing the row in place)
@@ -576,10 +605,10 @@ reject raises the sought good (demand edge 1.1) and lowers each tender,
 harder when more units were offered per unit sought. No-proposal raises the
 sought good only. After the match loop, leftover and unmatched orders
 still move AMV: unsatisfied buys raise it, unsatisfied sells lower it,
-in the direction of the larger leftover book. The step is
-`leftover_blend * unsatisfied / (unsatisfied + purchased)` so a small
-miss on a busy book barely moves, and a book with no fills takes the
-full leftover blend toward the demand edge (1.1 up, 1/1.1 down).
+in the direction of the larger leftover book. The factor is
+`1 + leftover_blend * miss / purchased` on the winning side (empty fill
+counts as 1 whole unit). Demand multiplies AMV by that factor; supply
+divides. Each leftover multiple of today's volume adds one leftover_blend.
 
 **Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
 `drift_amv_on_no_proposal`, `drift_amv_on_book_pressure`,
@@ -642,7 +671,7 @@ transport_needed = TRANSACTION_COST + bulk * market.friction
 bulk = Sum(|qty| * good.bulk())   // bulk = mass + 400 * volume
 ```
 
-`TRANSACTION_COST` is a flat **unit** count (placeholder 10). `market.friction` is 0 on a one-hex market. Buyer pays. Seller never receives the spent units. Excess transport stays with the buyer. Each transport good's **Transport tag** carries efficiency (1.0 = time baseline); cover is `qty * efficiency`. The bill and the spend may be fractional. Exchanging a transport-tagged good (the deal map) is still **whole units**.
+`TRANSACTION_COST` is a flat **unit** count (currently 1). `market.friction` is 0 on a one-hex market. Buyer pays. Seller never receives the spent units. Excess transport stays with the buyer. Each transport good's **Transport tag** carries efficiency (1.0 = time baseline); cover is `qty * efficiency`. The bill and the spend may be fractional. Exchanging a transport-tagged good (the deal map) is still **whole units**.
 
 **Wash / failed meeting:** spend only `TRANSACTION_COST` from **on-hand** transport (cannot use goods this deal would have brought in). Then renew or close.
 

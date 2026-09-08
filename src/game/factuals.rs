@@ -557,6 +557,7 @@ tags = ["untradeable", { transport = 2.0 }]
         assert_eq!(factuals.find_good(5).name, "coin");
         assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
         assert_eq!(factuals.find_good(6).name, "jewelry");
+        assert!((factuals.find_good(6).decay_rate - 0.02).abs() < 1e-12);
     }
 
     #[test]

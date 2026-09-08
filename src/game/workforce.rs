@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::game::config::GameConfig;
+use crate::game::config::{labor_constants, GameConfig};
+use crate::game::desire::DesireTargetType;
+use crate::game::factuals::Factuals;
 use crate::game::firm::{Firm, FirmPRow};
-
+use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::pop::Pop;
-use crate::game::util::{whole_units, whole_units_up};
+use crate::game::process::InputType;
+use crate::game::util::{round_units, whole_units, whole_units_up};
 
 /// # Workforce
 /// 
@@ -266,6 +269,105 @@ impl Workforce {
         }
         (promised_amv, paid_amv, paid)
     }
+
+    /// AMV of the wage basket at `hours` (whole-unit quantities).
+    pub fn promised_amv(&self, hours: f64, history: &MarketHistory) -> f64 {
+        self.payment
+            .iter()
+            .map(|term| term.promised_qty(hours) * history.price(term.good))
+            .sum()
+    }
+
+    /// Scales every payment term amount by `factor`.
+    /// Factor must be `>= 0.0`.
+    pub fn scale_payments(&mut self, factor: f64) {
+        debug_assert!(factor >= 0.0, "payment scale factor must be >= 0.0");
+        let factor = factor.max(0.0);
+        for term in &mut self.payment {
+            term.amount = (term.amount * factor).max(0.0);
+        }
+    }
+
+    /// Rounds hours and payment amounts to nearest whole units (half-up).
+    /// Scaling wage amounts stay at least [`labor_constants::WAGE_AMOUNT_MIN`].
+    fn round_hours_and_wages(&mut self) {
+        self.hours = round_units(self.hours.max(0.0));
+        for term in &mut self.payment {
+            term.amount = round_units(term.amount.max(0.0));
+            if !term.flat && term.amount > 0.0 {
+                term.amount = term.amount.max(labor_constants::WAGE_AMOUNT_MIN);
+            }
+        }
+    }
+
+    /// Turns a fat flat into hourly when `flat / hours` is at least 1 whole unit.
+    /// Leftover stays flat (the fractional sneak).
+    fn fold_flat_into_hourly(&mut self) {
+        if self.hours < 1.0 {
+            return;
+        }
+        let hours = self.hours;
+        let mut i = 0;
+        while i < self.payment.len() {
+            if !self.payment[i].flat {
+                i += 1;
+                continue;
+            }
+            let good = self.payment[i].good;
+            let amount = self.payment[i].amount;
+            let hourly = whole_units(amount / hours);
+            if hourly < labor_constants::WAGE_AMOUNT_MIN {
+                i += 1;
+                continue;
+            }
+            let take = hourly * hours;
+            self.payment[i].amount = (amount - take).max(0.0);
+            if let Some(scaling) = self
+                .payment
+                .iter_mut()
+                .find(|term| !term.flat && term.good == good)
+            {
+                scaling.amount = (scaling.amount + hourly).max(labor_constants::WAGE_AMOUNT_MIN);
+            } else {
+                self.payment.push(PaymentTerm::new(
+                    good,
+                    hourly.max(labor_constants::WAGE_AMOUNT_MIN),
+                ));
+            }
+            if self.payment[i].amount < 1.0 {
+                self.payment.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Drops 1 unit from each flat term (bonuses first when the firm is shrinking).
+    fn trim_flats(&mut self) {
+        self.payment.retain_mut(|term| {
+            if !term.flat {
+                return true;
+            }
+            term.amount = (term.amount - 1.0).max(0.0);
+            term.amount >= 1.0
+        });
+    }
+
+    /// Adds 1 whole unit as a flat bonus for `good` (does not jack the hourly).
+    fn add_flat_bonus(&mut self, good: usize) {
+        if good == TIME {
+            return;
+        }
+        if let Some(flat) = self
+            .payment
+            .iter_mut()
+            .find(|term| term.flat && term.good == good)
+        {
+            flat.amount += 1.0;
+            return;
+        }
+        self.payment.push(PaymentTerm::flat(good, 1.0));
+    }
 }
 
 /// # Workforce Contract Type
@@ -308,9 +410,11 @@ impl LaborSettlement {
     ///    to the firm in proportion to AMV paid / AMV promised.
     /// 2. Stock fence is `max(stock_target, reserve_target)` and is never spent.
     ///    Wages may raid `growth_target`. Profit shares cannot.
-    /// 3. After wages, pay worker then owner profit shares of yesterday's
+    /// 3. After wages, pay worker profit shares of yesterday's
     ///    `sold_amv - sold_cost_amv` from goods above stock and growth, highest
     ///    salability first, skipping Time.
+    /// 4. Then the owner: remainder takes leftover till (even if profit is 0);
+    ///    otherwise a limited `profit_share` of yesterday's profit AMV.
     ///
     /// Partial pay withholds Time linearly in AMV. Missing pops are skipped.
     pub fn settle(
@@ -385,25 +489,239 @@ impl LaborSettlement {
                     }
                 }
             }
+        }
 
-            if let Some(owner_id) = firm.owners.pop_id() {
-                if firm.owners.profit_share > 0.0 {
-                    if let Some(pop) = pops.get_mut(&owner_id) {
-                        let want = profit_amv * firm.owners.profit_share;
-                        let (paid_amv, paid) = firm.pay_profit_share_amv(pop, want, history);
-                        report.owner = Some(LaborOwnerReport {
-                            pop: owner_id,
-                            profit_share_amv: want,
-                            paid_amv,
-                            paid,
-                        });
-                    }
+        if let Some(owner_id) = firm.owners.pop_id() {
+            if let Some(pop) = pops.get_mut(&owner_id) {
+                let remainder = firm.owners.remainder;
+                let want = if remainder {
+                    firm.leftover_profit_amv(history)
+                } else if firm.owners.profit_share > 0.0 && profit_amv > 0.0 {
+                    profit_amv * firm.owners.profit_share
+                } else {
+                    0.0
+                };
+                if remainder || want > 0.0 {
+                    let (paid_amv, paid) = firm.pay_profit_share_amv(pop, want, history);
+                    report.owner = Some(LaborOwnerReport {
+                        pop: owner_id,
+                        remainder,
+                        profit_share_amv: want,
+                        paid_amv,
+                        paid,
+                    });
                 }
             }
         }
 
         report
     }
+}
+
+impl Firm {
+    /// # Budget Labor
+    ///
+    /// Rewrites standing workforce `hours` and payment amounts. Does not hire,
+    /// fire, or move pops. No-op when `labor.budget_interval` is 0 or `day`
+    /// is not a multiple of the interval (`day` is 1-based completed days).
+    ///
+    /// 1. Snap hours to recipe Time for current line targets, plus today's
+    ///    `transport_spent + 1` (and one extra `transaction_cost` if they still
+    ///    need to buy much more). Plan already slow-walks targets; hours are
+    ///    not cut to fit the till.
+    /// 2. Fold fat flats into hourly when `flat / hours >= 1`.
+    /// 3. Wages: angry/fearful pops get a 1-unit flat bonus in a good they
+    ///    consume or a salable good. Calm + unprofitable trims flats.
+    ///    Calm + profit in 1.0..=1.15 holds. Calm + more profit ensures a
+    ///    1-unit flat of product they still want as kind. Hourly rates never
+    ///    go below 1. Short till is settle's problem.
+    pub fn budget_labor(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        pops: &HashMap<usize, Pop>,
+        day: u32,
+    ) {
+        let interval = factuals.config.labor.budget_interval;
+        if interval == 0 || day % interval != 0 {
+            return;
+        }
+        let idxs: Vec<usize> = self
+            .workforce
+            .iter()
+            .enumerate()
+            .filter(|(_, worker)| worker.id != 0)
+            .map(|(i, _)| i)
+            .collect();
+        if idxs.is_empty() {
+            return;
+        }
+
+        let extra_shop = if self.needs_much_more_shopping() {
+            factuals.config.market.transaction_cost.max(0.0)
+        } else {
+            0.0
+        };
+        let haul = self.transport_spent.max(0.0) + 1.0 + extra_shop;
+        let hours_want_total = self.plan_time_need(factuals) + haul;
+        let hour_sum: f64 = idxs
+            .iter()
+            .map(|&i| self.workforce[i].hours.max(0.0))
+            .sum();
+        let n = idxs.len() as f64;
+        for &i in &idxs {
+            let share = if hour_sum > 0.0 {
+                self.workforce[i].hours.max(0.0) / hour_sum
+            } else {
+                1.0 / n
+            };
+            let want = hours_want_total * share;
+            self.workforce[i].hours = round_units(want.max(0.0));
+        }
+
+        for &i in &idxs {
+            self.workforce[i].fold_flat_into_hourly();
+            let Some(pop) = pops.get(&self.workforce[i].id) else {
+                self.workforce[i].round_hours_and_wages();
+                continue;
+            };
+            self.negotiate_wages(i, pop, factuals, history);
+            self.workforce[i].fold_flat_into_hourly();
+            self.workforce[i].round_hours_and_wages();
+        }
+    }
+
+    /// One worker's wage basket: pop pressure vs firm product/miserliness.
+    fn negotiate_wages(
+        &mut self,
+        idx: usize,
+        pop: &Pop,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) {
+        let pressure = (pop.sentiment.anger() + pop.sentiment.fear()).clamp(0.0, 1.0);
+        let profit = self.records.profit_ratio;
+        if pressure >= labor_constants::WAGE_PRESSURE_BAR {
+            if let Some(good) = self.pick_pop_wage_good(pop, factuals, history) {
+                self.workforce[idx].add_flat_bonus(good);
+            }
+        } else if profit < 1.0 {
+            self.workforce[idx].trim_flats();
+        } else if profit <= labor_constants::WAGE_HOLD_MAX {
+            // Barely profitable: do not push product or raises.
+        } else if let Some(good) = self.pick_firm_product(factuals) {
+            if pop_wants_kind(pop, good) {
+                let has_product = self.workforce[idx]
+                    .payment
+                    .iter()
+                    .any(|term| term.good == good);
+                if !has_product {
+                    self.workforce[idx].add_flat_bonus(good);
+                }
+            }
+        }
+    }
+
+    /// Pop pick: in-kind they still want, else a salable firm output, else
+    /// the most salable good on the firm (not Time). Satiated consume desires
+    /// skip in-kind so pay can move toward coin/salable.
+    fn pick_pop_wage_good(
+        &self,
+        pop: &Pop,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> Option<usize> {
+        let outputs = self.firm_output_goods(factuals);
+        for &good in &outputs {
+            if pop_wants_kind(pop, good) {
+                return Some(good);
+            }
+        }
+        let sal_min = factuals.config.market.exchange_salability_min;
+        for &good in &outputs {
+            if history.salability(good) >= sal_min {
+                return Some(good);
+            }
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for &good in self.property.keys() {
+            if good == TIME {
+                continue;
+            }
+            let sal = history.salability(good);
+            if best.map_or(true, |(_, old)| sal > old) {
+                best = Some((good, sal));
+            }
+        }
+        best.map(|(good, _)| good).or_else(|| outputs.first().copied())
+    }
+
+    /// Firm pick: first output of an active production line.
+    fn pick_firm_product(&self, factuals: &Factuals) -> Option<usize> {
+        self.firm_output_goods(factuals).into_iter().next()
+    }
+
+    /// Output goods of lines with a positive target.
+    fn firm_output_goods(&self, factuals: &Factuals) -> Vec<usize> {
+        let mut goods = Vec::new();
+        for line in &self.production_line {
+            if line.target.unwrap_or(0.0) <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.good != TIME && !goods.contains(&output.good) {
+                    goods.push(output.good);
+                }
+            }
+        }
+        goods
+    }
+
+    /// Destroyed Time on current production-line targets.
+    fn plan_time_need(&self, factuals: &Factuals) -> f64 {
+        let mut need = 0.0;
+        for line in &self.production_line {
+            let Some(target) = line.target else {
+                continue;
+            };
+            if target <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for input in &process.inputs {
+                if input.good == TIME && matches!(input.input_type, InputType::Destroyed) {
+                    need += target * input.amount.max(0.0);
+                }
+            }
+        }
+        need
+    }
+
+    /// True when remaining purchase targets are much larger than today's buys.
+    fn needs_much_more_shopping(&self) -> bool {
+        let mut want = 0.0;
+        let mut got = 0.0;
+        for row in self.property.values() {
+            want += row.purchase_target.max(0.0);
+            got += row.bought.max(0.0);
+        }
+        want > 0.0 && want > got * 2.0
+    }
+}
+
+/// True when a consume desire for this good is still unsatisfied.
+fn pop_wants_kind(pop: &Pop, good: usize) -> bool {
+    pop.desires.iter().flatten().any(|desire| {
+        let targets = desire.target.iter().any(|target| {
+            target.good == good && matches!(target.desire_type, DesireTargetType::Consume)
+        });
+        targets && desire.satisfaction < desire.amount
+    })
 }
 
 /// One workforce pop's wage and Time transfer for the morning settle.
@@ -438,6 +756,8 @@ impl LaborWorkerReport {
 #[derive(Debug, Clone)]
 pub struct LaborOwnerReport {
     pub pop: usize,
+    /// True when this payout was the residual leftover claim.
+    pub remainder: bool,
     pub profit_share_amv: f64,
     pub paid_amv: f64,
     pub paid: HashMap<usize, f64>,
@@ -660,7 +980,78 @@ mod settle_labor_contracts_should {
         assert_eq!(pops[&2].property[&COIN].quantity, 1.0);
         let owner = report.owner.expect("owner paid");
         assert_eq!(owner.paid[&COIN], 2.0);
+        assert!(!owner.remainder);
         assert_eq!(firm.property[&COIN].quantity, 7.0);
+    }
+
+    #[test]
+    fn remainder_takes_leftover_even_when_profit_is_zero() {
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.property.insert(
+            COIN,
+            FirmPRow::new()
+                .with_quantity(20.0)
+                .with_stock_target(2.0)
+                .with_growth_target(5.0),
+        );
+        let mut pops = HashMap::from([(3, make_pop(3))]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &GameConfig::default());
+
+        let owner = report.owner.expect("remainder owner");
+        assert!(owner.remainder);
+        assert_eq!(owner.paid[&COIN], 13.0);
+        assert_eq!(firm.property[&COIN].quantity, 7.0);
+    }
+
+    #[test]
+    fn limited_share_caps_below_leftover_till() {
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_profit_share(0.5);
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(20.0));
+        firm.records.sold_amv = 10.0;
+        firm.records.sold_cost_amv = 0.0;
+        let mut pops = HashMap::from([(3, make_pop(3))]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &GameConfig::default());
+
+        let owner = report.owner.expect("share owner");
+        assert!(!owner.remainder);
+        assert_eq!(owner.paid[&COIN], 5.0);
+        assert_eq!(firm.property[&COIN].quantity, 15.0);
+    }
+
+    #[test]
+    fn remainder_follows_worker_dividend() {
+        let worker = Workforce::new(2)
+            .with_hours(1.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0))
+            .with_profit_share(0.2);
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder()
+            .with_workforce(worker);
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(20.0));
+        firm.records.sold_amv = 10.0;
+        firm.records.sold_cost_amv = 0.0;
+        let mut pops = HashMap::from([
+            (2, with_time(make_pop(2), 48.0)),
+            (3, make_pop(3)),
+        ]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &GameConfig::default());
+
+        assert_eq!(pops[&2].property[&COIN].quantity, 3.0);
+        let owner = report.owner.expect("remainder after dividend");
+        assert!(owner.remainder);
+        assert_eq!(owner.paid[&COIN], 17.0);
+        assert_eq!(firm.property[&COIN].quantity, 0.0);
     }
 
     #[test]
@@ -718,5 +1109,328 @@ mod settle_labor_contracts_should {
         assert_eq!(pops[&2].property[&BREAD].quantity, 1.0);
         assert!((report.workers[0].paid_amv - 6.0).abs() < 1e-12);
         assert!((report.workers[0].time_given - 4.0).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod budget_labor_should {
+    use super::*;
+    use crate::game::config::labor_constants;
+    use crate::game::factuals::Factuals;
+    use crate::game::firm::{FirmPRow, ProductionLine};
+    use crate::game::good::TIME;
+    use crate::game::process::{InputType, Process, ProcessInput};
+
+    const COIN: usize = 5;
+
+    fn history_coin() -> MarketHistory {
+        let mut history = MarketHistory::new();
+        history.prices.insert(COIN, 1.0);
+        history.salability.insert(COIN, 0.9);
+        history
+    }
+
+    fn time_process() -> Process {
+        Process::new(1, "farm grain".to_string(), 0).with_input(ProcessInput::new(
+            TIME,
+            3.0,
+            true,
+            InputType::Destroyed,
+            false,
+        ))
+    }
+
+    fn line(target: f64) -> ProductionLine {
+        ProductionLine {
+            process: 1,
+            target: Some(target),
+            inputs: vec![],
+            historical_productivity: 0.0,
+            last_success_rate: 0.0,
+            last_iterations: 0.0,
+            last_effects: vec![],
+            last_missing_goods: vec![],
+            last_amv_consumed: 0.0,
+            last_amv_produced: 0.0,
+        }
+    }
+
+    const GRAIN: usize = 1;
+
+    fn farm_with_hours(hours: f64) -> Firm {
+        let worker = Workforce::new(2)
+            .with_hours(hours)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_workforce(worker);
+        firm.production_line.push(line(5.0));
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(100.0));
+        firm
+    }
+
+    fn worker_pop(id: usize) -> Pop {
+        use crate::game::household::Household;
+        use crate::game::pop::{DemoRow, PopPRow, PopRecords};
+        use crate::game::sentiment::Sentiment;
+        Pop {
+            id,
+            job: 0,
+            property: HashMap::new(),
+            desires: vec![vec![]; 3],
+            working_desires: vec![],
+            demographics: DemoRow {
+                household: Household::with_count(1.0),
+                species: 0,
+                culture: 0,
+                class: 0,
+                religion: 0,
+            },
+            current_orders: vec![],
+            stored_effects: vec![],
+            sentiment: Sentiment::new(),
+            records: PopRecords::default(),
+        }
+    }
+
+    fn pops_for(firm: &Firm) -> HashMap<usize, Pop> {
+        firm.workforce
+            .iter()
+            .filter(|w| w.id != 0)
+            .map(|w| (w.id, worker_pop(w.id)))
+            .collect()
+    }
+
+    fn with_grain_need(mut pop: Pop, satisfaction: f64) -> Pop {
+        use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+        use crate::game::scalingfactor::ScalingFactor;
+        pop.desires[0].push(Desire {
+            source: DesireSource::Species(0, 0),
+            priority: 0,
+            target: vec![DesireTarget::new(GRAIN, DesireTargetType::Consume, 1.0)],
+            amount: 2.0,
+            satisfaction,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Household(1.0),
+            decay: 0.0,
+        });
+        pop
+    }
+
+    fn grain_process() -> Process {
+        time_process().with_output(crate::game::process::ProcessOutput::new(GRAIN, 6.0, true))
+    }
+
+    #[test]
+    fn interval_zero_skips() {
+        let mut firm = farm_with_hours(1.0);
+        let mut factuals = Factuals::new().with_process(time_process());
+        factuals.config.labor.budget_interval = 0;
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert!((firm.workforce[0].hours - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn off_interval_skips() {
+        let mut firm = farm_with_hours(1.0);
+        let mut factuals = Factuals::new().with_process(time_process());
+        factuals.config.labor.budget_interval = 3;
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert!((firm.workforce[0].hours - 1.0).abs() < 1e-12);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 3);
+        assert!(firm.workforce[0].hours > 1.0);
+    }
+
+    #[test]
+    fn hours_snap_to_recipe_time() {
+        let mut firm = farm_with_hours(1.0);
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert_eq!(firm.workforce[0].hours, 16.0);
+        assert_eq!(firm.workforce[0].id, 2);
+        assert_eq!(firm.workforce.len(), 1);
+    }
+
+    #[test]
+    fn short_till_does_not_cut_hours() {
+        let mut firm = farm_with_hours(10.0);
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(4.0));
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        let worker = &firm.workforce[0];
+        assert_eq!(worker.hours, 16.0);
+        assert!(
+            worker.payment.iter().any(|t| !t.flat && t.amount >= labor_constants::WAGE_AMOUNT_MIN)
+        );
+    }
+
+    #[test]
+    fn empty_till_keeps_hours_and_rate() {
+        let mut firm = farm_with_hours(10.0);
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(0.0));
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert_eq!(firm.workforce[0].hours, 16.0);
+        assert_eq!(
+            firm.workforce[0]
+                .payment
+                .iter()
+                .find(|t| !t.flat && t.good == COIN)
+                .map(|t| t.amount),
+            Some(labor_constants::WAGE_AMOUNT_MIN)
+        );
+    }
+
+    #[test]
+    fn wage_rate_does_not_fall_to_zero() {
+        let mut firm = farm_with_hours(10.0);
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(1.0));
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        let min_scale = firm.workforce[0]
+            .payment
+            .iter()
+            .filter(|t| !t.flat)
+            .map(|t| t.amount)
+            .fold(f64::INFINITY, f64::min);
+        assert!(min_scale >= labor_constants::WAGE_AMOUNT_MIN, "{min_scale}");
+    }
+
+    #[test]
+    fn folds_fat_flat_into_hourly() {
+        let mut worker = Workforce::new(2)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0))
+            .with_payment(PaymentTerm::flat(COIN, 15.0));
+        worker.fold_flat_into_hourly();
+        let scaling = worker
+            .payment
+            .iter()
+            .find(|t| !t.flat && t.good == COIN)
+            .expect("hourly");
+        assert_eq!(scaling.amount, 2.0);
+        let flat = worker.payment.iter().find(|t| t.flat && t.good == COIN);
+        assert_eq!(flat.map(|t| t.amount), Some(5.0));
+    }
+
+    #[test]
+    fn angry_pop_gets_a_flat_bonus() {
+        let mut firm = farm_with_hours(10.0);
+        let factuals = Factuals::new().with_process(grain_process());
+        let mut pops = pops_for(&firm);
+        pops.get_mut(&2).expect("worker").sentiment =
+            crate::game::sentiment::Sentiment::from_parts(0.0, 0.1, 0.5, 0.4, 0.0);
+        firm.property.insert(GRAIN, FirmPRow::new().with_quantity(10.0));
+        let mut history = history_coin();
+        history.prices.insert(GRAIN, 1.0);
+        history.salability.insert(GRAIN, 0.5);
+        firm.budget_labor(&factuals, &history, &pops, 1);
+        assert!(
+            firm.workforce[0]
+                .payment
+                .iter()
+                .any(|t| t.flat && t.amount >= 1.0),
+            "{:?}",
+            firm.workforce[0].payment
+        );
+    }
+
+    #[test]
+    fn calm_profitable_firm_adds_product_bonus() {
+        let mut firm = farm_with_hours(10.0);
+        firm.records.profit_ratio = 1.5;
+        let factuals = Factuals::new().with_process(grain_process());
+        let mut pops = pops_for(&firm);
+        let worker = pops.remove(&2).expect("worker");
+        pops.insert(2, with_grain_need(worker, 0.0));
+        let mut history = history_coin();
+        history.prices.insert(GRAIN, 1.0);
+        history.salability.insert(GRAIN, 0.5);
+        firm.budget_labor(&factuals, &history, &pops, 1);
+        assert!(
+            firm.workforce[0]
+                .payment
+                .iter()
+                .any(|t| t.good == GRAIN && t.amount >= 1.0),
+            "{:?}",
+            firm.workforce[0].payment
+        );
+    }
+
+    #[test]
+    fn barely_profitable_holds_wages() {
+        let mut firm = farm_with_hours(10.0);
+        firm.records.profit_ratio = 1.1;
+        let factuals = Factuals::new().with_process(grain_process());
+        let mut pops = pops_for(&firm);
+        let worker = pops.remove(&2).expect("worker");
+        pops.insert(2, with_grain_need(worker, 0.0));
+        let mut history = history_coin();
+        history.prices.insert(GRAIN, 1.0);
+        history.salability.insert(GRAIN, 0.5);
+        firm.budget_labor(&factuals, &history, &pops, 1);
+        assert!(
+            !firm.workforce[0].payment.iter().any(|t| t.good == GRAIN),
+            "{:?}",
+            firm.workforce[0].payment
+        );
+    }
+
+    #[test]
+    fn satiated_kind_skips_product_bonus() {
+        let mut firm = farm_with_hours(10.0);
+        firm.records.profit_ratio = 1.5;
+        let factuals = Factuals::new().with_process(grain_process());
+        let mut pops = pops_for(&firm);
+        let worker = pops.remove(&2).expect("worker");
+        pops.insert(2, with_grain_need(worker, 2.0));
+        let mut history = history_coin();
+        history.prices.insert(GRAIN, 1.0);
+        history.salability.insert(GRAIN, 0.5);
+        firm.budget_labor(&factuals, &history, &pops, 1);
+        assert!(
+            !firm.workforce[0].payment.iter().any(|t| t.good == GRAIN),
+            "{:?}",
+            firm.workforce[0].payment
+        );
+    }
+
+    #[test]
+    fn hours_include_todays_transport_plus_one() {
+        let mut firm = farm_with_hours(1.0);
+        firm.transport_spent = 4.0;
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert_eq!(firm.workforce[0].hours, 20.0);
+    }
+
+    #[test]
+    fn unprofitable_trims_flats_not_hours() {
+        let worker = Workforce::new(2)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0))
+            .with_payment(PaymentTerm::flat(COIN, 3.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_workforce(worker);
+        firm.production_line.push(line(5.0));
+        firm.property.insert(COIN, FirmPRow::new().with_quantity(100.0));
+        firm.records.profit_ratio = 0.5;
+        let factuals = Factuals::new().with_process(time_process());
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert_eq!(firm.workforce[0].hours, 16.0);
+        let flat = firm.workforce[0]
+            .payment
+            .iter()
+            .find(|t| t.flat && t.good == COIN)
+            .map(|t| t.amount);
+        assert_eq!(flat, Some(2.0));
     }
 }

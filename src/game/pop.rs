@@ -1223,6 +1223,65 @@ impl Pop {
         }
     }
 
+    /// One full desire level in target units (`amount * cap / efficiency`).
+    /// Used to keep luxury shop climbing after a filled pass.
+    fn luxury_level_units(desires: &[Desire]) -> HashMap<usize, f64> {
+        let mut need = HashMap::new();
+        for desire in desires {
+            if desire.amount <= 0.0 {
+                continue;
+            }
+            for target in &desire.target {
+                debug_assert!(
+                    target.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                let want_sat = desire.amount * target.cap;
+                if want_sat <= 0.0 {
+                    continue;
+                }
+                *need.entry(target.good).or_insert(0.0) += want_sat / target.efficiency;
+            }
+        }
+        need
+    }
+
+    /// Cheapest tradeable luxury target (sat-cost, then good id). Price is
+    /// market AMV. None if the tier has no priced buyable good.
+    fn cheapest_luxury_shop_good(
+        desires: &[Desire],
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+    ) -> Option<(usize, f64)> {
+        let mut best: Option<(f64, usize, f64)> = None;
+        for desire in desires {
+            for target in &desire.target {
+                debug_assert!(
+                    target.efficiency > 0.0,
+                    "Desire target efficiency must be positive"
+                );
+                if !factuals.find_good(target.good).is_buyable() {
+                    continue;
+                }
+                let price = market_history.price(target.good);
+                if price <= 0.0 {
+                    continue;
+                }
+                let sat_cost = price / target.efficiency;
+                let better = match best {
+                    None => true,
+                    Some((cost, id, _)) => {
+                        sat_cost < cost || ((sat_cost - cost).abs() < f64::EPSILON && target.good < id)
+                    }
+                };
+                if better {
+                    best = Some((sat_cost, target.good, price));
+                }
+            }
+        }
+        best.map(|(_, id, price)| (id, price))
+    }
+
     /// Units still wanted per target good: unsatisfied sat / efficiency, on
     /// every target that can contribute. Does not walk a full extra level.
     fn unsatisfied_target_units(desires: &[Desire]) -> HashMap<usize, f64> {
@@ -1348,6 +1407,9 @@ impl Pop {
     /// Savings is `savings_ratio` days of the cheapest basic+common basket.
     /// Fear lowers substitutability: more of the pile is parked on those
     /// specific goods; the rest goes salability-first as liquid AMV.
+    /// Luxury adds one more full level on top of consume need, then parks
+    /// leftover on-hand AMV (above need+save) onto the cheapest luxury shop
+    /// good so a wealth pile becomes next-day luxury demand.
     fn rewrite_shop_and_save_targets(
         &mut self,
         factuals: &Factuals,
@@ -1378,6 +1440,12 @@ impl Pop {
                 .map(|row| row.consumed + row.used)
                 .unwrap_or(0.0);
             consume_need.insert(good_id, need.max(used));
+        }
+        if self.desires.len() > 2 {
+            for (good_id, qty) in Self::luxury_level_units(&self.desires[2]) {
+                *consume_need.entry(good_id).or_insert(0.0) += qty;
+                goods.insert(good_id);
+            }
         }
 
         let daily_need_amv = Self::living_need_amv(&self.desires[0], factuals, market_history)
@@ -1455,6 +1523,37 @@ impl Pop {
             }
             *save_units.entry(good_id).or_insert(0.0) += remaining_liquid / price;
             remaining_liquid = 0.0;
+        }
+
+        if self.desires.len() > 2 && !self.desires[2].is_empty() {
+            let mut leftover_amv = 0.0;
+            for &good_id in &goods {
+                if !factuals.find_good(good_id).is_buyable() {
+                    continue;
+                }
+                let price = market_history.price(good_id);
+                if price <= 0.0 {
+                    continue;
+                }
+                let committed = consume_need.get(&good_id).copied().unwrap_or(0.0)
+                    + save_units.get(&good_id).copied().unwrap_or(0.0);
+                let qty = self
+                    .property
+                    .get(&good_id)
+                    .map(|row| row.quantity)
+                    .unwrap_or(0.0);
+                leftover_amv += (qty - committed).max(0.0) * price;
+            }
+            if leftover_amv > 0.0 {
+                if let Some((good_id, price)) = Self::cheapest_luxury_shop_good(
+                    &self.desires[2],
+                    factuals,
+                    market_history,
+                ) {
+                    *consume_need.entry(good_id).or_insert(0.0) += leftover_amv / price;
+                    goods.insert(good_id);
+                }
+            }
         }
 
         for row in self.property.values_mut() {
@@ -3263,9 +3362,46 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            // Already satisfied; do not add another full luxury level.
+            // Satisfied this pass; shop still adds one more luxury level.
             assert_eq!(pop.property[&300].desire_needs, 0.0);
-            assert!(pop.property[&300].shop_target >= 30.0);
+            assert!(pop.property[&300].shop_target >= 40.0);
+        }
+
+        #[test]
+        fn luxury_shop_adds_a_level_even_when_unsatisfied() {
+            let mut pop = make_pop();
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(300, PopPRow::new(0.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.property[&300].desire_needs - 10.0).abs() < 1e-12);
+            assert!(pop.property[&300].shop_target >= 20.0);
+        }
+
+        #[test]
+        fn leftover_liquid_raises_luxury_shop() {
+            let mut pop = make_pop();
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                2.0,
+            ));
+            pop.property.insert(300, PopPRow::new(0.0));
+            pop.property.insert(500, PopPRow::new(100.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            // Unsatisfied 2 + extra level 2 + leftover 100 AMV at price 1.
+            assert!(pop.property[&300].shop_target >= 104.0);
         }
 
         #[test]

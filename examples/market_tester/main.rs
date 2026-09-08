@@ -1,14 +1,14 @@
 //! CLI box for probing a market day.
 //!
 //! Startup loads goods, processes, and config from `data/world/`, builds a
-//! small living roster (4 pops, 5 producer firms), and loads books from
+//! small living roster (6 pops, 5 producer firms), and loads books from
 //! [`Pop::create_orders`] / [`Firm::create_orders`]. The home screen is a
 //! short summary. `stock`, `orders`, and `processes` open full pages.
 //! `day` / `day N` runs the calendar loop, including firm `record_keeping`
 //! (rolling average, records, [`Firm::plan`]) after production and pop
-//! consume. Each day appends price CSVs under `data/logs/` (market close,
-//! firm quotes, settled trades). `csv` shows the files; `csv <name>`
-//! changes the stem.
+//! consume. Each day appends core market CSVs under `data/logs/` (close
+//! quotes and trade candles). Pops and firms are logged only when flagged
+//! (`csv on <actor>`). `csv` shows the files; `csv <name>` changes the stem.
 //!
 //! ```text
 //! cargo run --example market_tester
@@ -32,7 +32,8 @@ use simpler_economy::game::actor::Actor;
 use simpler_economy::game::config::pop_constants;
 use simpler_economy::game::good::TIME;
 use simpler_economy::game::factuals::Factuals;
-use simpler_economy::game::firm::{Firm, WagePayout};
+use simpler_economy::game::firm::Firm;
+use simpler_economy::game::workforce::LaborSettlement;
 use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
@@ -72,8 +73,6 @@ const JEWELRY: usize = 6;
 /// Tester coin is 10x units. Opening AMV is 0.1 * 2.1 so gold 8 / coin
 /// sits near the 40-coin mint recipe (8 / 0.21 ~ 38).
 const COIN_AMV: f64 = 0.21;
-/// Overnight coin save cap (units). Leaves the rest tenderable.
-const COIN_SAVE_UNITS: f64 = 1.0;
 /// Default CSV stem under `data/logs/` (`prices_market.csv`, …).
 const CSV_STEM_DEFAULT: &str = "prices";
 
@@ -92,6 +91,8 @@ const PREFAB_ACTORS: &[NamedActor] = &[
     NamedActor { actor: Actor::Pop(2), name: "laborers" },
     NamedActor { actor: Actor::Pop(3), name: "townsfolk" },
     NamedActor { actor: Actor::Pop(4), name: "lord" },
+    NamedActor { actor: Actor::Pop(5), name: "jewelers" },
+    NamedActor { actor: Actor::Pop(6), name: "wellhands" },
     NamedActor { actor: Actor::Firm(1), name: "farm" },
     NamedActor { actor: Actor::Firm(2), name: "bakery" },
     NamedActor { actor: Actor::Firm(3), name: "mine" },
@@ -116,27 +117,15 @@ struct Session {
     market: Market,
     /// Basename for day-end CSVs in `data/logs/` (`{stem}_market.csv`, …).
     csv_stem: String,
+    /// Pop ids written to `{stem}_pops.csv`. Empty skips that file.
+    csv_pops: HashSet<usize>,
+    /// Firm ids written to `{stem}_firms.csv`. Empty skips that file.
+    csv_firms: HashSet<usize>,
 }
 
 
 fn main() {
-    let (pops, firms, factuals, history) = build_world();
-    let market = market_from_world(&pops, &firms, &history);
-    let mut session = Session {
-        buys: Vec::new(),
-        sells: Vec::new(),
-        rng: StdRng::from_os_rng(),
-        seed: None,
-        log: String::new(),
-        focus_log: false,
-        day: 0,
-        pops,
-        firms,
-        factuals,
-        history,
-        market,
-        csv_stem: CSV_STEM_DEFAULT.to_string(),
-    };
+    let mut session = boot_session();
     session.log = shop_from_actors(&mut session);
 
     let tty = io::stdout().is_terminal();
@@ -378,6 +367,29 @@ fn run_match(session: &mut Session) -> String {
     out
 }
 
+/// Loads the living roster and an empty CSV flag set.
+pub(crate) fn boot_session() -> Session {
+    let (pops, firms, factuals, history) = build_world();
+    let market = market_from_world(&pops, &firms, &history);
+    Session {
+        buys: Vec::new(),
+        sells: Vec::new(),
+        rng: StdRng::from_os_rng(),
+        seed: None,
+        log: String::new(),
+        focus_log: false,
+        day: 0,
+        pops,
+        firms,
+        factuals,
+        history,
+        market,
+        csv_stem: CSV_STEM_DEFAULT.to_string(),
+        csv_pops: HashSet::new(),
+        csv_firms: HashSet::new(),
+    }
+}
+
 fn market_from_world(pops: &[Pop], firms: &[Firm], history: &MarketHistory) -> Market {
     let mut market = Market::new(1);
     for pop in pops {
@@ -399,7 +411,7 @@ fn market_from_world(pops: &[Pop], firms: &[Firm], history: &MarketHistory) -> M
 fn run_days(session: &mut Session, n: u32) -> String {
     let mut out = String::new();
     let mut last_report = None;
-    let mut last_wages: Vec<(usize, WagePayout)> = Vec::new();
+    let mut last_wages: Vec<(usize, LaborSettlement)> = Vec::new();
     if n > 1 {
         out.push_str("=== calendar ===\n");
     }
@@ -428,9 +440,9 @@ fn run_days(session: &mut Session, n: u32) -> String {
     out
 }
 
-/// Runs one tester calendar day: wages, market, production, consume,
-/// pop and firm record keeping (firm plan), decay.
-fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayout)>) {
+/// Runs one tester calendar day: labor settle, market, production, consume,
+/// pop and firm record keeping (firm plan), labor budget, decay.
+fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSettlement)>) {
     let mut pops: HashMap<usize, Pop> = session.pops.drain(..).map(|pop| (pop.id, pop)).collect();
     let mut firms: HashMap<usize, Firm> =
         session.firms.drain(..).map(|firm| (firm.id, firm)).collect();
@@ -447,16 +459,19 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
         firm.clear_day_flows();
     }
 
-    let coin_amv = session.history.price(COIN);
     let mut wages = Vec::new();
     let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
     firm_ids.sort_unstable();
     for id in &firm_ids {
-        let payout = firms
+        let settlement = firms
             .get_mut(id)
             .expect("firm id from keys")
-            .pay_wage_shares(&mut pops, COIN, coin_amv, &session.factuals.config);
-        wages.push((*id, payout));
+            .settle_labor_contracts(
+                &mut pops,
+                &session.history,
+                &session.factuals.config,
+            );
+        wages.push((*id, settlement));
     }
 
     let report = session.market.run_market_day(
@@ -475,13 +490,19 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
         pop.consume();
         pop.update_sentiments(&closing, &session.factuals.config.pop);
         pop.record_keeping(&session.factuals, &closing);
-        cap_coin_save(pop);
     }
     for id in &firm_ids {
         firms
             .get_mut(id)
             .expect("firm id from keys")
             .record_keeping(&session.factuals, &closing);
+    }
+    let budget_day = session.day + 1;
+    for id in &firm_ids {
+        firms
+            .get_mut(id)
+            .expect("firm id from keys")
+            .budget_labor(&session.factuals, &closing, &pops, budget_day);
     }
     for pop in pops.values_mut() {
         pop.decay_goods(&session.factuals);
@@ -499,4 +520,88 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, WagePayou
     session.history = closing;
     session.day += 1;
     (report, wages)
+}
+
+#[cfg(test)]
+mod day_should {
+    use super::*;
+
+    #[test]
+    fn roster_gives_each_pop_one_employer() {
+        let session = boot_session();
+        let mut seen = HashSet::new();
+        for firm in &session.firms {
+            for worker in &firm.workforce {
+                if worker.id == 0 {
+                    continue;
+                }
+                assert!(
+                    seen.insert(worker.id),
+                    "pop {} is on more than one firm",
+                    worker.id
+                );
+            }
+        }
+        assert_eq!(seen.len(), session.firms.len());
+    }
+
+    #[test]
+    fn morning_settle_moves_recipe_time() {
+        let mut session = boot_session();
+        session.rng = StdRng::seed_from_u64(1);
+        session.seed = Some(1);
+        let (_report, wages) = run_one_day(&mut session);
+        let haul = session.factuals.config.market.transaction_cost;
+        let expected = [
+            (1, 15.0 + haul),
+            (2, 28.0 + haul),
+            (3, 32.0),
+            (5, 5.0 + haul),
+            (6, 30.0),
+        ];
+        for (id, hours) in expected {
+            let settle = wages
+                .iter()
+                .find(|(firm_id, _)| *firm_id == id)
+                .unwrap_or_else(|| panic!("missing settle for firm {id}"));
+            let given: f64 = settle.1.workers.iter().map(|w| w.time_given).sum();
+            assert!(
+                (given - hours).abs() < 1e-9,
+                "firm {id} time_given {given}, want {hours}"
+            );
+            let coin: f64 = settle
+                .1
+                .workers
+                .iter()
+                .map(|w| w.paid.get(&COIN).copied().unwrap_or(0.0))
+                .sum();
+            assert!(
+                (coin - hours).abs() < 1e-9,
+                "firm {id} coin {coin}, want {hours}"
+            );
+        }
+        let mine = session
+            .firms
+            .iter()
+            .find(|firm| firm.id == 3)
+            .expect("mine");
+        assert!((mine.production_line[0].last_iterations - 8.0).abs() < 1e-9);
+        let well = session
+            .firms
+            .iter()
+            .find(|firm| firm.id == 6)
+            .expect("well");
+        assert!((well.production_line[0].last_iterations - 30.0).abs() < 1e-9);
+        let farm = session
+            .firms
+            .iter()
+            .find(|firm| firm.id == 1)
+            .expect("farm");
+        assert!(
+            (farm.production_line[0].last_iterations - 5.0).abs() < 1e-9,
+            "farm did {} want 5 missing {:?}",
+            farm.production_line[0].last_iterations,
+            farm.production_line[0].last_missing_goods
+        );
+    }
 }

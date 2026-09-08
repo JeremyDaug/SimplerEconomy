@@ -685,9 +685,11 @@ impl Market {
 
     /// Moves AMV from leftover and unmatched orders after the match loop.
     /// Unsatisfied buys raise AMV; unsatisfied sells lower it. When both
-    /// books have leftover, the larger side wins. Blend is leftover_blend
-    /// times unsatisfied / (unsatisfied + purchased) so a small miss on a
-    /// busy book barely moves, and a book with no fills takes the full step.
+    /// books have leftover, the larger side wins. Factor is
+    /// `1 + leftover_blend * miss / purchased` on the winning side (empty
+    /// fill counts as 1 whole unit). Demand: `AMV * factor`. Supply:
+    /// `AMV / factor`. Each leftover multiple of today's volume adds one
+    /// leftover_blend to the multiplier.
     fn drift_amv_on_book_pressure(
         &mut self,
         leftover_buys: &[MarketOrder],
@@ -714,7 +716,6 @@ impl Market {
         }
         let mut goods: HashSet<usize> = buy_left.keys().copied().collect();
         goods.extend(sell_left.keys().copied());
-        let edge = cfg.amv_reject_demand_edge;
         let band = cfg.amv_leftover_band;
         for good in goods {
             let buy_u = buy_left.get(&good).copied().unwrap_or(0.0);
@@ -734,19 +735,25 @@ impl Market {
                 .get(&good)
                 .map(|row| row.purchased.max(0.0))
                 .unwrap_or(0.0);
-            let share = unsat / (unsat + filled);
-            if !share.is_finite() || share <= 0.0 {
-                continue;
-            }
             let net = buy_u - sell_u;
             if net == 0.0 {
                 continue;
             }
-            let blend = (cfg.amv_leftover_blend * share).clamp(0.0, 1.0);
+            let miss = if net > 0.0 { buy_u } else { sell_u };
+            if miss <= 0.0 {
+                continue;
+            }
+            let denom = if filled > 0.0 { filled } else { 1.0 };
+            let factor = 1.0 + cfg.amv_leftover_blend * miss / denom;
+            debug_assert!(factor >= 1.0, "leftover AMV factor must be >= 1");
             let old = self.market_good_mut(good, cfg).amv;
-            let toward = if net > 0.0 { old * edge } else { old / edge };
+            let new = if net > 0.0 {
+                old * factor
+            } else {
+                old / factor
+            };
             self.market_good_mut(good, cfg)
-                .set_amv_min(lerp(old, toward, blend), cfg.amv_min_abs);
+                .set_amv_min(new, cfg.amv_min_abs);
         }
     }
 
@@ -2233,7 +2240,8 @@ mod run_market_day_should {
         assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
         // Three deal attempts (initial + two auto-renews), then close-out.
         assert!((market.goods[&GRAIN].requests - 12.0).abs() < 1e-12);
-        assert!(market.goods[&GRAIN].amv > 1.0);
+        // Closed wash buys leave the book; leftover unsold grain cuts AMV 10%.
+        assert!(market.goods[&GRAIN].amv < 1.0);
         assert!(market.goods[&COIN].amv < 1.0);
         // Coin was tendered and never accepted.
         assert!(market.goods[&COIN].salability < 0.2);
@@ -2304,7 +2312,8 @@ mod run_market_day_should {
         let mut pops = HashMap::new();
         pops.insert(1, shopper(1, 10.0, 1.0));
         let mut firms = HashMap::new();
-        firms.insert(1, farm(1, 10.0, 10.0));
+        // Sell equals the 1-unit fill so leftover 10% does not reverse accept lerp.
+        firms.insert(1, farm(1, 1.0, 1.0));
 
         market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
@@ -2378,7 +2387,8 @@ mod run_market_day_should {
         let mut pops = HashMap::new();
         pops.insert(1, shopper(1, 10.0, 1.0));
         let mut firms = HashMap::new();
-        firms.insert(1, farm(1, 10.0, 10.0));
+        // Sell equals the 1-unit fill so leftover 10% does not reverse accept lerp.
+        firms.insert(1, farm(1, 1.0, 1.0));
 
         market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
@@ -2452,7 +2462,8 @@ mod run_market_day_should {
         market.run_market_day(&factuals, &mut pops, &mut firms, &mut rng());
 
         assert!((pops[&1].property[&GRAIN].quantity - 4.0).abs() < 1e-12);
-        assert!((pops[&1].property[&CARGO].quantity).abs() < 1e-12);
+        // 5 cargo at efficiency 2.0; fee 1 spends 0.5 units.
+        assert!((pops[&1].property[&CARGO].quantity - 4.5).abs() < 1e-12);
     }
 
     #[test]
@@ -2581,6 +2592,49 @@ mod run_market_day_should {
         let wet_drop = 1.0 - wet.goods[&GRAIN].amv;
         assert!(dry_drop > wet_drop, "dry {dry_drop} wet {wet_drop}");
         assert!(wet_drop > 0.0);
+    }
+
+    #[test]
+    fn leftover_dry_demand_raises_amv_by_leftover_blend() {
+        let mut market = priced_market();
+        let cfg = crate::game::config::MarketConfig::default();
+        let unmatched = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            GRAIN,
+            10.0,
+            4.0,
+        )];
+        market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
+        // Empty fill counts as 1 unit: 1 + 0.10 * 10 / 1 = 2.
+        let want = 1.0 * (1.0 + cfg.amv_leftover_blend * 10.0);
+        assert!((market.goods[&GRAIN].amv - want).abs() < 1e-12);
+    }
+
+    #[test]
+    fn leftover_dry_supply_cuts_amv_by_leftover_blend() {
+        let mut market = priced_market();
+        let cfg = crate::game::config::MarketConfig::default();
+        let sells = vec![MarketOrder::offer_order(Actor::Pop(2), GRAIN, -10.0, 1.5)];
+        market.drift_amv_on_book_pressure(&[], &sells, &[], &cfg);
+        let factor = 1.0 + cfg.amv_leftover_blend * 10.0;
+        assert!((market.goods[&GRAIN].amv - 1.0 / factor).abs() < 1e-12);
+    }
+
+    #[test]
+    fn leftover_miss_over_purchased_scales_the_factor() {
+        let mut market = priced_market();
+        market.goods.get_mut(&GRAIN).unwrap().set_purchased(5.0);
+        let cfg = crate::game::config::MarketConfig::default();
+        let unmatched = vec![MarketOrder::request_order(
+            Actor::Pop(1),
+            GRAIN,
+            10.0,
+            4.0,
+        )];
+        market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
+        // 1 + 0.10 * 10 / 5 = 1.2
+        let want = 1.0 * (1.0 + cfg.amv_leftover_blend * 10.0 / 5.0);
+        assert!((market.goods[&GRAIN].amv - want).abs() < 1e-12);
     }
 
     #[test]

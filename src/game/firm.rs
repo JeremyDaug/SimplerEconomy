@@ -88,6 +88,9 @@ pub struct Firm {
     /// Day snapshots and the confidence planning variable. Written in
     /// [`Firm::record_keeping`], read by [`Firm::plan`].
     pub records: FirmRecords,
+    /// Transport units spent this day (buyer haul). Cleared at day start.
+    /// Labor budget uses this plus 1 as the next-day Time buffer.
+    pub transport_spent: f64,
 }
 
 /// # Firm Records
@@ -279,14 +282,22 @@ impl Firm {
         self
     }
 
-    /// Sets the owner's profit-share fraction of yesterday's profit AMV.
-    /// Must be in 0..=1.
+    /// Sets a limited owner claim: this fraction of yesterday's profit AMV.
+    /// Must be in 0..=1. Clears remainder (dividend / partial owner).
     pub fn with_owner_profit_share(mut self, profit_share: f64) -> Self {
         debug_assert!(
             (0.0..=1.0).contains(&profit_share),
             "profit_share must be in 0.0..=1.0"
         );
         self.owners.profit_share = profit_share;
+        self.owners.remainder = false;
+        self
+    }
+
+    /// Marks the owner as the residual claimant (owner-operator).
+    /// Leftover after wages, worker shares, stock fence, and growth.
+    pub fn with_owner_remainder(mut self) -> Self {
+        self.owners.remainder = true;
         self
     }
 
@@ -357,6 +368,7 @@ impl Firm {
             row.sold = 0.0;
             row.sold_amv = 0.0;
         }
+        self.transport_spent = 0.0;
     }
 
     /// # Take Good
@@ -395,6 +407,7 @@ impl Firm {
             property: HashMap::new(),
             production_line: vec![],
             records: FirmRecords::new(),
+            transport_spent: 0.0,
         }
     }
 
@@ -584,7 +597,13 @@ pub struct Owners {
     /// of the firm.
     pub priority_override: Option<f64>,
     /// Share of yesterday's profit AMV paid after wages and growth retain. 0..=1.
+    /// Ignored when [`Self::remainder`] is set (owner-operator leftover).
     pub profit_share: f64,
+    /// When true, this owner takes leftover till after wages, worker profit
+    /// shares, stock fence, and growth. Owner-operator residual claim.
+    /// When false, [`Self::profit_share`] is a limited percent of yesterday's
+    /// profit AMV (dividend / partial owner).
+    pub remainder: bool,
 }
 
 impl Owners {
@@ -593,6 +612,7 @@ impl Owners {
             owner: Actor::Pop(0),
             priority_override: None,
             profit_share: 0.0,
+            remainder: false,
         }
     }
 
@@ -689,6 +709,15 @@ impl Firm {
         row.quantity += qty;
         row.reserve = (row.reserve + qty).min(row.quantity);
         row.use_target = row.use_target.max(row.quantity);
+    }
+
+    /// AMV of on-hand goods above stock and growth, skipping Time.
+    pub fn leftover_profit_amv(&self, history: &MarketHistory) -> f64 {
+        self.property
+            .iter()
+            .filter(|(good, _)| **good != TIME)
+            .map(|(good, row)| row.profit_spendable() * history.price(*good).max(0.0))
+            .sum()
     }
 
     /// Spends leftover till (above stock and growth) toward `want_amv`, high salability first.
@@ -1379,6 +1408,7 @@ impl DealMaker for Firm {
                 row.quantity = (row.quantity - sub).max(0.0);
                 row.sync_reserve();
             }
+            self.transport_spent += sub;
         }
     }
 }
