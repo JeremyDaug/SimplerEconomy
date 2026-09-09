@@ -31,7 +31,7 @@ Do not list or glob `docs/handoff/`.
   start coding unless they asked for a change.
 - **Done** = the asked change, tests for that change, and (only if behavior
   landed) the matching topic file + Status line. Do not volunteer extra phases,
-  extra files, comment rewrites, or `TODO.md` / `reviewlog.md` edits.
+  extra files, or `TODO.md` / `reviewlog.md` edits.
 - Be conversational in replies. Do not pad context with extra file reads.
 
 ## Goals
@@ -70,10 +70,6 @@ Paths are machine-local. If missing, say so and continue from the repo.
 
 Game modules: `src/game/` (list in `src/game.rs`). Task routing: the handoff.
 Style authority: `STYLE.md`. Match the file you edit; no drive-by refactors.
-
-**Comments:** ASCII only (`Sum`, `->`, plain `-`). **Add, do not edit or
-replace** existing comments unless asked. Notify instead. New function
-comments: **what** it does first, why second.
 
 **Names:** the vocabulary file wins on naming. New term: ask the user and
 record it there.

@@ -43,7 +43,7 @@ volume = 1.0
 
 [[goods]]
 id = 5
-name = "coin"
+name = "gold_token"
 mass = 1.0
 volume = 1.0
 decay_rate = 0.01
@@ -54,3 +54,134 @@ name = "jewelry"
 mass = 1.0
 volume = 1.0
 decay_rate = 0.02
+
+[[goods]]
+id = 7
+name = "wood"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 8
+name = "cabins"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 9
+name = "wood_tools"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 10
+name = "buckets"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 11
+name = "iron"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 12
+name = "iron_tools"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 13
+name = "copper"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 14
+name = "tin"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 15
+name = "bronze"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 16
+name = "bronze_tools"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 17
+name = "blades"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 18
+name = "bronze_mirror"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 19
+name = "bronze_token"
+mass = 1.0
+volume = 1.0
+decay_rate = 0.01
+
+[[goods]]
+id = 20
+name = "iron_token"
+mass = 1.0
+volume = 1.0
+decay_rate = 0.01
+
+[[goods]]
+id = 21
+name = "copper_token"
+mass = 1.0
+volume = 1.0
+decay_rate = 0.01
+
+[[goods]]
+id = 22
+name = "tin_token"
+mass = 1.0
+volume = 1.0
+decay_rate = 0.01
+
+[[goods]]
+id = 23
+name = "coal"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 24
+name = "charcoal"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 25
+name = "beer"
+mass = 1.0
+volume = 1.0
+decay_rate = 0.20
+
+[[goods]]
+id = 26
+name = "clay"
+mass = 1.0
+volume = 1.0
+
+[[goods]]
+id = 27
+name = "pots"
+mass = 1.0
+volume = 1.0

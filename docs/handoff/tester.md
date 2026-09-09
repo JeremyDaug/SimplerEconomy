@@ -12,16 +12,25 @@ cargo run --example market_tester
 **Code / source of truth:** `examples/market_tester/` (`main`, `roster`,
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml`. Starting
 AMV/sal, desires, ownership, and bounds: `roster.rs` — do not copy them here.
-Living roster bulk is `ROSTER_SCALE` (100): households, line targets, hours,
-and starting stocks. Per-household desire amounts and AMV/sal are unscaled.
+Living roster: one pop per world good, 1 household each, empty firm list.
+Grouped consume desires (basic food/hydration/heating/housing, common
+utility/improved food/materials/health, luxury shiny tokens/libations) are
+duplicated onto every pop at 1 unit per member (5 units). Starting stocks
+are 1 of each tradeable good. Each morning: `start_day` Time (`TIME_PER_LABOR`
+64 * household labor), then 1 of every non-Time good and 30 of the specialty
+good (`pop.id % n_goods`; pop 28 produces Time). Opening AMV is 1.0 and
+salability 0.3 on every good (no money good, no price spread). Coin is
+`gold_token`; iron ore is `iron`.
 
 Home is a short summary. Pages: `stock` / `orders` / `processes` / `amv` /
 `day`. `home` / `cls` back. `shop` reloads books from `create_orders`. `match`
 is **read-only** (does not move stock). `main.rs` is still the Bevy hex stub.
+Firm helpers stay in `roster.rs` but are not on the living roster.
 
 ## `day` / `day N`
 
-1. `Pop::start_day` (Time grant). Zero `income_amv`, reservations, firm
+1. `Pop::start_day` (Time grant). Tester morning endowment (1 of each
+   non-Time good, 30 of specialty). Zero `income_amv`, reservations, firm
    `clear_day_flows`.
 2. `Market::settle_labor` (pays contracts, stamps Time AMV). Hours, wage
    basket, and one-employer roster: `labor.md`. Time moves pop -> firm here.
@@ -43,11 +52,9 @@ confidence) and the last day's full report. Books reload from current stock
 after the loop.
 
 Working pops emit **requests** only, with desires set outright (not from
-demographics). Gold is a common consume desire; jewelry is luxury consume
-(world goods: jewelry decays 2%/day). No merchants. Firm default buy
-priority is `FIRM_PRODUCER`. All five firms are owned by the Lord pop as
-**remainder** (owner-operator). Bounds are hand-set on the roster, not
-computed. No cargo goods. Leftover AMV is lib (`market.md`), not tester.
+demographics). No merchants. Firm helpers remain in `roster.rs` but
+`build_world` returns an empty firm list. No cargo goods. Leftover AMV is
+lib (`market.md`), not tester.
 
 ## CSV
 

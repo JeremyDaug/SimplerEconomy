@@ -669,27 +669,28 @@ mod csv_should {
     #[test]
     fn flags_only_named_roster_actors() {
         let mut session = session();
-        let msg = handle_csv_command(&mut session, &["on", "farm", "laborers"]);
-        assert!(msg.contains("logging farm laborers"), "{msg}");
-        assert!(session.csv_firms.contains(&1));
+        let msg = handle_csv_command(&mut session, &["on", "pop1", "pop2"]);
+        assert!(msg.contains("logging pop1 pop2"), "{msg}");
+        assert!(session.csv_pops.contains(&1));
         assert!(session.csv_pops.contains(&2));
-        assert!(!session.csv_firms.contains(&2));
-        assert_eq!(csv_kind_brace(&session), "{market,trades,firms,pops}");
-
-        let header = firm_csv_header(&session);
-        assert!(header.contains("farm_confidence"), "{header}");
-        assert!(!header.contains("bakery"), "{header}");
+        assert!(!session.csv_pops.contains(&3));
+        assert!(session.csv_firms.is_empty());
+        assert_eq!(csv_kind_brace(&session), "{market,trades,pops}");
 
         let pop_header = pop_csv_header(&session);
         assert!(
-            pop_header.contains("laborers_living_standard"),
+            pop_header.contains("pop1_living_standard"),
             "{pop_header}"
         );
-        assert!(!pop_header.contains("farmers_"), "{pop_header}");
+        assert!(
+            pop_header.contains("pop2_living_standard"),
+            "{pop_header}"
+        );
+        assert!(!pop_header.contains("pop3_"), "{pop_header}");
 
-        let off = handle_csv_command(&mut session, &["off", "farm"]);
-        assert!(off.contains("stopped farm"), "{off}");
-        assert!(session.csv_firms.is_empty());
+        let off = handle_csv_command(&mut session, &["off", "pop1"]);
+        assert!(off.contains("stopped pop1"), "{off}");
+        assert!(!session.csv_pops.contains(&1));
         assert!(session.csv_pops.contains(&2));
         assert_eq!(csv_kind_brace(&session), "{market,trades,pops}");
     }
@@ -697,8 +698,7 @@ mod csv_should {
     #[test]
     fn off_with_no_actors_clears_all_flags() {
         let mut session = session();
-        handle_csv_command(&mut session, &["on", "well", "lord"]);
-        assert!(!session.csv_firms.is_empty());
+        handle_csv_command(&mut session, &["on", "pop1", "pop2"]);
         assert!(!session.csv_pops.is_empty());
         let msg = handle_csv_command(&mut session, &["off"]);
         assert!(msg.contains("flags cleared"), "{msg}");

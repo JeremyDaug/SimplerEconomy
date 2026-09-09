@@ -1,16 +1,15 @@
 //! CLI box for probing a market day.
 //!
 //! Startup loads goods, processes, and config from `data/world/`, builds a
-//! small living roster (6 pops, 5 producer firms), and loads books from
-//! [`Pop::create_orders`] / [`Firm::create_orders`]. The home screen is a
-//! short summary. `stock`, `orders`, and `processes` open full pages.
-//! `day` / `day N` runs the calendar loop, including firm `record_keeping`
-//! (rolling average, records, [`Firm::plan`]) after production and pop
-//! consume. Labor settle and budget go through [`Market`] so Time AMV is
-//! stamped from contracts. Each day appends core market CSVs under
-//! `data/logs/` (close quotes and trade candles). Pops and firms are logged
-//! only when flagged
-//! (`csv on <actor>`). `csv` shows the files; `csv <name>` changes the stem.
+//! living roster (one household pop per world good, grouped consume desires,
+//! no firms), and loads books from
+//! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
+//! `orders`, and `processes` open full pages. `day` / `day N` runs the
+//! calendar loop, including pop `record_keeping` after consume. Labor settle
+//! and budget still go through [`Market`] (no-op with an empty firm list).
+//! Each day appends core market CSVs under `data/logs/` (close quotes and
+//! trade candles). Pops are logged only when flagged (`csv on <actor>`).
+//! `csv` shows the files; `csv <name>` changes the stem.
 //!
 //! ```text
 //! cargo run --example market_tester
@@ -40,6 +39,7 @@ use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
 use simpler_economy::game::marketorder::{compose_sell_priority_with, MarketOrder};
+use simpler_economy::game::desire::DesireTargetType;
 use simpler_economy::game::pop::Pop;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 
@@ -69,8 +69,29 @@ const GRAIN: usize = 1;
 const WATER: usize = 2;
 const BREAD: usize = 3;
 const GOLD: usize = 4;
-const COIN: usize = 5;
+const GOLD_TOKEN: usize = 5;
 const JEWELRY: usize = 6;
+const WOOD: usize = 7;
+const CABINS: usize = 8;
+const WOOD_TOOLS: usize = 9;
+const BUCKETS: usize = 10;
+const IRON: usize = 11;
+const IRON_TOOLS: usize = 12;
+const COPPER: usize = 13;
+const TIN: usize = 14;
+const BRONZE: usize = 15;
+const BRONZE_TOOLS: usize = 16;
+const BLADES: usize = 17;
+const BRONZE_MIRROR: usize = 18;
+const BRONZE_TOKEN: usize = 19;
+const IRON_TOKEN: usize = 20;
+const COPPER_TOKEN: usize = 21;
+const TIN_TOKEN: usize = 22;
+const COAL: usize = 23;
+const CHARCOAL: usize = 24;
+const BEER: usize = 25;
+const CLAY: usize = 26;
+const POTS: usize = 27;
 
 /// Tester coin is 10x units. Opening AMV is 0.1 * 2.1 so gold 8 / coin
 /// sits near the 40-coin mint recipe (8 / 0.21 ~ 38).
@@ -84,22 +105,52 @@ const PREFAB_GOODS: &[NamedGood] = &[
     NamedGood { id: WATER, name: "water" },
     NamedGood { id: BREAD, name: "bread" },
     NamedGood { id: GOLD, name: "gold" },
-    NamedGood { id: COIN, name: "coin" },
+    NamedGood { id: GOLD_TOKEN, name: "gold_token" },
     NamedGood { id: JEWELRY, name: "jewelry" },
+    NamedGood { id: WOOD, name: "wood" },
+    NamedGood { id: CABINS, name: "cabins" },
+    NamedGood { id: WOOD_TOOLS, name: "wood_tools" },
+    NamedGood { id: BUCKETS, name: "buckets" },
+    NamedGood { id: IRON, name: "iron" },
+    NamedGood { id: IRON_TOOLS, name: "iron_tools" },
+    NamedGood { id: COPPER, name: "copper" },
+    NamedGood { id: TIN, name: "tin" },
+    NamedGood { id: BRONZE, name: "bronze" },
+    NamedGood { id: BRONZE_TOOLS, name: "bronze_tools" },
+    NamedGood { id: BLADES, name: "blades" },
+    NamedGood { id: BRONZE_MIRROR, name: "bronze_mirror" },
+    NamedGood { id: BRONZE_TOKEN, name: "bronze_token" },
+    NamedGood { id: IRON_TOKEN, name: "iron_token" },
+    NamedGood { id: COPPER_TOKEN, name: "copper_token" },
+    NamedGood { id: TIN_TOKEN, name: "tin_token" },
+    NamedGood { id: COAL, name: "coal" },
+    NamedGood { id: CHARCOAL, name: "charcoal" },
+    NamedGood { id: BEER, name: "beer" },
+    NamedGood { id: CLAY, name: "clay" },
+    NamedGood { id: POTS, name: "pots" },
 ];
 
 const PREFAB_ACTORS: &[NamedActor] = &[
-    NamedActor { actor: Actor::Pop(1), name: "farmers" },
-    NamedActor { actor: Actor::Pop(2), name: "laborers" },
-    NamedActor { actor: Actor::Pop(3), name: "townsfolk" },
-    NamedActor { actor: Actor::Pop(4), name: "lord" },
-    NamedActor { actor: Actor::Pop(5), name: "jewelers" },
-    NamedActor { actor: Actor::Pop(6), name: "wellhands" },
-    NamedActor { actor: Actor::Firm(1), name: "farm" },
-    NamedActor { actor: Actor::Firm(2), name: "bakery" },
-    NamedActor { actor: Actor::Firm(3), name: "mine" },
-    NamedActor { actor: Actor::Firm(5), name: "jeweler" },
-    NamedActor { actor: Actor::Firm(6), name: "well" },
+    NamedActor { actor: Actor::Pop(1), name: "pop1" },
+    NamedActor { actor: Actor::Pop(2), name: "pop2" },
+    NamedActor { actor: Actor::Pop(3), name: "pop3" },
+    NamedActor { actor: Actor::Pop(4), name: "pop4" },
+    NamedActor { actor: Actor::Pop(5), name: "pop5" },
+    NamedActor { actor: Actor::Pop(6), name: "pop6" },
+    NamedActor { actor: Actor::Pop(7), name: "pop7" },
+    NamedActor { actor: Actor::Pop(8), name: "pop8" },
+    NamedActor { actor: Actor::Pop(9), name: "pop9" },
+    NamedActor { actor: Actor::Pop(10), name: "pop10" },
+    NamedActor { actor: Actor::Pop(11), name: "pop11" },
+    NamedActor { actor: Actor::Pop(12), name: "pop12" },
+    NamedActor { actor: Actor::Pop(13), name: "pop13" },
+    NamedActor { actor: Actor::Pop(14), name: "pop14" },
+    NamedActor { actor: Actor::Pop(15), name: "pop15" },
+    NamedActor { actor: Actor::Pop(16), name: "pop16" },
+    NamedActor { actor: Actor::Pop(17), name: "pop17" },
+    NamedActor { actor: Actor::Pop(18), name: "pop18" },
+    NamedActor { actor: Actor::Pop(19), name: "pop19" },
+    NamedActor { actor: Actor::Pop(20), name: "pop20" },
 ];
 
 struct Session {
@@ -468,11 +519,13 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     let mut firms: HashMap<usize, Firm> =
         session.firms.drain(..).map(|firm| (firm.id, firm)).collect();
 
+    let good_ids: Vec<usize> = session.factuals.goods.keys().copied().collect();
     for pop in pops.values_mut() {
         pop.start_day(&vec![(
             TIME,
             ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
         )]);
+        grant_daily_endowment(pop, &good_ids);
         pop.records.income_amv = 0.0;
         pop.initial_reservations_and_update_satisfaction();
     }
@@ -534,82 +587,103 @@ mod day_should {
     use super::*;
 
     #[test]
-    fn roster_gives_each_pop_one_employer() {
+    fn living_roster_is_one_pop_per_world_good() {
         let session = boot_session();
-        let mut seen = HashSet::new();
-        for firm in &session.firms {
-            for worker in &firm.workforce {
-                if worker.id == 0 {
-                    continue;
-                }
-                assert!(
-                    seen.insert(worker.id),
-                    "pop {} is on more than one firm",
-                    worker.id
-                );
-            }
-        }
-        assert_eq!(seen.len(), session.firms.len());
+        let n_goods = session.factuals.goods.len();
+        assert_eq!(session.pops.len(), n_goods);
+        assert!(session.firms.is_empty());
+        let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
+        assert_eq!(ids, (1..=n_goods).collect::<Vec<_>>());
     }
 
     #[test]
-    fn morning_settle_moves_recipe_time() {
-        let mut session = boot_session();
-        session.rng = StdRng::seed_from_u64(1);
-        session.seed = Some(1);
-        let (_report, wages) = run_one_day(&mut session);
-        let haul = session.factuals.config.market.transaction_cost;
-        let expected = [
-            (1, 15.0 * ROSTER_SCALE + haul),
-            (2, 28.0 * ROSTER_SCALE + haul),
-            (3, 32.0 * ROSTER_SCALE),
-            (5, 5.0 * ROSTER_SCALE + haul),
-            (6, 30.0 * ROSTER_SCALE),
-        ];
-        for (id, hours) in expected {
-            let settle = wages
-                .iter()
-                .find(|(firm_id, _)| *firm_id == id)
-                .unwrap_or_else(|| panic!("missing settle for firm {id}"));
-            let given: f64 = settle.1.workers.iter().map(|w| w.time_given).sum();
+    fn opening_quotes_are_flat_amv_and_salability() {
+        let session = boot_session();
+        assert!((session.history.default_salability - OPENING_SALABILITY).abs() < 1e-9);
+        for id in session.factuals.goods.keys() {
             assert!(
-                (given - hours).abs() < 1e-9,
-                "firm {id} time_given {given}, want {hours}"
+                (session.history.price(*id) - OPENING_AMV).abs() < 1e-9,
+                "good {id} AMV {}",
+                session.history.price(*id)
             );
-            let coin: f64 = settle
-                .1
-                .workers
-                .iter()
-                .map(|w| w.paid.get(&COIN).copied().unwrap_or(0.0))
-                .sum();
             assert!(
-                (coin - hours).abs() < 1e-9,
-                "firm {id} coin {coin}, want {hours}"
+                (session.history.salability(*id) - OPENING_SALABILITY).abs() < 1e-9,
+                "good {id} sal {}",
+                session.history.salability(*id)
             );
         }
-        let mine = session
-            .firms
-            .iter()
-            .find(|firm| firm.id == 3)
-            .expect("mine");
-        assert!((mine.production_line[0].last_iterations - 8.0 * ROSTER_SCALE).abs() < 1e-9);
-        let well = session
-            .firms
-            .iter()
-            .find(|firm| firm.id == 6)
-            .expect("well");
-        assert!((well.production_line[0].last_iterations - 30.0 * ROSTER_SCALE).abs() < 1e-9);
-        let farm = session
-            .firms
-            .iter()
-            .find(|firm| firm.id == 1)
-            .expect("farm");
+    }
+
+    #[test]
+    fn each_pop_has_one_household_and_grouped_consume_desires() {
+        let session = boot_session();
+        let pop = &session.pops[0];
+        let house = &pop.demographics.household;
+        assert!((house.count - 1.0).abs() < 1e-9);
+        assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
+        assert_eq!(pop.desires[0].len(), 4);
+        assert_eq!(pop.desires[1].len(), 4);
+        assert_eq!(pop.desires[2].len(), 2);
+        assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
+        assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
+        assert_eq!(pop.desires[1][0].category.as_deref(), Some("utility items"));
+        assert_eq!(pop.desires[2][1].category.as_deref(), Some("libations"));
+        for tier in &pop.desires {
+            for desire in tier {
+                match desire.scalar {
+                    ScalingFactor::All(weight) => {
+                        assert!((weight - 1.0).abs() < 1e-9)
+                    }
+                    other => panic!("want All(1.0), got {other:?}"),
+                }
+                assert!((desire.amount - 5.0).abs() < 1e-9);
+                assert!(desire.target.iter().all(|t| {
+                    matches!(t.desire_type, DesireTargetType::Consume)
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn start_day_grants_labor_time() {
+        let mut session = boot_session();
+        let pop = &mut session.pops[0];
+        pop.property.remove(&TIME);
+        pop.start_day(&vec![(
+            TIME,
+            ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
+        )]);
+        let want = pop.demographics.labor() * pop_constants::TIME_PER_LABOR;
+        let got = pop.property.get(&TIME).map(|row| row.quantity).unwrap_or(0.0);
+        assert!((got - want).abs() < 1e-9, "time {got} want {want}");
+        assert!((pop_constants::TIME_PER_LABOR - 64.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn morning_endowment_is_one_of_each_and_thirty_of_specialty() {
+        let session = boot_session();
+        let good_ids: Vec<usize> = session.factuals.goods.keys().copied().collect();
+        let n_goods = good_ids.len();
+        assert_eq!(produced_good_id(1, n_goods), GRAIN);
+        assert_eq!(produced_good_id(n_goods, n_goods), TIME);
+
+        let mut grain_pop = empty_pop(1, &session.factuals.config.pop);
+        grant_daily_endowment(&mut grain_pop, &good_ids);
+        assert!((grain_pop.property[&GRAIN].quantity - DAILY_OUTPUT).abs() < 1e-9);
+        assert!((grain_pop.property[&WATER].quantity - DAILY_ENDOWMENT).abs() < 1e-9);
         assert!(
-            (farm.production_line[0].last_iterations - 5.0 * ROSTER_SCALE).abs() < 1e-9,
-            "farm did {} want {} missing {:?}",
-            farm.production_line[0].last_iterations,
-            5.0 * ROSTER_SCALE,
-            farm.production_line[0].last_missing_goods
+            grain_pop
+                .property
+                .get(&TIME)
+                .map(|row| row.quantity)
+                .unwrap_or(0.0)
+                .abs()
+                < 1e-9
         );
+
+        let mut time_pop = empty_pop(n_goods, &session.factuals.config.pop);
+        grant_daily_endowment(&mut time_pop, &good_ids);
+        assert!((time_pop.property[&TIME].quantity - DAILY_OUTPUT).abs() < 1e-9);
+        assert!((time_pop.property[&GRAIN].quantity - DAILY_ENDOWMENT).abs() < 1e-9);
     }
 }

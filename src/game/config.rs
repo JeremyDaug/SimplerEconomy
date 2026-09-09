@@ -15,7 +15,11 @@ pub mod pop_constants {
 
     /// Daily Time grant per unit of household labor (`ScalingFactor::Labor`).
     /// Adult labor 1.0, elder 0.7, child 0.3 (household defaults).
-    pub const TIME_PER_LABOR: f64 = 48.0;
+    /// Equal to 15 minutes per unit of Time. 1 Labor is a 16 hour day (assuming 8 hours
+    /// sleep) for a total of 64 units of time per pop Labor efficiency.
+    /// 
+    /// 1 Labor => 16 hrs => 64 quarter hours => 64 units of Time.
+    pub const TIME_PER_LABOR: f64 = 64.0;
 
     /// Default days of basic+common consume-need to hold as a buffer (1.0 = 1 day).
     pub const DEFAULT_SAVINGS_RATIO: f64 = 0.20;

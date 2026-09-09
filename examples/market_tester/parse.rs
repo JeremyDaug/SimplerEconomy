@@ -163,10 +163,22 @@ pub(crate) fn parse_actor(tok: &mut Tokens<'_>) -> Result<Actor, String> {
     if let Some(named) = PREFAB_ACTORS.iter().find(|a| a.name == key) {
         return Ok(named.actor);
     }
+    if let Some(id) = parse_glued_pop_id(&key) {
+        return Ok(Actor::Pop(id));
+    }
     let id_tok = tok
         .next()
         .ok_or_else(|| format!("unknown actor '{first}' (need a prefab name, or kind plus id)"))?;
     parse_actor_kind_id(&key, id_tok)
+
+}
+
+fn parse_glued_pop_id(key: &str) -> Option<usize> {
+    let rest = key.strip_prefix("pop")?;
+    if rest.is_empty() {
+        return None;
+    }
+    rest.parse().ok()
 }
 
 pub(crate) fn parse_actor_kind_id(kind: &str, id: &str) -> Result<Actor, String> {

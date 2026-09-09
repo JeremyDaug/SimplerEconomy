@@ -48,19 +48,33 @@ pub(crate) fn format_home(session: &Session) -> String {
             fmt_num(session.history.salability(good.id))
         ));
     }
-    let pops: Vec<&str> = PREFAB_ACTORS
+    let pops: Vec<String> = session
+        .pops
         .iter()
-        .filter(|a| matches!(a.actor, Actor::Pop(_)))
-        .map(|a| a.name)
+        .map(|pop| fmt_actor(Actor::Pop(pop.id)))
         .collect();
-    let firms: Vec<&str> = PREFAB_ACTORS
+    let firms: Vec<String> = session
+        .firms
         .iter()
-        .filter(|a| matches!(a.actor, Actor::Firm(_)))
-        .map(|a| a.name)
+        .map(|firm| fmt_actor(Actor::Firm(firm.id)))
         .collect();
     out.push('\n');
-    out.push_str(&format!("pops   {}\n", pops.join("  ")));
-    out.push_str(&format!("firms  {}\n", firms.join("  ")));
+    out.push_str(&format!(
+        "pops   {}\n",
+        if pops.is_empty() {
+            "(none)".to_string()
+        } else {
+            pops.join("  ")
+        }
+    ));
+    out.push_str(&format!(
+        "firms  {}\n",
+        if firms.is_empty() {
+            "(none)".to_string()
+        } else {
+            firms.join("  ")
+        }
+    ));
     out.push_str(&format!(
         "books  {} buys / {} sells\n",
         session.buys.len(),
@@ -399,8 +413,8 @@ data/logs/ (market quotes and trade candles always; flagged pops/firms).
 Startup runs shop once. `day` grants Time, settles labor contracts, runs the
 market, runs each firm's process, pops consume, then pop and firm
 record keeping (firm plan), labor budget / decay.
-actor: prefab name (farmers, lord, bakery, ...) or kind id (pop 1, firm 2)
-good:  prefab name (time, grain, coin, jewelry) or id (0, 1, 5, 6)
+actor: prefab name (pop1, pop2, ...) or kind id (pop 1)
+good:  prefab name (time, grain, gold_token, wood_tools, ...) or id
 
 examples
   day
@@ -410,8 +424,8 @@ examples
   day 5
   csv
   csv run1
-  csv on farm laborers
-  request laborers grain 3"
+  csv on pop1 pop2
+  request pop1 grain 3"
         .into()
 }
 
@@ -660,12 +674,12 @@ fn labor_coin_paid(settle: &LaborSettlement) -> f64 {
     let workers: f64 = settle
         .workers
         .iter()
-        .map(|w| w.paid.get(&COIN).copied().unwrap_or(0.0))
+        .map(|w| w.paid.get(&GOLD_TOKEN).copied().unwrap_or(0.0))
         .sum();
     let owner = settle
         .owner
         .as_ref()
-        .map(|o| o.paid.get(&COIN).copied().unwrap_or(0.0))
+        .map(|o| o.paid.get(&GOLD_TOKEN).copied().unwrap_or(0.0))
         .unwrap_or(0.0);
     workers + owner
 }
@@ -1060,6 +1074,9 @@ pub(crate) fn fmt_actor_kind_id(actor: Actor) -> String {
 }
 
 pub(crate) fn fmt_actor(actor: Actor) -> String {
+    if let Actor::Pop(id) = actor {
+        return format!("pop{id}");
+    }
     match actor_label(actor) {
         Some(name) => name.to_string(),
         None => fmt_actor_kind_id(actor),

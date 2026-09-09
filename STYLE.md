@@ -238,6 +238,7 @@ docs/proposals/          # short design drafts (trim when implemented)
 
 ## 10. Comments in implementation
 
+- ASCII only (`Sum`, `->`, plain `-`).
 - Step comments (`// 1. ...`, `// 2. ...`) are welcome when the method doc lists
   numbered steps — keep them in sync.
 - Avoid narrating obvious Rust (`// increment i`). Explain **domain why**.
