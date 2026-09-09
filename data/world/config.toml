@@ -76,12 +76,14 @@ transaction_cost = 1.0
 amv_accept_blend = 0.25
 amv_reject_blend = 0.10
 amv_reject_demand_edge = 1.1
-amv_leftover_blend = 0.10
+amv_leftover_blend = 0.0
 amv_leftover_band = 0.10
 salability_blend = 0.25
+amv_rescale_period = 1
+amv_rescale_mean = 10.0
 
 [deal]
-pop_amv_min_keep = 0.25
+pop_amv_unused_keep = 0.50
 firm_amv_min_keep = 0.50
 firm_amv_need_keep = 0.25
 high_salability = 0.8

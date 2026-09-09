@@ -16,10 +16,20 @@ invariants and traps, not a substitute for the code.
 - Pop economic day is closed through record keeping.
 - Pop `create_orders` posts ceil'd shop-plan requests, freezes tender cover,
   then floor'd offers of leftover surplus. Offers/requests may name a
-  `counter_offer` good (no AMV or amount). `run_market_day` parks hopeless
-  buys, then waves `next_shopping_trip` (1 request + 1 offer, or offer only
-  if a request is still open) until trips emit nothing, then tombstones.
-  Listed offer units and `reserved` are not tenderable.
+  `counter_offer` good (no AMV or amount). Shop need spends on-hand then
+  spreads leftover sat across buyable substitutes. Morning `create_orders`
+  posts a higher tier only when the wallet covers the lower one. Save AMV
+  scales with durability (decay 1.0 => no save). Consume always eats
+  common on-hand; luxury is skipped unless basic is complete.
+  `run_market_day` parks hopeless front-group buys then keeps matching
+  later bands, then waves `next_shopping_trip`
+  until trips emit nothing, then tombstones. Listed offer units and
+  `reserved` are not tenderable. World goods currently decay 1.0 daily.
+  After decay, salability is capped at `1 - decayed/volume` (eaten stock
+  is volume, not rot). Each market day AMV is rescaled so one unit of
+  each tradeable good averages 10.0 (after salability, then the close).
+  A pop that receives a used/desired good ignores
+  the AMV floor; unused-only keep is 0.50 after the salability haircut.
 - Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
   production phases are stubs.
 - `Firm::plan` rewrites production and property targets (realized profit, sell
@@ -32,27 +42,35 @@ invariants and traps, not a substitute for the code.
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`.
 - Tester CLI is **paused** unless asked. Living roster is one household pop
-  per world good, no firms. Opening AMV 1.0 / salability 0.3 on every good.
+  per world good, no firms. Opening AMV 10.0 / salability 0.3 on every good.
   Grouped consume desires (basic/common/luxury) are 1 unit per member
-  (5 units), duplicated onto every pop. Morning endowment: 1 of each
-  non-Time good and 30 of `pop.id % n_goods`. Coin is `gold_token`; iron
-  ore is `iron`.
+  (5 units), duplicated onto every pop. **No** morning 1-of-each endowment
+  (`DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
+  only (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pop 28 is Time
+  and is the untradeable control). Coin is `gold_token`; iron ore is `iron`.
   `keep_alive on` is an emergency firm subsidy (1-iteration floor +
   coin/inputs); default off.
   Desire amounts do not rise with success.
   Luxury shop_target adds an extra level and leftover liquid above save.
-  Day-end leftover AMV is `AMV * (1 ± leftover_blend * unsat / (unsat +
-  purchased))` with leftover_blend 0.10 (no lerp). Miss/purchased was tried
-  (even at 0.01) and still ran away; do not retune leftover AMV unless asked.
+  AMV moves from meetings only (accept / reject / no-proposal). Reject
+  tender down-push is tender AMV / sought AMV, not raw units. Leftover
+  book blend is 0. Volume-scaled leftover collapsed AMV to the bounce
+  floor; do not turn it back on unless asked.
   CSV is market + trades always; pops/firms only when flagged (`csv on`).
+  **Checkpoint:** zero-endowment intramarket barter holds a 50-day run
+  with clustered AMVs. Do not retune leftover AMV or re-add the 1-of-each
+  grant unless asked.
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
 
 **Live day (tester / intended lib order):**
 `start_day` -> `Market::settle_labor` -> `run_market_day` -> `run_production`
--> pop consume / sentiments / records -> firm `record_keeping` (`plan`) ->
-`Market::budget_labor` -> decay.
+-> pop consume / sentiments / decay -> firm decay -> salability rot cap ->
+pop `record_keeping` -> firm `record_keeping` (`plan`) ->
+`Market::budget_labor`.
+With goods decaying 1.0, planning **after** decay is required; otherwise
+shop_targets fence stock that will not exist next morning and nobody offers.
 
 ---
 
@@ -100,7 +118,7 @@ Nearby leftovers are traps, not implied scope: multimatch; `sell` rewrite /
 haggling / make-change; PlayState intramarket or production wire (unless that
 **is** the task); tester pages / extra CSV; species-culture-religion TOML;
 init/save data; class demographics; capital amortization; AMV as a matching
-weight; intra-day luxury loop; leftover AMV further retune.
+weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
 If they ask "what's next": wire PlayState `phase_intra_market_day` to

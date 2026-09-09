@@ -42,12 +42,16 @@ impl Actors {
         rayon::scope(|s| {
             s.spawn(|_| {
                 pops.par_iter_mut()
-                    .for_each(|(_, pop)| pop.decay_goods(factuals));
+                    .for_each(|(_, pop)| {
+                        let _ = pop.decay_goods(factuals);
+                    });
             });
             s.spawn(|_| {
                 firms
                     .par_iter_mut()
-                    .for_each(|(_, firm)| firm.decay_goods(factuals));
+                    .for_each(|(_, firm)| {
+                        let _ = firm.decay_goods(factuals);
+                    });
             });
             s.spawn(|_| {
                 institutions

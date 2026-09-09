@@ -314,8 +314,11 @@ impl Firm {
     /// `consumed` on the row is a day-flow counter (goods already left `quantity`
     /// during production, and Consumed-type byproducts were applied there). It is
     /// not destroyed again here. Clear it with [`Firm::clear_day_flows`].
-    pub fn decay_goods(&mut self, factuals: &Factuals) {
+    /// Returns `(decayed, volume)` per good. Volume is on-hand after `used`
+    /// is returned, plus `consumed`.
+    pub fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
         let mut gains: HashMap<usize, f64> = HashMap::new();
+        let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
 
         for (&good_id, row) in self.property.iter_mut() {
             if row.used != 0.0 {
@@ -323,10 +326,12 @@ impl Firm {
                 row.used = 0.0;
             }
 
+            let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
+            let mut lost = 0.0;
             if !exposure && good.decay_rate > 0.0 && row.quantity > 0.0 {
-                let lost = row.quantity * good.decay_rate;
+                lost = row.quantity * good.decay_rate;
                 row.quantity -= lost;
                 debug_assert!(row.quantity >= 0.0, "Quantity should never be negative!");
                 for (&byproduct, &ratio) in &good.decay_result {
@@ -334,6 +339,11 @@ impl Firm {
                         *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
                     }
                 }
+            }
+            if volume > 0.0 || lost > 0.0 {
+                let entry = rot.entry(good_id).or_insert((0.0, 0.0));
+                entry.0 += lost;
+                entry.1 += volume;
             }
 
             row.sync_reserve();
@@ -347,6 +357,7 @@ impl Firm {
             row.quantity += amount;
             row.sync_reserve();
         }
+        rot
     }
 
     /// # Clear Day Flows
@@ -1408,7 +1419,7 @@ impl DealMaker for Firm {
     ///
     /// Returns Accept or Reject for this deal as this firm.
     /// Keep must meet the firm AMV floor, with the need catch (purchase or
-    /// use target on a received good) down to the pop keep. Process inputs
+    /// use target on a received good) down to the need keep. Process inputs
     /// skip salability; other received goods are haircut. Buyers accept
     /// windfalls. Does not move stock.
     fn evaluate(
@@ -1595,6 +1606,7 @@ mod firm {
             goods,
             friction: 0.0,
             unavailable_goods: HashSet::new(),
+            market_days: 0,
         }
     }
 
@@ -2591,6 +2603,39 @@ mod firm {
             firm.decay_goods(&factuals);
 
             assert_eq!(firm.property[&10].quantity, 8.0);
+        }
+
+        #[test]
+        fn reports_volume_as_on_hand_plus_consumed() {
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+
+            let mut firm = Firm::new(1, "Yard".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_quantity(4.0).with_consumed(10.0),
+            );
+            let rot = firm.decay_goods(&factuals);
+
+            assert_eq!(rot[&10], (0.0, 14.0));
+        }
+
+        #[test]
+        fn reports_leftover_rot_after_used_returns() {
+            let mut wood = make_good(10, "wood", HashMap::new());
+            wood.decay_rate = 0.2;
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(10, wood);
+
+            let mut firm = Firm::new(1, "Yard".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(
+                10,
+                FirmPRow::new().with_quantity(10.0).with_used(5.0),
+            );
+            let rot = firm.decay_goods(&factuals);
+
+            // used 5 returned -> 15 on hand, 20% decay -> lost 3, volume 15.
+            assert_eq!(rot[&10], (3.0, 15.0));
         }
     }
 

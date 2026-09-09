@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Exception to "0 means none" for good ids.
 pub const TIME: usize = 0;
 
+fn default_decay_rate() -> f64 {
+    1.0
+}
+
 /// # Good
 /// 
 /// Goods are things that are bought, sold, and traded in the economy.
@@ -30,7 +34,8 @@ pub struct Good {
     /// [0, 1]
     /// 
     /// Decay rate of 0, means no decay, decay of 1 means it always decays.
-    #[serde(default)]
+    /// Missing world-data keys default to 1.0 (full daily decay).
+    #[serde(default = "default_decay_rate")]
     pub decay_rate: f64,
     /// What the good decays into.
     /// 

@@ -22,7 +22,8 @@ Default and unit-test fallback. Buffer sizes (`HISTORY_MAX`, `AMV_HISTORY_MAX`)
 stay compile-time. Do not add a process-global OnceLock; tests run in parallel.
 
 Catalog load tests sample a few goods (Time, one staple, one later id). Do
-not enumerate the file or assert an exact goods count.
+not enumerate the file or assert an exact goods count. Missing `decay_rate`
+defaults to **1.0** (full daily decay). Live world goods are all 1.0 for now.
 
 **Code:** `src/game/factuals.rs`, `src/game/config.rs`, `data/world/goods.toml`,
 `processes.toml`, `config.toml`.

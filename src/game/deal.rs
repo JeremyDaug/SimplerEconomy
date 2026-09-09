@@ -300,9 +300,9 @@ pub trait DealMaker {
 /// 1. Buyer and keep >= 1.0 (received AMV >= given; a windfall, no equity
 ///    seeking). Currently also covered by (2) because `min_keep` is below 1.0;
 ///    kept explicit so a later tighter floor does not reject good deals.
-/// 2. keep >= `min_keep` (normal band: pop 0.25, firm 0.50).
+/// 2. keep >= `min_keep` (normal band: pop unused-only 0.50, firm 0.50).
 /// 3. `needs_received` and keep >= `need_keep` (looser band when they need
-///    an inbound good; firm 0.25).
+///    an inbound good; pop 0.0 when any received good is used, firm 0.25).
 ///
 /// Otherwise Reject.
 ///
@@ -313,15 +313,15 @@ pub trait DealMaker {
 ///   consulted.
 /// * `history` — market AMV and salability for the goods in the deal.
 /// * `min_keep` — minimum `received / given` to Accept in the normal band.
-///   0.25 means keep at least a quarter of the AMV you give (up to 75% loss).
 ///   0.50 means at most 50% loss.
 /// * `need_keep` — looser minimum used only when `needs_received` is true.
 ///   Lets a firm take a worse ratio when the inbound good is a purchase or
-///   use target and the deal cannot land in the firm band.
-/// * `needs_received` — this role is receiving a good they have a
-///   `purchase_target` or `use_target` for. Not the same as `uses`: a
-///   merchant restock is a need (looser floor) but not a use (still
-///   haircut by salability). Pops pass `false`.
+///   use target. Pops pass `0.0` when any received good is used, so a
+///   desired good ignores the AMV floor.
+/// * `needs_received` — this role is receiving a good they want. Firm:
+///   `purchase_target` or `use_target`. Pop: any desire / shop-target good.
+///   Not the same as `uses` for firms: a merchant restock is a need (looser
+///   floor) but not a use (still haircut by salability).
 /// * `uses` — per good, true if this actor will consume it or run it as a
 ///   process input. Those skip the salability haircut on the received side.
 pub fn evaluate_amv_floor(
@@ -351,22 +351,23 @@ pub fn evaluate_amv_floor(
     DealResponse::Reject
 }
 
-/// Returns Accept or Reject using the pop AMV keep floor (0.25).
-/// `needs_received` is off; `need_keep` equals `min_keep`. `uses` is
-/// typically shop-target / desire goods.
+/// Returns Accept or Reject using the pop AMV rule.
+/// Receiving any used/desired good ignores the AMV floor (`need_keep` 0).
+/// Unused-only baskets use [`deal_constants::POP_AMV_UNUSED_KEEP`].
 pub fn evaluate_pop_amv(
     deal: &ProposedDeal,
     role: DealRole,
     history: &MarketHistory,
     uses: impl Fn(usize) -> bool,
 ) -> DealResponse {
+    let wants_received = deal.goods_received(role).any(|(good, _)| uses(good));
     evaluate_amv_floor(
         deal,
         role,
         history,
-        deal_constants::POP_AMV_MIN_KEEP,
-        deal_constants::POP_AMV_MIN_KEEP,
-        false,
+        deal_constants::POP_AMV_UNUSED_KEEP,
+        0.0,
+        wants_received,
         uses,
     )
 }
@@ -988,21 +989,33 @@ mod amv_verdict_should {
     }
 
     #[test]
-    fn pop_accepts_at_twenty_five_percent_keep() {
-        let deal = bread_for_coin(1.0, 4.0);
+    fn pop_accepts_any_keep_when_receiving_a_used_good() {
+        let deal = bread_for_coin(1.0, 20.0);
         let history = unit_history();
         assert_eq!(
-            evaluate_pop_amv(&deal, DealRole::Buyer, &history, |_| true),
+            evaluate_pop_amv(&deal, DealRole::Buyer, &history, |g| g == 1),
             DealResponse::Accept
         );
     }
 
     #[test]
-    fn pop_rejects_below_twenty_five_percent_keep() {
-        let deal = bread_for_coin(1.0, 5.0);
-        let history = unit_history();
+    fn pop_accepts_unused_at_fifty_percent_keep() {
+        let deal = bread_for_coin(1.0, 2.0);
+        let mut history = unit_history();
+        history.salability.insert(1, 1.0);
         assert_eq!(
-            evaluate_pop_amv(&deal, DealRole::Buyer, &history, |_| true),
+            evaluate_pop_amv(&deal, DealRole::Buyer, &history, |_| false),
+            DealResponse::Accept
+        );
+    }
+
+    #[test]
+    fn pop_rejects_unused_below_fifty_percent_keep() {
+        let deal = bread_for_coin(1.0, 3.0);
+        let mut history = unit_history();
+        history.salability.insert(1, 1.0);
+        assert_eq!(
+            evaluate_pop_amv(&deal, DealRole::Buyer, &history, |_| false),
             DealResponse::Reject
         );
     }

@@ -389,6 +389,7 @@ mod institution_tests {
             goods: HashMap::new(),
             friction: 0.0,
             unavailable_goods: HashSet::new(),
+            market_days: 0,
         };
         let markets = HashMap::from([(market_id, market)]);
         let mut pops = HashMap::from([(pop_id, make_pop(pop_id))]);

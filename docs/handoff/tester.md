@@ -15,12 +15,12 @@ AMV/sal, desires, ownership, and bounds: `roster.rs` — do not copy them here.
 Living roster: one pop per world good, 1 household each, empty firm list.
 Grouped consume desires (basic food/hydration/heating/housing, common
 utility/improved food/materials/health, luxury shiny tokens/libations) are
-duplicated onto every pop at 1 unit per member (5 units). Starting stocks
-are 1 of each tradeable good. Each morning: `start_day` Time (`TIME_PER_LABOR`
-64 * household labor), then 1 of every non-Time good and 30 of the specialty
-good (`pop.id % n_goods`; pop 28 produces Time). Opening AMV is 1.0 and
-salability 0.3 on every good (no money good, no price spread). Coin is
-`gold_token`; iron ore is `iron`.
+duplicated onto every pop at 1 unit per member (5 units). **No** 1-of-each
+starter kit (`DAILY_ENDOWMENT` 0). Each morning: `start_day` Time
+(`TIME_PER_LABOR` 64 * household labor), then specialty only (`DAILY_OUTPUT`
+in `roster.rs`; `pop.id % n_goods`; pop 28 produces Time and cannot sell
+it). Opening AMV is 10.0 and salability 0.3 on every good (no money good,
+no price spread). Coin is `gold_token`; iron ore is `iron`.
 
 Home is a short summary. Pages: `stock` / `orders` / `processes` / `amv` /
 `day`. `home` / `cls` back. `shop` reloads books from `create_orders`. `match`
@@ -29,30 +29,36 @@ Firm helpers stay in `roster.rs` but are not on the living roster.
 
 ## `day` / `day N`
 
-1. `Pop::start_day` (Time grant). Tester morning endowment (1 of each
-   non-Time good, 30 of specialty). Zero `income_amv`, reservations, firm
+1. `Pop::start_day` (Time grant). Tester morning specialty only
+   (`DAILY_ENDOWMENT` 0). Zero `income_amv`, reservations, firm
    `clear_day_flows`.
 2. `Market::settle_labor` (pays contracts, stamps Time AMV). Hours, wage
    basket, and one-employer roster: `labor.md`. Time moves pop -> firm here.
 3. `Market::run_market_day`. Time is untradeable transport; Time AMV is not
-   leftover-book drift.
+   leftover-book drift. Leftover books do not move AMV. Each market day AMV
+   is rescaled to mean 10.0 after salability, then the close is recorded.
 4. `Firm::run_production` on **already-loaded** factuals. Do not reload
    `processes.toml`. A line starting from 0 snaps to 1.
-5. Pop `consume`, `update_sentiments`, `record_keeping`. Coin save/shop
-   come from that rewrite (no tester cap).
-6. Firm `record_keeping` (`plan`) from the closing `MarketHistory`. Do not call
-   pop `record_keeping` again.
-7. `Market::budget_labor` (hours and wage amounts; Time AMV restamp;
+5. Pop `consume`, `update_sentiments` (market-day history), then
+   `decay_goods`. Firm `decay_goods` next. Aggregate `(decayed, volume)`
+   and `Market::cap_salability_from_decay`. Consumed is volume, not rot.
+6. Pop `record_keeping` from the closing `MarketHistory` **after** decay and
+   the rot cap so shop/save are not written against stock that will rot away
+   and save ranking sees leftover-rot salability. Coin save/shop come from
+   that rewrite (no tester cap).
+7. Firm `record_keeping` (`plan`) after its decay (already done in step 5).
+   Do not call pop `record_keeping` again.
+8. `Market::budget_labor` (hours and wage amounts; Time AMV restamp;
    `budget_interval`, default 1).
-8. Pop/firm `decay_goods`.
 
 Prints a `MarketDayReport` plus wages, production, plans, post-consume pop
 stats, and the AMV trail. `day N` adds a one-line digest (includes mean firm
 confidence) and the last day's full report. Books reload from current stock
 after the loop.
 
-Working pops emit **requests** only, with desires set outright (not from
-demographics). No merchants. Firm helpers remain in `roster.rs` but
+Working pops emit **requests and leftover offers**, with desires set
+outright (not from demographics). No merchants. Firm helpers remain in
+`roster.rs` but
 `build_world` returns an empty firm list. No cargo goods. Leftover AMV is
 lib (`market.md`), not tester.
 

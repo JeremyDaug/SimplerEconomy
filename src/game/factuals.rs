@@ -520,6 +520,7 @@ volume = 1.0
         assert_eq!(grain.name, "grain");
         assert_eq!(grain.mass, 1.0);
         assert_eq!(grain.volume, 1.0);
+        assert!((grain.decay_rate - 1.0).abs() < 1e-12);
         assert!(grain.tags.is_empty());
         assert!(factuals.processes.is_empty());
     }
@@ -552,7 +553,7 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
         assert_eq!(factuals.find_good(5).name, "gold_token");
-        assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
+        assert!((factuals.find_good(5).decay_rate - 1.0).abs() < 1e-12);
     }
 
     #[test]

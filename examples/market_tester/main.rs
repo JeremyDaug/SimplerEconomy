@@ -5,7 +5,8 @@
 //! no firms), and loads books from
 //! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
 //! `orders`, and `processes` open full pages. `day` / `day N` runs the
-//! calendar loop, including pop `record_keeping` after consume. Labor settle
+//! calendar loop, including pop decay, salability rot cap, then
+//! `record_keeping`. Labor settle
 //! and budget still go through [`Market`] (no-op with an empty firm list).
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
@@ -513,7 +514,8 @@ fn run_days(session: &mut Session, n: u32) -> String {
 }
 
 /// Runs one tester calendar day: labor settle, market, production, consume,
-/// pop and firm record keeping (firm plan), labor budget, decay.
+/// sentiments, decay, salability rot cap, then pop/firm record keeping
+/// (plan from what survived, using post-cap quotes).
 fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSettlement)>) {
     let mut pops: HashMap<usize, Pop> = session.pops.drain(..).map(|pop| (pop.id, pop)).collect();
     let mut firms: HashMap<usize, Firm> =
@@ -546,14 +548,29 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         let _effects = firm.run_production(&session.factuals, &session.market);
     }
 
-    let closing = session.market.history();
+    let market_close = session.market.history();
+    let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
     for pop in pops.values_mut() {
         pop.consume();
-        pop.update_sentiments(&closing, &session.factuals.config.pop);
-        pop.record_keeping(&session.factuals, &closing);
+        pop.update_sentiments(&market_close, &session.factuals.config.pop);
+        add_decay_rot(&mut rot, pop.decay_goods(&session.factuals));
     }
     let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
     firm_ids.sort_unstable();
+    for id in &firm_ids {
+        add_decay_rot(
+            &mut rot,
+            firms
+                .get_mut(id)
+                .expect("firm id from keys")
+                .decay_goods(&session.factuals),
+        );
+    }
+    session.market.cap_salability_from_decay(&rot);
+    let closing = session.market.history();
+    for pop in pops.values_mut() {
+        pop.record_keeping(&session.factuals, &closing);
+    }
     for id in &firm_ids {
         firms
             .get_mut(id)
@@ -564,12 +581,6 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     session
         .market
         .budget_labor(&pops, &mut firms, &session.factuals, budget_day);
-    for pop in pops.values_mut() {
-        pop.decay_goods(&session.factuals);
-    }
-    for firm in firms.values_mut() {
-        firm.decay_goods(&session.factuals);
-    }
 
     session.pops = pops.into_values().collect();
     session.pops.sort_by_key(|pop| pop.id);
@@ -580,6 +591,16 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     session.history = session.market.history();
     session.day += 1;
     (report, wages)
+}
+
+/// Sums `(decayed, volume)` maps from pop/firm [`Pop::decay_goods`] /
+/// [`Firm::decay_goods`].
+fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f64, f64)>) {
+    for (id, (decayed, volume)) in from {
+        let entry = into.entry(id).or_insert((0.0, 0.0));
+        entry.0 += decayed;
+        entry.1 += volume;
+    }
 }
 
 #[cfg(test)]

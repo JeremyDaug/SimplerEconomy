@@ -24,10 +24,13 @@ impl Pop {
     /// surplus. Does not replan shop/save. Extra desire buys belong on
     /// [`Self::next_shopping_trip`].
     ///
-    /// 1. Desire-shop shortfalls, then parked non-desire shop, in walk order.
+    /// 1. Basic desire-shop, then parked save, then common, then luxury.
+    ///    A higher consume tier is posted only when remaining budget covers
+    ///    **all** of that tier's shortfalls; otherwise that tier is posted in
+    ///    walk order until overdraw and the next tier is skipped.
     ///    Request size is `whole_units_up(shop_target - quantity)` (overshoot).
     ///    Skip missing rows, `shop_target == 0`, `unavailable`, already-seen
-    ///    goods, and shortfalls that ceil to 0. One overdraw, then stop.
+    ///    goods, and shortfalls that ceil to 0.
     /// 2. Freeze enough leftover whole units (salability first, then lowest
     ///    desire importance) to cover posted request AMV. Those units stay
     ///    tenderable.
@@ -51,7 +54,7 @@ impl Pop {
         let mut seen = HashSet::new();
         let mut request_amv = 0.0;
 
-        // 1. Planned shop restock (desire goods, then parked savings).
+        // 1. Basic restock, parked save, then common/luxury if the wallet covers them.
         self.push_shop_requests(
             &mut orders,
             &mut seen,
@@ -61,7 +64,7 @@ impl Pop {
             factuals,
             unavailable,
             pop_start,
-            true,
+            Some(0),
             usize::MAX,
         );
         if remaining_budget > 0.0 {
@@ -74,8 +77,34 @@ impl Pop {
                 factuals,
                 unavailable,
                 pop_start,
-                false,
+                None,
                 usize::MAX,
+            );
+        }
+        if remaining_budget > 0.0 {
+            self.push_higher_tier_requests(
+                &mut orders,
+                &mut seen,
+                &mut remaining_budget,
+                &mut request_amv,
+                market_history,
+                factuals,
+                unavailable,
+                pop_start,
+                1,
+            );
+        }
+        if remaining_budget > 0.0 {
+            self.push_higher_tier_requests(
+                &mut orders,
+                &mut seen,
+                &mut remaining_budget,
+                &mut request_amv,
+                market_history,
+                factuals,
+                unavailable,
+                pop_start,
+                2,
             );
         }
 
@@ -134,7 +163,7 @@ impl Pop {
                 factuals,
                 unavailable,
                 pop_start,
-                true,
+                Some(0),
                 1,
             );
             if orders.is_empty() {
@@ -147,7 +176,35 @@ impl Pop {
                     factuals,
                     unavailable,
                     pop_start,
-                    false,
+                    None,
+                    1,
+                );
+            }
+            if orders.is_empty() && remaining_budget > 0.0 {
+                self.push_shop_requests(
+                    &mut orders,
+                    &mut seen,
+                    &mut remaining_budget,
+                    &mut request_amv,
+                    market_history,
+                    factuals,
+                    unavailable,
+                    pop_start,
+                    Some(1),
+                    1,
+                );
+            }
+            if orders.is_empty() && remaining_budget > 0.0 {
+                self.push_shop_requests(
+                    &mut orders,
+                    &mut seen,
+                    &mut remaining_budget,
+                    &mut request_amv,
+                    market_history,
+                    factuals,
+                    unavailable,
+                    pop_start,
+                    Some(2),
                     1,
                 );
             }
@@ -203,8 +260,86 @@ impl Pop {
         }
     }
 
-    /// `desire_goods` true walks desire targets with a shop row; false walks
-    /// parked non-desire `shop_target` rows, sorted by good id.
+    /// Posts a higher consume tier: all of it when remaining budget covers
+    /// every shortfall, otherwise walk order until overdraw.
+    fn push_higher_tier_requests(
+        &self,
+        orders: &mut Vec<MarketOrder>,
+        seen: &mut HashSet<usize>,
+        remaining_budget: &mut f64,
+        request_amv: &mut f64,
+        market_history: &MarketHistory,
+        factuals: &Factuals,
+        unavailable: &HashSet<usize>,
+        pop_start: f64,
+        tier: usize,
+    ) {
+        let cost = self.tier_shop_cost(tier, seen, market_history, unavailable);
+        if *remaining_budget + 1e-12 < cost {
+            self.push_shop_requests(
+                orders,
+                seen,
+                remaining_budget,
+                request_amv,
+                market_history,
+                factuals,
+                unavailable,
+                pop_start,
+                Some(tier),
+                usize::MAX,
+            );
+            return;
+        }
+        self.push_shop_requests(
+            orders,
+            seen,
+            remaining_budget,
+            request_amv,
+            market_history,
+            factuals,
+            unavailable,
+            pop_start,
+            Some(tier),
+            usize::MAX,
+        );
+    }
+
+    fn tier_shop_cost(
+        &self,
+        tier: usize,
+        seen: &HashSet<usize>,
+        market_history: &MarketHistory,
+        unavailable: &HashSet<usize>,
+    ) -> f64 {
+        if tier >= self.desires.len() {
+            return 0.0;
+        }
+        let mut cost = 0.0;
+        let mut local = seen.clone();
+        for desire in &self.desires[tier] {
+            for target in desire.ordered_targets() {
+                if local.contains(&target.good) || unavailable.contains(&target.good) {
+                    continue;
+                }
+                let Some(row) = self.property.get(&target.good) else {
+                    continue;
+                };
+                if row.shop_target == 0.0 {
+                    continue;
+                }
+                let purchase = shop_purchase_units(row);
+                if purchase < 1.0 {
+                    continue;
+                }
+                local.insert(target.good);
+                cost += purchase * market_history.price(target.good);
+            }
+        }
+        cost
+    }
+
+    /// `only_tier` Some walks that desire tier; None walks parked non-desire
+    /// `shop_target` rows, sorted by good id.
     fn push_shop_requests(
         &self,
         orders: &mut Vec<MarketOrder>,
@@ -215,30 +350,31 @@ impl Pop {
         factuals: &Factuals,
         unavailable: &HashSet<usize>,
         pop_start: f64,
-        desire_goods: bool,
+        only_tier: Option<usize>,
         max_new: usize,
     ) {
         let start_len = orders.len();
-        if desire_goods {
-            for tier in self.desires.iter() {
-                for desire in tier.iter() {
-                    for &target in desire.ordered_targets().iter() {
-                        if *remaining_budget <= 0.0 || orders.len() - start_len >= max_new {
-                            return;
-                        }
-                        self.try_push_shop_request(
-                            target.good,
-                            orders,
-                            seen,
-                            remaining_budget,
-                            request_amv,
-                            market_history,
-                            factuals,
-                            unavailable,
-                            pop_start,
-                            true,
-                        );
+        if let Some(tier) = only_tier {
+            let Some(desires) = self.desires.get(tier) else {
+                return;
+            };
+            for desire in desires.iter() {
+                for &target in desire.ordered_targets().iter() {
+                    if *remaining_budget <= 0.0 || orders.len() - start_len >= max_new {
+                        return;
                     }
+                    self.try_push_shop_request(
+                        target.good,
+                        orders,
+                        seen,
+                        remaining_budget,
+                        request_amv,
+                        market_history,
+                        factuals,
+                        unavailable,
+                        pop_start,
+                        true,
+                    );
                 }
             }
             return;
@@ -270,6 +406,22 @@ impl Pop {
                 false,
             );
         }
+    }
+
+    fn has_shop_shortfall(&self, tier: usize) -> bool {
+        let Some(desires) = self.desires.get(tier) else {
+            return false;
+        };
+        for desire in desires {
+            for target in desire.ordered_targets() {
+                if let Some(row) = self.property.get(&target.good) {
+                    if shop_purchase_units(row) >= 1.0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn try_push_shop_request(
@@ -328,7 +480,15 @@ impl Pop {
             .chain(orders.iter())
             .map(|order| order.target)
             .collect();
-        for tier in self.desires.iter() {
+        let basic_short = self.has_shop_shortfall(0);
+        let common_short = self.has_shop_shortfall(1);
+        for (tier_idx, tier) in self.desires.iter().enumerate() {
+            if tier_idx >= 1 && basic_short {
+                break;
+            }
+            if tier_idx >= 2 && common_short {
+                break;
+            }
             for desire in tier.iter() {
                 for &target in desire.ordered_targets().iter() {
                     if listed.contains(&target.good) || unavailable.contains(&target.good) {

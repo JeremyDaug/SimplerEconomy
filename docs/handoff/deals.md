@@ -30,9 +30,11 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
 - **Make change** is returning excess, not `take_tenders`.
 - Keep = received AMV / given AMV. Given goods are full AMV. Received
   use-goods (pop shop/desire, firm `use_target`) skip salability; others *
-  salability. Pop min `0.25`; firm min `0.50` with a need-catch to `0.25` when
-  `purchase_target` or `use_target`. Merchant restock is a **need**, not a use
-  (still takes the haircut). Buyers accept windfalls (`keep >= 1.0`).
+  salability. A pop that receives any used/desired good **ignores** the AMV
+  floor. Unused-only baskets must keep `0.50` after the haircut. Firm min
+  `0.50` with a need-catch to `0.25` when `purchase_target` or `use_target`.
+  Merchant restock is a **need**, not a use (still takes the haircut).
+  Buyers accept windfalls (`keep >= 1.0`).
 - `finalize` does not raise reserve toward stock and does not edit orders.
   Firm records bought/sold AMV and blends `average_cost` at market AMV on inflows.
 - `take_good` removes the property row and returns qty (`0` if missing).

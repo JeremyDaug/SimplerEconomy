@@ -16,13 +16,13 @@ use simpler_economy::game::workforce::{PaymentTerm, Workforce};
 use super::*;
 
 /// Opening AMV for every world good. No price spread at start.
-pub(crate) const OPENING_AMV: f64 = 1.0;
+pub(crate) const OPENING_AMV: f64 = 10.0;
 /// Opening salability for every world good. Below the exchange floor, so
 /// nothing starts as money.
 pub(crate) const OPENING_SALABILITY: f64 = 0.3;
 
 /// Morning grant of every non-Time good.
-pub(crate) const DAILY_ENDOWMENT: f64 = 1.0;
+pub(crate) const DAILY_ENDOWMENT: f64 = 0.0;
 /// Morning output of this pop's specialty good (`pop.id % n_goods`).
 pub(crate) const DAILY_OUTPUT: f64 = 150.0;
 
@@ -56,9 +56,12 @@ pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
 
     let pop_cfg = &factuals.config.pop;
     let n_pops = factuals.goods.len();
-    let pops: Vec<Pop> = (1..=n_pops)
+    let mut pops: Vec<Pop> = (1..=n_pops)
         .map(|id| make_basic_pop(id, pop_cfg))
         .collect();
+    for pop in &mut pops {
+        pop.record_keeping(&factuals, &history);
+    }
     (pops, Vec::new(), factuals, history)
 }
 
@@ -162,14 +165,14 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         0,
         "food",
         amount,
-        &[(GRAIN, 1.0), (BREAD, 2.0)],
+        &[(GRAIN, 1.0), (BREAD, 1.5)],
     ));
     pop.desires[0].push(make_consume_desire(1, "hydration", amount, &[(WATER, 1.0)]));
     pop.desires[0].push(make_consume_desire(
         2,
         "heating",
         amount,
-        &[(WOOD, 1.0), (CHARCOAL, 2.0), (COAL, 2.5)],
+        &[(WOOD, 1.0), (CHARCOAL, 1.25), (COAL, 1.5)],
     ));
     pop.desires[0].push(make_consume_desire(3, "housing", amount, &[(CABINS, 1.0)]));
     pop.desires[1].push(make_consume_desire(
@@ -177,12 +180,12 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         "utility items",
         amount,
         &[
-            (WOOD_TOOLS, 1.0),
-            (BUCKETS, 2.0),
-            (IRON_TOOLS, 2.0),
-            (BRONZE_TOOLS, 1.5),
-            (POTS, 1.5),
-            (BLADES, 2.0),
+            (WOOD_TOOLS, 0.2),
+            (BUCKETS, 0.5),
+            (IRON_TOOLS, 0.9),
+            (BRONZE_TOOLS, 0.5),
+            (POTS, 0.8),
+            (BLADES, 1.0),
         ],
     ));
     pop.desires[1].push(make_consume_desire(
@@ -196,13 +199,13 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         "materials",
         amount,
         &[
-            (WOOD, 1.0),
-            (IRON, 1.0),
-            (COPPER, 1.0),
-            (TIN, 1.0),
-            (BRONZE, 1.0),
-            (GOLD, 1.0),
-            (CLAY, 1.0),
+            (WOOD, 0.5),
+            (IRON, 0.5),
+            (COPPER, 0.5),
+            (TIN, 0.5),
+            (BRONZE, 0.5),
+            (GOLD, 0.5),
+            (CLAY, 0.5),
         ],
     ));
     pop.desires[1].push(make_consume_desire(

@@ -259,16 +259,13 @@ Consume draws quantity and reserved together, so the same formula holds after co
 **Avoid:** consume-half (internal draft jargon)
 
 **Meaning:** Units of a good planned for tomorrow's consume/use, **before**
-savings. Hybrid of remaining unsatisfied desire units and what was actually
-consumed/used today:
-
-```text
-consume_need = max(unsatisfied target units, consumed + used)
-```
+savings. On-hand is spent along `ordered_targets` (efficiency / high
+priority). Leftover sat is split equally across remaining buyable
+substitutes, each still limited by its cap.
 
 Shop target for a tradeable good is `consume_need + save_target`.
 
-**Code:** local map in `Pop::rewrite_shop_and_save_targets`
+**Code:** `Pop::consume_need`, `Pop::rewrite_shop_and_save_targets`
 
 ### Savings ratio
 **Preferred:** savings ratio, days of buffer
@@ -607,18 +604,28 @@ retries on this pairing. First-pass impls return Accept or Reject only.
 evaluate still read the opening `MarketHistory` snapshot. A successful basket
 lerps both sides toward the midpoint of sold-AMV vs payment-AMV. A seller
 reject raises the sought good (demand edge 1.1) and lowers each tender,
-harder when more units were offered per unit sought. No-proposal raises the
-sought good only. After the match loop, leftover and unmatched orders
-still move AMV: unsatisfied buys raise it, unsatisfied sells lower it,
-in the direction of the larger leftover book. The step is
-`leftover_blend * unsatisfied / (unsatisfied + purchased)` applied as
-a direct raise or cut (`AMV * (1 ± step)`). A dry book moves 10%. Not a
-lerp to the reject demand edge.
+harder when more tender **AMV** was offered per sought AMV (not raw units).
+No-proposal raises the
+sought good only. Leftover and unmatched books do **not** move AMV
+(live `amv_leftover_blend` 0). Vault AMV is trial-and-error on meetings.
 
 **Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
-`drift_amv_on_no_proposal`, `drift_amv_on_book_pressure`,
+`drift_amv_on_no_proposal`,
 `market_constants::AMV_ACCEPT_BLEND`, `AMV_REJECT_BLEND`,
-`AMV_REJECT_DEMAND_EDGE`, `AMV_LEFTOVER_BLEND`, `AMV_LEFTOVER_BAND`
+`AMV_REJECT_DEMAND_EDGE`
+
+### AMV rescale
+**Preferred:** AMV rescale
+**Avoid:** scaler, price normalize (ambiguous with average_price)
+
+**Meaning:** Every `amv_rescale_period` completed market days (default 1),
+multiply live AMV, average_price, and the AMV trail so the unweighted mean
+of one unit of each tradeable good equals `amv_rescale_mean` (default 10.0).
+Time is skipped. Period 0 disables. A unit-normalization for readability;
+relative AMVs stay the same. Firm bids/asks are not scaled.
+
+**Code:** `Market::rescale_amv_to_mean`, `market_constants::AMV_RESCALE_PERIOD`,
+`AMV_RESCALE_MEAN`
 
 ### AMV history
 **Preferred:** AMV history, AMV trail
@@ -638,9 +645,12 @@ end-of-day closes. Intra-day drift is not recorded tick-by-tick. Caps at
 
 **Meaning:** Day-end rolling lerp of salability toward `payment / tender` for
 goods that were offered as payment. No tender means no change. Volume and
-fill-rate of demand are not this pass.
+fill-rate of demand are not this pass. After decay, live salability is
+capped at `1 - decayed / volume` (consumed is volume, not rot). The cap
+does not raise salability.
 
-**Code:** `Market::update_salability`, `market_constants::SALABILITY_BLEND`
+**Code:** `Market::update_salability`, `Market::cap_salability_from_decay`,
+`market_constants::SALABILITY_BLEND`
 
 ### AMV keep
 **Preferred:** AMV keep, keep ratio  
@@ -650,12 +660,14 @@ fill-rate of demand are not this pass.
 are always full market AMV. Received goods the actor will **use** (pop
 desire / shop target, firm `use_target`) are full AMV; anything else is
 `AMV * salability` (coins at 1.0 count in full, leftover copper is
-discounted). Pop min keep `0.25` (up to 75% AMV loss). Firm min keep
-`0.50` (up to 50% AMV loss), with a need-catch down to the pop keep when
-the firm has a purchase or use target on a received good. Buyers accept
-windfalls (`keep >= 1.0`); they do not seek a more equitable split.
+discounted). A pop that receives any used/desired good ignores the AMV
+floor. Unused-only pop baskets must keep `0.50` after the haircut. Firm
+min keep `0.50` (up to 50% AMV loss), with a need-catch down to `0.25`
+when the firm has a purchase or use target on a received good. Buyers
+accept windfalls (`keep >= 1.0`); they do not seek a more equitable split.
 
-**Code:** `deal_constants`, `evaluate_amv_floor`, `amv_percent_keep`
+**Code:** `deal_constants`, `evaluate_amv_floor`, `evaluate_pop_amv`,
+`amv_percent_keep`
 
 ### Order priority
 **Preferred:** order priority, market priority  

@@ -58,8 +58,9 @@ impl DealMaker for Pop {
     /// # Evaluate
     ///
     /// Returns Accept or Reject for this deal as this pop.
-    /// Keep must meet the pop AMV floor. Desire / shop-target goods skip
-    /// salability; other received goods are haircut. Buyers accept windfalls.
+    /// Receiving a desire / shop-target good ignores the AMV floor. Unused
+    /// received goods are haircut by salability and must keep 0.50 AMV.
+    /// Buyers accept windfalls.
     /// Does not move stock.
     fn evaluate(
         &self,
@@ -78,13 +79,16 @@ impl DealMaker for Pop {
         if !deal_goods_tradeable(deal, factuals) {
             return DealResponse::Reject;
         }
+        let wants_received = deal
+            .goods_received(role)
+            .any(|(good, _)| pop_uses_good(self, good));
         evaluate_amv_floor(
             deal,
             role,
             history,
-            factuals.config.deal.pop_amv_min_keep,
-            factuals.config.deal.pop_amv_min_keep,
-            false,
+            factuals.config.deal.pop_amv_unused_keep,
+            0.0,
+            wants_received,
             |good| pop_uses_good(self, good),
         )
     }

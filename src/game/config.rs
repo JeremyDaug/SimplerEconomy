@@ -180,13 +180,19 @@ pub mod market_constants {
     /// Sought-good up-push is this times the tender down-push (demand edge).
     pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
     /// Day-end leftover-book AMV fraction, before leftover/fill scaling.
-    /// 0 = no move, 1 = double or zero AMV on a dry book.
-    pub const AMV_LEFTOVER_BLEND: f64 = 0.10;
+    /// 0 = no move (live: AMV only from meetings). 1 = double or zero AMV
+    /// on a dry book. Volume-scaled leftover pressure collapsed AMV to the
+    /// bounce floor; do not turn this back on unless asked.
+    pub const AMV_LEFTOVER_BLEND: f64 = 0.0;
     /// Skip leftover AMV when both books have leftover and
     /// `|buy - sell| / (buy + sell)` is below this (0.10 = 10%).
     pub const AMV_LEFTOVER_BAND: f64 = 0.10;
     /// Day-end lerp of salability toward payment/tender (0 = no move, 1 = snap).
     pub const SALABILITY_BLEND: f64 = 0.25;
+    /// Market days between unweighted AMV rescales. 0 disables. 1 = every day.
+    pub const AMV_RESCALE_PERIOD: u32 = 1;
+    /// Target mean AMV of one unit of each good after a rescale.
+    pub const AMV_RESCALE_MEAN: f64 = 10.0;
 
     /// Compile-time max ring slots for [`crate::game::market::MarketGood`] AMV history.
     pub const AMV_HISTORY_MAX: usize = 16;
@@ -194,17 +200,20 @@ pub mod market_constants {
 
 /// Deal-making AMV acceptance floors and tender cutoffs.
 ///
-/// Values are **keep ratios** (`received AMV / given AMV`). A pop "75% max
-/// loss" is keep `0.25`. Buyers still accept windfalls (`keep >= 1.0`).
+/// Values are **keep ratios** (`received AMV / given AMV`). A pop that
+/// receives a used/desired good ignores the AMV floor. Unused received
+/// goods use [`POP_AMV_UNUSED_KEEP`]. Buyers still accept windfalls
+/// (`keep >= 1.0`).
 pub mod deal_constants {
-    /// Pop minimum AMV keep. `0.25` = accept up to 75% AMV loss.
-    pub const POP_AMV_MIN_KEEP: f64 = 0.25;
+    /// Pop AMV keep when every received good is unused. `0.50` = at most
+    /// 50% AMV loss after the salability haircut.
+    pub const POP_AMV_UNUSED_KEEP: f64 = 0.50;
     /// Firm minimum AMV keep. `0.50` = accept up to 50% AMV loss.
     pub const FIRM_AMV_MIN_KEEP: f64 = 0.50;
     /// When a firm deal cannot land in [`FIRM_AMV_MIN_KEEP`] but the firm
     /// needs the received goods (purchase or use target), fall back to this
-    /// keep ratio (same as pop).
-    pub const FIRM_AMV_NEED_KEEP: f64 = POP_AMV_MIN_KEEP;
+    /// keep ratio.
+    pub const FIRM_AMV_NEED_KEEP: f64 = 0.25;
     /// Salability at or above this is highly salable (money-like). Buy
     /// proposals fill from these (plus the seller's named counter) before
     /// offering lower-salability goods.
@@ -852,14 +861,21 @@ pub struct MarketConfig {
     pub amv_reject_blend: f64,
     /// Sought-good up-push vs tender down-push. Default 1.1. Must be > 0.
     pub amv_reject_demand_edge: f64,
-    /// Day-end leftover-book AMV fraction, before leftover/fill scaling. Default 0.10.
-    /// Bound 0..=1. Applied as a direct raise/cut, not a lerp to the demand edge.
+    /// Day-end leftover-book AMV fraction, before leftover/fill scaling. Default 0
+    /// (off). Bound 0..=1. Applied as a direct raise/cut, not a lerp to the
+    /// demand edge. Live AMV comes from meetings only.
     pub amv_leftover_blend: f64,
     /// Skip leftover AMV when both sides leftover and the imbalance is below this.
     /// Default 0.10. Bound 0..=1.
     pub amv_leftover_band: f64,
     /// Day-end lerp of salability toward payment/tender. Default 0.25. Bound 0..=1.
     pub salability_blend: f64,
+    /// Market days between unweighted AMV rescales. Default 1 (every day).
+    /// 0 disables.
+    pub amv_rescale_period: u32,
+    /// Target mean AMV of one unit of each good after a rescale. Default 10.0.
+    /// Must be > 0.
+    pub amv_rescale_mean: f64,
 }
 
 impl Default for MarketConfig {
@@ -877,6 +893,8 @@ impl Default for MarketConfig {
             amv_leftover_blend: market_constants::AMV_LEFTOVER_BLEND,
             amv_leftover_band: market_constants::AMV_LEFTOVER_BAND,
             salability_blend: market_constants::SALABILITY_BLEND,
+            amv_rescale_period: market_constants::AMV_RESCALE_PERIOD,
+            amv_rescale_mean: market_constants::AMV_RESCALE_MEAN,
         }
     }
 }
@@ -909,18 +927,20 @@ impl MarketConfig {
         in_range(problems, "market.amv_leftover_blend", self.amv_leftover_blend, 0.0, 1.0);
         in_range(problems, "market.amv_leftover_band", self.amv_leftover_band, 0.0, 1.0);
         in_range(problems, "market.salability_blend", self.salability_blend, 0.0, 1.0);
+        above(problems, "market.amv_rescale_mean", self.amv_rescale_mean, 0.0);
     }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DealConfig {
-    /// Pop minimum AMV keep (`received / given`). Default 0.25 (up to 75% loss).
-    /// Bound 0..=1. Buyers still accept windfalls (`keep >= 1.0`).
-    pub pop_amv_min_keep: f64,
+    /// Pop AMV keep when no received good is used. Default 0.50 (up to 50% loss).
+    /// Bound 0..=1. Ignored when any received good is a desire / shop target.
+    /// Buyers still accept windfalls (`keep >= 1.0`).
+    pub pop_amv_unused_keep: f64,
     /// Firm minimum AMV keep. Default 0.50 (up to 50% loss). Bound 0..=1.
     pub firm_amv_min_keep: f64,
-    /// Looser keep when the firm needs a received good. Default 0.25 (same as pop).
+    /// Looser keep when the firm needs a received good. Default 0.25.
     /// Bound 0..=1. Must be <= `firm_amv_min_keep`.
     pub firm_amv_need_keep: f64,
     /// Salability at or above this is money-like for buy tenders. Default 0.8.
@@ -931,7 +951,7 @@ pub struct DealConfig {
 impl Default for DealConfig {
     fn default() -> Self {
         Self {
-            pop_amv_min_keep: deal_constants::POP_AMV_MIN_KEEP,
+            pop_amv_unused_keep: deal_constants::POP_AMV_UNUSED_KEEP,
             firm_amv_min_keep: deal_constants::FIRM_AMV_MIN_KEEP,
             firm_amv_need_keep: deal_constants::FIRM_AMV_NEED_KEEP,
             high_salability: deal_constants::HIGH_SALABILITY,
@@ -941,7 +961,7 @@ impl Default for DealConfig {
 
 impl DealConfig {
     fn validate(&self, problems: &mut Vec<String>) {
-        in_range(problems, "deal.pop_amv_min_keep", self.pop_amv_min_keep, 0.0, 1.0);
+        in_range(problems, "deal.pop_amv_unused_keep", self.pop_amv_unused_keep, 0.0, 1.0);
         in_range(problems, "deal.firm_amv_min_keep", self.firm_amv_min_keep, 0.0, 1.0);
         in_range(problems, "deal.firm_amv_need_keep", self.firm_amv_need_keep, 0.0, 1.0);
         ordered(

@@ -430,10 +430,12 @@ impl Pop {
     /// 
     /// Goods should already be reserved and ready to be consumed, so do so.
     /// 
-    /// - Basic (0) and Common (1) tiers are processed **once each**, in list order,
-    ///   filling to the best of the pop's ability before moving to the next tier.
-    /// - Luxury (2) desires are **repeatedly cycled** and overfilled as much as possible
-    ///   until no further progress can be made with remaining goods.
+    /// - Basic (0) and Common (1) tiers are processed **once each**, in list
+    ///   order. Common still runs when basic is incomplete (eat what is on
+    ///   hand). Luxury (2) is skipped unless every basic desire has a full
+    ///   level (`tiers_satisfied >= 1`).
+    /// - Luxury desires are **repeatedly cycled** and overfilled as much as
+    ///   possible until no further progress can be made with remaining goods.
     ///
     /// For desires with a bucket of goods, higher-efficiency goods are preferred.
     ///
@@ -447,12 +449,18 @@ impl Pop {
         // first do basic desires, only one pass needed.
         let mut working_desires = self.desires.remove(0); // pop off front
         self.satisfy_tier(&mut working_desires); // satisfy them
+        let basic_done = Self::tier_is_complete(&working_desires);
         self.desires.insert(0, working_desires); // put back
 
-        // second do common needs, only one pass needed.
+        // Common still runs when basic is short: eat on-hand rather than
+        // hold it hoping the staple shows up.
         working_desires = self.desires.remove(1); // pop off
         self.satisfy_tier(&mut working_desires); // satisfy
         self.desires.insert(1, working_desires); // put back
+
+        if !basic_done {
+            return;
+        }
 
         // Last is Luxury Needs, do until we produce no more satisfaction.
         let mut iter_target = 1.0;
@@ -1222,26 +1230,106 @@ impl Pop {
     }
 
     /// One full desire level in target units (`amount * cap / efficiency`).
-    /// Used to keep luxury shop climbing after a filled pass.
-    fn luxury_level_units(desires: &[Desire]) -> HashMap<usize, f64> {
+    /// True when the tier is empty or every desire has at least one full level.
+    fn tier_is_complete(desires: &[Desire]) -> bool {
+        desires.is_empty()
+            || desires.iter().all(|desire| desire.tiers_satisfied() >= 1.0)
+    }
+
+    /// One consume level: spend `on_hand` along `ordered_targets`, then split
+    /// remaining sat equally across remaining buyable substitutes (respecting
+    /// each target's cap). Mutates `on_hand`.
+    fn consume_need(
+        desires: &[Desire],
+        on_hand: &mut HashMap<usize, f64>,
+        factuals: &Factuals,
+    ) -> HashMap<usize, f64> {
         let mut need = HashMap::new();
         for desire in desires {
             if desire.amount <= 0.0 {
                 continue;
             }
-            for target in &desire.target {
+            let mut remaining = desire.amount;
+            let targets: Vec<DesireTarget> = desire
+                .ordered_targets()
+                .into_iter()
+                .cloned()
+                .collect();
+            let mut assigned: HashMap<usize, f64> = HashMap::new();
+            for target in &targets {
+                if remaining <= 0.0 {
+                    break;
+                }
                 debug_assert!(
                     target.efficiency > 0.0,
                     "Desire target efficiency must be positive"
                 );
-                let want_sat = desire.amount * target.cap;
-                if want_sat <= 0.0 {
+                let have = on_hand.get(&target.good).copied().unwrap_or(0.0);
+                if have <= 0.0 {
                     continue;
                 }
-                *need.entry(target.good).or_insert(0.0) += want_sat / target.efficiency;
+                let cap_sat = desire.amount * target.cap;
+                let used = assigned.get(&target.good).copied().unwrap_or(0.0);
+                let sat = remaining
+                    .min(cap_sat - used)
+                    .min(have * target.efficiency)
+                    .max(0.0);
+                if sat <= 0.0 {
+                    continue;
+                }
+                let take = sat / target.efficiency;
+                *on_hand.entry(target.good).or_insert(0.0) -= take;
+                *need.entry(target.good).or_insert(0.0) += take;
+                *assigned.entry(target.good).or_insert(0.0) += sat;
+                remaining -= sat;
+            }
+            loop {
+                if remaining <= 1e-12 {
+                    break;
+                }
+                let open: Vec<&DesireTarget> = targets
+                    .iter()
+                    .filter(|target| {
+                        debug_assert!(
+                            target.efficiency > 0.0,
+                            "Desire target efficiency must be positive"
+                        );
+                        if !factuals.find_good(target.good).is_buyable() {
+                            return false;
+                        }
+                        let cap_sat = desire.amount * target.cap;
+                        let used = assigned.get(&target.good).copied().unwrap_or(0.0);
+                        used + 1e-12 < cap_sat
+                    })
+                    .collect();
+                if open.is_empty() {
+                    break;
+                }
+                let share = remaining / open.len() as f64;
+                for target in open {
+                    let cap_sat = desire.amount * target.cap;
+                    let used = assigned.get(&target.good).copied().unwrap_or(0.0);
+                    let sat = share.min(cap_sat - used).max(0.0);
+                    if sat <= 0.0 {
+                        continue;
+                    }
+                    *need.entry(target.good).or_insert(0.0) += sat / target.efficiency;
+                    *assigned.entry(target.good).or_insert(0.0) += sat;
+                    remaining -= sat;
+                }
             }
         }
         need
+    }
+
+    fn merge_need(into: &mut HashMap<usize, f64>, extra: HashMap<usize, f64>) {
+        for (good_id, qty) in extra {
+            *into.entry(good_id).or_insert(0.0) += qty;
+        }
+    }
+
+    fn good_durability(factuals: &Factuals, good_id: usize) -> f64 {
+        (1.0 - factuals.find_good(good_id).decay_rate).clamp(0.0, 1.0)
     }
 
     /// Cheapest tradeable luxury target (sat-cost, then good id). Price is
@@ -1278,30 +1366,6 @@ impl Pop {
             }
         }
         best.map(|(_, id, price)| (id, price))
-    }
-
-    /// Units still wanted per target good: unsatisfied sat / efficiency, on
-    /// every target that can contribute. Does not walk a full extra level.
-    fn unsatisfied_target_units(desires: &[Desire]) -> HashMap<usize, f64> {
-        let mut need = HashMap::new();
-        for desire in desires {
-            let needed_sat = (desire.amount - desire.satisfaction).max(0.0);
-            if needed_sat <= 0.0 {
-                continue;
-            }
-            for target in &desire.target {
-                debug_assert!(
-                    target.efficiency > 0.0,
-                    "Desire target efficiency must be positive"
-                );
-                let want_sat = needed_sat.min(desire.amount * target.cap);
-                if want_sat <= 0.0 {
-                    continue;
-                }
-                *need.entry(target.good).or_insert(0.0) += want_sat / target.efficiency;
-            }
-        }
-        need
     }
 
     /// Cheapest market cover for one desire: tradeable, price > 0, respect cap.
@@ -1400,51 +1464,46 @@ impl Pop {
 
     /// # Rewrite Shop and Save Targets
     ///
-    /// **Consume need** is the live-use side of `shop_target`:
-    /// `max(unsatisfied target units, consumed + used)`.
-    /// Savings is `savings_ratio` days of the cheapest basic+common basket.
-    /// Fear lowers substitutability: more of the pile is parked on those
-    /// specific goods; the rest goes salability-first as liquid AMV.
-    /// Luxury adds one more full level on top of consume need, then parks
-    /// leftover on-hand AMV (above need+save) onto the cheapest luxury shop
-    /// good so a wealth pile becomes next-day luxury demand.
+    /// **Consume need** spends on-hand along `ordered_targets`, then splits
+    /// leftover sat equally across remaining buyable substitutes.
+    /// All three tiers are written; `create_orders` decides in the morning
+    /// whether the wallet covers common/luxury. Savings is `savings_ratio`
+    /// days of the cheapest basic+common basket, scaled by durability
+    /// (`1 - decay_rate`); fully decaying goods get no save. Liquid parks
+    /// salability-first, then durability. Luxury leftover dump only if
+    /// leftover AMV remains.
     fn rewrite_shop_and_save_targets(
         &mut self,
         factuals: &Factuals,
         market_history: &MarketHistory,
     ) {
-        let need_by_tier = [
-            Self::unsatisfied_target_units(&self.desires[0]),
-            Self::unsatisfied_target_units(&self.desires[1]),
-            Self::unsatisfied_target_units(&self.desires[2]),
-        ];
+        let mut on_hand: HashMap<usize, f64> = self
+            .property
+            .iter()
+            .map(|(&id, row)| (id, row.quantity.max(0.0)))
+            .collect();
 
-        let mut total_need: HashMap<usize, f64> = HashMap::new();
-        for tier in &need_by_tier {
-            for (&good_id, &qty) in tier {
-                *total_need.entry(good_id).or_insert(0.0) += qty;
-            }
+        let basic_need = Self::consume_need(&self.desires[0], &mut on_hand, factuals);
+        let common_need = Self::consume_need(&self.desires[1], &mut on_hand, factuals);
+        let mut luxury_need = HashMap::new();
+        if self.desires.len() > 2 {
+            luxury_need = Self::consume_need(&self.desires[2], &mut on_hand, factuals);
+            let extra = Self::consume_need(
+                &self.desires[2],
+                &mut HashMap::new(),
+                factuals,
+            );
+            Self::merge_need(&mut luxury_need, extra);
         }
-
-        let mut goods: HashSet<usize> = self.property.keys().copied().collect();
-        goods.extend(total_need.keys().copied());
 
         let mut consume_need: HashMap<usize, f64> = HashMap::new();
-        for &good_id in &goods {
-            let need = total_need.get(&good_id).copied().unwrap_or(0.0);
-            let used = self
-                .property
-                .get(&good_id)
-                .map(|row| row.consumed + row.used)
-                .unwrap_or(0.0);
-            consume_need.insert(good_id, need.max(used));
-        }
-        if self.desires.len() > 2 {
-            for (good_id, qty) in Self::luxury_level_units(&self.desires[2]) {
-                *consume_need.entry(good_id).or_insert(0.0) += qty;
-                goods.insert(good_id);
-            }
-        }
+        Self::merge_need(&mut consume_need, basic_need);
+        Self::merge_need(&mut consume_need, common_need);
+        Self::merge_need(&mut consume_need, luxury_need);
+
+        let total_need = consume_need.clone();
+        let mut goods: HashSet<usize> = self.property.keys().copied().collect();
+        goods.extend(total_need.keys().copied());
 
         let daily_need_amv = Self::living_need_amv(&self.desires[0], factuals, market_history)
             + Self::living_need_amv(&self.desires[1], factuals, market_history);
@@ -1475,11 +1534,15 @@ impl Pop {
         let specific_total: f64 = specific_weights.values().sum();
         if specific_total > 0.0 && specific_amv > 0.0 {
             for (&good_id, &weight) in &specific_weights {
+                let dur = Self::good_durability(factuals, good_id);
+                if dur <= 0.0 {
+                    continue;
+                }
                 let price = market_history.price(good_id);
                 if price <= 0.0 {
                     continue;
                 }
-                let amv = specific_amv * (weight / specific_total);
+                let amv = specific_amv * (weight / specific_total) * dur;
                 *save_units.entry(good_id).or_insert(0.0) += amv / price;
             }
             specific_amv = 0.0;
@@ -1510,16 +1573,22 @@ impl Pop {
             ));
         }
         candidates.sort_by(|a, b| {
+            let dur_a = 1.0 - factuals.find_good(a.0).decay_rate.clamp(0.0, 1.0);
+            let dur_b = 1.0 - factuals.find_good(b.0).decay_rate.clamp(0.0, 1.0);
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| dur_b.partial_cmp(&dur_a).unwrap_or(std::cmp::Ordering::Equal))
                 .then_with(|| a.0.cmp(&b.0))
         });
         for (good_id, _sal, _day_qty, price) in candidates {
             if remaining_liquid <= 0.0 {
                 break;
             }
-            *save_units.entry(good_id).or_insert(0.0) += remaining_liquid / price;
+            let dur = Self::good_durability(factuals, good_id);
+            if dur <= 0.0 {
+                continue;
+            }
+            *save_units.entry(good_id).or_insert(0.0) += remaining_liquid * dur / price;
             remaining_liquid = 0.0;
         }
 
@@ -1593,10 +1662,13 @@ impl Pop {
     /// Does **not** rewrite `saved` / `reserved` after stock falls: `saved` is a
     /// wish target (shortfall should remain visible for mood), and `reserved` is
     /// cleared at next day-start.
-    pub fn decay_goods(&mut self, factuals: &Factuals) {
+    /// Returns `(decayed, volume)` per good. Volume is on-hand after `used`
+    /// is returned, plus `consumed` (eaten stock does not count as rot).
+    pub fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
         // Byproducts and bonus goods applied after the main pass so they do not
         // decay again the same day, and so we can insert missing property rows.
         let mut gains: HashMap<usize, f64> = HashMap::new();
+        let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
 
         for (&good_id, row) in self.property.iter_mut() {
             // 1. Return used goods to quantity (consume had moved them out).
@@ -1605,17 +1677,25 @@ impl Pop {
                 row.used = 0.0;
             }
 
+            let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
+
             // 2. Decay on-hand goods by the good's rate, excluding Exposure while owned.
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
+            let mut lost = 0.0;
             if !exposure && good.decay_rate > 0.0 && row.quantity > 0.0 {
-                let lost = row.quantity * good.decay_rate;
+                lost = row.quantity * good.decay_rate;
                 row.quantity -= lost;
                 for (&byproduct, &ratio) in &good.decay_result {
                     if ratio != 0.0 && lost != 0.0 {
                         *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
                     }
                 }
+            }
+            if volume > 0.0 || lost > 0.0 {
+                let entry = rot.entry(good_id).or_insert((0.0, 0.0));
+                entry.0 += lost;
+                entry.1 += volume;
             }
 
             // 3. Consumed goods: full destruction + byproducts.
@@ -1697,6 +1777,7 @@ impl Pop {
             self.stored_effects.is_empty(),
             "No ether stored effects should exist at this point."
         );
+        rot
     }
 }
 
@@ -2026,7 +2107,7 @@ mod pop {
             id,
             name,
             class: None,
-            decay_rate: 1.0,
+            decay_rate: 0.0,
             decay_result: HashMap::new(),
             mass: 1.0,
             volume: 1.0,
@@ -3509,9 +3590,9 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            // Satisfied this pass; shop still adds one more luxury level.
-            assert_eq!(pop.property[&300].desire_needs, 0.0);
-            assert!(pop.property[&300].shop_target >= 40.0);
+            // One path for tomorrow plus one extra luxury level (not yesterday's 30 consumed).
+            assert!((pop.property[&300].desire_needs - 20.0).abs() < 1e-12);
+            assert!(pop.property[&300].shop_target >= 20.0);
         }
 
         #[test]
@@ -3528,7 +3609,7 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            assert!((pop.property[&300].desire_needs - 10.0).abs() < 1e-12);
+            assert!((pop.property[&300].desire_needs - 20.0).abs() < 1e-12);
             assert!(pop.property[&300].shop_target >= 20.0);
         }
 
@@ -3590,7 +3671,7 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
+            assert!((pop.property[&100].desire_needs - 4.0).abs() < 1e-12);
             assert_eq!(pop.property[&100].shop_target, 0.0);
             assert_eq!(pop.property[&100].save_target, 0.0);
         }
@@ -3903,7 +3984,7 @@ mod pop {
         }
 
         #[test]
-        fn unsatisfied_need_is_added_to_every_target() {
+        fn spreads_remaining_need_across_buyable_substitutes() {
             let mut pop = make_pop();
             let mut desire = make_desire(
                 0,
@@ -3917,13 +3998,107 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            // 10 sat / 1.0 eff and 10 sat / 2.0 eff; both sources listed.
-            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
-            assert!((pop.property[&101].desire_needs - 5.0).abs() < 1e-12);
+            // 10 sat split equally: 5 sat on 101 (2.5 units at eff 2) and
+            // 5 sat on 100 (5 units at eff 1).
+            assert!((pop.property[&101].desire_needs - 2.5).abs() < 1e-12);
+            assert!((pop.property[&100].desire_needs - 5.0).abs() < 1e-12);
         }
 
         #[test]
-        fn satisfied_desire_does_not_add_another_level() {
+        fn leftover_substitute_is_not_shopped_when_the_path_is_covered() {
+            let mut pop = make_pop();
+            let mut desire = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                5.0,
+            );
+            desire.target.push(DesireTarget::new(101, DesireTargetType::Consume, 2.0));
+            pop.desires[0].push(desire);
+            pop.property.insert(100, PopPRow::new(5.0));
+            pop.property.insert(101, PopPRow::new(2.5));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.property[&101].desire_needs - 2.5).abs() < 1e-12);
+            assert_eq!(pop.property[&100].desire_needs, 0.0);
+            assert_eq!(pop.property[&100].shop_target, pop.property[&100].save_target);
+        }
+
+        #[test]
+        fn writes_higher_tier_consume_need_even_when_basic_is_unpaid() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                50.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                2.0,
+            ));
+            pop.property.insert(100, PopPRow::new(0.0));
+            pop.property.insert(300, PopPRow::new(0.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.property[&100].shop_target > 0.0);
+            assert!(pop.property[&300].shop_target > 0.0);
+        }
+
+        #[test]
+        fn fully_decaying_goods_get_no_save_target() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(500, PopPRow::new(50.0));
+            let mut factuals = make_default_factuals();
+            factuals.goods.get_mut(&100).unwrap().decay_rate = 1.0;
+            factuals.goods.get_mut(&500).unwrap().decay_rate = 1.0;
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert_eq!(pop.property[&100].save_target, 0.0);
+            assert_eq!(pop.property[&500].save_target, 0.0);
+        }
+
+        #[test]
+        fn save_target_scales_down_with_decay() {
+            let mut durable = make_pop();
+            durable.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            durable.property.insert(100, PopPRow::new(10.0));
+            let mut rotting = make_pop();
+            rotting.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            rotting.property.insert(100, PopPRow::new(10.0));
+            let mut factuals = make_default_factuals();
+            let history = make_default_market_history();
+            durable.record_keeping(&factuals, &history);
+            factuals.goods.get_mut(&100).unwrap().decay_rate = 0.5;
+            rotting.record_keeping(&factuals, &history);
+
+            assert!(durable.property[&100].save_target > rotting.property[&100].save_target);
+            assert!(rotting.property[&100].save_target > 0.0);
+        }
+
+        #[test]
+        fn restocks_one_level_even_when_today_was_satisfied() {
             let mut pop = make_pop();
             let mut desire = make_desire(
                 0,
@@ -3938,7 +4113,7 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            assert_eq!(pop.property[&100].desire_needs, 0.0);
+            assert!((pop.property[&100].desire_needs - 10.0).abs() < 1e-12);
             assert!(pop.property[&100].shop_target >= 10.0);
         }
 
@@ -4154,6 +4329,30 @@ mod pop {
             assert_eq!(pop.stored_effects.len(), 0);
             
         }
+
+        #[test]
+        fn reports_leftover_rot_against_leftover_plus_consumed() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0).with_consumed(10.0));
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(100, good_with_decay(100, 1.0, HashMap::new()));
+
+            let rot = pop.decay_goods(&factuals);
+            assert_eq!(rot[&100], (10.0, 20.0));
+        }
+
+        #[test]
+        fn reports_zero_rot_when_only_consumed_remains() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_consumed(10.0));
+
+            let mut factuals = Factuals::new();
+            factuals.goods.insert(100, good_with_decay(100, 1.0, HashMap::new()));
+
+            let rot = pop.decay_goods(&factuals);
+            assert_eq!(rot[&100], (0.0, 10.0));
+        }
     }
 
     mod consume_should {
@@ -4240,6 +4439,66 @@ mod pop {
             assert_eq!(pop.property[&300].reserved, 0.0);
             assert_eq!(pop.property[&300].consumed, 30.0);
             assert_eq!(pop.property[&300].saved(), 0.0);
+        }
+
+        #[test]
+        fn eats_common_on_hand_when_basic_is_incomplete() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(3.0));
+            pop.property.insert(200, PopPRow::new(10.0));
+            pop.property.insert(300, PopPRow::new(10.0));
+
+            pop.consume();
+
+            assert_eq!(pop.property[&100].consumed, 3.0);
+            assert_eq!(pop.property[&200].consumed, 10.0);
+            assert_eq!(pop.property[&300].consumed, 0.0);
+            assert_eq!(pop.desires[1][0].satisfaction, 10.0);
+            assert_eq!(pop.desires[2][0].satisfaction, 0.0);
+        }
+
+        #[test]
+        fn luxury_still_runs_when_common_is_short_if_basic_is_complete() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(200, PopPRow::new(2.0));
+            pop.property.insert(300, PopPRow::new(10.0));
+
+            pop.consume();
+
+            assert_eq!(pop.property[&100].consumed, 10.0);
+            assert_eq!(pop.property[&200].consumed, 2.0);
+            assert_eq!(pop.property[&300].consumed, 10.0);
         }
     }
 
@@ -4967,17 +5226,35 @@ mod pop {
         }
 
         #[test]
-        fn evaluate_rejects_more_than_seventy_five_percent_amv_loss() {
+        fn evaluate_rejects_unused_below_keep_floor() {
             let pop = make_pop();
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 1.0);
+            let (own, other) = buy_and_offer();
+            // Unused bread at sal 1. 1 grain for 3 coin is keep 0.333 < 0.50.
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 3.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_accepts_a_used_good_despite_amv_loss() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(4.0));
             let factuals = make_default_factuals();
             let history = make_default_market_history();
             let (own, other) = buy_and_offer();
             let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
                 .with_good(100, -1.0)
-                .with_good(500, 5.0);
+                .with_good(500, 20.0);
             assert_eq!(
                 pop.evaluate(&deal, &own, &other, &history, &factuals),
-                DealResponse::Reject
+                DealResponse::Accept
             );
         }
 

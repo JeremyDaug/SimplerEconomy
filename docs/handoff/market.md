@@ -11,9 +11,10 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 |-------|--------|
 | `run_market_day` | Live lib loop. Tester `day` calls it. PlayState intramarket is `todo!()` |
 | `match_orders` | One success per pass, front buy-priority group only |
-| AMV drift + leftover book pressure | Live. Step is `leftover_blend * unsat / (unsat + purchased)` as a direct raise/cut (no lerp). Intra-day evaluate uses frozen `history()` |
-| Salability day-end | Lerp toward `payment / tender` when tender > 0 |
-| AMV history ring | Seed opening AMV; push close after salability. Cap 16 |
+| AMV drift + leftover book pressure | Meetings only (accept / reject / no-proposal). Leftover-book blend is **0** (off). The function still exists; volume-scaled leftover collapsed AMV to the bounce floor. Do not turn it back on unless asked. Intra-day evaluate uses frozen `history()` |
+| AMV rescale | Each market day, unweighted mean of one unit of each tradeable good is scaled to 10.0 after salability, then the close is recorded. Time skipped. Not firm bids/asks. Vault does not have this; it is a unit-normalization for readability |
+| Salability day-end | Lerp toward `payment / tender` when tender > 0. After decay, cap at `1 - decayed/volume` (consumed is volume, not rot). Does not raise salability |
+| AMV history ring | Seed opening AMV; push close after daily rescale. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
 | New orders after a fill | Pop `next_shopping_trip` waves. Firms do not re-emit |
@@ -32,15 +33,19 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).
 3. **Waves:** match until no pair. Hopeless front-group buys are **parked**
-   (no fee, not unavailable). Matched: buyer `buy`, seller `evaluate`;
+   (no fee, not unavailable); later buy bands still match against the sell
+   book. Matched: buyer `buy`, seller `evaluate`;
    accept -> `finalize` + wagon bill; leftover orders scale down.
    Then each pop with transport cover for the door runs
    `next_shopping_trip` (open/parked request => offer only). Wash-closed
    goods are skipped that day (not the same as parked/no-seller). If
    anything posted, parked buys return and rematch. If not, parked ->
    `unavailable_goods`. Firms do not re-emit. See `deals.md`.
-4. **Cleanup:** clear member pops' `current_orders`; leftover books pull AMV;
-   salability lerps; push each good's close.
+4. **Cleanup:** clear member pops' `current_orders`; leftover books are
+   reported and do **not** move AMV (leftover_blend 0); salability lerps;
+   rescale so one unit of each tradeable good averages 10.0; push each
+   good's close. Leftover rot cap (`Market::cap_salability_from_decay`)
+   is a later caller after decay, not this method.
 
 After an accepted deal, leftover sell/offer amounts clamp to on-hand.
 Trip door cover: unreserved Time plus other transport on-hand. Wash-closed
@@ -80,15 +85,23 @@ Default AMV `1.0`, salability `0.4` (below exchange floor: **not** till money).
 AMV / average_price never `0` (bounce). Salability clamp `0..=1`. Volume is
 derived (`purchased + payment`). Day logic should go through setters.
 `history()` snapshots AMV, salability, `purchased`, and `amv_trails`. Missing
-salability `0.4`; missing prices `1.0`.
+salability `0.4`; missing prices `1.0`. After decay, salability is capped at
+`1 - decayed / volume` from aggregated pop/firm `decay_goods` returns.
+Eaten stock is volume, not rot, so a fully consumed good is treated as if it
+lasts. Leftover that rots pulls the cap down. Does not raise salability.
 
 **Drift:** write live AMV; intra-day `buy` / `evaluate` / orders use frozen
 `history()`. Accept: both sides lerp toward basket midpoint. Reject: sought
-* 1.1 up, tenders down by units offered per unit sought. No-proposal: sought
-up only. End of day: leftover buys raise, leftover sells lower, larger leftover
-wins, `AMV * (1 ± leftover_blend * unsat / (unsat + purchased))`. Dry miss
-is leftover_blend (10%). Miss/purchased multiplier was tried and exploded;
-do not bring it back unless asked. `set_amv` does not push the ring.
+* 1.1 up, tenders down by tender AMV offered per sought AMV (not raw units).
+No-proposal: sought up only. Leftover books do not move AMV
+(`amv_leftover_blend` 0). Volume
+scaled leftover (10% dry miss) collapsed unsold goods to the bounce floor.
+Miss/purchased was tried earlier and exploded. Do not turn leftover-book
+AMV back on unless asked. `set_amv` does not push the ring.
+Every completed market day, AMV is rescaled so the unweighted mean of
+one unit of each **tradeable** good is 10.0 (trail and average_price too).
+Time is skipped. Period 0 disables. This is a unit change, not a
+value-theory pass.
 
 **Code:** `market.rs`, `marketorder.rs`; tunables `factuals.config.market` /
 `market_priority`.
