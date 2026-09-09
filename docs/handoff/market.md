@@ -16,7 +16,7 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 | AMV history ring | Seed opening AMV; push close after salability. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
-| New orders after a fill | **Not** added |
+| New orders after a fill | Pop `next_shopping_trip` waves. Firms do not re-emit |
 | Leftover book carry | Reported then dropped; next day recasts from `create_orders` |
 | Multimatch | Later. Do not start |
 
@@ -31,21 +31,28 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 2. **Collate** opening supply/demand/buyers/suppliers. Zero day exchange
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).
-3. **Loop** until the buy book is empty: one matched pair plus hopeless
-   front-group buys. Hopeless -> `unavailable_goods` (no meeting, no fee, no
-   renew). Matched: buyer `buy`, seller `evaluate`; accept -> `finalize` +
-   wagon bill; reject / no proposal -> wash. See `deals.md`.
+3. **Waves:** match until no pair. Hopeless front-group buys are **parked**
+   (no fee, not unavailable). Matched: buyer `buy`, seller `evaluate`;
+   accept -> `finalize` + wagon bill; leftover orders scale down.
+   Then each pop with transport cover for the door runs
+   `next_shopping_trip` (open/parked request => offer only). Wash-closed
+   goods are skipped that day (not the same as parked/no-seller). If
+   anything posted, parked buys return and rematch. If not, parked ->
+   `unavailable_goods`. Firms do not re-emit. See `deals.md`.
 4. **Cleanup:** clear member pops' `current_orders`; leftover books pull AMV;
    salability lerps; push each good's close.
 
 After an accepted deal, leftover sell/offer amounts clamp to on-hand.
+Trip door cover: unreserved Time plus other transport on-hand. Wash-closed
+goods are not re-requested that day.
 
 ## Matching
 
 One pass, **does not mutate** the books. Buys by priority (lowest first); sells
 by target good id. Only the **front** buy-priority group (shuffled). At most
 **one** weighted sell. Coincidence doubles that sell's weight for this pick
-only when both named counters match (`SELL_COINCIDENCE_WEIGHT = 2.0`).
+only when both named counters match (`SELL_COINCIDENCE_WEIGHT = 2.0`). Pop
+request/offer may name a counter **good** without an amount.
 Self-trade skipped. No other-origin seller -> `unmatched_buys` (may be several).
 Matchable leftovers in the same group stay. Do **not** add AMV into matching.
 Do not batch several deals. RNG: `rand` 0.9.

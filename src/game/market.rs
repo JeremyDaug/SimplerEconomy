@@ -6,7 +6,7 @@ use rand::seq::SliceRandom;
 
 use crate::game::actor::Actor;
 use crate::game::config::{market_constants, market_priority, MarketConfig};
-use crate::game::deal::{DealMaker, DealResponse};
+use crate::game::deal::{transport_cover_on_hand, DealMaker, DealResponse};
 use crate::game::firm::Firm;
 use crate::game::good::TIME;
 use crate::game::marketorder::{priority_in_band, wealth_unit_rank, MarketOrder};
@@ -179,6 +179,68 @@ fn pick_available_sell<R: Rng + ?Sized>(
         rng.random_range(0..available.len())
     };
     Some(available[pick])
+}
+
+/// Moves `buys` at `indices` onto `parked` (descending so later indices stay valid).
+fn park_buys(buys: &mut Vec<MarketOrder>, indices: &[usize], parked: &mut Vec<MarketOrder>) {
+    let mut remove = indices.to_vec();
+    remove.sort_unstable();
+    remove.dedup();
+    for i in remove.into_iter().rev() {
+        parked.push(buys.remove(i));
+    }
+}
+
+/// Live book orders belonging to `origin`.
+fn orders_for_origin(
+    origin: Actor,
+    buys: &[MarketOrder],
+    sells: &[MarketOrder],
+    parked: &[MarketOrder],
+) -> Vec<MarketOrder> {
+    buys.iter()
+        .chain(sells.iter())
+        .chain(parked.iter())
+        .filter(|order| order.origin == origin)
+        .cloned()
+        .collect()
+}
+
+/// Transport cover available for another shopping trip. Time uses unreserved
+/// stock; other transport goods use on-hand quantity.
+fn shopping_cover(pop: &Pop, factuals: &Factuals) -> f64 {
+    transport_cover_on_hand(
+        pop.property.iter().map(|(&id, row)| {
+            let qty = if id == TIME {
+                row.available().max(0.0)
+            } else {
+                row.quantity.max(0.0)
+            };
+            (id, qty)
+        }),
+        factuals,
+    )
+}
+
+fn max_pop_wealth(
+    market: &Market,
+    pops: &HashMap<usize, Pop>,
+    history: &MarketHistory,
+) -> f64 {
+    let mut max_wealth = 0.0;
+    for &id in &market.pops {
+        let pop = pops.get(&id).expect("market pop missing from pops");
+        let households = pop.demographics.household.count;
+        let per_household = if households > 0.0 {
+            pop.property_wealth_amv(history) / households
+        } else {
+            0.0
+        };
+        if per_household > max_wealth {
+            max_wealth = per_household;
+        }
+    }
+    max_wealth
 }
 
 /// Pushes each order into the buy book (`target_amount` > 0) or the sell book
@@ -448,18 +510,19 @@ impl Market {
     ///    Institution and state orders are not collected yet.
     /// 2. Collate opening supply, demand, buyers, and suppliers onto
     ///    [`MarketGood`] rows.
-    /// 3. Match loop, until no buy remains that can pair:
-    ///    1. [`Market::match_orders`] (one pair, plus hopeless front-group buys).
-    ///    2. Unmatched buys (no other-origin seller): mark the good on
-    ///       [`Market::unavailable_goods`], no transport fee, no renew.
-    ///    3. Matched pair: buyer `buy` (that basket is the buyer's accept),
-    ///       seller `evaluate`. Accept -> [`DealMaker::finalize`] both
-    ///       parties, buyer pays `transport_needed` after the map, leftover
-    ///       orders reinserted. Reject / no proposal -> wash (flat
-    ///       [`market_constants::TRANSACTION_COST`] from on-hand; buyer may
-    ///       renew up to [`market_constants::BUY_TRY_LIMIT`] retries).
-    ///    4. New orders after a fill (`Pop::next_shopping_trip`, firm re-emit)
-    ///       are deferred.
+    /// 3. Waves until shopping trips emit nothing:
+    ///    1. Match until no pair can be made. Hopeless front-group buys
+    ///       (no other-origin seller) are **parked** — no fee, not
+    ///       unavailable yet.
+    ///    2. Matched pair: buyer `buy`, seller `evaluate`. Accept ->
+    ///       finalize + wagon bill; leftover orders scale down and stay.
+    ///       Wash: flat door fee; buyer may renew up to `BUY_TRY_LIMIT`.
+    ///    3. Each pop with unreserved Time for the door runs
+    ///       [`Pop::next_shopping_trip`]. Open/parked requests skip a new
+    ///       request (offer only). Firms do not re-emit.
+    ///    4. If any trip posted, parked buys return to the book and the
+    ///       wave rematches. If none posted, parked buys become unmatched
+    ///       / [`Market::unavailable_goods`].
     /// 4. Cleanup: clear member pops' `current_orders`. AMV is written on
     ///    [`MarketGood`] as meetings resolve (history stays the opening
     ///    snapshot). Salability updates from payment/tender after the loop.
@@ -484,56 +547,49 @@ impl Market {
         self.collate_order_books(&buys, &sells, &factuals.config.market);
 
         let mut steps = 0usize;
+        let mut parked: Vec<MarketOrder> = Vec::new();
+        let mut exhausted: HashSet<usize> = HashSet::new();
+        let door = wash_transport(factuals);
         loop {
-            steps += 1;
-            debug_assert!(steps < 1_000_000, "market day failed to terminate");
+            loop {
+                steps += 1;
+                debug_assert!(steps < 1_000_000, "market day failed to terminate");
 
-            buys.sort_by(|a, b| {
-                a.priority
-                    .partial_cmp(&b.priority)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            sells.sort_by_key(|order| order.target);
+                buys.sort_by(|a, b| {
+                    a.priority
+                        .partial_cmp(&b.priority)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                sells.sort_by_key(|order| order.target);
 
-            let batch = Self::match_orders_with_coincidence(
-                &buys,
-                &sells,
-                rng,
-                factuals.config.market_priority.sell_coincidence_weight,
-            );
-            if batch.is_empty() {
-                break;
-            }
+                let batch = Self::match_orders_with_coincidence(
+                    &buys,
+                    &sells,
+                    rng,
+                    factuals.config.market_priority.sell_coincidence_weight,
+                );
+                if batch.matched.is_none() {
+                    park_buys(&mut buys, &batch.unmatched_buys, &mut parked);
+                    break;
+                }
 
-            let matched = batch.matched.map(|pair| {
-                (
-                    buys[pair.buy_index].clone(),
-                    sells[pair.sell_index].clone(),
-                    pair.sell_index,
-                )
-            });
-
-            for &i in &batch.unmatched_buys {
-                self.unavailable_goods.insert(buys[i].target);
-                report.unmatched_buys.push(buys[i].clone());
-            }
-
-            let mut remove_buys = batch.unmatched_buys.clone();
-            if let Some(pair) = batch.matched {
+                let pair = batch.matched.unwrap();
+                let buy_order = buys[pair.buy_index].clone();
+                let sell_order = sells[pair.sell_index].clone();
+                let mut remove_buys = batch.unmatched_buys.clone();
                 remove_buys.push(pair.buy_index);
-            }
-            remove_buys.sort_unstable();
-            remove_buys.dedup();
-            for i in remove_buys.into_iter().rev() {
-                buys.remove(i);
-            }
-            if let Some((_, _, sell_index)) = matched {
-                sells.remove(sell_index);
-            }
+                remove_buys.sort_unstable();
+                remove_buys.dedup();
+                for i in remove_buys.into_iter().rev() {
+                    let order = buys.remove(i);
+                    if batch.unmatched_buys.contains(&i) {
+                        parked.push(order);
+                    }
+                }
+                sells.remove(pair.sell_index);
 
-            if let Some((buy_order, sell_order, _)) = matched {
                 self.settle_pair(
-                    buy_order,
+                    buy_order.clone(),
                     sell_order,
                     &history,
                     factuals,
@@ -543,7 +599,64 @@ impl Market {
                     &mut sells,
                     &mut report.meetings,
                 );
+                if let Some(meeting) = report.meetings.last() {
+                    if let MeetingOutcome::Wash { closed: true, .. } = meeting.outcome {
+                        exhausted.insert(buy_order.target);
+                    }
+                }
             }
+
+            let mut any_new = false;
+            let mut pop_ids: Vec<usize> = self.pops.iter().copied().collect();
+            pop_ids.sort_unstable();
+            let max_wealth = max_pop_wealth(self, pops, &history);
+            for &id in &pop_ids {
+                let pop = pops
+                    .get_mut(&id)
+                    .unwrap_or_else(|| panic!("market pop {id} missing from pops"));
+                pop.current_orders = orders_for_origin(
+                    Actor::Pop(id),
+                    &buys,
+                    &sells,
+                    &parked,
+                );
+                if shopping_cover(pop, factuals) + f64::EPSILON < door {
+                    continue;
+                }
+                let households = pop.demographics.household.count;
+                let wealth = if households > 0.0 {
+                    pop.property_wealth_amv(&history) / households
+                } else {
+                    0.0
+                };
+                let mut skip = self.unavailable_goods.clone();
+                skip.extend(exhausted.iter().copied());
+                let mut new_orders = pop.next_shopping_trip(&history, factuals, &skip);
+                if new_orders.is_empty() {
+                    continue;
+                }
+                any_new = true;
+                let prio = &factuals.config.market_priority;
+                for order in &mut new_orders {
+                    if order.target_amount > 0.0 {
+                        order.set_priority(priority_in_band(
+                            prio.pop_start,
+                            prio.pop_end,
+                            wealth_unit_rank(wealth, max_wealth),
+                        ));
+                    }
+                }
+                split_into_books(new_orders, &mut buys, &mut sells);
+            }
+
+            if !any_new {
+                for order in parked.drain(..) {
+                    self.unavailable_goods.insert(order.target);
+                    report.unmatched_buys.push(order);
+                }
+                break;
+            }
+            buys.extend(parked.drain(..));
         }
 
         for &id in &self.pops {
@@ -929,7 +1042,7 @@ impl Market {
         &self,
         history: &MarketHistory,
         factuals: &Factuals,
-        pops: &HashMap<usize, Pop>,
+        pops: &mut HashMap<usize, Pop>,
         firms: &HashMap<usize, Firm>,
     ) -> (Vec<MarketOrder>, Vec<MarketOrder>) {
         let mut buys = Vec::new();
@@ -952,7 +1065,7 @@ impl Market {
         }
 
         for &id in &self.pops {
-            let pop = pops.get(&id).expect("market pop missing from pops");
+            let pop = pops.get_mut(&id).expect("market pop missing from pops");
             let per_household = wealth[&id];
             let mut orders = pop.create_orders(history, factuals, &self.unavailable_goods);
             for order in &mut orders {
@@ -2139,6 +2252,16 @@ mod match_orders_should {
     }
 
     #[test]
+    fn request_and_offer_with_the_same_named_counter_are_a_coincidence() {
+        let buy = request(1, 10, 2.0, market_priority::POP_START).with_counter_offer(99);
+        let sell = offer(2, 10, 2.0, 1.5).with_counter_offer(99);
+        let w = market_priority::SELL_COINCIDENCE_WEIGHT;
+        assert!((sell_match_weight_with(&buy, &sell, w) - 3.0).abs() < 1e-12);
+        assert!(buy.is_request_order());
+        assert!(sell.is_offer_order());
+    }
+
+    #[test]
     fn pick_weighted_index_walks_the_roll() {
         assert_eq!(pick_weighted_index(&[1.0, 9.0], 0.0), 0);
         assert_eq!(pick_weighted_index(&[1.0, 9.0], 0.999), 0);
@@ -2203,6 +2326,22 @@ mod run_market_day_should {
         market
     }
 
+    fn extra_desire(good: usize, amount: f64) -> crate::game::desire::Desire {
+        use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+        use crate::game::scalingfactor::ScalingFactor;
+        Desire {
+            source: DesireSource::Species(0, 1),
+            priority: 0,
+            target: vec![DesireTarget::new(good, DesireTargetType::Consume, 1.0)],
+            amount,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Household(1.0),
+            decay: 0.0,
+        }
+    }
+
     fn shopper(id: usize, coin: f64, grain_shop: f64) -> Pop {
         let mut pop = Pop {
             id,
@@ -2255,7 +2394,7 @@ mod run_market_day_should {
         market.firms.insert(1);
 
         let mut pops = HashMap::new();
-        pops.insert(1, shopper(1, 10.0, 4.0));
+        pops.insert(1, shopper(1, 4.0, 4.0));
         let mut firms = HashMap::new();
         firms.insert(1, farm(1, 10.0, 10.0));
 
@@ -2276,7 +2415,7 @@ mod run_market_day_should {
         assert!((coin.volume() - 4.0).abs() < 1e-12);
 
         assert!((pops[&1].property[&GRAIN].quantity - 4.0).abs() < 1e-12);
-        assert!((pops[&1].property[&COIN].quantity - 6.0).abs() < 1e-12);
+        assert!((pops[&1].property[&COIN].quantity).abs() < 1e-12);
         assert!((firms[&1].property[&GRAIN].quantity - 6.0).abs() < 1e-12);
         assert!((firms[&1].property[&COIN].quantity - 4.0).abs() < 1e-12);
         assert!((firms[&1].property[&GRAIN].sold - 4.0).abs() < 1e-12);
@@ -2439,13 +2578,61 @@ mod run_market_day_should {
     }
 
     #[test]
+    fn shopping_trip_after_a_fill_posts_an_extra_desire() {
+        let mut market = priced_market();
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pop = shopper(1, 20.0, 4.0);
+        pop.desires[0].push(extra_desire(BREAD, 10.0));
+        let mut pops = HashMap::new();
+        pops.insert(1, pop);
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        let report = market.run_market_day(
+            &factuals().with_good(test_good(BREAD, "bread")),
+            &mut pops,
+            &mut firms,
+            &mut rng(),
+        );
+        assert!((pops[&1].property[&GRAIN].quantity - 4.0).abs() < 1e-12);
+        assert!(report.unmatched_buys.iter().any(|order| order.target == BREAD));
+        assert!(market.unavailable_goods.contains(&BREAD));
+    }
+
+    #[test]
+    fn shopping_trip_skips_when_the_door_cannot_be_paid() {
+        let mut market = priced_market();
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pop = shopper_with_cargo(1, 20.0, 4.0, 1.0);
+        pop.desires[0].push(extra_desire(BREAD, 10.0));
+        let mut pops = HashMap::new();
+        pops.insert(1, pop);
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        let report = market.run_market_day(
+            &factuals_with_cargo().with_good(test_good(BREAD, "bread")),
+            &mut pops,
+            &mut firms,
+            &mut rng(),
+        );
+        assert!((pops[&1].property[&GRAIN].quantity - 4.0).abs() < 1e-12);
+        assert!(report.unmatched_buys.iter().all(|order| order.target != BREAD));
+        assert!(!market.unavailable_goods.contains(&BREAD));
+    }
+
+    #[test]
     fn report_records_a_trade_and_leftover_sell() {
         let mut market = priced_market();
         market.pops.insert(1);
         market.firms.insert(1);
 
         let mut pops = HashMap::new();
-        pops.insert(1, shopper(1, 10.0, 4.0));
+        pops.insert(1, shopper(1, 4.0, 4.0));
         let mut firms = HashMap::new();
         firms.insert(1, farm(1, 10.0, 10.0));
 
@@ -2480,7 +2667,7 @@ mod run_market_day_should {
         market.firms.insert(1);
 
         let mut pops = HashMap::new();
-        pops.insert(1, shopper(1, 10.0, 1.0));
+        pops.insert(1, shopper(1, 3.0, 1.0));
         let mut firms = HashMap::new();
         // Sell equals the 1-unit fill so leftover 10% does not reverse accept lerp.
         firms.insert(1, farm(1, 1.0, 1.0));

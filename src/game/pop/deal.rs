@@ -15,7 +15,8 @@ impl DealMaker for Pop {
     /// # Buy
     ///
     /// Returns a proposed basket as buyer, or `None` if no tender can be named.
-    /// Uses excess above `shop_target`. Seller's named counter first (any
+    /// Uses free stock above `shop_target.max(reserved)`, minus units listed
+    /// on offer orders in `current_orders`. Seller's named counter first (any
     /// salability), then other excess by salability. Highly salable goods
     /// (and that counter) cover the fill first; lower salability only if
     /// those cannot. Shrinks the fill if still short. Does not move stock.
@@ -143,7 +144,7 @@ fn pop_uses_good(pop: &Pop, good: usize) -> bool {
 }
 
 /// Returns how many units of `good` this pop can tender (0 if it is `targeted_good`).
-/// Excess above `shop_target`.
+/// Free stock above `shop_target.max(reserved)`, minus listed offer qty.
 fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
     if good == targeted_good {
         return 0.0;
@@ -151,10 +152,17 @@ fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factu
     if !factuals.find_good(good).is_buyable() {
         return 0.0;
     }
-    pop.property
-        .get(&good)
-        .map(|row| row.exchange().max(0.0))
-        .unwrap_or(0.0)
+    let Some(row) = pop.property.get(&good) else {
+        return 0.0;
+    };
+    let keep = row.shop_target.max(row.reserved);
+    let listed: f64 = pop
+        .current_orders
+        .iter()
+        .filter(|order| order.target == good && order.target_amount < 0.0)
+        .map(|order| -order.target_amount)
+        .sum();
+    (row.quantity - keep - listed).max(0.0)
 }
 
 /// Returns this pop's tenderable goods as `(id, qty)`, highest salability first.

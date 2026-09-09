@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-08
+**Updated:** 2026-09-09
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -14,20 +14,31 @@ invariants and traps, not a substitute for the code.
 ## Status
 
 - Pop economic day is closed through record keeping.
+- Pop `create_orders` posts ceil'd shop-plan requests, freezes tender cover,
+  then floor'd offers of leftover surplus. Offers/requests may name a
+  `counter_offer` good (no AMV or amount). `run_market_day` parks hopeless
+  buys, then waves `next_shopping_trip` (1 request + 1 offer, or offer only
+  if a request is still open) until trips emit nothing, then tombstones.
+  Listed offer units and `reserved` are not tenderable.
 - Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
   production phases are stubs.
 - `Firm::plan` rewrites production and property targets (realized profit, sell
   success, confidence). Own quote, not lerp-to-market.
-- Time is good id 0 (untradeable, transport 1.0). Pops get 48 * household labor
+- Time is good id 0 (untradeable, transport 1.0). Pops get 64 * household labor
   at `Pop::start_day`.
 - Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
   [`Market::budget_labor`]. Time AMV is stamped from contracts (hours-weighted
   wage AMV), not goods matching. Firms do **not** rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`.
-- Tester CLI is **paused** unless asked. Living roster is 100x (`ROSTER_SCALE`)
-  on households, lines, hours, and stocks. `keep_alive on` is an emergency
-  firm subsidy (1-iteration floor + coin/inputs); default off.
+- Tester CLI is **paused** unless asked. Living roster is one household pop
+  per world good, no firms. Opening AMV 1.0 / salability 0.3 on every good.
+  Grouped consume desires (basic/common/luxury) are 1 unit per member
+  (5 units), duplicated onto every pop. Morning endowment: 1 of each
+  non-Time good and 30 of `pop.id % n_goods`. Coin is `gold_token`; iron
+  ore is `iron`.
+  `keep_alive on` is an emergency firm subsidy (1-iteration floor +
+  coin/inputs); default off.
   Desire amounts do not rise with success.
   Luxury shop_target adds an extra level and leftover liquid above save.
   Day-end leftover AMV is `AMV * (1 ± leftover_blend * unsat / (unsat +
@@ -89,9 +100,7 @@ Nearby leftovers are traps, not implied scope: multimatch; `sell` rewrite /
 haggling / make-change; PlayState intramarket or production wire (unless that
 **is** the task); tester pages / extra CSV; species-culture-religion TOML;
 init/save data; class demographics; capital amortization; AMV as a matching
-weight; `next_shopping_trip` / re-emit after fill; pop offers; intra-day luxury
-loop (`create_orders` still one luxury pass); leftover AMV further retune;
-stale comments (notify, do not rewrite); repo-wide function comments.
+weight; intra-day luxury loop; leftover AMV further retune.
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
 If they ask "what's next": wire PlayState `phase_intra_market_day` to

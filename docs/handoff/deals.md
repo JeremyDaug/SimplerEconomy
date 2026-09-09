@@ -19,11 +19,14 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
 - `ProposedDeal.goods` is the **seller's inventory change** (negative = sold,
   positive = tender). Seller adds the map; buyer subtracts it.
 - `buy` ranks the seller's named counter first (any salability), then live
-  tenders by salability (pop: excess above `shop_target`; firm: `free_for_market`
-  minus units `create_orders` would sell or liquidate). `take_tenders` then
-  covers from that set plus `HIGH_SALABILITY` (`0.8`). Low-sal only if those
-  cannot cover. Shrink fill only after all tenders. Payment AMV above
-  `amv_target` or the row buy cap does **not** void the basket.
+  tenders by salability (pop: free stock above `shop_target.max(reserved)`,
+  minus listed offer qty on `current_orders`; firm: `free_for_market`
+  minus units `create_orders` would sell or liquidate). Pop offer
+  `counter_offer` is a good-only hint (no amount); payment still uses market
+  AMV. `take_tenders` then covers from that set plus `HIGH_SALABILITY`
+  (`0.8`). Low-sal only if those cannot cover. Shrink fill only after all
+  tenders. Payment AMV above `amv_target` or the row buy cap does **not**
+  void the basket.
 - **Make change** is returning excess, not `take_tenders`.
 - Keep = received AMV / given AMV. Given goods are full AMV. Received
   use-goods (pop shop/desire, firm `use_target`) skip salability; others *
@@ -35,14 +38,15 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
 - `take_good` removes the property row and returns qty (`0` if missing).
 - A sell-plan good can still tender its exchange slice; mid-day salability
   reclassify vs the morning sell order can overdraw (later: freeze the morning
-  split).
+  split). Pop offers are frozen out of tenders via `current_orders`.
 
 ## Whole units vs fractional
 
 Orders and deal-map **goods** are whole units (including a transport-tagged
-good in the deal map). Inventory may hold fractions. Shortfall below 1 does
-not post. Payment ceils the AMV (or named-counter) cost of the largest whole
-fill on-hand can cover. Helpers: `util::whole_units`, `whole_units_up`.
+good in the deal map). Inventory may hold fractions. Pop **requests** ceil
+the shop shortfall; **offers** floor leftover free stock. Payment ceils the
+AMV (or named-counter) cost of the largest whole fill on-hand can cover.
+Helpers: `util::whole_units`, `whole_units_up`.
 
 **Not whole-unit:** AMV, and the wagon bill (may spend a fraction of cargo).
 

@@ -287,7 +287,7 @@ fn shop_from_actors(session: &mut Session) -> String {
     session.buys.clear();
     session.sells.clear();
     let mut pop_orders = Vec::new();
-    for pop in &session.pops {
+    for pop in &mut session.pops {
         pop_orders.extend(pop.create_orders(
             &session.history,
             &session.factuals,

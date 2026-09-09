@@ -10,12 +10,12 @@ ratio, reserved, sentiment). Household primer:
 | Piece | Status |
 |-------|--------|
 | Consume / growth / sentiments / record keeping / decay | Closed on `Pop`. PlayState wires these as they mature |
-| `create_orders` | Three passes, whole-unit **requests**. Used by `run_market_day` |
+| `create_orders` | Shop-plan **requests** (ceil) then leftover **offers** (floor). Tender freeze covers posted request AMV. Used by `run_market_day` |
 | `start_day` | Exists. Tester uses it. PlayState day-start still stub |
 | `extract_special_resources` | First pass exists. Yield is **not** routed onto `State.resources` |
-| `next_shopping_trip` | `todo!()` |
-| Pop offers | Not generated |
-| Shop ambition / looping luxury | Record keeping adds one extra luxury level and leftover liquid above save onto luxury shop. Staple `Desire.amount` stays fixed. `create_orders` still one luxury pass. `next_shopping_trip` still `todo!()` |
+| `next_shopping_trip` | Solidify, then at most one request and one offer (full remaining size). Open/parked request => offer only. `run_market_day` waves call it |
+| Pop offers | Morning leftover after tender cover. Named `counter_offer` good only (no AMV, no amount). Trip adds at most one more good |
+| Shop ambition / looping luxury | Record keeping adds one extra luxury level and leftover liquid above save onto luxury shop. Staple `Desire.amount` stays fixed. `create_orders` does not extra-walk luxury. Trip can post one extra desire request |
 | Class demographics | Unimplemented (vault: park this) |
 | Migration leaves | Orchestrator exists; leaves are `todo!()` |
 
@@ -34,9 +34,14 @@ demographic ids only. Do not reopen the household-rates model.
 - Reserved is never negative. Extra luxury consume eats unreserved stock.
 - Shop ambition: luxury shop gets one extra level plus leftover on-hand AMV
   above need+save (cheapest luxury good). `Desire.amount` does not rise.
-  `create_orders` still one luxury pass (posts that shop). No extra staple buys.
-- `create_orders` passes: desire shop, parked non-desire shop, opportunistic
-  extra. Skip amounts `< 1` and `unavailable` goods.
+  `create_orders` posts that shop as a request; it does not extra-walk luxury.
+- `create_orders`: desire shop, then parked non-desire shop (ceil requests),
+  then cover-then-offer leftover free stock. Skip `unavailable` on requests
+  only. Extra desire buys are `next_shopping_trip`, not morning.
+- Tender freeze: salability first, then lowest desire importance. Listed
+  offer units (and `reserved`) are not tenderable. Sell size floors; buy size
+  ceils. Offers name the first remaining request as `counter_offer`; requests
+  name the most salable free good. No AMV target or counter amount.
 - Planning only lerps savings ratio / time preference / risk appetite.
 - `DemoDesire::create_desire` is the only demo-to-pop path (`derive_desire`
   folded in). It scales `amount` **and** additive effects (player resources,

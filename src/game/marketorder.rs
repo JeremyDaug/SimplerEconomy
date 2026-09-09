@@ -19,9 +19,10 @@ use crate::game::util::{is_whole_unit, lerp};
 /// - Their AMV target for acceptance.
 /// - A good they are seeking in return.
 /// - The amount of the other good they are requesting.
-/// 
-/// These last parts are only allowed if the actor has access to Buy and Sell orders.
-/// Pops do not have access to this, but firms, institutions, and states do.
+///
+/// Buy and sell orders (firms, institutions, states) set all three. Pop
+/// request and offer orders may name a `counter_offer` **good** without an
+/// AMV target or counter amount: a coincidence hint, not a price.
 ///
 /// Orders also carry a purchase **order priority** (lower goes first). Named slots
 /// live in [`market_priority`]. Bands, ranking, and what is not wired yet are in
@@ -335,6 +336,19 @@ impl MarketOrder {
         self
     }
 
+    /// Names a preferred counter good without an AMV target or counter amount.
+    ///
+    /// Request and offer only. `good` must differ from `target`.
+    pub fn with_counter_offer(mut self, good: usize) -> Self {
+        debug_assert!(
+            self.amv_target.is_none() && self.counter_offer_amount.is_none(),
+            "priced buy/sell orders set counter amount at construction"
+        );
+        debug_assert!(good != self.target, "counter_offer must differ from target");
+        self.counter_offer = Some(good);
+        self
+    }
+
     /// Sets order priority.
     /// Buy/request: pops in `[POP_START, POP_END)`, firms in
     /// `[FIRM_MERCHANT_START, FIRM_PRODUCER_END)`. Sell/offer: `priority > 0.0`.
@@ -367,65 +381,56 @@ impl MarketOrder {
     }
 
     pub fn is_buy_order(&self) -> bool {
-        if self.amv_target.is_some() && self.counter_offer.is_some() && self.counter_offer_amount.is_some() {
-            // check that the target amount is positive, and the counter_offer_amount is negative 
-            if self.target_amount > 0.0 && self.counter_offer_amount.unwrap() < 0.0 {
-                true
-            } else {
-                false
-            }
-        } else if self.amv_target.is_none() && self.counter_offer.is_none() && self.counter_offer_amount.is_none() {
-            // if they are none, then it can't be a buy order.
+        if self.is_priced() {
+            self.target_amount > 0.0 && self.counter_offer_amount.unwrap() < 0.0
+        } else if self.is_unpriced() {
             false
         } else {
-            unreachable!("Market Orders cannot mix it's optionals.");
+            unreachable!("Market Orders cannot mix their optionals.");
         }
     }
 
     pub fn is_sell_order(&self) -> bool {
-        if self.amv_target.is_some() && self.counter_offer.is_some() && self.counter_offer_amount.is_some() {
-            // check that the target amount is negative, and the counter_offer_amount is positive 
-            if self.target_amount < 0.0 && self.counter_offer_amount.unwrap() > 0.0 {
-                true
-            } else {
-                false
-            }
-        } else if self.amv_target.is_none() && self.counter_offer.is_none() && self.counter_offer_amount.is_none() {
-            // if they are none, then it can't be a buy order.
+        if self.is_priced() {
+            self.target_amount < 0.0 && self.counter_offer_amount.unwrap() > 0.0
+        } else if self.is_unpriced() {
             false
         } else {
-            unreachable!("Market Orders cannot mix it's optionals.");
+            unreachable!("Market Orders cannot mix their optionals.");
         }
     }
 
     pub fn is_offer_order(&self) -> bool {
-        if self.amv_target.is_some() && self.counter_offer.is_some() && self.counter_offer_amount.is_some() {
-            // if they are some, then it can't be a offer or request order.
+        if self.is_priced() {
             false
-        } else if self.amv_target.is_none() && self.counter_offer.is_none() && self.counter_offer_amount.is_none() {
-            if self.target_amount < 0.0 {
-                true
-            } else {
-                false
-            }
+        } else if self.is_unpriced() {
+            self.target_amount < 0.0
         } else {
-            unreachable!("Market Orders cannot mix it's optionals.");
+            unreachable!("Market Orders cannot mix their optionals.");
         }
     }
 
     pub fn is_request_order(&self) -> bool {
-        if self.amv_target.is_some() && self.counter_offer.is_some() && self.counter_offer_amount.is_some() {
-            // if they are some, then it can't be a offer or request order.
+        if self.is_priced() {
             false
-        } else if self.amv_target.is_none() && self.counter_offer.is_none() && self.counter_offer_amount.is_none() {
-            if self.target_amount > 0.0 {
-                true
-            } else {
-                false
-            }
+        } else if self.is_unpriced() {
+            self.target_amount > 0.0
         } else {
-            unreachable!("Market Orders cannot mix it's optionals.");
+            unreachable!("Market Orders cannot mix their optionals.");
         }
+    }
+
+    /// Buy/sell: AMV target, named counter, and counter amount are all set.
+    fn is_priced(&self) -> bool {
+        self.amv_target.is_some()
+            && self.counter_offer.is_some()
+            && self.counter_offer_amount.is_some()
+    }
+
+    /// Request/offer: no AMV target and no counter amount. A counter **good**
+    /// is allowed as a coincidence hint.
+    fn is_unpriced(&self) -> bool {
+        self.amv_target.is_none() && self.counter_offer_amount.is_none()
     }
 }
 
@@ -447,6 +452,35 @@ mod market_order_should {
         assert_eq!(order.priority, market_priority::POP_START);
         assert_eq!(order.tries, 0);
         assert!(order.is_request_order());
+    }
+
+    #[test]
+    fn named_counter_good_keeps_request_and_offer_unpriced() {
+        let request = MarketOrder::request_order(
+            Actor::Pop(1),
+            10,
+            2.0,
+            market_priority::POP_START,
+        )
+        .with_counter_offer(7);
+        assert!(request.is_request_order());
+        assert!(!request.is_buy_order());
+        assert_eq!(request.counter_offer, Some(7));
+        assert!(request.amv_target.is_none());
+        assert!(request.counter_offer_amount.is_none());
+
+        let offer = MarketOrder::offer_order(
+            Actor::Pop(1),
+            8,
+            -3.0,
+            1.5,
+        )
+        .with_counter_offer(10);
+        assert!(offer.is_offer_order());
+        assert!(!offer.is_sell_order());
+        assert_eq!(offer.counter_offer, Some(10));
+        assert!(offer.amv_target.is_none());
+        assert!(offer.counter_offer_amount.is_none());
     }
 
     #[test]
