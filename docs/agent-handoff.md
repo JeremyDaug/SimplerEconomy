@@ -24,30 +24,38 @@ invariants and traps, not a substitute for the code.
   `run_market_day` parks hopeless front-group buys then keeps matching
   later bands, then waves `next_shopping_trip`
   until trips emit nothing, then tombstones. Listed offer units and
-  `reserved` are not tenderable. World goods currently decay 1.0 daily.
+  `reserved` are not tenderable. World goods use per-good `decay_rate` in
+  `goods.toml`.
   After decay, salability is capped at `1 - decayed/volume` (eaten stock
   is volume, not rot). Each market day AMV is rescaled so one unit of
   each tradeable good averages 10.0 (after salability, then the close).
+  Firm AMV quotes scale with it; recorded trail samples do not.
   A pop that receives a used/desired good ignores
   the AMV floor; unused-only keep is 0.50 after the salability haircut.
 - Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
   production phases are stubs.
 - `Firm::plan` rewrites production and property targets (realized profit, sell
-  success, confidence). Own quote, not lerp-to-market.
+  success). Pace is `planning_lerp_rate`. Own quote, not lerp-to-market.
 - Time is good id 0 (untradeable, transport 1.0). Pops get 64 * household labor
   at `Pop::start_day`.
 - Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
   [`Market::budget_labor`]. Time AMV is stamped from contracts (hours-weighted
   wage AMV), not goods matching. Firms do **not** rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
-- World goods, processes, and config load from `data/world/`.
-- Tester CLI is **paused** unless asked. Living roster is one household pop
-  per world good, no firms. Opening AMV 10.0 / salability 0.3 on every good.
+- World goods, processes, and config load from `data/world/`. Processes are
+  1 Time → 15 of each good (Time is process 28).
+- Tester CLI is **paused** unless asked. Living roster loads from `data/init/`
+  (one household pop and one remainder-owner firm per world good). Opening AMV 10.0 / salability 0.3 on every good.
   Grouped consume desires (basic/common/luxury) are 1 unit per member
-  (5 units), duplicated onto every pop. **No** morning 1-of-each endowment
-  (`DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
-  only (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pop 28 is Time
-  and is the untradeable control). Coin is `gold_token`; iron ore is `iron`.
+  (5 units), duplicated onto every pop. **No** opening 1-of-each kit
+  (init starter empty; `DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
+  grant is 0 (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pop 28 is Time
+  and is the untradeable control). Each firm is that pop's remainder
+  owner-operator: 10 Time, no wage basket, 1 Time → 15 line (150 output).
+  Opening stock is process outputs times line target (yesterday succeeded;
+  10 x 15 = 150). Posted firm sells cap at max market salability times
+  daily output; remainder leftover is extra above that. Remainder owners
+  cover an AMV shortfall on a loss. Coin is `gold_token`; iron ore is `iron`.
   `keep_alive on` is an emergency firm subsidy (1-iteration floor +
   coin/inputs); default off.
   Desire amounts do not rise with success.
@@ -66,7 +74,8 @@ produce, then consume, then plan. Call it out; do not silently "fix" either side
 
 **Live day (tester / intended lib order):**
 `start_day` -> `Market::settle_labor` -> `run_market_day` -> `run_production`
--> pop consume / sentiments / decay -> firm decay -> salability rot cap ->
+(outputs go to `held`) -> pop consume / sentiments / decay -> firm decay
+(`quantity` rots, then `held` joins `quantity`) -> salability rot cap ->
 pop `record_keeping` -> firm `record_keeping` (`plan`) ->
 `Market::budget_labor`.
 With goods decaying 1.0, planning **after** decay is required; otherwise
@@ -104,6 +113,7 @@ Match the user's task. Stay in those files.
 | Pop consume, shop/save, desires, sentiment | [`pops.md`](handoff/pops.md) | `pop.rs`, `pop/orders.rs`, `desire.rs`, `pop_property.rs` |
 | Tester CLI, `day`, CSV | [`tester.md`](handoff/tester.md) | `examples/market_tester/` |
 | World data, config, factuals | [`world.md`](handoff/world.md) | `factuals.rs`, `config.rs`, `data/world/` |
+| Init pops/firms (scenario) | [`world.md`](handoff/world.md) | `init.rs`, `data/init/` |
 | PlayState / turn wiring | [`turns.md`](handoff/turns.md) | `playstate.rs` |
 | Order-priority numbers (deferred ranking too) | `docs/proposals/market-order-priority.md` | `config::market_priority` |
 

@@ -2,16 +2,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hexx::Hex;
+use simpler_economy::game::actor::Actor;
 use simpler_economy::game::config::PopConfig;
 use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
-use simpler_economy::game::firm::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
+use simpler_economy::game::firm::{Firm, FirmPRow, ProductionLine};
+use simpler_economy::game::init::InitData;
 use simpler_economy::game::good::TIME;
 use simpler_economy::game::household::Household;
 use simpler_economy::game::market::MarketHistory;
 use simpler_economy::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
 use simpler_economy::game::sentiment::Sentiment;
-use simpler_economy::game::workforce::{PaymentTerm, Workforce};
+use simpler_economy::game::workforce::Workforce;
 
 use super::*;
 
@@ -23,8 +25,10 @@ pub(crate) const OPENING_SALABILITY: f64 = 0.3;
 
 /// Morning grant of every non-Time good.
 pub(crate) const DAILY_ENDOWMENT: f64 = 0.0;
-/// Morning output of this pop's specialty good (`pop.id % n_goods`).
-pub(crate) const DAILY_OUTPUT: f64 = 150.0;
+/// Morning pop specialty grant. 0: firms produce the day's output.
+pub(crate) const DAILY_OUTPUT: f64 = 0.0;
+/// Time units the owner-operator works. 10 Time * 15 output = 150 units.
+pub(crate) const FIRM_HOURS: f64 = 10.0;
 
 /// Bulk scale for unused firm helpers. Households, line targets, hours, and
 /// starting stocks are multiplied. AMV, salability, and per-household desire
@@ -41,8 +45,12 @@ pub(crate) fn world_data_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world")
 }
 
-/// Builds the living roster: one pop per world good, each one default
-/// household (5 members).
+pub(crate) fn init_data_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/init")
+}
+
+/// Builds the living roster: one pop and one remainder-owner firm per world
+/// good, each pop one default household (5 members).
 pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
     let factuals = Factuals::load_from_path(world_data_path())
         .unwrap_or_else(|err| panic!("load {}: {err}", world_data_path().display()));
@@ -54,15 +62,12 @@ pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
         set_quote(&mut history, id, OPENING_AMV, OPENING_SALABILITY);
     }
 
-    let pop_cfg = &factuals.config.pop;
-    let n_pops = factuals.goods.len();
-    let mut pops: Vec<Pop> = (1..=n_pops)
-        .map(|id| make_basic_pop(id, pop_cfg))
-        .collect();
-    for pop in &mut pops {
+    let mut init = InitData::load_from_path(init_data_path(), &factuals)
+        .unwrap_or_else(|err| panic!("load {}: {err}", init_data_path().display()));
+    for pop in &mut init.pops {
         pop.record_keeping(&factuals, &history);
     }
-    (pops, Vec::new(), factuals, history)
+    (init.pops, init.firms, factuals, history)
 }
 
 pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, salability: f64) {
@@ -158,6 +163,7 @@ pub(crate) fn empty_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
 
 /// Builds one living-roster pop: one household, grouped consume desires at
 /// 1 unit per member (5 units with the default 5-person household).
+#[allow(dead_code)]
 pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
     let mut pop = empty_pop(id, pop_cfg);
     let amount = pop.get_scaling_factor(ScalingFactor::All(1.0));
@@ -233,64 +239,86 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         amount,
         &[(BEER, 1.5), (TIME, 1.0)],
     ));
-    for &good in &[
-        GRAIN,
-        WATER,
-        BREAD,
-        GOLD,
-        GOLD_TOKEN,
-        JEWELRY,
-        WOOD,
-        CABINS,
-        WOOD_TOOLS,
-        BUCKETS,
-        IRON,
-        IRON_TOOLS,
-        COPPER,
-        TIN,
-        BRONZE,
-        BRONZE_TOOLS,
-        BLADES,
-        BRONZE_MIRROR,
-        BRONZE_TOKEN,
-        IRON_TOKEN,
-        COPPER_TOKEN,
-        TIN_TOKEN,
-        COAL,
-        CHARCOAL,
-        BEER,
-        CLAY,
-        POTS,
-    ] {
-        pop.property
-            .insert(good, PopPRow::new(1.0).with_target(2.0));
-    }
     pop
 }
 
-/// Roster row: wage contract, 1 coin per Time unit, no worker profit share.
-/// Lord is the owner-operator: remainder after wages, with sell piles and a
-/// wage-float retained as growth (plan does not write growth_target yet).
-#[allow(dead_code)]
-pub(crate) fn with_worker(mut firm: Firm, pop_id: usize, hours: f64) -> Firm {
-    firm = firm.with_owner_remainder();
-    for row in firm.property.values_mut() {
-        if row.sell_target > 0.0 {
-            row.growth_target = row.growth_target.max(row.sell_target);
-        }
+/// Process whose first output is this good. World data must have exactly one.
+pub(crate) fn process_id_for_output(factuals: &Factuals, output: usize) -> usize {
+    let mut matches: Vec<usize> = factuals
+        .processes
+        .iter()
+        .filter(|(_, process)| process.outputs.iter().any(|row| row.good == output))
+        .map(|(&id, _)| id)
+        .collect();
+    matches.sort_unstable();
+    match matches.as_slice() {
+        [id] => *id,
+        [] => panic!("no process outputs good {output}"),
+        _ => panic!("multiple processes output good {output}"),
     }
-    let coin = firm.property.entry(GOLD_TOKEN).or_insert_with(FirmPRow::new);
-    coin.growth_target = coin.growth_target.max(hours);
-    firm.with_workforce(
-        Workforce::new(pop_id)
-            .with_workers(qty(10.0), qty(10.0))
-            .with_hours(hours)
-            .with_payment(PaymentTerm::new(GOLD_TOKEN, 1.0)),
-    )
 }
 
+/// One owner-operator firm for this pop's specialty. Remainder owner, no
+/// wage basket; they work `FIRM_HOURS` Time for the 1 Time -> 15 recipe.
 #[allow(dead_code)]
-pub(crate) fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine {
+pub(crate) fn make_specialty_firm(pop_id: usize, factuals: &Factuals) -> Firm {
+    let n_goods = factuals.goods.len();
+    let good = produced_good_id(pop_id, n_goods);
+    let process_id = process_id_for_output(factuals, good);
+    let process = factuals
+        .processes
+        .get(&process_id)
+        .unwrap_or_else(|| panic!("missing process {process_id}"));
+    let time_in = process
+        .inputs
+        .iter()
+        .find(|input| input.good == TIME)
+        .map(|input| input.amount)
+        .unwrap_or(1.0);
+    debug_assert!(
+        time_in > 0.0,
+        "process {process_id} Time input must be > 0.0"
+    );
+    let target = FIRM_HOURS / time_in;
+    let name = factuals
+        .goods
+        .get(&good)
+        .unwrap_or_else(|| panic!("missing good {good}"))
+        .name
+        .as_str();
+    let mut firm = Firm::new(
+        pop_id,
+        format!("firm{pop_id}-{name}"),
+        1,
+        Hex::new(0, 0),
+    )
+    .with_owner(Actor::Pop(pop_id))
+    .with_owner_remainder()
+    .with_workforce(
+        Workforce::new(pop_id)
+            .with_workers(1.0, 1.0)
+            .with_hours(FIRM_HOURS),
+    );
+    firm.production_line
+        .push(dummy_line(process_id, target, vec![TIME]));
+    let output_amt = process
+        .outputs
+        .first()
+        .map(|row| row.amount)
+        .unwrap_or(0.0);
+    let opening = target * output_amt;
+    if good != TIME && opening > 0.0 {
+        firm.property.insert(
+            good,
+            FirmPRow::new()
+                .with_quantity(opening)
+                .with_sell_target(opening),
+        );
+    }
+    firm
+}
+
+fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine {
     ProductionLine {
         process,
         target: Some(target),
@@ -303,142 +331,5 @@ pub(crate) fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> Pro
         last_amv_consumed: 0.0,
         last_amv_produced: 0.0,
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn make_farm() -> Firm {
-    let mut firm = Firm::new(1, "farm".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(1, qty(5.0), vec![TIME, WATER]));
-    // Stock matches plan's input_cover * use (2 * 5). Start a little short so
-    // a water buy posts on day 1. Bid 0.45 clears the well's 0.20 ask.
-    firm.property.insert(
-        WATER,
-        FirmPRow::new()
-            .with_quantity(qty(8.0))
-            .with_purchase_target(qty(8.0))
-            .with_use_target(qty(5.0))
-            .with_stock_target(qty(10.0))
-            .with_amv_target(0.60)
-            .with_amv_bound(FirmAmvBound::Maximum(2.5)),
-    );
-    firm.property.insert(
-        GRAIN,
-        FirmPRow::new()
-            .with_quantity(qty(45.0))
-            .with_sell_target(qty(30.0))
-            .with_amv_target(1.2)
-            .with_amv_bound(FirmAmvBound::Minimum(1.0)),
-    );
-    firm.property.insert(GOLD_TOKEN, FirmPRow::new().with_quantity(qty(120.0)));
-    firm
-}
-
-#[allow(dead_code)]
-pub(crate) fn make_bakery() -> Firm {
-    let mut firm = Firm::new(2, "bakery".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(2, qty(14.0), vec![TIME, GRAIN]));
-    // Two days of grain on the stock fence so day 1 need not buy to bake.
-    firm.property.insert(
-        GRAIN,
-        FirmPRow::new()
-            .with_quantity(qty(28.0))
-            .with_purchase_target(qty(16.0))
-            .with_use_target(qty(14.0))
-            .with_stock_target(qty(28.0))
-            .with_amv_target(2.0)
-            .with_amv_bound(FirmAmvBound::Maximum(1.5)),
-    );
-    firm.property.insert(
-        BREAD,
-        FirmPRow::new()
-            .with_quantity(qty(24.0))
-            .with_sell_target(qty(16.0))
-            .with_amv_target(2.5)
-            .with_amv_bound(FirmAmvBound::Minimum(1.8)),
-    );
-    // Coin growth is a wage float remainder cannot take (wages may still raid).
-    firm.property.insert(
-        GOLD_TOKEN,
-        FirmPRow::new()
-            .with_quantity(qty(400.0))
-            .with_growth_target(qty(90.0)),
-    );
-    firm
-}
-
-#[allow(dead_code)]
-pub(crate) fn make_mine() -> Firm {
-    let mut firm = Firm::new(3, "mine".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(3, qty(8.0), vec![TIME]));
-    firm.property.insert(
-        GOLD,
-        FirmPRow::new()
-            .with_quantity(qty(24.0))
-            .with_sell_target(qty(16.0))
-            .with_amv_target(4.0)
-            .with_amv_bound(FirmAmvBound::Minimum(3.0)),
-    );
-    firm.property.insert(
-        GOLD_TOKEN,
-        FirmPRow::new()
-            .with_quantity(qty(120.0))
-            .with_growth_target(qty(96.0)),
-    );
-    firm
-}
-
-#[allow(dead_code)]
-pub(crate) fn make_jeweler() -> Firm {
-    let mut firm = Firm::new(5, "jeweler".into(), 1, Hex::new(0, 0));
-    firm.production_line.push(dummy_line(5, qty(1.0), vec![TIME, GOLD]));
-    firm.production_line.push(dummy_line(4, qty(1.0), vec![TIME, GOLD]));
-    // Reverse mint stays idle so it does not eat the till at opening prices.
-    firm.production_line.push(dummy_line(7, 0.0, vec![TIME, GOLD_TOKEN]));
-    // 16 gold covers jewelry (3) plus mint (1) for several days without a buy.
-    firm.property.insert(
-        GOLD,
-        FirmPRow::new()
-            .with_quantity(qty(16.0))
-            .with_purchase_target(qty(4.0))
-            .with_use_target(qty(4.0))
-            .with_stock_target(qty(16.0))
-            .with_amv_bound(FirmAmvBound::Maximum(6.0)),
-    );
-    firm.property.insert(
-        JEWELRY,
-        FirmPRow::new()
-            .with_quantity(qty(12.0))
-            .with_sell_target(qty(8.0))
-            .with_amv_target(60.0)
-            .with_amv_bound(FirmAmvBound::Minimum(48.0)),
-    );
-    firm.property.insert(
-        GOLD_TOKEN,
-        FirmPRow::new()
-            .with_quantity(qty(400.0))
-            .with_sell_target(qty(150.0))
-            .with_growth_target(qty(150.0))
-            .with_amv_target(COIN_AMV)
-            .with_amv_bound(FirmAmvBound::Minimum(0.168)),
-    );
-    firm
-}
-
-#[allow(dead_code)]
-pub(crate) fn make_well() -> Firm {
-    let mut firm = Firm::new(6, "well".into(), 1, Hex::new(0, 0));
-    // 40/day covers pop water shop (~18) plus the farm restock (~12) with slack.
-    // Ask at market (0.20); floor 0.15 so leftover-AMV cheapening can still sell.
-    firm.production_line.push(dummy_line(6, qty(30.0), vec![TIME]));
-    firm.property.insert(
-        WATER,
-        FirmPRow::new()
-            .with_quantity(qty(60.0))
-            .with_sell_target(qty(30.0))
-            .with_amv_target(0.50)
-            .with_amv_bound(FirmAmvBound::Minimum(0.40)),
-    );
-    firm.property.insert(GOLD_TOKEN, FirmPRow::new().with_quantity(qty(40.0)));
-    firm
 }
 

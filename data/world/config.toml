@@ -105,6 +105,7 @@ state_after_firms = 3.1
 state_last = 5.1
 sell_actor_priority_floor = 0.01
 successful_sell_bonus = 0.25
+sell_reject_weight = 0.10
 sell_coincidence_weight = 2.0
 
 [labor]
@@ -126,7 +127,4 @@ default_margin = 0.05
 rolling_avg_weight = 0.25
 sell_success_grow = 0.80
 sell_success_shrink = 0.50
-confidence_default = 0.5
-confidence_pace_min = 0.5
-confidence_pace_max = 1.5
 keep_alive = false

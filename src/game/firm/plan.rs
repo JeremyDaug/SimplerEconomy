@@ -32,9 +32,8 @@ impl Firm {
         }
     }
 
-    /// Writes firm-wide sold/bought AMV, realized profit, sell success, and
-    /// lerps `confidence` toward today's evidence. Also lerps each selling
-    /// row's `average_price` toward today's unit sale AMV.
+    /// Writes firm-wide sold/bought AMV, realized profit, and sell success.
+    /// Also lerps each selling row's `average_price` toward today's unit sale AMV.
     fn update_records(&mut self, cfg: &FirmConfig) {
         let mut sold_amv = 0.0;
         let mut bought_amv = 0.0;
@@ -59,10 +58,6 @@ impl Firm {
                 sell_plan += row.sell_target;
             }
         }
-        let missing = self
-            .production_line
-            .iter()
-            .any(|line| !line.last_missing_goods.is_empty());
 
         let profit = if sold_cost > 0.0 {
             (sold_amv / sold_cost).max(0.0)
@@ -87,27 +82,6 @@ impl Firm {
         self.records.profit_avg = lerp(self.records.profit_avg, profit, cfg.rolling_avg_weight);
         self.records.sell_success_avg =
             lerp(self.records.sell_success_avg, success, cfg.rolling_avg_weight);
-
-        let mut evidence: f64 = 0.5;
-        if success >= cfg.sell_success_grow {
-            evidence += 0.25;
-        } else if success < cfg.sell_success_shrink {
-            evidence -= 0.25;
-        }
-        if profit > firm_constants::PROFIT_HIGH {
-            evidence += 0.25;
-        } else if profit < firm_constants::PROFIT_LOW {
-            evidence -= 0.25;
-        }
-        if missing {
-            evidence -= 0.25;
-        }
-        self.records.confidence = lerp(
-            self.records.confidence,
-            evidence.clamp(0.0, 1.0),
-            cfg.planning_lerp_rate,
-        )
-        .clamp(0.0, 1.0);
     }
 
     /// # Plan
@@ -180,8 +154,7 @@ impl Firm {
         cfg: &FirmConfig,
     ) {
         let n = self.production_line.len();
-        let confidence = self.records.confidence;
-        let pace = plan_pace(confidence, cfg);
+        let pace = cfg.planning_lerp_rate;
         let mut desired_sell: HashMap<usize, f64> = HashMap::new();
         let mut desired_amv: HashMap<usize, f64> = HashMap::new();
         let mut desired_line: Vec<Option<f64>> = vec![None; n];
@@ -207,7 +180,7 @@ impl Firm {
                 desired_amv.insert(good.good, good.own_amv);
                 continue;
             }
-            let (sell, amv) = good_plan_nudge(good, cfg, confidence);
+            let (sell, amv) = good_plan_nudge(good, cfg);
             desired_sell.insert(good.good, sell.max(0.0));
             desired_amv.insert(good.good, amv);
 
@@ -230,7 +203,6 @@ impl Firm {
                     sell,
                     increase,
                     cfg,
-                    confidence,
                 );
             }
         }
@@ -300,7 +272,7 @@ impl Firm {
         history: &MarketHistory,
         cfg: &FirmConfig,
     ) {
-        let pace = plan_pace(self.records.confidence, cfg);
+        let pace = cfg.planning_lerp_rate;
         let (use_qty, make_qty) = recipe_flows(&self.production_line, factuals);
         let bounds = recipe_bounds(&self.production_line, factuals, history);
 
@@ -500,8 +472,8 @@ fn good_facts_from_row(
 
 /// Returns `(desired_sell, desired_amv)` from baseline-relative nudges.
 /// Pressures add, then clamp to one step, so several loud signals cannot
-/// stack past `growth_rate` / `shrink_rate` (scaled by confidence).
-fn good_plan_nudge(good: &GoodFacts, cfg: &FirmConfig, confidence: f64) -> (f64, f64) {
+/// stack past `growth_rate` / `shrink_rate`.
+fn good_plan_nudge(good: &GoodFacts, cfg: &FirmConfig) -> (f64, f64) {
     let mut sell = if good.sell_target > 0.0 {
         good.sell_target
     } else {
@@ -600,8 +572,8 @@ fn good_plan_nudge(good: &GoodFacts, cfg: &FirmConfig, confidence: f64) -> (f64,
     } else {
         cfg.growth_rate
     };
-    sell = (sell * (1.0 + volume * plan_step(confidence, vol_base, cfg))).max(0.0);
-    amv *= 1.0 + price * plan_step(confidence, cfg.growth_rate, cfg);
+    sell = (sell * (1.0 + volume * plan_step(vol_base))).max(0.0);
+    amv *= 1.0 + price * plan_step(cfg.growth_rate);
     (sell, amv)
 }
 
@@ -612,8 +584,6 @@ fn add_pressures(volume: &mut f64, price: &mut f64, sign: f64, prefer_price: f64
     *price += sign * p;
 }
 
-/// Returns the lerp/step scale for this confidence: slower when cautious,
-/// faster when confident. Mid confidence keeps `planning_lerp_rate`.
 /// Walks `current` toward `target` by `pace`. A line at 0 that is starting
 /// snaps to at least 1 iteration so the day's output is a whole recipe.
 fn next_line_target(current: f64, target: f64, pace: f64) -> f64 {
@@ -625,17 +595,8 @@ fn next_line_target(current: f64, target: f64, pace: f64) -> f64 {
     }
 }
 
-pub(super) fn plan_pace(confidence: f64, cfg: &FirmConfig) -> f64 {
-    let t = confidence.clamp(0.0, 1.0);
-    let mul = lerp(cfg.confidence_pace_min, cfg.confidence_pace_max, t);
-    (cfg.planning_lerp_rate * mul).clamp(0.0, 1.0)
-}
-
-/// Returns `base` scaled by the same confidence multiplier as [`plan_pace`].
-fn plan_step(confidence: f64, base: f64, cfg: &FirmConfig) -> f64 {
-    let t = confidence.clamp(0.0, 1.0);
-    let mul = lerp(cfg.confidence_pace_min, cfg.confidence_pace_max, t);
-    (base * mul).clamp(0.0, 1.0)
+fn plan_step(base: f64) -> f64 {
+    base.clamp(0.0, 1.0)
 }
 
 /// Sets maker line targets so total output walks toward `sell`.
@@ -648,7 +609,6 @@ fn align_lines_to_sell(
     sell: f64,
     increase: bool,
     cfg: &FirmConfig,
-    confidence: f64,
 ) {
     let mut total = 0.0;
     let mut weights = Vec::new();
@@ -677,7 +637,7 @@ fn align_lines_to_sell(
     } else {
         cfg.shrink_rate
     };
-    let step = plan_pace(confidence, cfg).max(plan_step(confidence, base, cfg));
+    let step = cfg.planning_lerp_rate.max(plan_step(base));
     let move_out = gap * step;
     for (k, &i) in makers.iter().enumerate() {
         let line = &lines[i];

@@ -1,0 +1,134 @@
+# Scenario kickoff pops. Init data, not world factuals, not a save.
+# Goods may be names or ids. Optional starter and [[desires]] apply to every pop.
+# A pop's own property overrides starter. household defaults to 1.
+# Keep starter/pops above [[desires]] so they stay root keys.
+# No opening stock; boot record_keeping writes shop targets from desires.
+
+pops = [
+    { id = 1 },
+    { id = 2 },
+    { id = 3 },
+    { id = 4 },
+    { id = 5 },
+    { id = 6 },
+    { id = 7 },
+    { id = 8 },
+    { id = 9 },
+    { id = 10 },
+    { id = 11 },
+    { id = 12 },
+    { id = 13 },
+    { id = 14 },
+    { id = 15 },
+    { id = 16 },
+    { id = 17 },
+    { id = 18 },
+    { id = 19 },
+    { id = 20 },
+    { id = 21 },
+    { id = 22 },
+    { id = 23 },
+    { id = 24 },
+    { id = 25 },
+    { id = 26 },
+    { id = 27 },
+    { id = 28 },
+]
+
+[[desires]]
+tier = 0
+id = 0
+name = "food"
+targets = [
+    { good = "grain", efficiency = 1.0 },
+    { good = "bread", efficiency = 1.5 },
+]
+
+[[desires]]
+tier = 0
+id = 1
+name = "hydration"
+targets = [{ good = "water", efficiency = 1.0 }]
+
+[[desires]]
+tier = 0
+id = 2
+name = "heating"
+targets = [
+    { good = "wood", efficiency = 1.0 },
+    { good = "charcoal", efficiency = 1.25 },
+    { good = "coal", efficiency = 1.5 },
+]
+
+[[desires]]
+tier = 0
+id = 3
+name = "housing"
+targets = [{ good = "cabins", efficiency = 1.0 }]
+
+[[desires]]
+tier = 1
+id = 4
+name = "utility items"
+targets = [
+    { good = "wood_tools", efficiency = 0.2 },
+    { good = "buckets", efficiency = 0.5 },
+    { good = "iron_tools", efficiency = 0.9 },
+    { good = "bronze_tools", efficiency = 0.5 },
+    { good = "pots", efficiency = 0.8 },
+    { good = "blades", efficiency = 1.0 },
+]
+
+[[desires]]
+tier = 1
+id = 5
+name = "improved food"
+targets = [
+    { good = "bread", efficiency = 1.0 },
+    { good = "beer", efficiency = 1.5 },
+]
+
+[[desires]]
+tier = 1
+id = 6
+name = "materials"
+targets = [
+    { good = "wood", efficiency = 0.5 },
+    { good = "iron", efficiency = 0.5 },
+    { good = "copper", efficiency = 0.5 },
+    { good = "tin", efficiency = 0.5 },
+    { good = "bronze", efficiency = 0.5 },
+    { good = "gold", efficiency = 0.5 },
+    { good = "clay", efficiency = 0.5 },
+]
+
+[[desires]]
+tier = 1
+id = 7
+name = "health"
+targets = [
+    { good = "bronze_mirror", efficiency = 2.5 },
+    { good = "time", efficiency = 1.0 },
+]
+
+[[desires]]
+tier = 2
+id = 8
+name = "shiny tokens"
+targets = [
+    { good = "gold_token", efficiency = 1.0 },
+    { good = "bronze_token", efficiency = 1.0 },
+    { good = "iron_token", efficiency = 1.0 },
+    { good = "copper_token", efficiency = 1.0 },
+    { good = "tin_token", efficiency = 1.0 },
+    { good = "jewelry", efficiency = 1.0 },
+]
+
+[[desires]]
+tier = 2
+id = 9
+name = "libations"
+targets = [
+    { good = "beer", efficiency = 1.5 },
+    { good = "time", efficiency = 1.0 },
+]

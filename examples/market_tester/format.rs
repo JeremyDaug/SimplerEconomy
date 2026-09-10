@@ -8,6 +8,13 @@ use simpler_economy::game::workforce::LaborSettlement;
 
 use super::*;
 
+/// Width for actor labels (`firm18-bronze_mirror`).
+const ACTOR_COL: usize = 20;
+/// Width for good names (`bronze_mirror`).
+const GOOD_COL: usize = 14;
+/// Width for AMV table numbers (`+100.1234`).
+const AMV_COL: usize = 9;
+
 pub(crate) fn is_page_command(cmd: &str) -> bool {
     matches!(
         cmd,
@@ -98,18 +105,18 @@ pub(crate) fn format_home(session: &Session) -> String {
 pub(crate) fn format_stock_page(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("Stock  (live on-hand)\n");
-    out.push_str(&format!("  {:<10}", "actor"));
+    out.push_str(&format!("  {:<ACTOR_COL$}", "actor"));
     for good in PREFAB_GOODS {
         out.push_str(&format!("  {:>8}", good.name));
     }
     out.push('\n');
-    out.push_str(&format!("  {:-<10}", ""));
+    out.push_str(&format!("  {:-<ACTOR_COL$}", ""));
     for _ in PREFAB_GOODS {
         out.push_str(&format!("  {:-<8}", ""));
     }
     out.push('\n');
     for pop in &session.pops {
-        out.push_str(&format!("  {:<10}", fmt_actor(Actor::Pop(pop.id))));
+        out.push_str(&format!("  {:<ACTOR_COL$}", fmt_actor(Actor::Pop(pop.id))));
         for good in PREFAB_GOODS {
             out.push_str(&format!(
                 "  {:>8}",
@@ -119,7 +126,7 @@ pub(crate) fn format_stock_page(session: &Session) -> String {
         out.push('\n');
     }
     for firm in &session.firms {
-        out.push_str(&format!("  {:<10}", fmt_actor(Actor::Firm(firm.id))));
+        out.push_str(&format!("  {:<ACTOR_COL$}", fmt_actor(Actor::Firm(firm.id))));
         for good in PREFAB_GOODS {
             out.push_str(&format!(
                 "  {:>8}",
@@ -166,14 +173,14 @@ pub(crate) fn format_firm_bounds(session: &Session) -> String {
 
 pub(crate) fn format_firm_records(session: &Session) -> String {
     let mut out = String::new();
-    out.push_str("Firm records  (confidence 0 cautious .. 1 aggressive)\n");
+    out.push_str("Firm records\n");
     out.push_str(&format!(
-        "  {:<10} {:>6} {:>7} {:>8} {:>8}\n",
-        "firm", "conf", "profit", "success", "sold AMV"
+        "  {:<10} {:>7} {:>8} {:>8}\n",
+        "firm", "profit", "success", "sold AMV"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<6} {:-<7} {:-<8} {:-<8}\n",
-        "", "", "", "", ""
+        "  {:-<10} {:-<7} {:-<8} {:-<8}\n",
+        "", "", "", ""
     ));
     if session.firms.is_empty() {
         out.push_str("  (none)\n");
@@ -181,9 +188,8 @@ pub(crate) fn format_firm_records(session: &Session) -> String {
     }
     for firm in &session.firms {
         out.push_str(&format!(
-            "  {:<10} {:>6} {:>7} {:>8} {:>8}\n",
+            "  {:<10} {:>7} {:>8} {:>8}\n",
             fmt_actor(Actor::Firm(firm.id)),
-            fmt_num(firm.records.confidence),
             fmt_num(firm.records.profit_ratio),
             fmt_num(firm.records.sell_success),
             fmt_qty(firm.records.sold_amv)
@@ -384,7 +390,7 @@ commands
   stock                 live on-hand + firm AMV bounds and quotes
   orders                current buy/sell books
   processes             world recipes + firm records and lines
-  amv                   AMV trail (old -> new)
+  amv                   AMV, day diff, trail trend, salability
   csv                   show day-end CSV paths and flags
   csv <name>            write under data/logs/<name>_*.csv
   csv reset             wipe current CSVs and rewrite headers
@@ -413,7 +419,7 @@ data/logs/ (market quotes and trade candles always; flagged pops/firms).
 Startup runs shop once. `day` grants Time, settles labor contracts, runs the
 market, runs each firm's process, pops consume, then pop and firm
 record keeping (firm plan), labor budget / decay.
-actor: prefab name (pop1, pop2, ...) or kind id (pop 1)
+actor: prefab name (pop1-grain, firm1-grain, pop1, ...) or kind id (pop 1)
 good:  prefab name (time, grain, gold_token, wood_tools, ...) or id
 
 examples
@@ -451,25 +457,14 @@ pub(crate) fn day_digest(
             .sum::<f64>()
             / session.pops.len() as f64
     };
-    let conf: f64 = if session.firms.is_empty() {
-        0.0
-    } else {
-        session
-            .firms
-            .iter()
-            .map(|firm| firm.records.confidence)
-            .sum::<f64>()
-            / session.firms.len() as f64
-    };
     format!(
-        "{} trade{}  {} wash{}  wages {} coin  SOL {}  conf {}",
+        "{} trade{}  {} wash{}  wages {} coin  SOL {}",
         n_trade,
         if n_trade == 1 { "" } else { "s" },
         n_wash,
         if n_wash == 1 { "" } else { "es" },
         fmt_qty(wage_coin),
-        fmt_num(sol),
-        fmt_num(conf)
+        fmt_num(sol)
     )
 }
 
@@ -519,11 +514,11 @@ pub(crate) fn format_day_report(
 
     if !report.unmatched_buys.is_empty() {
         out.push_str("\nUnmatched  (no seller)\n");
-        out.push_str(&format!("  {:<10}  {:>6} {}\n", "buyer", "qty", "good"));
-        out.push_str(&format!("  {:-<10}  {:-<6} {:-<8}\n", "", "", ""));
+        out.push_str(&format!("  {:<ACTOR_COL$}  {:>6} {}\n", "buyer", "qty", "good"));
+        out.push_str(&format!("  {:-<ACTOR_COL$}  {:-<6} {:-<8}\n", "", "", ""));
         for order in &report.unmatched_buys {
             out.push_str(&format!(
-                "  {:<10}  {:>6} {}\n",
+                "  {:<ACTOR_COL$}  {:>6} {}\n",
                 fmt_actor(order.origin),
                 fmt_qty(order.target_amount.abs()),
                 fmt_good(order.target)
@@ -541,11 +536,11 @@ pub(crate) fn format_day_report(
         out.push_str("  (none)\n");
     } else {
         out.push_str(&format!(
-            "  {:<10}  {:>6} {:<8} | {:<10}  {}\n",
+            "  {:<ACTOR_COL$}  {:>6} {:<8} | {:<ACTOR_COL$}  {}\n",
             "buyer", "qty", "good", "seller", "pays"
         ));
         out.push_str(&format!(
-            "  {:-<10}  {:-<6} {:-<8}-+-{:-<10}  {:-<16}\n",
+            "  {:-<ACTOR_COL$}  {:-<6} {:-<8}-+-{:-<ACTOR_COL$}  {:-<16}\n",
             "", "", "", "", ""
         ));
         for meeting in trades {
@@ -557,7 +552,7 @@ pub(crate) fn format_day_report(
                 continue;
             };
             let mut line = format!(
-                "  {:<10}  {:>6} {:<8} | {:<10}  {}",
+                "  {:<ACTOR_COL$}  {:>6} {:<8} | {:<ACTOR_COL$}  {}",
                 fmt_actor(meeting.buy.origin),
                 fmt_qty(bought_qty(goods, meeting.buy.target)),
                 fmt_good(meeting.buy.target),
@@ -578,16 +573,16 @@ pub(crate) fn format_day_report(
         out.push_str("  (none)\n");
     } else {
         out.push_str(&format!(
-            "  {:<10}  {:<8} | {:<10}  {:<14}  {}\n",
+            "  {:<ACTOR_COL$}  {:<8} | {:<ACTOR_COL$}  {:<14}  {}\n",
             "buyer", "good", "seller", "why", "end"
         ));
         out.push_str(&format!(
-            "  {:-<10}  {:-<8}-+-{:-<10}  {:-<14}  {:-<10}\n",
+            "  {:-<ACTOR_COL$}  {:-<8}-+-{:-<ACTOR_COL$}  {:-<14}  {:-<10}\n",
             "", "", "", "", ""
         ));
         for group in washes {
             out.push_str(&format!(
-                "  {:<10}  {:<8} | {:<10}  {:<14}  x{} {}\n",
+                "  {:<ACTOR_COL$}  {:<8} | {:<ACTOR_COL$}  {:<14}  x{} {}\n",
                 fmt_actor(group.buyer),
                 fmt_good(group.good),
                 fmt_actor(group.seller),
@@ -600,24 +595,24 @@ pub(crate) fn format_day_report(
 
     if !report.leftover_buys.is_empty() {
         out.push_str("\nLeftover buys\n");
-        out.push_str(&format!("  {:<10}  {:>6} {}\n", "buyer", "qty", "good"));
-        out.push_str(&format!("  {:-<10}  {:-<6} {:-<8}\n", "", "", ""));
+        out.push_str(&format!("  {:<ACTOR_COL$}  {:>6} {}\n", "buyer", "qty", "good"));
+        out.push_str(&format!("  {:-<ACTOR_COL$}  {:-<6} {:-<8}\n", "", "", ""));
         fmt_compact_orders(&mut out, &report.leftover_buys);
     }
     if !report.leftover_sells.is_empty() {
         out.push_str("\nLeftover sells\n");
-        out.push_str(&format!("  {:<10}  {:>6} {}\n", "seller", "qty", "good"));
-        out.push_str(&format!("  {:-<10}  {:-<6} {:-<8}\n", "", "", ""));
+        out.push_str(&format!("  {:<ACTOR_COL$}  {:>6} {}\n", "seller", "qty", "good"));
+        out.push_str(&format!("  {:-<ACTOR_COL$}  {:-<6} {:-<8}\n", "", "", ""));
         fmt_compact_orders(&mut out, &report.leftover_sells);
     }
 
     out.push_str("\nOutcomes\n");
     out.push_str(&format!(
-        "  {:<8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
+        "  {:<GOOD_COL$} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
         "good", "demand", "supply", "bought", "paid", "vol", "amv", "sal"
     ));
     out.push_str(&format!(
-        "  {:-<8} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7}\n",
+        "  {:-<GOOD_COL$} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7}\n",
         "", "", "", "", "", "", "", ""
     ));
     let mut ids: Vec<usize> = session.market.goods.keys().copied().collect();
@@ -634,7 +629,7 @@ pub(crate) fn format_day_report(
         }
         any_row = true;
         out.push_str(&format!(
-            "  {:<8} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
+            "  {:<GOOD_COL$} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
             fmt_good(id),
             fmt_qty(row.demand),
             fmt_qty(row.supply),
@@ -708,11 +703,11 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
         session.factuals.config.labor.work_time_fraction * 100.0
     ));
     out.push_str(&format!(
-        "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+        "  {:<ACTOR_COL$} {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
         "firm", "who", "hours", "time", "paid"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<10} {:-<6} {:-<6}  {:-<24}\n",
+        "  {:-<ACTOR_COL$} {:-<ACTOR_COL$} {:-<6} {:-<6}  {:-<24}\n",
         "", "", "", "", ""
     ));
     if wages.is_empty() {
@@ -723,14 +718,14 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
         let firm_name = fmt_actor(Actor::Firm(*firm_id));
         if settle.workers.is_empty() && settle.owner.is_none() {
             out.push_str(&format!(
-                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                "  {:<ACTOR_COL$} {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
                 firm_name, "-", "-", "-", "-"
             ));
             continue;
         }
         for worker in &settle.workers {
             out.push_str(&format!(
-                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                "  {:<ACTOR_COL$} {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
                 firm_name,
                 fmt_actor(Actor::Pop(worker.pop)),
                 fmt_qty(worker.time_claimed),
@@ -740,7 +735,7 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
         }
         if let Some(owner) = &settle.owner {
             let paid = format_paid_map(&owner.paid);
-            let paid = if owner.remainder {
+            let mut paid = if owner.remainder {
                 if paid == "-" {
                     "remainder".into()
                 } else {
@@ -749,8 +744,11 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
             } else {
                 paid
             };
+            if owner.recap_paid_amv > 0.0 {
+                paid = format!("{paid}; cover {}", format_paid_map(&owner.recap));
+            }
             out.push_str(&format!(
-                "  {:<10} {:<10} {:>6} {:>6}  {}\n",
+                "  {:<ACTOR_COL$} {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
                 firm_name,
                 format!("owner {}", fmt_actor(Actor::Pop(owner.pop))),
                 "-",
@@ -767,11 +765,11 @@ pub(crate) fn format_production_report(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("Production  (did today; want is next-day after plan)\n");
     out.push_str(&format!(
-        "  {:<10} {:>6} {:>6}  {}\n",
+        "  {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
         "firm", "did", "want", "flows / missing"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<6} {:-<6}  {:-<28}\n",
+        "  {:-<ACTOR_COL$} {:-<6} {:-<6}  {:-<28}\n",
         "", "", "", ""
     ));
     if session.firms.is_empty() {
@@ -812,7 +810,7 @@ pub(crate) fn format_production_report(session: &Session) -> String {
                 bits.push("-".into());
             }
             out.push_str(&format!(
-                "  {:<10} {:>6} {:>6}  {}\n",
+                "  {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
                 fmt_actor(Actor::Firm(firm.id)),
                 fmt_qty(line.last_iterations),
                 fmt_qty(want),
@@ -828,12 +826,12 @@ pub(crate) fn format_plan_report(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("Plans  (after firm record keeping)\n");
     out.push_str(&format!(
-        "  {:<10} {:>6} {:>7} {:>8} {:>6} {:>6} {:<8} {:>7}\n",
-        "firm", "conf", "profit", "success", "want", "sell", "good", "quote"
+        "  {:<ACTOR_COL$} {:>7} {:>8} {:>6} {:>6} {:<GOOD_COL$} {:>7}\n",
+        "firm", "profit", "success", "want", "sell", "good", "quote"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<6} {:-<7} {:-<8} {:-<6} {:-<6} {:-<8} {:-<7}\n",
-        "", "", "", "", "", "", "", ""
+        "  {:-<ACTOR_COL$} {:-<7} {:-<8} {:-<6} {:-<6} {:-<GOOD_COL$} {:-<7}\n",
+        "", "", "", "", "", "", ""
     ));
     if session.firms.is_empty() {
         out.push_str("  (none)\n\n");
@@ -854,9 +852,8 @@ pub(crate) fn format_plan_report(session: &Session) -> String {
             None => ("-".into(), "-".into(), "-".into()),
         };
         out.push_str(&format!(
-            "  {:<10} {:>6} {:>7} {:>8} {:>6} {:>6} {:<8} {:>7}\n",
+            "  {:<ACTOR_COL$} {:>7} {:>8} {:>6} {:>6} {:<GOOD_COL$} {:>7}\n",
             fmt_actor(Actor::Firm(firm.id)),
-            fmt_num(firm.records.confidence),
             fmt_num(firm.records.profit_ratio),
             fmt_num(firm.records.sell_success),
             fmt_qty(want),
@@ -873,11 +870,11 @@ pub(crate) fn format_pop_report(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("Pops  (after consume)\n");
     out.push_str(&format!(
-        "  {:<10} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
+        "  {:<ACTOR_COL$} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
         "actor", "basic", "common", "luxury", "SOL", "shop", "income"
     ));
     out.push_str(&format!(
-        "  {:-<10} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6}\n",
+        "  {:-<ACTOR_COL$} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6}\n",
         "", "", "", "", "", "", ""
     ));
     if session.pops.is_empty() {
@@ -886,7 +883,7 @@ pub(crate) fn format_pop_report(session: &Session) -> String {
     }
     for pop in &session.pops {
         out.push_str(&format!(
-            "  {:<10} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
+            "  {:<ACTOR_COL$} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
             fmt_actor(Actor::Pop(pop.id)),
             fmt_num(pop.records.tier_sat[0]),
             fmt_num(pop.records.tier_sat[1]),
@@ -902,14 +899,14 @@ pub(crate) fn format_pop_report(session: &Session) -> String {
 
 pub(crate) fn format_amv_trail(session: &Session) -> String {
     let mut out = String::new();
-    out.push_str("AMV trail  (old -> new)\n");
+    out.push_str("AMV\n");
     out.push_str(&format!(
-        "  {:<8} {:>7} {:>7}  {}\n",
-        "good", "now", "diff", "trail"
+        "  {:<GOOD_COL$} {:>AMV_COL$} {:>AMV_COL$} {:>AMV_COL$} {:>AMV_COL$}\n",
+        "good", "now", "diff", "trend", "sal"
     ));
     out.push_str(&format!(
-        "  {:-<8} {:-<7} {:-<7}  {:-<16}\n",
-        "", "", "", ""
+        "  {:-<GOOD_COL$} {:-<AMV_COL$} {:-<AMV_COL$} {:-<AMV_COL$} {:-<AMV_COL$}\n",
+        "", "", "", "", ""
     ));
     let mut ids: Vec<usize> = session.market.goods.keys().copied().collect();
     ids.sort_unstable();
@@ -920,40 +917,45 @@ pub(crate) fn format_amv_trail(session: &Session) -> String {
     for id in ids {
         let row = &session.market.goods[&id];
         out.push_str(&format!(
-            "  {:<8} {:>7} {:>7}  {}\n",
+            "  {:<GOOD_COL$} {} {} {} {}\n",
             fmt_good(id),
-            fmt_num(row.amv),
+            fmt_amv_col(row.amv),
             fmt_amv_delta(row),
-            fmt_amv_history(row)
+            fmt_amv_trend(row),
+            fmt_amv_col(row.salability)
         ));
     }
     out
 }
 
-pub(crate) fn fmt_amv_history(row: &MarketGood) -> String {
-    let trail = row.amv_trail();
-    if trail.is_empty() {
-        return "-".into();
-    }
-    trail
-        .iter()
-        .map(|v| fmt_num(*v))
-        .collect::<Vec<_>>()
-        .join("  ")
+fn fmt_amv_col(x: f64) -> String {
+    format!("{:AMV_COL$.4}", x)
+}
+
+fn fmt_amv_signed(x: f64) -> String {
+    format!("{:+AMV_COL$.4}", x)
+}
+
+fn fmt_amv_missing() -> String {
+    format!("{:>AMV_COL$}", "-")
 }
 
 pub(crate) fn fmt_amv_delta(row: &MarketGood) -> String {
     let trail = row.amv_trail();
     if trail.len() < 2 {
-        return "-".into();
+        return fmt_amv_missing();
     }
-    let d = trail[trail.len() - 1] - trail[trail.len() - 2];
-    if d.abs() < 1e-12 {
-        "0".into()
-    } else if d > 0.0 {
-        format!("+{}", fmt_num(d))
-    } else {
-        fmt_num(d)
+    fmt_amv_signed(trail[trail.len() - 1] - trail[trail.len() - 2])
+}
+
+/// Relative slope over the stored AMV ring: (last - first) / |first|.
+pub(crate) fn fmt_amv_trend(row: &MarketGood) -> String {
+    let trail = row.amv_trail();
+    let first = trail.first().copied().filter(|v| v.abs() > 1e-12);
+    let last = trail.last().copied();
+    match (first, last, trail.len()) {
+        (Some(first), Some(last), n) if n >= 2 => fmt_amv_signed((last - first) / first.abs()),
+        _ => fmt_amv_missing(),
     }
 }
 
@@ -1022,7 +1024,7 @@ pub(crate) fn fmt_payment(goods: &HashMap<usize, f64>, target: usize) -> String 
 pub(crate) fn fmt_compact_orders(out: &mut String, orders: &[MarketOrder]) {
     for order in orders {
         out.push_str(&format!(
-            "  {:<10}  {:>6} {}\n",
+            "  {:<ACTOR_COL$}  {:>6} {}\n",
             fmt_actor(order.origin),
             fmt_qty(order.target_amount.abs()),
             fmt_good(order.target)
@@ -1074,12 +1076,24 @@ pub(crate) fn fmt_actor_kind_id(actor: Actor) -> String {
 }
 
 pub(crate) fn fmt_actor(actor: Actor) -> String {
-    if let Actor::Pop(id) = actor {
-        return format!("pop{id}");
+    match actor {
+        Actor::Pop(id) => fmt_labeled_actor("pop", id),
+        Actor::Firm(id) => fmt_labeled_actor("firm", id),
+        other => match actor_label(other) {
+            Some(name) => name.to_string(),
+            None => fmt_actor_kind_id(other),
+        },
     }
-    match actor_label(actor) {
-        Some(name) => name.to_string(),
-        None => fmt_actor_kind_id(actor),
+}
+
+fn fmt_labeled_actor(kind: &str, id: usize) -> String {
+    let n = PREFAB_GOODS.len();
+    if n == 0 {
+        return format!("{kind}{id}");
+    }
+    match PREFAB_GOODS.iter().find(|good| good.id == id % n) {
+        Some(good) => format!("{kind}{id}-{}", good.name),
+        None => format!("{kind}{id}"),
     }
 }
 
@@ -1166,21 +1180,21 @@ pub(crate) fn order_bound_cell(session: &Session, order: &MarketOrder) -> String
 
 pub(crate) fn order_header() -> String {
     format!(
-        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
+        "{:>2}  {:<7}  {:<ACTOR_COL$}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
         "#", "kind", "actor", "good", "amt", "prio", "amv", "bound", "counter"
     )
 }
 
 pub(crate) fn order_rule() -> String {
     format!(
-        "{:-<2}  {:-<7}  {:-<10}  {:-<8}  {:-<8}  {:-<8}  {:-<6}  {:-<16}  {:-<16}",
+        "{:-<2}  {:-<7}  {:-<ACTOR_COL$}  {:-<8}  {:-<8}  {:-<8}  {:-<6}  {:-<16}  {:-<16}",
         "", "", "", "", "", "", "", "", ""
     )
 }
 
 pub(crate) fn order_row(session: &Session, idx: usize, order: &MarketOrder) -> String {
     format!(
-        "{:>2}  {:<7}  {:<10}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
+        "{:>2}  {:<7}  {:<ACTOR_COL$}  {:<8}  {:>8}  {:>8}  {:>6}  {:<16}  {}",
         idx,
         order_kind(order),
         fmt_actor(order.origin),

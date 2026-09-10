@@ -532,11 +532,13 @@ impl Market {
     /// 4. Cleanup: clear member pops' `current_orders`. AMV is written on
     ///    [`MarketGood`] as meetings resolve (history stays the opening
     ///    snapshot). Leftover books do not move AMV. Salability updates
-    ///    from payment/tender after the loop. Then AMV is rescaled so one
-    ///    unit of each tradeable good averages `amv_rescale_mean` (daily by
-    ///    default) and the close is recorded. Leftover rot cap is a later
-    ///    caller ([`Market::cap_salability_from_decay`]) after decay, not this
-    ///    method. Leftover book carry and re-planning are deferred.
+    ///    from payment/tender after the loop. Then live AMV is rescaled so
+    ///    one unit of each tradeable good averages `amv_rescale_mean` (daily
+    ///    by default), firm AMV quotes are scaled by the same factor, and
+    ///    the close is recorded. The AMV trail is not rewritten. Leftover
+    ///    rot cap is a later caller ([`Market::cap_salability_from_decay`])
+    ///    after decay, not this method. Leftover book carry and re-planning
+    ///    are deferred.
     ///
     /// Returns a [`MarketDayReport`] of unmatched buys, each meeting, and
     /// leftover book orders.
@@ -693,9 +695,14 @@ impl Market {
         );
         self.market_days = self.market_days.saturating_add(1);
         self.update_salability(&factuals.config.market);
-        let cfg = &factuals.config.market;
-        if cfg.amv_rescale_period > 0 && self.market_days % cfg.amv_rescale_period == 0 {
-            self.rescale_amv_to_mean(cfg.amv_rescale_mean, cfg.amv_min_abs);
+        let period = factuals.config.market.amv_rescale_period;
+        let mean = factuals.config.market.amv_rescale_mean;
+        let min_abs = factuals.config.market.amv_min_abs;
+        if period > 0 && self.market_days % period == 0 {
+            let scale = self.rescale_amv_to_mean(mean, min_abs);
+            for firm in firms.values_mut() {
+                firm.scale_amv_unit(scale);
+            }
         }
         self.record_amv_closes();
         report
@@ -703,20 +710,22 @@ impl Market {
 
     /// # Rescale AMV To Mean
     ///
-    /// Multiplies every tradeable good's AMV, average price, and AMV trail so
-    /// the unweighted mean of one unit of each equals `target`. Time is skipped
+    /// Multiplies every tradeable good's live AMV and average price so the
+    /// unweighted mean of one unit of each equals `target`. Time is skipped
     /// (labor-stamped, not leftover-book drift).
     ///
-    /// No-op when there are no scaled goods, `target` is not finite and
-    /// positive, or the current mean is inside `(-min_abs, min_abs)`. Does not
-    /// change salability. Firm bids/asks are not scaled.
-    pub fn rescale_amv_to_mean(&mut self, target: f64, min_abs: f64) {
+    /// Returns the scale applied, or `1.0` when this is a no-op. Does not
+    /// rewrite the AMV trail: recorded closes already live in that day's
+    /// mean units, so scaling them again compounds the unit change into
+    /// diff/trend. Does not change salability. Callers scale firm AMV
+    /// quotes by the same factor ([`Firm::scale_amv_unit`]).
+    pub fn rescale_amv_to_mean(&mut self, target: f64, min_abs: f64) -> f64 {
         if !(target.is_finite() && target > 0.0) {
-            return;
+            return 1.0;
         }
         let n = self.goods.keys().filter(|id| **id != TIME).count() as f64;
         if n <= 0.0 {
-            return;
+            return 1.0;
         }
         let mean: f64 = self
             .goods
@@ -726,11 +735,11 @@ impl Market {
             .sum::<f64>()
             / n;
         if !mean.is_finite() || mean.abs() < min_abs {
-            return;
+            return 1.0;
         }
         let scale = target / mean;
         if !scale.is_finite() {
-            return;
+            return 1.0;
         }
         for (&id, good) in self.goods.iter_mut() {
             if id == TIME {
@@ -738,12 +747,8 @@ impl Market {
             }
             good.set_amv_min(good.amv * scale, min_abs);
             good.set_average_price_min(good.average_price * scale, min_abs);
-            let mut ring = CircularBuffer::new();
-            for &value in good.amv_history.iter() {
-                ring.push_back(bounce_away_from_zero(value, value * scale, min_abs));
-            }
-            good.amv_history = ring;
         }
+        scale
     }
 
     /// Pushes current AMV into an empty history ring (the opening AMV).
@@ -808,7 +813,7 @@ impl Market {
             let Some(firm) = firms.get_mut(&id) else {
                 continue;
             };
-            let settlement = firm.settle_labor_contracts(pops, &history, &factuals.config);
+            let settlement = firm.settle_labor_contracts(pops, &history, factuals);
             wages.push((id, settlement));
         }
 
@@ -1269,7 +1274,9 @@ impl Market {
     ///    basket midpoint, [`DealMaker::finalize`] both inventories, push
     ///    leftover order amounts back onto `buys` / `sells`.
     /// 4. Reject / no proposal: drift AMV (sought up, tenders down on reject),
-    ///    wash. Charge [`market_constants::TRANSACTION_COST`]
+    ///    wash. On reject, cut the sell/offer weight by
+    ///    `sell_reject_weight` (same day only). Charge
+    ///    [`market_constants::TRANSACTION_COST`]
     ///    transport from on-hand. Push `sell_order` back onto `sells`.
     ///    Buyer [`DealMaker::renew_buy`] may put the buy back with `tries`
     ///    incremented; after [`market_constants::BUY_TRY_LIMIT`] retries the
@@ -1329,6 +1336,11 @@ impl Market {
             // buyer would then evaluate it (or a close-out). Wash for now.
             self.drift_amv_on_reject(target, &proposal.goods, &factuals.config.market);
             let transport = wash_transport(factuals);
+            let mut sell_order = sell_order;
+            sell_order.apply_reject_weight_penalty(
+                factuals.config.market_priority.sell_reject_weight,
+                factuals.config.market_priority.sell_actor_priority_floor,
+            );
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
                 buy: buy_snap,
@@ -1657,6 +1669,17 @@ impl MarketHistory {
             .get(&good_id)
             .copied()
             .unwrap_or(self.default_salability)
+    }
+
+    /// Highest recorded salability among tradeable goods in this snapshot.
+    /// Time is skipped. Returns 0.0 when the snapshot has no other goods.
+    pub fn max_salability(&self) -> f64 {
+        let mut ids: HashSet<usize> = self.prices.keys().copied().collect();
+        ids.extend(self.salability.keys().copied());
+        ids.remove(&TIME);
+        ids.iter()
+            .map(|&id| self.salability(id))
+            .fold(0.0, f64::max)
     }
 }
 
@@ -2272,19 +2295,20 @@ mod rescale_amv_to_mean_should {
     }
 
     #[test]
-    fn scales_the_amv_trail() {
+    fn does_not_rescale_recorded_closes() {
         let mut market = Market::new(1);
-        let mut grain = MarketGood::new().with_amv(2.0);
+        let mut grain = MarketGood::new().with_amv(10.0);
         grain.record_amv();
-        grain.set_amv(4.0);
-        grain.record_amv();
+        grain.set_amv(30.0);
         market.goods.insert(GRAIN, grain);
-        market.goods.insert(COIN, MarketGood::new().with_amv(6.0));
-        // Mean (4+6)/2 = 5; scale 2 to target 10.
-        market.rescale_amv_to_mean(10.0, market_constants::AMV_MIN_ABS);
-        assert_eq!(market.goods[&GRAIN].amv_trail(), vec![4.0, 8.0]);
-        assert!((market.goods[&GRAIN].amv - 8.0).abs() < 1e-12);
-        assert!((market.goods[&COIN].amv - 12.0).abs() < 1e-12);
+        market.goods.insert(COIN, MarketGood::new().with_amv(10.0));
+        // Mean (30+10)/2 = 20; scale 0.5 to target 10.
+        let scale = market.rescale_amv_to_mean(10.0, market_constants::AMV_MIN_ABS);
+        assert!((scale - 0.5).abs() < 1e-12);
+        assert_eq!(market.goods[&GRAIN].amv_trail(), vec![10.0]);
+        assert!((market.goods[&GRAIN].amv - 15.0).abs() < 1e-12);
+        market.goods.get_mut(&GRAIN).unwrap().record_amv();
+        assert_eq!(market.goods[&GRAIN].amv_trail(), vec![10.0, 15.0]);
     }
 
     #[test]
@@ -2507,7 +2531,8 @@ mod match_orders_should {
 #[cfg(test)]
 mod run_market_day_should {
     use super::*;
-    use crate::game::config::market_constants;
+    use crate::game::actor::Actor;
+    use crate::game::config::{market_constants, market_priority};
     use crate::game::factuals::Factuals;
     use crate::game::firm::{Firm, FirmPRow};
     use crate::game::good::{Good, TIME};
@@ -2804,6 +2829,51 @@ mod run_market_day_should {
     }
 
     #[test]
+    fn reject_cuts_same_day_sell_weight() {
+        let mut market = Market::new(1);
+        market.goods.insert(
+            GRAIN,
+            MarketGood::new().with_amv(1.0).with_salability(0.5),
+        );
+        market.goods.insert(
+            COIN,
+            MarketGood::new().with_amv(1.0).with_salability(0.2),
+        );
+        market.pops.insert(1);
+        market.firms.insert(1);
+
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 4.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+
+        let report = market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        let first = report
+            .meetings
+            .iter()
+            .find(|m| matches!(m.outcome, MeetingOutcome::Wash { reason: WashReason::Rejected, .. }))
+            .expect("reject");
+        let leftover = report
+            .leftover_sells
+            .iter()
+            .find(|o| o.origin == Actor::Firm(1) && o.target == GRAIN)
+            .expect("leftover sell");
+        let rejects = report
+            .meetings
+            .iter()
+            .filter(|m| matches!(m.outcome, MeetingOutcome::Wash { reason: WashReason::Rejected, .. }))
+            .count() as i32;
+        let keep = 1.0 - market_priority::SELL_REJECT_WEIGHT;
+        let want = first.sell.priority * keep.powi(rejects);
+        assert!(
+            (leftover.priority - want).abs() < 1e-9,
+            "leftover {} want {want} after {rejects} rejects",
+            leftover.priority
+        );
+        assert!(rejects >= 1);
+    }
+
+    #[test]
     fn unmatched_buy_marks_the_good_unavailable() {
         let mut market = priced_market();
         market.pops.insert(1);
@@ -3030,8 +3100,26 @@ mod run_market_day_should {
         assert!((market.goods[&GRAIN].amv - 10.0).abs() < 1e-12);
         assert!((market.goods[&COIN].amv - 10.0).abs() < 1e-12);
         let trail = market.goods[&GRAIN].amv_trail();
-        assert!((trail[0] - 10.0).abs() < 1e-12);
+        assert!((trail[0] - 1.0).abs() < 1e-12);
         assert!((trail[trail.len() - 1] - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rescales_firm_amv_quotes_with_the_market() {
+        let mut market = priced_market();
+        let mut facts = factuals();
+        facts.config.market.amv_rescale_period = 1;
+        let mut firm = farm(1, 10.0, 10.0);
+        firm.property.get_mut(&GRAIN).unwrap().amv_target = 2.0;
+        firm.property.get_mut(&GRAIN).unwrap().average_cost = 2.0;
+        market.firms.insert(1);
+        let mut firms = HashMap::new();
+        firms.insert(1, firm);
+        let mut pops = HashMap::new();
+        market.run_market_day(&facts, &mut pops, &mut firms, &mut rng());
+        let row = &firms[&1].property[&GRAIN];
+        assert!((row.amv_target - 20.0).abs() < 1e-12);
+        assert!((row.average_cost - 20.0).abs() < 1e-12);
     }
 
     #[test]

@@ -380,6 +380,21 @@ impl Pop {
         self.property.remove(&good).map(|row| row.quantity).unwrap_or(0.0)
     }
 
+    /// Subtracts `qty` of `good` from on-hand stock. Clamps `reserved` down
+    /// if it would exceed the remaining quantity. No-op when the good is absent.
+    pub fn debit_good(&mut self, good: usize, qty: f64) {
+        debug_assert!(qty.is_finite() && qty >= 0.0, "debit qty must be finite and >= 0.0");
+        if qty <= 0.0 {
+            return;
+        }
+        if let Some(row) = self.property.get_mut(&good) {
+            row.quantity = (row.quantity - qty).max(0.0);
+            if row.reserved > row.quantity {
+                row.reserved = row.quantity;
+            }
+        }
+    }
+
     /// Adds `qty` of `good` and records `qty * unit_amv` on `records.income_amv`.
     pub fn credit_good(&mut self, good: usize, qty: f64, unit_amv: f64) {
         debug_assert!(qty.is_finite() && qty >= 0.0, "credit qty must be finite and >= 0");

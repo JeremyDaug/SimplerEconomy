@@ -1,6 +1,9 @@
 # World data: processes (factuals).
 # Human-editable. Live firm targets, stock, and prices are game state, not here.
-# Time (good 0) is 1 unit minimum plus a little extra per recipe.
+#
+# One recipe per world good: 1 Time (good 0) -> 15 of the output.
+# Process id equals the output good id, except Time (good 0) which is
+# process 28 so id 0 stays none.
 #
 # input type: destroyed | consumed | capital | factor  (default destroyed)
 # optional = true to skip if the good is missing.
@@ -8,57 +11,168 @@
 
 [[processes]]
 id = 1
-name = "farm grain"
-inputs = [
-    { good = 0, amount = 3.0, type = "destroyed" },
-    { good = 2, amount = 1.0, type = "destroyed" },
-]
-outputs = [{ good = 1, amount = 6.0 }]
+name = "make grain"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 1, amount = 15.0 }]
 
 [[processes]]
 id = 2
-name = "bake bread"
-inputs = [
-    { good = 0, amount = 2.0, type = "destroyed" },
-    { good = 1, amount = 1.0, type = "destroyed" },
-]
-outputs = [{ good = 3, amount = 1.2 }]
+name = "make water"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 2, amount = 15.0 }]
 
 [[processes]]
 id = 3
-name = "mine gold"
-inputs = [{ good = 0, amount = 4.0, type = "destroyed" }]
-outputs = [{ good = 4, amount = 1.0 }]
+name = "make bread"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 3, amount = 15.0 }]
 
 [[processes]]
 id = 4
-name = "mint gold token"
-inputs = [
-    { good = 0, amount = 2.0, type = "destroyed" },
-    { good = 4, amount = 1.0, type = "destroyed" },
-]
-outputs = [{ good = 5, amount = 40.0 }]
+name = "make gold"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 4, amount = 15.0 }]
 
 [[processes]]
 id = 5
-name = "cut jewelry"
-inputs = [
-    { good = 0, amount = 3.0, type = "destroyed" },
-    { good = 4, amount = 3.0, type = "destroyed" },
-]
-outputs = [{ good = 6, amount = 5.0 }]
+name = "make gold_token"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 5, amount = 15.0 }]
 
 [[processes]]
 id = 6
-name = "draw water"
-inputs = [{ good = 0, amount = 1.0, type = "destroyed" }]
-outputs = [{ good = 2, amount = 1.0 }]
+name = "make jewelry"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 6, amount = 15.0 }]
 
 [[processes]]
 id = 7
-name = "melt gold token"
-inputs = [
-    { good = 0, amount = 2.0, type = "destroyed" },
-    { good = 5, amount = 41.0, type = "destroyed" },
-]
-outputs = [{ good = 4, amount = 1.0 }]
+name = "make wood"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 7, amount = 15.0 }]
+
+[[processes]]
+id = 8
+name = "make cabins"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 8, amount = 15.0 }]
+
+[[processes]]
+id = 9
+name = "make wood_tools"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 9, amount = 15.0 }]
+
+[[processes]]
+id = 10
+name = "make buckets"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 10, amount = 15.0 }]
+
+[[processes]]
+id = 11
+name = "make iron"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 11, amount = 15.0 }]
+
+[[processes]]
+id = 12
+name = "make iron_tools"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 12, amount = 15.0 }]
+
+[[processes]]
+id = 13
+name = "make copper"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 13, amount = 15.0 }]
+
+[[processes]]
+id = 14
+name = "make tin"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 14, amount = 15.0 }]
+
+[[processes]]
+id = 15
+name = "make bronze"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 15, amount = 15.0 }]
+
+[[processes]]
+id = 16
+name = "make bronze_tools"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 16, amount = 15.0 }]
+
+[[processes]]
+id = 17
+name = "make blades"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 17, amount = 15.0 }]
+
+[[processes]]
+id = 18
+name = "make bronze_mirror"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 18, amount = 15.0 }]
+
+[[processes]]
+id = 19
+name = "make bronze_token"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 19, amount = 15.0 }]
+
+[[processes]]
+id = 20
+name = "make iron_token"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 20, amount = 15.0 }]
+
+[[processes]]
+id = 21
+name = "make copper_token"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 21, amount = 15.0 }]
+
+[[processes]]
+id = 22
+name = "make tin_token"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 22, amount = 15.0 }]
+
+[[processes]]
+id = 23
+name = "make coal"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 23, amount = 15.0 }]
+
+[[processes]]
+id = 24
+name = "make charcoal"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 24, amount = 15.0 }]
+
+[[processes]]
+id = 25
+name = "make beer"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 25, amount = 15.0 }]
+
+[[processes]]
+id = 26
+name = "make clay"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 26, amount = 15.0 }]
+
+[[processes]]
+id = 27
+name = "make pots"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 27, amount = 15.0 }]
+
+[[processes]]
+id = 28
+name = "make time"
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 0, amount = 15.0 }]

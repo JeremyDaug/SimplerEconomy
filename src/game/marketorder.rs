@@ -380,6 +380,22 @@ impl MarketOrder {
         self.priority += bonus;
     }
 
+    /// Cuts this sell/offer weight by `fraction` after the seller rejects
+    /// (0.10 keeps 90%). Same-day book only. Floors at `floor` (`> 0`).
+    pub fn apply_reject_weight_penalty(&mut self, fraction: f64, floor: f64) {
+        debug_assert!(
+            self.target_amount < 0.0,
+            "reject weight penalty is for sell/offer orders"
+        );
+        debug_assert!(fraction.is_finite() && fraction >= 0.0 && fraction <= 1.0);
+        debug_assert!(floor.is_finite() && floor > 0.0, "floor must be finite and > 0.0");
+        if fraction <= 0.0 {
+            return;
+        }
+        let next = (self.priority * (1.0 - fraction)).max(floor);
+        self.set_priority(next);
+    }
+
     pub fn is_buy_order(&self) -> bool {
         if self.is_priced() {
             self.target_amount > 0.0 && self.counter_offer_amount.unwrap() < 0.0
@@ -580,6 +596,21 @@ mod market_order_should {
         assert!(
             (order.priority - (before + market_priority::SUCCESSFUL_SELL_BONUS)).abs() < 1e-12
         );
+    }
+
+    #[test]
+    fn apply_reject_weight_penalty_cuts_ten_percent() {
+        let mut order = MarketOrder::offer_order(
+            Actor::Pop(1),
+            10,
+            -4.0,
+            2.0,
+        );
+        order.apply_reject_weight_penalty(
+            market_priority::SELL_REJECT_WEIGHT,
+            market_priority::SELL_ACTOR_PRIORITY_FLOOR,
+        );
+        assert!((order.priority - 1.8).abs() < 1e-12);
     }
 
     #[test]

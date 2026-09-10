@@ -12,9 +12,9 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 | `run_market_day` | Live lib loop. Tester `day` calls it. PlayState intramarket is `todo!()` |
 | `match_orders` | One success per pass, front buy-priority group only |
 | AMV drift + leftover book pressure | Meetings only (accept / reject / no-proposal). Leftover-book blend is **0** (off). The function still exists; volume-scaled leftover collapsed AMV to the bounce floor. Do not turn it back on unless asked. Intra-day evaluate uses frozen `history()` |
-| AMV rescale | Each market day, unweighted mean of one unit of each tradeable good is scaled to 10.0 after salability, then the close is recorded. Time skipped. Not firm bids/asks. Vault does not have this; it is a unit-normalization for readability |
+| AMV rescale | Each market day, unweighted mean of one unit of each tradeable good is scaled to 10.0 after salability, then the close is recorded. Time skipped. Trail is not rewritten. Firm AMV quotes/cost basis scale with it. Vault does not have this; it is a unit-normalization for readability |
 | Salability day-end | Lerp toward `payment / tender` when tender > 0. After decay, cap at `1 - decayed/volume` (consumed is volume, not rot). Does not raise salability |
-| AMV history ring | Seed opening AMV; push close after daily rescale. Cap 16 |
+| AMV history ring | Seed opening AMV; push close after daily rescale. Do not rescale old samples. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
 | New orders after a fill | Pop `next_shopping_trip` waves. Firms do not re-emit |
@@ -43,7 +43,8 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
    `unavailable_goods`. Firms do not re-emit. See `deals.md`.
 4. **Cleanup:** clear member pops' `current_orders`; leftover books are
    reported and do **not** move AMV (leftover_blend 0); salability lerps;
-   rescale so one unit of each tradeable good averages 10.0; push each
+   rescale live AMV so one unit of each tradeable good averages 10.0
+   (firm quotes scale with it; trail is not rewritten); push each
    good's close. Leftover rot cap (`Market::cap_salability_from_decay`)
    is a later caller after decay, not this method.
 
@@ -73,7 +74,9 @@ start. Institutions `1` / `3` / `5`. Merchants `[2, 2.5)`, producers `[2.5, 3)`.
 No state-among-pops slot. State firm inserts at `2.49` / `2.99`.
 
 Sell compose (write on create, then flat-add fills): `1/band + sqrt(supply) +
-0.25 * fills`. Floor band `0.01`. Do not invert at match time. Marketing later.
+0.25 * fills`. Floor band `0.01`. After a **reject**, that sell/offer's
+weight is cut by `sell_reject_weight` (default 0.10) for the rest of the
+day; books are recast next morning. Do not invert at match time. Marketing later.
 
 Stale (notify only): proposal `compose_sell_priority` comments may lag live
 `SELL_*` constants; `match_orders` rustdoc still describes const defaults (live
@@ -98,10 +101,11 @@ No-proposal: sought up only. Leftover books do not move AMV
 scaled leftover (10% dry miss) collapsed unsold goods to the bounce floor.
 Miss/purchased was tried earlier and exploded. Do not turn leftover-book
 AMV back on unless asked. `set_amv` does not push the ring.
-Every completed market day, AMV is rescaled so the unweighted mean of
-one unit of each **tradeable** good is 10.0 (trail and average_price too).
-Time is skipped. Period 0 disables. This is a unit change, not a
-value-theory pass.
+Every completed market day, live AMV and average_price are rescaled so
+the unweighted mean of one unit of each **tradeable** good is 10.0. Time
+is skipped. Period 0 disables. This is a unit change, not a value-theory
+pass. Recorded trail samples stay as that day's close. Firm `amv_target`,
+cost basis, and AMV bounds use the same scale.
 
 **Code:** `market.rs`, `marketorder.rs`; tunables `factuals.config.market` /
 `market_priority`.

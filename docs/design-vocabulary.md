@@ -21,7 +21,7 @@ and `docs/proposals/`.
 | Pop consumption patterns | ascetic, affluent |
 | Satisfaction and fill | desire sat, tier sat, SOL, sat units, sat boost, common surplus, luxury oversat |
 | Sentiment | sentiment, axes, sentiment shift |
-| Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, update sentiments, stored effects |
+| Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, held, update sentiments, stored effects |
 | World data | world data, init data, save data, factuals, gameplay config, game state, actor, pop, household, institution, firm, firm property row, firm records, state |
 | Exchange | deal, take tenders, whole units, Time, labor contract, take good, make change, deal response, AMV drift, AMV history, salability update, AMV keep, order priority, friction / transport, order tries, write / set, player resources |
 
@@ -297,6 +297,19 @@ and SOL trend.
 
 **Meaning:** Goods that have been used 
 
+### Held
+**Preferred:** held, holding slot  
+**Avoid:** pending, staged, buffer (those are other stores)
+
+**Meaning:** Today's process output sitting on a [`FirmPRow`] until decay. Not
+on the market and not rotting. Later production lines in the same day may
+spend it after on-hand `quantity`. Decay returns `used` capital, rots
+`quantity`, then moves `held` into `quantity` last so this day's output
+skips tonight's rot.
+
+**Code:** `FirmPRow.held`, `FirmPRow::production_stock`,
+`FirmPRow::take_for_production`, `Firm::run_production`, `Firm::decay_goods`
+
 ### Update sentiments
 **Preferred:** update sentiments  
 
@@ -336,7 +349,9 @@ Later: overlapping mod folders with ids, dependencies, and exclusivity.
 **Avoid:** world data (that is the factuals), save data
 
 **Meaning:** Kickoff state for a new game: starting prices, pops, firms, markets,
-property. Not loaded yet.
+property. Human-editable scenario TOML, not a compressed save. Pops and firms
+load from `data/init/` (`InitData`). Starting prices are still tester-side.
+**Code:** `InitData`, `data/init/pops.toml`, `data/init/firms.toml`
 
 ### Save data
 **Preferred:** save data  
@@ -431,7 +446,6 @@ Rolled-up day memory for planning, written in `Firm::record_keeping` before `Fir
 | Preferred | Meaning | Code |
 |-----------|---------|------|
 | **realized profit** | Sold AMV vs cost of what sold: firm-wide `sold_amv / sold_cost_amv`, per-good `sold_unit_amv / average_cost`. 0 if the row meant to sell and sold nothing. Not process AMV-out / AMV-in (that is **productivity**, used to rank peer lines) | `profit_ratio`, `profit_avg`; `realized_profit_of` |
-| **confidence** | How aggressively the firm moves production and quotes. **0** cautious (half the advertised lerp/step), **0.5** advertised pace, **1** one-and-a-half times. Nudged from sell success, realized profit, and missing inputs | `FirmRecords.confidence`; tunables `confidence_default` / `confidence_pace_min` / `confidence_pace_max` |
 
 Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs are recorded as **produced** on the result goods. Capital is recorded as **used**, not consumed. Factors are not moved.
 
@@ -554,12 +568,17 @@ Wages do not yet track market Time AMV (pops cannot move or resize).
 **Avoid:** unlimited profit (stock fence and growth still hold), trigger
 
 **Meaning:** Flag on [`Owners`] (`remainder`). The living owner pop takes
-leftover till after wages, worker profit shares, **stock fence**, and
-**growth target**. Direct owner-operator. Distinct from **profit share**
+leftover till after wages, worker profit shares, **stock fence**,
+**growth target**, and **posted sell**. Posted sell is `min(sell_target,
+max market salability * daily output)` for goods the firm makes. Direct owner-operator. Distinct from **profit share**
 (`profit_share` 0..=1 of yesterday `sold_amv - sold_cost_amv`): a limited
 dividend / partial owner / LLC, where the firm keeps the rest. Remainder
 runs even when yesterday's profit is 0. Paid high salability first, skipping
-Time. `Firm::plan` does not write `growth_target` yet.
+Time. On a loss (yesterday profit AMV <= 0) the remainder owner also covers
+the AMV shortfall between needs (recipe inputs, wage basket, stock fence)
+and on-hand goods, from unreserved stock, whole units, skipping Time:
+missing inputs, missing wage goods, production outputs, then exchange.
+Limited owners do not cover. `Firm::plan` does not write `growth_target` yet.
 
 **Code:** `Owners.remainder`, `Firm::with_owner_remainder`,
 `LaborSettlement::settle`
@@ -619,10 +638,12 @@ sought good only. Leftover and unmatched books do **not** move AMV
 **Avoid:** scaler, price normalize (ambiguous with average_price)
 
 **Meaning:** Every `amv_rescale_period` completed market days (default 1),
-multiply live AMV, average_price, and the AMV trail so the unweighted mean
-of one unit of each tradeable good equals `amv_rescale_mean` (default 10.0).
-Time is skipped. Period 0 disables. A unit-normalization for readability;
-relative AMVs stay the same. Firm bids/asks are not scaled.
+multiply live AMV and average_price so the unweighted mean of one unit of
+each tradeable good equals `amv_rescale_mean` (default 10.0). Time is
+skipped. Period 0 disables. A unit-normalization for readability; relative
+AMVs stay the same. The AMV trail is **not** rewritten (closes already sit
+in that day's mean units). Firm `amv_target`, cost basis, and AMV bounds
+scale by the same factor.
 
 **Code:** `Market::rescale_amv_to_mean`, `market_constants::AMV_RESCALE_PERIOD`,
 `AMV_RESCALE_MEAN`
@@ -673,7 +694,7 @@ accept windfalls (`keep >= 1.0`); they do not seek a more equitable split.
 **Preferred:** order priority, market priority  
 **Avoid:** priority alone (conflicts with **desire priority**), purchase order (ambiguous with `MarketOrder`)
 
-**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SUCCESSFUL_SELL_BONUS * fills`. Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
+**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SUCCESSFUL_SELL_BONUS * fills`. A same-day **reject** cuts that sell/offer weight by `SELL_REJECT_WEIGHT` (0.10). Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
 **Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
 **Deferred detail:** `docs/proposals/market-order-priority.md`
 
@@ -712,7 +733,7 @@ If the world has no transport-tagged goods, the bill is 0.
 **Preferred:** write, set  
 **Avoid:** stamp, restamp (except a **stamped deal**: market marks an accepted exchange complete)
 
-**Meaning:** Filling in a field on an order or property row is not a final act. Say **write** or **set** AMV, counter, or order priority on create. Say **update** or **edit** when changing an order already in the books (remaining amount, successful sell bonus). **Stamp** is reserved for closing a deal.
+**Meaning:** Filling in a field on an order or property row is not a final act. Say **write** or **set** AMV, counter, or order priority on create. Say **update** or **edit** when changing an order already in the books (remaining amount, successful sell bonus, reject weight). **Stamp** is reserved for closing a deal.
 
 ### Player resources
 **Preferred:** player resources  

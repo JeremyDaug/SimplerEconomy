@@ -61,7 +61,8 @@ goods (cover = `qty * efficiency`). Seller never receives the spent units.
 - **Success:** cap fill so post-exchange cover can pay, *then* form the basket,
   then spend the **full** bill. Do not also charge the door fee at the start.
 - **Wash** (reject / no proposal): `TRANSACTION_COST` from **on-hand** only,
-  then `renew_buy` until `BUY_TRY_LIMIT` 2.
+  then `renew_buy` until `BUY_TRY_LIMIT` 2. A **reject** also cuts that
+  sell/offer weight by 10% for the rest of the day.
 - **Unavailable:** no meeting, no fee. Lives on `Market.unavailable_goods`.
 - No Transport tag in the world => bill 0.
 

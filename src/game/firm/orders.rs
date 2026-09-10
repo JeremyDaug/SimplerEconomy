@@ -21,11 +21,12 @@ impl Firm {
     ///    plus expected sell and liquidate AMV (optimistic: assumes outgoing fills).
     ///
     /// Exchange if salability >= [`crate::game::config::market_constants::EXCHANGE_SALABILITY_MIN`].
-    /// Dedicated sell if `sell_target` > 0. When both apply, salability lerps the
-    /// free pile from 90% sell / 10% exchange at the exchange floor to 10% sell /
-    /// 90% exchange at salability 1.0. Exchange units are rounded to nearest;
-    /// sell is the remainder, then capped at `sell_target` (overflow stays
-    /// exchange).
+    /// Dedicated sell if posted sell > 0 (`min(sell_target, max market
+    /// salability * daily output)` for goods this firm makes). When both
+    /// apply, salability lerps the free pile from 90% sell / 10% exchange at
+    /// the exchange floor to 10% sell / 90% exchange at salability 1.0.
+    /// Exchange units are rounded to nearest; sell is the remainder, then
+    /// capped at posted sell (overflow stays exchange).
     ///
     /// Liquidate if the row has free stock and no purchase, sell, or use target,
     /// and it is not exchange-eligible. Those units are leftover barter and go
@@ -90,7 +91,8 @@ impl Firm {
             let salability = history.salability(good);
             let market_amv = history.price(good);
             let mid = row.mid_amv(market_amv);
-            let split = classify_on_hand(row, salability, &factuals.config.market);
+            let sell_plan = self.posted_sell_qty(good, history, factuals);
+            let split = classify_on_hand(row, salability, &factuals.config.market, sell_plan);
             let buy_qty = whole_units(if unavailable.contains(&good) {
                 0.0
             } else {
@@ -311,7 +313,14 @@ impl OnHandSplit {
 
 /// Split free on-hand stock into sell, exchange, and/or liquidate.
 /// Production-fenced units are already excluded by [`FirmPRow::free_for_market`].
-pub(super) fn classify_on_hand(row: &FirmPRow, salability: f64, market: &MarketConfig) -> OnHandSplit {
+/// `sell_plan` is posted sell ([`Firm::posted_sell_qty`]), not unconstrained
+/// `sell_target`.
+pub(super) fn classify_on_hand(
+    row: &FirmPRow,
+    salability: f64,
+    market: &MarketConfig,
+    sell_plan: f64,
+) -> OnHandSplit {
     let free = row.free_for_market();
     if free <= 0.0 {
         return OnHandSplit::empty();
@@ -337,7 +346,7 @@ pub(super) fn classify_on_hand(row: &FirmPRow, salability: f64, market: &MarketC
         };
     }
 
-    let can_sell = row.sell_target > 0.0;
+    let can_sell = sell_plan > 0.0;
     if can_sell && can_exchange {
         let span = 1.0 - market.exchange_salability_min;
         let t = if span > 0.0 {
@@ -349,9 +358,9 @@ pub(super) fn classify_on_hand(row: &FirmPRow, salability: f64, market: &MarketC
         let exchange_frac = lerp(edge, 1.0 - edge, t);
         let mut exchange_qty = round_units(free * exchange_frac).clamp(0.0, free);
         let mut sell_qty = free - exchange_qty;
-        if sell_qty > row.sell_target {
-            exchange_qty += sell_qty - row.sell_target;
-            sell_qty = row.sell_target;
+        if sell_qty > sell_plan {
+            exchange_qty += sell_qty - sell_plan;
+            sell_qty = sell_plan;
         }
         OnHandSplit {
             sell: sell_qty,
@@ -360,7 +369,7 @@ pub(super) fn classify_on_hand(row: &FirmPRow, salability: f64, market: &MarketC
         }
     } else if can_sell {
         OnHandSplit {
-            sell: row.sell_target.min(free),
+            sell: sell_plan.min(free),
             exchange: 0.0,
             liquidate: 0.0,
         }

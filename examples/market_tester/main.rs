@@ -1,13 +1,13 @@
 //! CLI box for probing a market day.
 //!
 //! Startup loads goods, processes, and config from `data/world/`, builds a
-//! living roster (one household pop per world good, grouped consume desires,
-//! no firms), and loads books from
+//! living roster (one household pop and one remainder-owner firm per world good,
+//! grouped consume desires), and loads books from
 //! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
 //! `orders`, and `processes` open full pages. `day` / `day N` runs the
 //! calendar loop, including pop decay, salability rot cap, then
-//! `record_keeping`. Labor settle
-//! and budget still go through [`Market`] (no-op with an empty firm list).
+//! `record_keeping`. Firms are remainder owner-operators: 10 Time for
+//! 150 specialty output, no wage basket.
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
 //! `csv` shows the files; `csv <name>` changes the stem.
@@ -94,9 +94,6 @@ const BEER: usize = 25;
 const CLAY: usize = 26;
 const POTS: usize = 27;
 
-/// Tester coin is 10x units. Opening AMV is 0.1 * 2.1 so gold 8 / coin
-/// sits near the 40-coin mint recipe (8 / 0.21 ~ 38).
-const COIN_AMV: f64 = 0.21;
 /// Default CSV stem under `data/logs/` (`prices_market.csv`, …).
 const CSV_STEM_DEFAULT: &str = "prices";
 
@@ -132,26 +129,34 @@ const PREFAB_GOODS: &[NamedGood] = &[
 ];
 
 const PREFAB_ACTORS: &[NamedActor] = &[
-    NamedActor { actor: Actor::Pop(1), name: "pop1" },
-    NamedActor { actor: Actor::Pop(2), name: "pop2" },
-    NamedActor { actor: Actor::Pop(3), name: "pop3" },
-    NamedActor { actor: Actor::Pop(4), name: "pop4" },
-    NamedActor { actor: Actor::Pop(5), name: "pop5" },
-    NamedActor { actor: Actor::Pop(6), name: "pop6" },
-    NamedActor { actor: Actor::Pop(7), name: "pop7" },
-    NamedActor { actor: Actor::Pop(8), name: "pop8" },
-    NamedActor { actor: Actor::Pop(9), name: "pop9" },
-    NamedActor { actor: Actor::Pop(10), name: "pop10" },
-    NamedActor { actor: Actor::Pop(11), name: "pop11" },
-    NamedActor { actor: Actor::Pop(12), name: "pop12" },
-    NamedActor { actor: Actor::Pop(13), name: "pop13" },
-    NamedActor { actor: Actor::Pop(14), name: "pop14" },
-    NamedActor { actor: Actor::Pop(15), name: "pop15" },
-    NamedActor { actor: Actor::Pop(16), name: "pop16" },
-    NamedActor { actor: Actor::Pop(17), name: "pop17" },
-    NamedActor { actor: Actor::Pop(18), name: "pop18" },
-    NamedActor { actor: Actor::Pop(19), name: "pop19" },
-    NamedActor { actor: Actor::Pop(20), name: "pop20" },
+    NamedActor { actor: Actor::Pop(1), name: "pop1-grain" },
+    NamedActor { actor: Actor::Pop(2), name: "pop2-water" },
+    NamedActor { actor: Actor::Pop(3), name: "pop3-bread" },
+    NamedActor { actor: Actor::Pop(4), name: "pop4-gold" },
+    NamedActor { actor: Actor::Pop(5), name: "pop5-gold_token" },
+    NamedActor { actor: Actor::Pop(6), name: "pop6-jewelry" },
+    NamedActor { actor: Actor::Pop(7), name: "pop7-wood" },
+    NamedActor { actor: Actor::Pop(8), name: "pop8-cabins" },
+    NamedActor { actor: Actor::Pop(9), name: "pop9-wood_tools" },
+    NamedActor { actor: Actor::Pop(10), name: "pop10-buckets" },
+    NamedActor { actor: Actor::Pop(11), name: "pop11-iron" },
+    NamedActor { actor: Actor::Pop(12), name: "pop12-iron_tools" },
+    NamedActor { actor: Actor::Pop(13), name: "pop13-copper" },
+    NamedActor { actor: Actor::Pop(14), name: "pop14-tin" },
+    NamedActor { actor: Actor::Pop(15), name: "pop15-bronze" },
+    NamedActor { actor: Actor::Pop(16), name: "pop16-bronze_tools" },
+    NamedActor { actor: Actor::Pop(17), name: "pop17-blades" },
+    NamedActor { actor: Actor::Pop(18), name: "pop18-bronze_mirror" },
+    NamedActor { actor: Actor::Pop(19), name: "pop19-bronze_token" },
+    NamedActor { actor: Actor::Pop(20), name: "pop20-iron_token" },
+    NamedActor { actor: Actor::Pop(21), name: "pop21-copper_token" },
+    NamedActor { actor: Actor::Pop(22), name: "pop22-tin_token" },
+    NamedActor { actor: Actor::Pop(23), name: "pop23-coal" },
+    NamedActor { actor: Actor::Pop(24), name: "pop24-charcoal" },
+    NamedActor { actor: Actor::Pop(25), name: "pop25-beer" },
+    NamedActor { actor: Actor::Pop(26), name: "pop26-clay" },
+    NamedActor { actor: Actor::Pop(27), name: "pop27-pots" },
+    NamedActor { actor: Actor::Pop(28), name: "pop28-time" },
 ];
 
 struct Session {
@@ -612,9 +617,70 @@ mod day_should {
         let session = boot_session();
         let n_goods = session.factuals.goods.len();
         assert_eq!(session.pops.len(), n_goods);
-        assert!(session.firms.is_empty());
+        assert_eq!(session.firms.len(), n_goods);
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
         assert_eq!(ids, (1..=n_goods).collect::<Vec<_>>());
+        let firm_ids: Vec<usize> = session.firms.iter().map(|firm| firm.id).collect();
+        assert_eq!(firm_ids, ids);
+    }
+
+    #[test]
+    fn each_firm_is_a_remainder_owner_operator() {
+        let session = boot_session();
+        let n_goods = session.factuals.goods.len();
+        for firm in &session.firms {
+            let good = produced_good_id(firm.id, n_goods);
+            let process_id = process_id_for_output(&session.factuals, good);
+            assert_eq!(firm.production_line.len(), 1);
+            let line = &firm.production_line[0];
+            assert_eq!(line.process, process_id);
+            assert_eq!(line.inputs, vec![TIME]);
+            let target = line.target.unwrap();
+            let time_in = session.factuals.processes[&process_id]
+                .inputs
+                .iter()
+                .find(|input| input.good == TIME)
+                .map(|input| input.amount)
+                .unwrap_or(1.0);
+            if target > 0.0 {
+                assert!((line.last_iterations - target).abs() < 1e-9);
+                assert!((line.last_success_rate - 1.0).abs() < 1e-9);
+            }
+            let output_amt = session.factuals.processes[&process_id].outputs[0].amount;
+            let opening = target * output_amt;
+            if good == TIME || opening <= 0.0 {
+                assert!(
+                    firm.property
+                        .get(&good)
+                        .map(|row| row.quantity)
+                        .unwrap_or(0.0)
+                        .abs()
+                        < 1e-9
+                );
+            } else {
+                let row = firm.property.get(&good).expect("opening output stock");
+                assert!((row.quantity - opening).abs() < 1e-9);
+                assert!((row.sell_target - opening).abs() < 1e-9);
+            }
+            assert_eq!(firm.workforce.len(), 1);
+            assert_eq!(firm.workforce[0].id, firm.id);
+            assert!((firm.workforce[0].hours - target * time_in).abs() < 1e-9);
+            assert!(firm.workforce[0].payment.is_empty());
+            assert!((firm.workforce[0].profit_share - 0.0).abs() < 1e-9);
+            assert_eq!(firm.owners.owner, Actor::Pop(firm.id));
+            assert!(firm.owners.remainder);
+            assert!(session.market.firms.contains(&firm.id));
+        }
+        let grain = session.factuals.processes.get(&1).expect("make grain");
+        assert_eq!(grain.name, "make grain");
+        assert_eq!(grain.outputs[0].good, GRAIN);
+        assert!((grain.outputs[0].amount - 15.0).abs() < 1e-9);
+        let time = session
+            .factuals
+            .processes
+            .get(&process_id_for_output(&session.factuals, TIME))
+            .expect("make time");
+        assert_eq!(time.outputs[0].good, TIME);
     }
 
     #[test]
@@ -632,6 +698,24 @@ mod day_should {
                 "good {id} sal {}",
                 session.history.salability(*id)
             );
+        }
+    }
+
+    #[test]
+    fn living_pops_have_no_opening_stock() {
+        let session = boot_session();
+        for pop in &session.pops {
+            for (&id, row) in &pop.property {
+                if id == TIME {
+                    continue;
+                }
+                assert!(
+                    row.quantity.abs() < 1e-9,
+                    "pop {} good {id} qty {}",
+                    pop.id,
+                    row.quantity
+                );
+            }
         }
     }
 

@@ -280,6 +280,10 @@ pub mod market_priority {
     /// Small so repeat sales do not explode into a rich-get-richer spiral.
     pub const SUCCESSFUL_SELL_BONUS: f64 = 0.25;
 
+    /// Same-day cut to a sell/offer weight after the seller rejects.
+    /// 0.10 = keep 90% of the current weight. Does not persist overnight.
+    pub const SELL_REJECT_WEIGHT: f64 = 0.10;
+
     /// This-pick-only multiplier when buy and sell name the same counter-offer
     /// good. Does not change stored priority. Both sides must be `Some`.
     pub const SELL_COINCIDENCE_WEIGHT: f64 = 2.0;
@@ -337,13 +341,6 @@ pub mod firm_constants {
     pub const SELL_SUCCESS_GROW: f64 = 0.80;
     /// Sell success below this counts as a miss (track `sold`, apply undersell pressure).
     pub const SELL_SUCCESS_SHRINK: f64 = 0.50;
-    /// Starting [`crate::game::firm::FirmRecords::confidence`] (0 cautious .. 1 aggressive).
-    pub const CONFIDENCE_DEFAULT: f64 = 0.5;
-    /// Plan-pace multiplier at confidence 0 (half the advertised lerp/step).
-    pub const CONFIDENCE_PACE_MIN: f64 = 0.5;
-    /// Plan-pace multiplier at confidence 1 (one and a half times the advertised lerp/step).
-    /// Mid confidence (0.5) keeps multiplier 1.0.
-    pub const CONFIDENCE_PACE_MAX: f64 = 1.5;
     /// Emergency: keep collapsed firms at 1 iteration and feed coin/inputs.
     /// Default off.
     pub const KEEP_ALIVE: bool = false;
@@ -1013,6 +1010,9 @@ pub struct MarketPriorityConfig {
     /// Flat add to a sell order's priority after each successful fill. Default 0.25.
     /// Must be >= 0.
     pub successful_sell_bonus: f64,
+    /// Same-day fraction cut from a sell/offer weight after a reject. Default 0.10.
+    /// Bound 0..=1.
+    pub sell_reject_weight: f64,
     /// This-pick-only multiplier when buy and sell name the same counter-offer.
     /// Default 2.0. Must be > 0.
     pub sell_coincidence_weight: f64,
@@ -1037,6 +1037,7 @@ impl Default for MarketPriorityConfig {
             state_last: market_priority::STATE_LAST,
             sell_actor_priority_floor: market_priority::SELL_ACTOR_PRIORITY_FLOOR,
             successful_sell_bonus: market_priority::SUCCESSFUL_SELL_BONUS,
+            sell_reject_weight: market_priority::SELL_REJECT_WEIGHT,
             sell_coincidence_weight: market_priority::SELL_COINCIDENCE_WEIGHT,
         }
     }
@@ -1123,6 +1124,13 @@ impl MarketPriorityConfig {
             0.0,
         );
         at_least(problems, "market_priority.successful_sell_bonus", self.successful_sell_bonus, 0.0);
+        in_range(
+            problems,
+            "market_priority.sell_reject_weight",
+            self.sell_reject_weight,
+            0.0,
+            1.0,
+        );
         above(
             problems,
             "market_priority.sell_coincidence_weight",
@@ -1211,12 +1219,6 @@ pub struct FirmConfig {
     /// Sell success below this is a miss. Default 0.50.
     /// Bound 0..=1. Must be <= `sell_success_grow`.
     pub sell_success_shrink: f64,
-    /// Starting firm confidence. Default 0.5. Bound 0..=1.
-    pub confidence_default: f64,
-    /// Plan-pace multiplier at confidence 0. Default 0.5. Must be >= 0.
-    pub confidence_pace_min: f64,
-    /// Plan-pace multiplier at confidence 1. Default 1.5. Must be >= `confidence_pace_min`.
-    pub confidence_pace_max: f64,
     /// Emergency keep-alive: floor collapsed lines at 1 iteration and feed
     /// missing inputs plus coin. Default false.
     pub keep_alive: bool,
@@ -1237,9 +1239,6 @@ impl Default for FirmConfig {
             rolling_avg_weight: firm_constants::ROLLING_AVG_WEIGHT,
             sell_success_grow: firm_constants::SELL_SUCCESS_GROW,
             sell_success_shrink: firm_constants::SELL_SUCCESS_SHRINK,
-            confidence_default: firm_constants::CONFIDENCE_DEFAULT,
-            confidence_pace_min: firm_constants::CONFIDENCE_PACE_MIN,
-            confidence_pace_max: firm_constants::CONFIDENCE_PACE_MAX,
             keep_alive: firm_constants::KEEP_ALIVE,
         }
     }
@@ -1265,16 +1264,6 @@ impl FirmConfig {
             self.sell_success_shrink,
             "firm.sell_success_grow",
             self.sell_success_grow,
-        );
-        in_range(problems, "firm.confidence_default", self.confidence_default, 0.0, 1.0);
-        at_least(problems, "firm.confidence_pace_min", self.confidence_pace_min, 0.0);
-        at_least(problems, "firm.confidence_pace_max", self.confidence_pace_max, 0.0);
-        ordered(
-            problems,
-            "firm.confidence_pace_min",
-            self.confidence_pace_min,
-            "firm.confidence_pace_max",
-            self.confidence_pace_max,
         );
     }
 }

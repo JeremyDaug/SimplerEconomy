@@ -81,7 +81,7 @@ pub(crate) fn csv_status(session: &Session) -> String {
         ));
     } else {
         out.push_str(&format!(
-            "  {stem}_firms.csv    flagged {}; firm conf/profit/success, then good blocks: qty, targets, bid, ask, costs, sold, produced\n",
+            "  {stem}_firms.csv    flagged {}; firm profit/success, then good blocks: qty, targets, bid, ask, costs, sold, produced\n",
             csv_flagged_firm_names(session)
         ));
     }
@@ -254,7 +254,7 @@ fn reset_actor_csv(
 }
 
 pub(crate) const MARKET_CSV_FIELDS: &[&str] = &["amv", "salability", "average_price"];
-pub(crate) const FIRM_RECORD_FIELDS: &[&str] = &["confidence", "profit", "sell_success"];
+pub(crate) const FIRM_RECORD_FIELDS: &[&str] = &["profit", "sell_success"];
 pub(crate) const FIRM_CSV_FIELDS: &[&str] = &[
     "quantity",
     "sell_target",
@@ -461,7 +461,6 @@ pub(crate) fn firm_csv_row(session: &Session) -> String {
         .iter()
         .filter(|firm| session.csv_firms.contains(&firm.id))
     {
-        cells.push(csv_num(firm.records.confidence));
         cells.push(csv_num(firm.records.profit_ratio));
         cells.push(csv_num(firm.records.sell_success));
         for id in &goods {
@@ -667,10 +666,34 @@ mod csv_should {
     }
 
     #[test]
+    fn pop_labels_include_specialty() {
+        assert_eq!(fmt_actor(Actor::Pop(1)), "pop1-grain");
+        assert_eq!(fmt_actor(Actor::Pop(18)), "pop18-bronze_mirror");
+        assert_eq!(fmt_actor(Actor::Pop(28)), "pop28-time");
+        assert_eq!(csv_actor_col(Actor::Pop(1)), "pop1_grain");
+        assert_eq!(fmt_actor(Actor::Firm(1)), "firm1-grain");
+        assert_eq!(fmt_actor(Actor::Firm(18)), "firm18-bronze_mirror");
+        assert_eq!(fmt_actor(Actor::Firm(28)), "firm28-time");
+        assert_eq!(csv_actor_col(Actor::Firm(1)), "firm1_grain");
+    }
+
+    #[test]
+    fn flags_specialty_prefab_names() {
+        let mut session = session();
+        let msg = handle_csv_command(&mut session, &["on", "pop1-grain", "pop28-time"]);
+        assert!(msg.contains("logging pop1-grain pop28-time"), "{msg}");
+        assert!(session.csv_pops.contains(&1));
+        assert!(session.csv_pops.contains(&28));
+        let firm = handle_csv_command(&mut session, &["on", "firm1-grain"]);
+        assert!(firm.contains("logging firm1-grain"), "{firm}");
+        assert!(session.csv_firms.contains(&1));
+    }
+
+    #[test]
     fn flags_only_named_roster_actors() {
         let mut session = session();
         let msg = handle_csv_command(&mut session, &["on", "pop1", "pop2"]);
-        assert!(msg.contains("logging pop1 pop2"), "{msg}");
+        assert!(msg.contains("logging pop1-grain pop2-water"), "{msg}");
         assert!(session.csv_pops.contains(&1));
         assert!(session.csv_pops.contains(&2));
         assert!(!session.csv_pops.contains(&3));
@@ -679,17 +702,17 @@ mod csv_should {
 
         let pop_header = pop_csv_header(&session);
         assert!(
-            pop_header.contains("pop1_living_standard"),
+            pop_header.contains("pop1_grain_living_standard"),
             "{pop_header}"
         );
         assert!(
-            pop_header.contains("pop2_living_standard"),
+            pop_header.contains("pop2_water_living_standard"),
             "{pop_header}"
         );
         assert!(!pop_header.contains("pop3_"), "{pop_header}");
 
         let off = handle_csv_command(&mut session, &["off", "pop1"]);
-        assert!(off.contains("stopped pop1"), "{off}");
+        assert!(off.contains("stopped pop1-grain"), "{off}");
         assert!(!session.csv_pops.contains(&1));
         assert!(session.csv_pops.contains(&2));
         assert_eq!(csv_kind_brace(&session), "{market,trades,pops}");

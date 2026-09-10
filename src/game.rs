@@ -19,6 +19,7 @@ pub mod state;
 pub mod techtree;
 pub mod household;
 pub mod factuals;
+pub mod init;
 pub mod actor;
 pub mod firmorganization;
 pub mod workforce;

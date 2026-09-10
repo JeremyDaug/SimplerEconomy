@@ -1,0 +1,35 @@
+# Scenario kickoff firms. Init data, not world factuals, not a save.
+# process is a name or id. remainder defaults true. owner defaults to the firm id.
+# target is process iterations. Opening stock is each output * target (yesterday
+# succeeded). Hours default to target * Time input. Time output is not stocked.
+
+firms = [
+    { id = 1, process = "make grain", target = 10 },
+    { id = 2, process = "make water", target = 10 },
+    { id = 3, process = "make bread", target = 10 },
+    { id = 4, process = "make gold", target = 1 },
+    { id = 5, process = "make gold_token", target = 1 },
+    { id = 6, process = "make jewelry", target = 1 },
+    { id = 7, process = "make wood", target = 1 },
+    { id = 8, process = "make cabins", target = 10 },
+    { id = 9, process = "make wood_tools", target = 1 },
+    { id = 10, process = "make buckets", target = 1 },
+    { id = 11, process = "make iron", target = 1 },
+    { id = 12, process = "make iron_tools", target = 1 },
+    { id = 13, process = "make copper", target = 1 },
+    { id = 14, process = "make tin", target = 1 },
+    { id = 15, process = "make bronze", target = 1 },
+    { id = 16, process = "make bronze_tools", target = 1 },
+    { id = 17, process = "make blades", target = 1 },
+    { id = 18, process = "make bronze_mirror", target = 1 },
+    { id = 19, process = "make bronze_token", target = 1 },
+    { id = 20, process = "make iron_token", target = 1 },
+    { id = 21, process = "make copper_token", target = 1 },
+    { id = 22, process = "make tin_token", target = 1 },
+    { id = 23, process = "make coal", target = 5 },
+    { id = 24, process = "make charcoal", target = 5 },
+    { id = 25, process = "make beer", target = 1 },
+    { id = 26, process = "make clay", target = 1 },
+    { id = 27, process = "make pots", target = 1 },
+    { id = 28, process = "make time", target = 10 },
+]

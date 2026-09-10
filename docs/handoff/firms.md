@@ -2,17 +2,17 @@
 
 Read this only for firm property, production, planning, or `create_orders`.
 Field names: `docs/design-vocabulary.md` (firm property row, sell success,
-realized profit, confidence, AMV bound). Do not copy them here.
+realized profit, AMV bound). Do not copy them here.
 
 ## Landed vs stub
 
 | Piece | Status |
 |-------|--------|
 | `FirmPRow` + helpers | Landed |
-| `run_production` | Landed + tests. Tester `day` calls it. PlayState production still `todo!()` |
+| `run_production` | Landed + tests. Tester `day` calls it. Living roster firms work 10 Time for 150 output. PlayState production still `todo!()` |
 | Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
-| `record_keeping` | Rolling average + `FirmRecords` (incl. **confidence**), then `plan` |
+| `record_keeping` | Rolling average + `FirmRecords`, then `plan` |
 | `create_orders` | Landed + tests. Used by `run_market_day`, not PlayState |
 | `apply_passive_bonuses` | Stub |
 | Re-emit after fill | Stub. Raise reserve toward stock **before** re-calling `create_orders` or merchants dump what they just bought |
@@ -27,7 +27,8 @@ call it out, do not "fix" the live order unless asked.
 
 - `reserve` is a stockpile guarantee (`sync_reserve` = `min(quantity, reserve_target)`). Not pop `reserved`.
 - `sellable` = `quantity - max(reserve, reserve_target)`. `free_for_market` adds stock/use fences when `use_target` > 0.
-- `clear_day_flows` is day start (totals stay visible overnight). `decay_goods` returns `used` then decays stock.
+- `clear_day_flows` is day start (totals stay visible overnight). `decay_goods`
+  returns `used` then decays `quantity`, then moves `held` into `quantity`.
 - **AMV bound** is a planning guidestone, **not** a trade gate. `create_orders` still posts the row's own bid/ask; `buy` still forms a basket when payment AMV is above the bound. Keep ratio can still reject. Later: headroom vs market for shrinking a line.
 - `plan` writes residual WTP as the buy cap and consumed-input AMV rollup as the sell floor. Default `None` until `plan` runs.
 
@@ -39,18 +40,23 @@ write it yet.
 ## Production
 
 Records `produced` / `consumed` / `used`; returns `Vec<ProcessEffect>` (no
-`ProductionReport`). Destroyed and Consumed inputs both go to `consumed`;
-Consumed decay products go to `produced`; capital goes to `used` only; factors
-untouched. Output `average_cost` blends consumed-input AMV only — used capital
-is not in that blend (amortization later, not v0).
+`ProductionReport`). Destroyed and Consumed inputs both go to `consumed`
+(on-hand `quantity` first, then `held`); Consumed decay products go to
+`produced`; capital goes to `used` only; factors untouched. Process outputs
+(and Consumed-input decay products) land in `held`, not `quantity`. Later
+lines may spend `held` after on-hand stock. Decay releases `held` after
+on-hand rot, so today's output skips tonight's decay. Output `average_cost`
+blends consumed-input AMV only — used capital is not in that blend
+(amortization later, not v0). Vault `Processes.md` does not describe `held`;
+do not invent a third model.
 
 A line starting from 0 snaps to at least 1 iteration. Missing inputs throttle
 the run (`last_missing_goods`); they do **not** shrink the line in `plan`.
 
 ## Plan
 
-`plan(&mut self, factuals, history)`. Gather then adjust. Pace is `plan_pace`:
-confidence 0.5 uses `planning_lerp_rate`; 0 is half speed, 1 is 1.5x.
+`plan(&mut self, factuals, history)`. Gather then adjust. Pace is
+`planning_lerp_rate` (growth/shrink steps are `growth_rate` / `shrink_rate`).
 
 1. **Gather:** line **productivity** (process AMV-out / AMV-in, peer rank);
    per output **realized profit** (sold unit AMV / average cost), sell success,
@@ -65,9 +71,12 @@ confidence 0.5 uses `planning_lerp_rate`; 0 is half speed, 1 is 1.5x.
    what sold and keep `amv_bound` None. Till / barter with no recipe role: leave
    alone.
 
-Own `amv_target` is nudged, not lerped onto live market AMV.
+Own `amv_target` is nudged, not lerped onto live market AMV. Market AMV
+rescale multiplies `amv_target`, cost basis, and AMV bounds by the same
+factor so quotes stay in the current unit.
 `record_keeping` snapshots then calls `plan` — do not also call `plan` the same
-day. Tunables: `factuals.config.firm`. Tests: `firm::plan_should`.
+day. Do not re-add a confidence pace scale. Tunables: `factuals.config.firm`.
+Tests: `firm::plan_should`.
 
 ## create_orders
 
@@ -78,8 +87,10 @@ counters ceil; bid/ask AMV stays fractional.
 On-hand `free_for_market` is sell / exchange / liquidate:
 
 - **Exchange** if salability >= `0.6`. High-sal leftover with no purchase/sell/use is till money, not a dump.
-- **Sell** if `sell_target` > 0. No salability cap.
-- **Both:** lerp 90/10 sell/exchange at 0.6 to 10/90 at 1.0. Exchange rounds half-up; sell is the remainder, capped at `sell_target` (overflow stays exchange).
+- **Sell** if posted sell > 0. Posted sell is `min(sell_target, max market
+  salability * daily output)` for goods this firm makes; unconstrained
+  `sell_target` otherwise. Sell-success still uses `sell_target`.
+- **Both:** lerp 90/10 sell/exchange at 0.6 to 10/90 at 1.0. Exchange rounds half-up; sell is the remainder, capped at posted sell (overflow stays exchange).
 - **Liquidate** if free stock, no purchase/sell/use, salability below 0.6. Always **offer**, never priced sells.
 
 Dual buy+sell: producers (`use_target` > 0) buy only the stock-target shortfall

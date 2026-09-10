@@ -552,44 +552,33 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!((factuals.find_good(0).transport_efficiency() - 1.0).abs() < 1e-12);
         assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
+        assert!((factuals.find_good(1).decay_rate - 0.4).abs() < 1e-12);
         assert_eq!(factuals.find_good(5).name, "gold_token");
-        assert!((factuals.find_good(5).decay_rate - 1.0).abs() < 1e-12);
+        assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
     }
 
     #[test]
     fn load_from_path_reads_world_dir_goods_and_processes() {
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         assert!(!factuals.goods.is_empty());
-        assert_eq!(factuals.processes.len(), 7);
-        let farm = factuals.processes.get(&1).expect("farm grain");
-        assert_eq!(farm.name, "farm grain");
-        assert_eq!(farm.inputs.len(), 2);
-        assert_eq!(farm.inputs[0].good, 0);
-        assert_eq!(farm.inputs[0].amount, 3.0);
-        assert_eq!(farm.inputs[1].good, 2);
-        assert_eq!(farm.inputs[1].amount, 1.0);
-        assert!(matches!(farm.inputs[1].input_type, InputType::Destroyed));
-        assert_eq!(farm.outputs.len(), 1);
-        assert_eq!(farm.outputs[0].good, 1);
-        assert_eq!(farm.outputs[0].amount, 6.0);
-        let mine = factuals.processes.get(&3).expect("mine gold");
-        assert_eq!(mine.inputs.len(), 1);
-        assert_eq!(mine.inputs[0].good, 0);
-        assert_eq!(mine.outputs[0].good, 4);
-        let mint = factuals.processes.get(&4).expect("mint coin");
-        assert_eq!(mint.inputs[0].good, 0);
-        assert_eq!(mint.inputs[1].good, 4);
-        assert_eq!(mint.outputs[0].amount, 40.0);
-        let melt = factuals.processes.get(&7).expect("melt coin");
-        assert_eq!(melt.inputs[0].good, 0);
-        assert_eq!(melt.inputs[1].good, 5);
-        assert_eq!(melt.inputs[1].amount, 41.0);
-        assert_eq!(melt.outputs[0].good, 4);
-        let jewelry = factuals.processes.get(&5).expect("cut jewelry");
-        assert_eq!(jewelry.inputs[0].good, 0);
-        assert_eq!(jewelry.inputs[1].good, 4);
-        assert_eq!(jewelry.inputs[1].amount, 3.0);
-        assert_eq!(jewelry.outputs[0].amount, 5.0);
+        assert_eq!(factuals.processes.len(), factuals.goods.len());
+        for process in factuals.processes.values() {
+            assert_eq!(process.inputs.len(), 1);
+            assert_eq!(process.inputs[0].good, 0);
+            assert!((process.inputs[0].amount - 1.0).abs() < 1e-12);
+            assert!(matches!(process.inputs[0].input_type, InputType::Destroyed));
+            assert_eq!(process.outputs.len(), 1);
+            assert!((process.outputs[0].amount - 15.0).abs() < 1e-12);
+        }
+        let grain = factuals.processes.get(&1).expect("make grain");
+        assert_eq!(grain.name, "make grain");
+        assert_eq!(grain.outputs[0].good, 1);
+        let pots = factuals.processes.get(&27).expect("make pots");
+        assert_eq!(pots.name, "make pots");
+        assert_eq!(pots.outputs[0].good, 27);
+        let time = factuals.processes.get(&28).expect("make time");
+        assert_eq!(time.name, "make time");
+        assert_eq!(time.outputs[0].good, 0);
         assert_eq!(factuals.config, GameConfig::default());
         assert_eq!(factuals.config.labor.worker_share, 0.30);
     }

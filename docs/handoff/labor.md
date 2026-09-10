@@ -34,7 +34,16 @@ PlayState labor fire is still a stub.
   of yesterday `sold_amv - sold_cost_amv` is paid after wages. Owner is
   either **remainder** (leftover till, owner-operator) or a limited
   **profit share** (dividend / partial owner). Remainder is cut first after
-  those fences; limited share is capped at profit AMV.
+  those fences and **posted sell** (`min(sell_target, max market
+  salability * daily output)` for goods the firm makes); leftover is extra
+  above that, paid high salability first. Limited share is capped at profit AMV.
+- Remainder owner on a loss (yesterday profit AMV <= 0) covers the AMV
+  shortfall vs needs (recipe inputs, wage basket, stock fence) **before**
+  wages, from unreserved stock: missing inputs, missing wage goods,
+  production outputs, then exchange. Contributed inputs/outputs are fenced
+  so leftover remainder cannot take them back the same morning. Limited
+  owners do not cover. Vault `Firms.md` does not spell this out; Owners
+  rustdoc already says they are accountable for losses.
 - Partial pay withholds Time linearly in AMV paid / AMV promised.
 - `growth_target` is read at settle; `Firm::plan` does not write it yet.
 
@@ -62,18 +71,13 @@ PlayState does not.
 ## Tester
 
 Tester `day` calls [`Market::settle_labor`] and [`Market::budget_labor`].
-Roster hours are day-1 recipe
-Time (farm 15, bakery 28, mine 32, jeweler 5, well 30); buying firms add one
-`transaction_cost` of Time so a restock meeting does not starve production.
-Wage basket is 1 coin per Time unit. Lord is **remainder** owner-operator.
-Sell piles and a coin wage-float are retained as `growth_target` (plan does
-not write it yet). One pop, one employer: farmers-farm, laborers-mine,
-townsfolk-bakery, jewelers-jeweler, wellhands-well. `pay_wage_shares` is
-unused here. PlayState labor fire is still a stub.
+Living roster: one remainder owner-operator per good, `FIRM_HOURS` 10, no
+wage basket, no worker profit share. 1 Time → 15 output so 10 Time is 150
+units. Pop morning specialty grant is 0. `pay_wage_shares` is unused here.
+PlayState labor fire is still a stub.
 
 Stale (notify only): `pay_wage_shares` rustdoc still links `labor_constants`
-(live reads `factuals.config`). `LaborSettlement::settle` rustdoc still says
-it is not wired into the tester.
+(live reads `factuals.config`).
 
 ## Later (do not start)
 

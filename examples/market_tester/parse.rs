@@ -163,8 +163,11 @@ pub(crate) fn parse_actor(tok: &mut Tokens<'_>) -> Result<Actor, String> {
     if let Some(named) = PREFAB_ACTORS.iter().find(|a| a.name == key) {
         return Ok(named.actor);
     }
-    if let Some(id) = parse_glued_pop_id(&key) {
+    if let Some(id) = parse_glued_kind_id(&key, "pop") {
         return Ok(Actor::Pop(id));
+    }
+    if let Some(id) = parse_glued_kind_id(&key, "firm") {
+        return Ok(Actor::Firm(id));
     }
     let id_tok = tok
         .next()
@@ -173,12 +176,13 @@ pub(crate) fn parse_actor(tok: &mut Tokens<'_>) -> Result<Actor, String> {
 
 }
 
-fn parse_glued_pop_id(key: &str) -> Option<usize> {
-    let rest = key.strip_prefix("pop")?;
-    if rest.is_empty() {
+fn parse_glued_kind_id(key: &str, prefix: &str) -> Option<usize> {
+    let rest = key.strip_prefix(prefix)?;
+    let n = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    if n == 0 {
         return None;
     }
-    rest.parse().ok()
+    rest[..n].parse().ok()
 }
 
 pub(crate) fn parse_actor_kind_id(kind: &str, id: &str) -> Result<Actor, String> {
