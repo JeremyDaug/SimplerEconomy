@@ -50,7 +50,8 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 
 After an accepted deal, leftover sell/offer amounts clamp to on-hand.
 Trip door cover: unreserved Time plus other transport on-hand. Wash-closed
-goods are not re-requested that day.
+goods are not re-requested that day. After the last wave, each pop gets a
+buy stop (`market` / `money` / `transport`) if shop shortfalls remain.
 
 ## Matching
 

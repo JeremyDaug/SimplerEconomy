@@ -41,7 +41,7 @@ pub(crate) fn is_page_command(cmd: &str) -> bool {
 
 pub(crate) fn format_home(session: &Session) -> String {
     let mut out = String::new();
-    out.push_str("=== market tester ===\n");
+    out.push_str("=== pop tester ===\n");
     out.push_str(&rng_line(session));
     out.push('\n');
     out.push_str("goods  (amv  sal)\n");
@@ -386,17 +386,17 @@ pub(crate) fn stock_cell(qty: Option<f64>) -> String {
 pub(crate) fn help_text() -> String {
     "\
 commands
-  day [N]               run N calendar days (default 1)
-  stock                 live on-hand + firm AMV bounds and quotes
+  day [N]               run N calendar days (default 1); stops on negative AMV
+  stock                 live on-hand
   orders                current buy/sell books
-  processes             world recipes + firm records and lines
+  processes             world recipes
   amv                   AMV, day diff, trail trend, salability
   csv                   show day-end CSV paths and flags
   csv <name>            write under data/logs/<name>_*.csv
   csv reset             wipe current CSVs and rewrite headers
-  csv on <actor>...     log those pops/firms (market/trades always)
+  csv on <actor>...     log those pops (market/trades always)
   csv off <actor>...    stop logging those actors
-  csv off               clear pop/firm flags
+  csv off               clear pop flags
   shop                  reload books from create_orders
   home                  back to the summary
   request <actor> <good> <amount> [priority]
@@ -406,7 +406,6 @@ commands
   match                 one match_orders pass; does not remove anything
   drop buy <i>          remove buy at list index
   drop sell <i>
-  keep_alive [on|off]   emergency: feed collapsed firms (default off)
   seed <n>              deterministic rng from n
   unseed                os rng again
   clear                 empty the books
@@ -415,11 +414,11 @@ commands
 
 Home is a short summary. stock / orders / processes / day / amv / help
 open a page; home returns. Each `day` appends one-row-per-day CSVs in
-data/logs/ (market quotes and trade candles always; flagged pops/firms).
-Startup runs shop once. `day` grants Time, settles labor contracts, runs the
-market, runs each firm's process, pops consume, then pop and firm
-record keeping (firm plan), labor budget / decay.
-actor: prefab name (pop1-grain, firm1-grain, pop1, ...) or kind id (pop 1)
+data/logs/ (market quotes and trade candles always; flagged pops).
+Startup runs shop once. `day` grants Time and tops each pop up to its
+init-firm process outputs, runs the market, pops consume, then record keeping.
+Stops early if any good AMV is negative (prints the day and goods).
+No firms. actor: prefab name (pop1-grain, pop1, ...) or kind id (pop 1)
 good:  prefab name (time, grain, gold_token, wood_tools, ...) or id
 
 examples

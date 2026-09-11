@@ -64,7 +64,7 @@ targets = [
 tier = 0
 id = 3
 name = "housing"
-targets = [{ good = "cabins", efficiency = 1.0 }]
+targets = [{ good = "cabins", efficiency = 5.0 }]
 
 [[desires]]
 tier = 1

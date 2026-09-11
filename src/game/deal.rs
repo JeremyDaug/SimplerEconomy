@@ -129,6 +129,18 @@ impl ProposedDeal {
         })
     }
 
+    /// Iterates goods this role gives (negative signed qty) as `(good, qty)`.
+    pub fn goods_given(&self, role: DealRole) -> impl Iterator<Item = (usize, f64)> + '_ {
+        self.goods.iter().filter_map(move |(&good, &qty)| {
+            let signed = role.sign() * qty;
+            if signed < 0.0 {
+                Some((good, -signed))
+            } else {
+                None
+            }
+        })
+    }
+
     /// Sums given AMV and received AMV for `role` in one pass.
     ///
     /// AMV is `|qty| * price` first, then the role's sign picks the bucket
@@ -259,7 +271,8 @@ pub trait DealMaker {
 
     /// Spends `amount` friction-cover from on-hand transport-tagged goods
     /// (lowest id first, `qty * efficiency`). Never goes negative; leftover
-    /// unpaid is dropped.
+    /// unpaid is dropped. Spent qty leaves `quantity` and is added to
+    /// `consumed`.
     /// `amount` may be fractional. This is the wagon bill, not an exchange.
     fn pay_transport(&mut self, amount: f64, factuals: &Factuals);
 
@@ -302,7 +315,7 @@ pub trait DealMaker {
 ///    kept explicit so a later tighter floor does not reject good deals.
 /// 2. keep >= `min_keep` (normal band: pop unused-only 0.50, firm 0.50).
 /// 3. `needs_received` and keep >= `need_keep` (looser band when they need
-///    an inbound good; pop 0.0 when any received good is used, firm 0.25).
+///    an inbound good; firm 0.25).
 ///
 /// Otherwise Reject.
 ///
@@ -316,12 +329,11 @@ pub trait DealMaker {
 ///   0.50 means at most 50% loss.
 /// * `need_keep` — looser minimum used only when `needs_received` is true.
 ///   Lets a firm take a worse ratio when the inbound good is a purchase or
-///   use target. Pops pass `0.0` when any received good is used, so a
-///   desired good ignores the AMV floor.
+///   use target.
 /// * `needs_received` — this role is receiving a good they want. Firm:
-///   `purchase_target` or `use_target`. Pop: any desire / shop-target good.
-///   Not the same as `uses` for firms: a merchant restock is a need (looser
-///   floor) but not a use (still haircut by salability).
+///   `purchase_target` or `use_target`. Not the same as `uses` for firms:
+///   a merchant restock is a need (looser floor) but not a use (still
+///   haircut by salability). Live pops do not use this catch.
 /// * `uses` — per good, true if this actor will consume it or run it as a
 ///   process input. Those skip the salability haircut on the received side.
 pub fn evaluate_amv_floor(
@@ -339,10 +351,8 @@ pub fn evaluate_amv_floor(
     debug_assert!(need_keep >= 0.0, "need_keep must be >= 0.0");
 
     let keep = deal.amv_percent_keep(role, history, uses);
-    if role == DealRole::Buyer && keep >= 1.0 {
-        return DealResponse::Accept;
-    }
-    if keep >= min_keep {
+    let verdict = evaluate_keep_ratio(role, keep, min_keep);
+    if verdict == DealResponse::Accept {
         return DealResponse::Accept;
     }
     if needs_received && keep >= need_keep {
@@ -351,23 +361,39 @@ pub fn evaluate_amv_floor(
     DealResponse::Reject
 }
 
-/// Returns Accept or Reject using the pop AMV rule.
-/// Receiving any used/desired good ignores the AMV floor (`need_keep` 0).
-/// Unused-only baskets use [`deal_constants::POP_AMV_UNUSED_KEEP`].
+/// Returns Accept or Reject from a precomputed keep ratio.
+///
+/// Buyers accept windfalls (`keep >= 1.0`). Otherwise Accept when
+/// `keep >= min_keep`.
+pub fn evaluate_keep_ratio(role: DealRole, keep: f64, min_keep: f64) -> DealResponse {
+    debug_assert!(min_keep.is_finite(), "min_keep must be finite");
+    debug_assert!(min_keep >= 0.0, "min_keep must be >= 0.0");
+    if role == DealRole::Buyer && keep >= 1.0 {
+        return DealResponse::Accept;
+    }
+    if keep >= min_keep {
+        return DealResponse::Accept;
+    }
+    DealResponse::Reject
+}
+
+/// Returns Accept or Reject using the pop AMV keep floor (0.50).
+/// `uses` skips the salability haircut on received goods. Live pops value
+/// received goods in [`crate::game::pop`] (needed / desired / unused split)
+/// instead of this helper.
 pub fn evaluate_pop_amv(
     deal: &ProposedDeal,
     role: DealRole,
     history: &MarketHistory,
     uses: impl Fn(usize) -> bool,
 ) -> DealResponse {
-    let wants_received = deal.goods_received(role).any(|(good, _)| uses(good));
     evaluate_amv_floor(
         deal,
         role,
         history,
         deal_constants::POP_AMV_UNUSED_KEEP,
         0.0,
-        wants_received,
+        false,
         uses,
     )
 }
@@ -989,12 +1015,12 @@ mod amv_verdict_should {
     }
 
     #[test]
-    fn pop_accepts_any_keep_when_receiving_a_used_good() {
+    fn pop_used_good_still_needs_keep_floor() {
         let deal = bread_for_coin(1.0, 20.0);
         let history = unit_history();
         assert_eq!(
             evaluate_pop_amv(&deal, DealRole::Buyer, &history, |g| g == 1),
-            DealResponse::Accept
+            DealResponse::Reject
         );
     }
 

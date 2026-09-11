@@ -1,19 +1,19 @@
-//! CLI box for probing a market day.
+//! CLI box for probing a pop-only market day.
 //!
-//! Startup loads goods, processes, and config from `data/world/`, builds a
-//! living roster (one household pop and one remainder-owner firm per world good,
-//! grouped consume desires), and loads books from
-//! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
-//! `orders`, and `processes` open full pages. `day` / `day N` runs the
-//! calendar loop, including pop decay, salability rot cap, then
-//! `record_keeping`. Firms are remainder owner-operators: 10 Time for
-//! 150 specialty output, no wage basket.
+//! Copy of `market_tester` with firms left out. Startup loads goods,
+//! processes, and config from `data/world/`, pops from `data/init/`, and
+//! sizes each pop's morning stock cap from the matching init firm's process
+//! outputs (`amount * target`, no scaling). Firms are not kept on the
+//! session. Books come from [`Pop::create_orders`]. `day` / `day N` grants
+//! Time, then tops each pop up to those process outputs, runs the market,
+//! then consume / decay / `record_keeping`. `day N` stops early if any good
+//! AMV goes negative. No firm production or plan.
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
 //! `csv` shows the files; `csv <name>` changes the stem.
 //!
 //! ```text
-//! cargo run --example market_tester
+//! cargo run --example pop_tester
 //! ```
 //!
 //! ```text
@@ -94,8 +94,8 @@ const BEER: usize = 25;
 const CLAY: usize = 26;
 const POTS: usize = 27;
 
-/// Default CSV stem under `data/logs/` (`prices_market.csv`, …).
-const CSV_STEM_DEFAULT: &str = "prices";
+/// Default CSV stem under `data/logs/` (`pop_prices_market.csv`, …).
+const CSV_STEM_DEFAULT: &str = "pop_prices";
 
 const PREFAB_GOODS: &[NamedGood] = &[
     NamedGood { id: TIME, name: "time" },
@@ -180,6 +180,8 @@ struct Session {
     csv_pops: HashSet<usize>,
     /// Firm ids written to `{stem}_firms.csv`. Empty skips that file.
     csv_firms: HashSet<usize>,
+    /// Morning process-output stock cap per pop, loaded from init firms.
+    morning_outputs: MorningOutputs,
 }
 
 
@@ -240,7 +242,7 @@ fn clear_screen() {
 fn draw_ui(session: &Session) {
     clear_screen();
     if session.focus_log {
-        println!("=== market tester ===");
+        println!("=== pop tester ===");
         println!("{}", rng_line(session));
         println!("home  back to summary.");
         println!();
@@ -282,25 +284,6 @@ fn handle_line(session: &mut Session, line: &str) -> CmdResult {
         },
         "amv" | "prices" => format_amv_trail(session).trim_end().to_string(),
         "csv" | "log" => handle_csv_command(session, rest),
-        "keep_alive" | "keepalive" => match rest.first().map(|s| s.to_ascii_lowercase()) {
-            None => format!(
-                "keep_alive {} (keep_alive on|off).",
-                if session.factuals.config.firm.keep_alive {
-                    "on"
-                } else {
-                    "off"
-                }
-            ),
-            Some(ref s) if s == "on" || s == "true" || s == "1" => {
-                session.factuals.config.firm.keep_alive = true;
-                "keep_alive on. Collapsed firms get coin, inputs, and a 1-iteration floor.".into()
-            }
-            Some(ref s) if s == "off" || s == "false" || s == "0" => {
-                session.factuals.config.firm.keep_alive = false;
-                "keep_alive off.".into()
-            }
-            Some(s) => format!("keep_alive on|off (got {s})."),
-        },
         "seed" => match parse_seed(rest) {
             Ok(seed) => {
                 session.rng = StdRng::seed_from_u64(seed);
@@ -352,22 +335,12 @@ fn shop_from_actors(session: &mut Session) -> String {
         ));
     }
     let n_pop = pop_orders.len();
-    let mut firm_orders = Vec::new();
-    for firm in &session.firms {
-        firm_orders.extend(firm.create_orders(
-            &session.history,
-            &session.factuals,
-            &HashSet::new(),
-        ));
-    }
-    let n_firm = firm_orders.len();
-    for order in pop_orders.into_iter().chain(firm_orders) {
+    for order in pop_orders {
         insert_order(session, order);
     }
     format!(
-        "shop loaded {} pop + {} firm orders ({} buys, {} sells).",
+        "shop loaded {} pop orders ({} buys, {} sells).",
         n_pop,
-        n_firm,
         session.buys.len(),
         session.sells.len()
     )
@@ -445,9 +418,11 @@ fn run_match(session: &mut Session) -> String {
     out
 }
 
-/// Loads the living roster and an empty CSV flag set.
+/// Loads the living pop roster, morning process-output caps, and an empty
+/// CSV flag set. Firms are not kept on the session.
 pub(crate) fn boot_session() -> Session {
-    let (pops, firms, factuals, history) = build_world();
+    let (pops, firms, factuals, history, morning_outputs) = build_world();
+    debug_assert!(firms.is_empty(), "pop tester does not load firms");
     let mut history = history;
     history.friction = factuals.config.market.friction;
     let market = market_from_world(&pops, &firms, &history)
@@ -468,6 +443,7 @@ pub(crate) fn boot_session() -> Session {
         csv_stem: CSV_STEM_DEFAULT.to_string(),
         csv_pops: HashSet::new(),
         csv_firms: HashSet::new(),
+        morning_outputs,
     }
 }
 
@@ -511,6 +487,11 @@ fn run_days(session: &mut Session, n: u32) -> String {
         }
         last_report = Some(report);
         last_wages = wages;
+        let negatives = negative_amv_goods(session);
+        if !negatives.is_empty() {
+            out.push_str(&format_negative_amv_stop(session.day, &negatives));
+            break;
+        }
     }
     let report = last_report.expect("ran at least one day");
     if n > 1 {
@@ -521,29 +502,26 @@ fn run_days(session: &mut Session, n: u32) -> String {
     out
 }
 
-/// Runs one tester calendar day: labor settle, market, production, consume,
-/// sentiments, decay, salability rot cap, then pop/firm record keeping
-/// (plan from what survived, using post-cap quotes).
+/// Runs one tester calendar day: morning Time and process-output top-up,
+/// labor settle (no-op with no firms), market, consume, sentiments, decay,
+/// salability rot cap, then pop record keeping.
 fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSettlement)>) {
     let mut pops: HashMap<usize, Pop> = session.pops.drain(..).map(|pop| (pop.id, pop)).collect();
-    let mut firms: HashMap<usize, Firm> =
-        session.firms.drain(..).map(|firm| (firm.id, firm)).collect();
+    let mut firms: HashMap<usize, Firm> = HashMap::new();
 
-    let good_ids: Vec<usize> = session.factuals.goods.keys().copied().collect();
     for pop in pops.values_mut() {
         pop.start_day(&vec![(
             TIME,
             ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
         )]);
-        grant_daily_endowment(pop, &good_ids);
+        grant_daily_endowment(pop, &session.morning_outputs);
         pop.records.income_amv = 0.0;
         pop.initial_reservations_and_update_satisfaction();
     }
-    for firm in firms.values_mut() {
-        firm.clear_day_flows();
-    }
 
-    let wages = session.market.settle_labor(&mut pops, &mut firms, &session.factuals);
+    let wages = session
+        .market
+        .settle_labor(&mut pops, &mut firms, &session.factuals);
 
     let report = session.market.run_market_day(
         &session.factuals,
@@ -552,10 +530,6 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         &mut session.rng,
     );
 
-    for firm in firms.values_mut() {
-        let _effects = firm.run_production(&session.factuals, &session.market);
-    }
-
     let market_close = session.market.history();
     let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
     for pop in pops.values_mut() {
@@ -563,27 +537,10 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         pop.update_sentiments(&market_close, &session.factuals.config.pop);
         add_decay_rot(&mut rot, pop.decay_goods(&session.factuals));
     }
-    let mut firm_ids: Vec<usize> = firms.keys().copied().collect();
-    firm_ids.sort_unstable();
-    for id in &firm_ids {
-        add_decay_rot(
-            &mut rot,
-            firms
-                .get_mut(id)
-                .expect("firm id from keys")
-                .decay_goods(&session.factuals),
-        );
-    }
     session.market.cap_salability_from_decay(&rot);
     let closing = session.market.history();
     for pop in pops.values_mut() {
         pop.record_keeping(&session.factuals, &closing);
-    }
-    for id in &firm_ids {
-        firms
-            .get_mut(id)
-            .expect("firm id from keys")
-            .record_keeping(&session.factuals, &closing);
     }
     let budget_day = session.day + 1;
     session
@@ -592,8 +549,7 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
 
     session.pops = pops.into_values().collect();
     session.pops.sort_by_key(|pop| pop.id);
-    session.firms = firms.into_values().collect();
-    session.firms.sort_by_key(|firm| firm.id);
+    session.firms.clear();
     session.buys.clear();
     session.sells.clear();
     session.history = session.market.history();
@@ -601,8 +557,30 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     (report, wages)
 }
 
-/// Sums `(decayed, volume)` maps from pop/firm [`Pop::decay_goods`] /
-/// [`Firm::decay_goods`].
+/// Goods whose close AMV is below 0.0, sorted by id.
+fn negative_amv_goods(session: &Session) -> Vec<(usize, String, f64)> {
+    let mut ids: Vec<usize> = session.market.goods.keys().copied().collect();
+    ids.sort_unstable();
+    let mut rows = Vec::new();
+    for id in ids {
+        let amv = session.market.goods[&id].amv;
+        if amv < 0.0 {
+            rows.push((id, fmt_good(id), amv));
+        }
+    }
+    rows
+}
+
+fn format_negative_amv_stop(day: u32, negatives: &[(usize, String, f64)]) -> String {
+    debug_assert!(!negatives.is_empty(), "stop line needs a negative good");
+    let mut out = format!("stopped: day {day}  negative AMV\n");
+    for (id, name, amv) in negatives {
+        out.push_str(&format!("  {name} (#{id})  amv {}\n", fmt_num(*amv)));
+    }
+    out
+}
+
+/// Sums `(decayed, volume)` maps from pop [`Pop::decay_goods`].
 fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f64, f64)>) {
     for (id, (decayed, volume)) in from {
         let entry = into.entry(id).or_insert((0.0, 0.0));
@@ -614,81 +592,39 @@ fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f6
 #[cfg(test)]
 mod day_should {
     use super::*;
+    use simpler_economy::game::init::InitData;
+    use simpler_economy::game::pop::PopPRow;
 
     #[test]
-    fn living_roster_is_one_pop_per_world_good() {
+    fn living_roster_is_one_pop_per_world_good_and_no_firms() {
         let session = boot_session();
         let n_goods = session.factuals.goods.len();
         assert_eq!(session.pops.len(), n_goods);
-        assert_eq!(session.firms.len(), n_goods);
+        assert!(session.firms.is_empty());
+        assert!(session.market.firms.is_empty());
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
         assert_eq!(ids, (1..=n_goods).collect::<Vec<_>>());
-        let firm_ids: Vec<usize> = session.firms.iter().map(|firm| firm.id).collect();
-        assert_eq!(firm_ids, ids);
     }
 
     #[test]
-    fn each_firm_is_a_remainder_owner_operator() {
-        let session = boot_session();
-        let n_goods = session.factuals.goods.len();
-        for firm in &session.firms {
-            let good = produced_good_id(firm.id, n_goods);
-            let process_id = process_id_for_output(&session.factuals, good);
-            assert_eq!(firm.production_line.len(), 1);
-            let line = &firm.production_line[0];
-            assert_eq!(line.process, process_id);
-            assert_eq!(line.inputs, vec![TIME]);
-            let target = line.target.unwrap();
-            let time_in = session.factuals.processes[&process_id]
-                .inputs
-                .iter()
-                .find(|input| input.good == TIME)
-                .map(|input| input.amount)
-                .unwrap_or(1.0);
-            if target > 0.0 {
-                assert!((line.last_iterations - target).abs() < 1e-9);
-                assert!((line.last_success_rate - 1.0).abs() < 1e-9);
-            }
-            let output_amt = session.factuals.processes[&process_id].outputs[0].amount;
-            let opening = target * output_amt;
-            if good == TIME || opening <= 0.0 {
-                assert!(
-                    firm.property
-                        .get(&good)
-                        .map(|row| row.quantity)
-                        .unwrap_or(0.0)
-                        .abs()
-                        < 1e-9
-                );
-            } else {
-                let row = firm.property.get(&good).expect("opening output stock");
-                assert!((row.quantity - opening).abs() < 1e-9);
-                assert!((row.sell_target - opening).abs() < 1e-9);
-            }
-            assert_eq!(firm.workforce.len(), 1);
-            assert_eq!(firm.workforce[0].id, firm.id);
-            assert!((firm.workforce[0].hours - target * time_in).abs() < 1e-9);
-            assert!(firm.workforce[0].payment.is_empty());
-            assert!((firm.workforce[0].profit_share - 0.0).abs() < 1e-9);
-            assert_eq!(firm.owners.owner, Actor::Pop(firm.id));
-            assert!(firm.owners.remainder);
-            assert!(session.market.firms.contains(&firm.id));
-        }
-        let grain = session.factuals.processes.get(&1).expect("make grain");
-        assert_eq!(grain.name, "make grain");
-        assert_eq!(grain.outputs[0].good, GRAIN);
-        assert!((grain.outputs[0].amount - 15.0).abs() < 1e-9);
-        let time = session
-            .factuals
-            .processes
-            .get(&process_id_for_output(&session.factuals, TIME))
-            .expect("make time");
-        assert_eq!(time.outputs[0].good, TIME);
+    fn negative_amv_stop_names_the_day_and_good() {
+        let mut session = boot_session();
+        assert!(negative_amv_goods(&session).is_empty());
+        session.market.goods.get_mut(&GRAIN).expect("grain").amv = -0.01;
+        let rows = negative_amv_goods(&session);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, GRAIN);
+        let msg = format_negative_amv_stop(7, &rows);
+        assert!(msg.contains("stopped: day 7"), "{msg}");
+        assert!(msg.contains("grain"), "{msg}");
+        assert!(msg.contains("negative AMV"), "{msg}");
     }
 
     #[test]
     fn opening_quotes_are_flat_amv_and_salability() {
         let session = boot_session();
+        assert!((session.history.friction - 1.0).abs() < 1e-9);
+        assert!((session.market.friction - 1.0).abs() < 1e-9);
         assert!((session.history.default_salability - OPENING_SALABILITY).abs() < 1e-9);
         for id in session.factuals.goods.keys() {
             assert!(
@@ -768,30 +704,91 @@ mod day_should {
     }
 
     #[test]
-    fn morning_endowment_is_one_of_each_and_thirty_of_specialty() {
+    fn morning_outputs_come_from_init_firm_process_times_target() {
         let session = boot_session();
-        let good_ids: Vec<usize> = session.factuals.goods.keys().copied().collect();
-        let n_goods = good_ids.len();
+        let init = InitData::load_from_path(init_data_path(), &session.factuals)
+            .expect("load init firms for grant check");
+        let expected = morning_outputs_from_firms(&init.firms, &session.factuals);
+        assert_eq!(session.morning_outputs.len(), expected.len());
+        for (pop_id, rows) in &expected {
+            assert_eq!(session.morning_outputs.get(pop_id), Some(rows));
+        }
+        assert!(session.firms.is_empty());
+
+        let grain_firm = init.firms.iter().find(|firm| firm.id == 1).expect("firm 1");
+        let grain_line = &grain_firm.production_line[0];
+        let grain_proc = &session.factuals.processes[&grain_line.process];
+        let grain_qty = grain_proc.outputs[0].amount * grain_line.target.unwrap();
+        assert_eq!(grain_proc.outputs[0].good, GRAIN);
+        assert!(grain_qty > 0.0);
+        assert_eq!(session.morning_outputs[&1], vec![(GRAIN, grain_qty)]);
+
+        let gold_firm = init.firms.iter().find(|firm| firm.id == 4).expect("firm 4");
+        let gold_line = &gold_firm.production_line[0];
+        let gold_proc = &session.factuals.processes[&gold_line.process];
+        let gold_qty = gold_proc.outputs[0].amount * gold_line.target.unwrap();
+        assert_eq!(gold_proc.outputs[0].good, GOLD);
+        assert!(gold_qty > 0.0);
+        assert_eq!(session.morning_outputs[&4], vec![(GOLD, gold_qty)]);
+
+        let time_id = session.pops.len();
+        let time_firm = init
+            .firms
+            .iter()
+            .find(|firm| firm.id == time_id)
+            .expect("time firm");
+        let time_line = &time_firm.production_line[0];
+        let time_proc = &session.factuals.processes[&time_line.process];
+        let time_qty = time_proc.outputs[0].amount * time_line.target.unwrap();
+        assert_eq!(time_proc.outputs[0].good, TIME);
+        assert_eq!(session.morning_outputs[&time_id], vec![(TIME, time_qty)]);
+    }
+
+    #[test]
+    fn morning_grant_tops_up_to_process_output_and_does_not_overfill() {
+        let session = boot_session();
+        let n_goods = session.factuals.goods.len();
         assert_eq!(produced_good_id(1, n_goods), GRAIN);
         assert_eq!(produced_good_id(n_goods, n_goods), TIME);
 
+        let grain_cap = session.morning_outputs[&1][0].1;
+        let gold_cap = session.morning_outputs[&4][0].1;
+        assert!(grain_cap > 50.0);
+        assert!(gold_cap > 5.0);
+
         let mut grain_pop = empty_pop(1, &session.factuals.config.pop);
-        grant_daily_endowment(&mut grain_pop, &good_ids);
-        assert!((grain_pop.property[&GRAIN].quantity - DAILY_OUTPUT).abs() < 1e-9);
-        assert!((grain_pop.property[&WATER].quantity - DAILY_ENDOWMENT).abs() < 1e-9);
+        grant_daily_endowment(&mut grain_pop, &session.morning_outputs);
+        assert!((grain_pop.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
         assert!(
             grain_pop
                 .property
-                .get(&TIME)
+                .get(&WATER)
                 .map(|row| row.quantity)
                 .unwrap_or(0.0)
                 .abs()
                 < 1e-9
         );
 
+        let mut short = empty_pop(1, &session.factuals.config.pop);
+        short.property.insert(GRAIN, PopPRow::new(50.0));
+        grant_daily_endowment(&mut short, &session.morning_outputs);
+        assert!((short.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
+
+        let over = grain_cap + 50.0;
+        let mut full = empty_pop(1, &session.factuals.config.pop);
+        full.property.insert(GRAIN, PopPRow::new(over));
+        grant_daily_endowment(&mut full, &session.morning_outputs);
+        assert!((full.property[&GRAIN].quantity - over).abs() < 1e-9);
+
+        let mut gold_pop = empty_pop(4, &session.factuals.config.pop);
+        gold_pop.property.insert(GOLD, PopPRow::new(5.0));
+        grant_daily_endowment(&mut gold_pop, &session.morning_outputs);
+        assert!((gold_pop.property[&GOLD].quantity - gold_cap).abs() < 1e-9);
+
         let mut time_pop = empty_pop(n_goods, &session.factuals.config.pop);
-        grant_daily_endowment(&mut time_pop, &good_ids);
-        assert!((time_pop.property[&TIME].quantity - DAILY_OUTPUT).abs() < 1e-9);
-        assert!((time_pop.property[&GRAIN].quantity - DAILY_ENDOWMENT).abs() < 1e-9);
+        time_pop.property.insert(TIME, PopPRow::new(64.0));
+        grant_daily_endowment(&mut time_pop, &session.morning_outputs);
+        let time_qty = session.morning_outputs[&n_goods][0].1;
+        assert!((time_pop.property[&TIME].quantity - time_qty).abs() < 1e-9);
     }
 }

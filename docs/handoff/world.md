@@ -30,7 +30,9 @@ stay compile-time. Do not add a process-global OnceLock; tests run in parallel.
 Catalog load tests sample a few goods (Time, one staple, one later id). Do
 not enumerate the file or assert an exact goods count. Missing `decay_rate`
 defaults to **1.0** (full daily decay). Live world goods use per-good rates
-in `goods.toml` (Time still 1.0).
+in `goods.toml` (Time still 1.0). `mass` / `volume` are kg and m³ per
+game unit; bulk is `mass + 400 * volume`. Time is 0/0. Tokens are light;
+cabins are bulky.
 Processes are one recipe per good: 1 Time → 15 output. Time is process 28
 so process id 0 stays none. Sample grain, pots, and Time; the rest share
 the same 1→15 shape.

@@ -1,13 +1,35 @@
-# Market tester CLI
+# Tester CLIs
 
-Read this only for the tester, `day`, CSV logs, or the living roster.
-**Paused.** Do not add pages, commands, or extra CSV series unless asked. Do
-not invent a second shopping model. `keep_alive on|off` is the emergency
-firm subsidy toggle (`firm.keep_alive`, default off).
+Read this only for the testers, `day`, CSV logs, or the living roster.
+**Paused** except when asked. Do not add pages, commands, or extra CSV
+series unless asked. Do not invent a second shopping model.
+
+Two examples share the same world/init data and CLI shape:
 
 ```bash
 cargo run --example market_tester
+cargo run --example pop_tester
 ```
+
+## Pop tester
+
+Copy of `market_tester` with firms left out. Code: `examples/pop_tester/`
+(`main`, `roster`, `format`, `parse`, `csv`). Loads pops from `data/init/`.
+Init firms are read only to size each pop's morning stock cap: process
+output `amount * target` (no scaling). Those firms are not kept on the
+session. Default CSV stem is `pop_prices`.
+
+Each morning: `start_day` Time, then top up to that cap (add only the
+shortfall; already-at-cap stock is left alone), then market / consume /
+decay / pop `record_keeping`. `day N` stops if any good AMV is negative
+and prints the day and those goods. No firm production, plan, or
+`keep_alive`.
+Caps follow init firm `target` × process output (Time output caps pop 28).
+
+## Market tester
+
+`keep_alive on|off` is the emergency firm subsidy toggle (`firm.keep_alive`,
+default off).
 
 **Code / source of truth:** `examples/market_tester/` (`main`, `roster`,
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml` (1 Time → 15
@@ -36,6 +58,11 @@ Home is a short summary. Pages: `stock` / `orders` / `processes` / `amv` /
 is **read-only** (does not move stock). `main.rs` is still the Bevy hex stub.
 
 ## `day` / `day N`
+
+`market_tester` order below. `pop_tester` skips firm steps (2 wages are a
+no-op, 4 production, 5 firm decay, 7 plan) and tops each pop up to its
+init-firm process outputs after `start_day` instead of `DAILY_OUTPUT` 0.
+`pop_tester` also stops `day N` when any good AMV is negative.
 
 1. `Pop::start_day` (Time grant). Tester morning specialty grant is 0
    (`DAILY_ENDOWMENT` 0, `DAILY_OUTPUT` 0). Zero `income_amv`, reservations, firm

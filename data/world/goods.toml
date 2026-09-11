@@ -6,8 +6,10 @@
 # Time is id 0 on purpose: it is foundational. Other goods start at 1.
 # 0 still means none for pops, owners, and most other ids.
 # Untradeable so pops cannot buy extra person-days; still transport 1.0.
-# decay_rate is 1.0 on every good for now (full daily rot) so leftover
-# stock cannot pile up while shop/save logic is still being tuned.
+#
+# mass is kg per game unit; volume is m^3 per game unit.
+# Bulk = mass + 400 * volume. Live market.friction is 1, so bulk is the
+# extra transport-cover (Time) per unit moved, on top of TRANSACTION_COST.
 
 [[goods]]
 id = 0
@@ -21,187 +23,187 @@ tags = ["untradeable", { transport = 1.0 }]
 id = 1
 name = "grain"
 mass = 1.0
-volume = 1.0
+volume = 0.0015
 decay_rate = 0.4
 
 [[goods]]
 id = 2
 name = "water"
 mass = 1.0
-volume = 1.0
+volume = 0.001
 decay_rate = 0.1
 
 [[goods]]
 id = 3
 name = "bread"
-mass = 1.0
-volume = 1.0
+mass = 0.5
+volume = 0.001
 decay_rate = 1.0
 
 [[goods]]
 id = 4
 name = "gold"
 mass = 1.0
-volume = 1.0
+volume = 0.00005
 decay_rate = 0.001
 
 [[goods]]
 id = 5
 name = "gold_token"
-mass = 1.0
-volume = 1.0
+mass = 0.01
+volume = 0.000001
 decay_rate = 0.01
 
 [[goods]]
 id = 6
 name = "jewelry"
-mass = 1.0
-volume = 1.0
+mass = 0.05
+volume = 0.00005
 decay_rate = 0.05
 
 [[goods]]
 id = 7
 name = "wood"
-mass = 1.0
-volume = 1.0
+mass = 2.0
+volume = 0.003
 decay_rate = 0.6
 
 [[goods]]
 id = 8
 name = "cabins"
-mass = 1.0
-volume = 1.0
+mass = 20.0
+volume = 0.05
 decay_rate = 0.1
 
 [[goods]]
 id = 9
 name = "wood_tools"
-mass = 1.0
-volume = 1.0
+mass = 1.5
+volume = 0.002
 decay_rate = 0.3
 
 [[goods]]
 id = 10
 name = "buckets"
 mass = 1.0
-volume = 1.0
+volume = 0.008
 decay_rate = 0.5
 
 [[goods]]
 id = 11
 name = "iron"
 mass = 1.0
-volume = 1.0
+volume = 0.00013
 decay_rate = 0.01
 
 [[goods]]
 id = 12
 name = "iron_tools"
-mass = 1.0
-volume = 1.0
+mass = 2.0
+volume = 0.002
 decay_rate = 0.20
 
 [[goods]]
 id = 13
 name = "copper"
 mass = 1.0
-volume = 1.0
+volume = 0.00011
 decay_rate = 0.01
 
 [[goods]]
 id = 14
 name = "tin"
 mass = 1.0
-volume = 1.0
+volume = 0.00014
 decay_rate = 0.01
 
 [[goods]]
 id = 15
 name = "bronze"
 mass = 1.0
-volume = 1.0
+volume = 0.00012
 decay_rate = 0.01
 
 [[goods]]
 id = 16
 name = "bronze_tools"
-mass = 1.0
-volume = 1.0
+mass = 2.0
+volume = 0.002
 decay_rate = 0.3
 
 [[goods]]
 id = 17
 name = "blades"
-mass = 1.0
-volume = 1.0
+mass = 0.8
+volume = 0.0005
 decay_rate = 0.25
 
 [[goods]]
 id = 18
 name = "bronze_mirror"
-mass = 1.0
-volume = 1.0
+mass = 1.5
+volume = 0.003
 decay_rate = 0.05
 
 [[goods]]
 id = 19
 name = "bronze_token"
-mass = 1.0
-volume = 1.0
+mass = 0.01
+volume = 0.000001
 decay_rate = 0.02
 
 [[goods]]
 id = 20
 name = "iron_token"
-mass = 1.0
-volume = 1.0
+mass = 0.01
+volume = 0.000001
 decay_rate = 0.03
 
 [[goods]]
 id = 21
 name = "copper_token"
-mass = 1.0
-volume = 1.0
+mass = 0.01
+volume = 0.000001
 decay_rate = 0.03
 
 [[goods]]
 id = 22
 name = "tin_token"
-mass = 1.0
-volume = 1.0
+mass = 0.01
+volume = 0.000001
 decay_rate = 0.02
 
 [[goods]]
 id = 23
 name = "coal"
 mass = 1.0
-volume = 1.0
+volume = 0.0012
 decay_rate = 0.04
 
 [[goods]]
 id = 24
 name = "charcoal"
-mass = 1.0
-volume = 1.0
+mass = 0.5
+volume = 0.002
 decay_rate = 0.06
 
 [[goods]]
 id = 25
 name = "beer"
 mass = 1.0
-volume = 1.0
+volume = 0.001
 decay_rate = 0.75
 
 [[goods]]
 id = 26
 name = "clay"
 mass = 1.0
-volume = 1.0
+volume = 0.0008
 decay_rate = 0.005
 
 [[goods]]
 id = 27
 name = "pots"
-mass = 1.0
-volume = 1.0
+mass = 1.5
+volume = 0.004
 decay_rate = 0.2

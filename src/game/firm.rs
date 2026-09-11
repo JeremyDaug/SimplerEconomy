@@ -1655,8 +1655,10 @@ impl DealMaker for Firm {
             .map(|(id, row)| (*id, row.quantity))
             .collect();
         for (id, sub) in transport_spend_plan(amount, factuals, on_hand) {
+            debug_assert!(sub >= 0.0 && sub.is_finite(), "transport spend must be >= 0.0");
             if let Some(row) = self.property.get_mut(&id) {
                 row.quantity = (row.quantity - sub).max(0.0);
+                row.consumed += sub;
                 row.sync_reserve();
             }
             self.transport_spent += sub;

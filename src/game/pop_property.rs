@@ -7,6 +7,27 @@ use crate::game::config::{pop_constants, PopConfig};
 use crate::game::household::Household;
 use crate::game::util::lerp;
 
+/// Why a pop stopped posting buy/requests today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuyStopReason {
+    /// Remaining wants are on goods with no seller (unavailable).
+    Market,
+    /// Remaining wants are still available, but free stock AMV is gone.
+    Money,
+    /// Not enough transport cover left to pay the door / wagon bill.
+    Transport,
+}
+
+impl BuyStopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Market => "market",
+            Self::Money => "money",
+            Self::Transport => "transport",
+        }
+    }
+}
+
 /// Demographic breakdown of a pop (one row for now).
 #[derive(Debug, Clone, Copy)]
 pub struct DemoRow {
@@ -89,6 +110,11 @@ impl PopPRow {
 
     pub fn with_target(mut self, target: f64) -> Self {
         self.shop_target = target;
+        self
+    }
+
+    pub fn with_desire_needs(mut self, desire_needs: f64) -> Self {
+        self.desire_needs = desire_needs;
         self
     }
 
@@ -203,6 +229,8 @@ pub struct PopRecords {
     pub saved_amv: f64,
     /// Shop success: AMV on-hand vs shop_target, typically 0.0..=1.0.
     pub shop_fill: f64,
+    /// Why this pop stopped buying today. `None` if the shop was filled.
+    pub buy_stop: Option<BuyStopReason>,
 
     // --- Planning variables (rewritten in record_keeping, read next market day) ---
     /// Target share of liquid wealth to hold. Drives PopPRow.saved.
@@ -235,6 +263,7 @@ impl Default for PopRecords {
             income_amv: 0.0,
             saved_amv: 0.0,
             shop_fill: 1.0,
+            buy_stop: None,
             savings_ratio: pop_constants::DEFAULT_SAVINGS_RATIO,
             time_preference: pop_constants::DEFAULT_TIME_PREFERENCE,
             risk_appetite: pop_constants::DEFAULT_RISK_APPETITE,

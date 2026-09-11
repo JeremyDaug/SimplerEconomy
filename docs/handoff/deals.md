@@ -28,11 +28,15 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
   tenders. Payment AMV above `amv_target` or the row buy cap does **not**
   void the basket.
 - **Make change** is returning excess, not `take_tenders`.
-- Keep = received AMV / given AMV. Given goods are full AMV. Received
-  use-goods (pop shop/desire, firm `use_target`) skip salability; others *
-  salability. A pop that receives any used/desired good **ignores** the AMV
-  floor. Unused-only baskets must keep `0.50` after the haircut. Firm min
-  `0.50` with a need-catch to `0.25` when `purchase_target` or `use_target`.
+- Keep = received AMV / given AMV. Firm given goods are full AMV. Firm
+  received `use_target` skips salability; others * salability. Pop given
+  units peel extra → save → consume at 0 / 25 / 50 / 100 salability
+  penalty (extra-desired vs unused on the leftover). Pop received bag
+  takes the best category: consume shortfall (`quantity < desire_needs`)
+  => full AMV; else save shortfall (`quantity < shop_target`) => quarter
+  penalty; else extra-desired => half penalty; else full salability. The
+  0.50 floor **always** applies (no floor-drop). Firm min `0.50` with a
+  need-catch to `0.25` when `purchase_target` or `use_target`.
   Merchant restock is a **need**, not a use (still takes the haircut).
   Buyers accept windfalls (`keep >= 1.0`).
 - `finalize` does not raise reserve toward stock and does not edit orders.
@@ -55,8 +59,10 @@ Helpers: `util::whole_units`, `whole_units_up`.
 ## Transport / wash
 
 `transport_needed = TRANSACTION_COST + bulk * market.friction` with
-`bulk = Sum(|qty| * (mass + 400 * volume))`. Buyer pays in Transport-tagged
-goods (cover = `qty * efficiency`). Seller never receives the spent units.
+`bulk = Sum(|qty| * (mass + 400 * volume))`. Live `market.friction` is 1.
+Buyer pays in Transport-tagged goods (cover = `qty * efficiency`). Seller
+never receives the spent units. Spent units leave `quantity` and go to
+`consumed` (haul is eaten, not leftover).
 
 - **Success:** cap fill so post-exchange cover can pay, *then* form the basket,
   then spend the **full** bill. Do not also charge the door fee at the start.

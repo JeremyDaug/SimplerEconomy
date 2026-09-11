@@ -6,7 +6,7 @@ use rand::seq::SliceRandom;
 
 use crate::game::actor::Actor;
 use crate::game::config::{market_constants, market_priority, MarketConfig};
-use crate::game::deal::{transport_cover_on_hand, DealMaker, DealResponse};
+use crate::game::deal::{DealMaker, DealResponse};
 use crate::game::firm::Firm;
 use crate::game::good::TIME;
 use crate::game::marketorder::{priority_in_band, wealth_unit_rank, MarketOrder};
@@ -206,20 +206,28 @@ fn orders_for_origin(
         .collect()
 }
 
-/// Transport cover available for another shopping trip. Time uses unreserved
-/// stock; other transport goods use on-hand quantity.
-fn shopping_cover(pop: &Pop, factuals: &Factuals) -> f64 {
-    transport_cover_on_hand(
-        pop.property.iter().map(|(&id, row)| {
-            let qty = if id == TIME {
-                row.available().max(0.0)
-            } else {
-                row.quantity.max(0.0)
-            };
-            (id, qty)
-        }),
-        factuals,
-    )
+impl Market {
+    fn note_buy_stops(
+        &self,
+        pops: &mut HashMap<usize, Pop>,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        door: f64,
+    ) {
+        let mut ids: Vec<usize> = self.pops.iter().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let pop = pops
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("market pop {id} missing from pops"));
+            pop.records.buy_stop = pop.classify_buy_stop(
+                factuals,
+                history,
+                &self.unavailable_goods,
+                door,
+            );
+        }
+    }
 }
 
 fn max_pop_wealth(
@@ -550,6 +558,12 @@ impl Market {
         rng: &mut R,
     ) -> MarketDayReport {
         self.unavailable_goods.clear();
+        for &id in &self.pops {
+            pops.get_mut(&id)
+                .unwrap_or_else(|| panic!("market pop {id} missing from pops"))
+                .records
+                .buy_stop = None;
+        }
         let mut report = MarketDayReport::default();
 
         let history = self.history_with(&factuals.config.market);
@@ -639,7 +653,7 @@ impl Market {
                     &sells,
                     &parked,
                 );
-                if shopping_cover(pop, factuals) + f64::EPSILON < door {
+                if pop.shopping_cover(factuals) + f64::EPSILON < door {
                     continue;
                 }
                 let households = pop.demographics.household.count;
@@ -677,6 +691,8 @@ impl Market {
             }
             buys.extend(parked.drain(..));
         }
+
+        self.note_buy_stops(pops, factuals, &history, door);
 
         for &id in &self.pops {
             pops.get_mut(&id)

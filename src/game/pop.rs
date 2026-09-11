@@ -16,7 +16,7 @@ use crate::game::{
 
 pub use crate::game::effects::PopEffect;
 pub use crate::game::pop_property::{
-    DemoRow, PopPRow, PopRecords,
+    BuyStopReason, DemoRow, PopPRow, PopRecords,
 };
 
 #[derive(Debug, Clone)]
@@ -2036,7 +2036,7 @@ mod pop {
     use crate::game::{
         desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
         factuals::Factuals,
-        good::{Good, GoodTag},
+        good::{Good, GoodTag, TIME},
         household::{DemographicRates, Household, HouseholdTarget},
         config::pop_constants,
         market::MarketHistory,
@@ -2133,6 +2133,10 @@ mod pop {
 
     fn make_default_factuals() -> Factuals {
         let mut factuals = Factuals::new();
+        factuals.goods.insert(
+            TIME,
+            make_good(TIME, "time".to_string()).with_transport_efficiency(1.0),
+        );
         factuals.goods.insert(100, make_good(100, "Test Good".to_string()));
         factuals.goods.insert(101, make_good(101, "Test Good 2".to_string()));
         factuals.goods.insert(200, make_good(200, "Test Good 3".to_string()));
@@ -2151,6 +2155,65 @@ mod pop {
         market_history.prices.insert(300, 1.0);
         market_history.prices.insert(500, 1.0);
         market_history
+    }
+
+    mod buy_stop_should {
+        use super::*;
+        use crate::game::pop::BuyStopReason;
+
+        #[test]
+        fn filled_shop_has_no_stop() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(10.0).with_target(10.0));
+            pop.property.insert(TIME, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            assert_eq!(
+                pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
+                None
+            );
+        }
+
+        #[test]
+        fn no_door_cover_is_transport() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            assert_eq!(
+                pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
+                Some(BuyStopReason::Transport)
+            );
+        }
+
+        #[test]
+        fn available_shortfall_without_excess_is_money() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
+            pop.property.insert(TIME, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            assert_eq!(
+                pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
+                Some(BuyStopReason::Money)
+            );
+        }
+
+        #[test]
+        fn remaining_wants_unavailable_is_market() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
+            pop.property.insert(500, PopPRow::new(10.0));
+            pop.property.insert(TIME, PopPRow::new(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let mut unavailable = HashSet::new();
+            unavailable.insert(100);
+            assert_eq!(
+                pop.classify_buy_stop(&factuals, &history, &unavailable, 1.0),
+                Some(BuyStopReason::Market)
+            );
+        }
     }
 
     mod create_orders_should {
@@ -5197,7 +5260,10 @@ mod pop {
         #[test]
         fn evaluate_accepts_even_amv_and_does_not_move_stock() {
             let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(0.0).with_target(4.0));
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(4.0).with_desire_needs(4.0),
+            );
             pop.property.insert(500, PopPRow::new(10.0));
             let factuals = make_default_factuals();
             let mut history = make_default_market_history();
@@ -5242,10 +5308,12 @@ mod pop {
 
         #[test]
         fn evaluate_rejects_unused_below_keep_floor() {
-            let pop = make_pop();
+            let mut pop = make_pop();
             let factuals = make_default_factuals();
             let mut history = make_default_market_history();
             history.salability.insert(100, 1.0);
+            history.salability.insert(500, 1.0);
+            pop.property.insert(500, PopPRow::new(3.0));
             let (own, other) = buy_and_offer();
             // Unused bread at sal 1. 1 grain for 3 coin is keep 0.333 < 0.50.
             let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
@@ -5258,15 +5326,267 @@ mod pop {
         }
 
         #[test]
-        fn evaluate_accepts_a_used_good_despite_amv_loss() {
+        fn evaluate_rejects_needed_good_below_keep_floor() {
             let mut pop = make_pop();
-            pop.property.insert(100, PopPRow::new(0.0).with_target(4.0));
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(4.0).with_desire_needs(4.0),
+            );
+            pop.property.insert(500, PopPRow::new(20.0));
             let factuals = make_default_factuals();
-            let history = make_default_market_history();
+            let mut history = make_default_market_history();
+            history.salability.insert(500, 1.0);
             let (own, other) = buy_and_offer();
             let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
                 .with_good(100, -1.0)
                 .with_good(500, 20.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Reject
+            );
+        }
+
+        #[test]
+        fn evaluate_accepts_needed_good_at_keep_floor() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(4.0).with_desire_needs(4.0),
+            );
+            pop.property.insert(500, PopPRow::new(2.0));
+            let factuals = make_default_factuals();
+            let mut history = make_default_market_history();
+            history.salability.insert(500, 1.0);
+            let (own, other) = buy_and_offer();
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 2.0);
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn evaluate_needed_bag_values_all_received_at_full_amv() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(1.0).with_desire_needs(1.0),
+            );
+            pop.property.insert(500, PopPRow::new(5.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.0);
+            history.salability.insert(500, 1.0);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -3.0)
+                .with_good(500, 5.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            // Need 1 of 3; sweetener lifts the extras. 3/5 = 0.60.
+            assert!((keep - 0.6).abs() < 1e-12);
+            let factuals = make_default_factuals();
+            let (own, other) = buy_and_offer();
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn evaluate_treats_filled_shop_target_as_desired_not_needed() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(4.0).with_target(4.0).with_desire_needs(4.0),
+            );
+            pop.property.insert(500, PopPRow::new(1.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.4);
+            history.salability.insert(500, 1.0);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 1.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            // Half penalty at S=0.4 => 0.7
+            assert!((keep - 0.7).abs() < 1e-12);
+        }
+
+        #[test]
+        fn evaluate_desire_list_without_shop_target_is_desired_not_needed() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                1.0,
+            ));
+            pop.property.insert(500, PopPRow::new(1.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.4);
+            history.salability.insert(500, 1.0);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 1.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            assert!((keep - 0.7).abs() < 1e-12);
+        }
+
+        #[test]
+        fn evaluate_needed_bag_sweetens_unused_companions_to_full_amv() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(1.0).with_desire_needs(1.0),
+            );
+            pop.property.insert(500, PopPRow::new(5.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.2);
+            history.salability.insert(200, 0.2);
+            history.salability.insert(500, 1.0);
+            // Seller pop receives 1 needed bread + 4 unused 200 for 5 of 500.
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Firm(2), Actor::Pop(0))
+                .with_good(500, -5.0)
+                .with_good(100, 1.0)
+                .with_good(200, 4.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Seller,
+                &history,
+            );
+            assert!((keep - 1.0).abs() < 1e-12);
+            let factuals = make_default_factuals();
+            let own = MarketOrder::offer_order(
+                Actor::Pop(0),
+                500,
+                -5.0,
+                market_priority::POP_START,
+            );
+            let other = MarketOrder::request_order(
+                Actor::Firm(2),
+                500,
+                5.0,
+                market_priority::FIRM_PRODUCER,
+            );
+            assert_eq!(
+                pop.evaluate(&deal, &own, &other, &history, &factuals),
+                DealResponse::Accept
+            );
+        }
+
+        #[test]
+        fn evaluate_desired_bag_sweetens_unused_companions_to_half_penalty() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(4.0).with_target(4.0).with_desire_needs(4.0),
+            );
+            pop.property.insert(500, PopPRow::new(5.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.2);
+            history.salability.insert(200, 0.2);
+            history.salability.insert(500, 1.0);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Firm(2), Actor::Pop(0))
+                .with_good(500, -5.0)
+                .with_good(100, 1.0)
+                .with_good(200, 4.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Seller,
+                &history,
+            );
+            // Shop filled: desired not needed. Whole bag at 0.5 + 0.5*0.2 = 0.6.
+            assert!((keep - 0.6).abs() < 1e-12);
+        }
+
+        #[test]
+        fn evaluate_save_shortfall_uses_quarter_penalty() {
+            let mut pop = make_pop();
+            pop.property.insert(100, PopPRow::new(0.0).with_target(4.0));
+            pop.property.insert(500, PopPRow::new(1.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 0.4);
+            history.salability.insert(500, 1.0);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -1.0)
+                .with_good(500, 1.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            // Save band at S=0.4 => 0.75 + 0.25*0.4 = 0.85
+            assert!((keep - 0.85).abs() < 1e-12);
+        }
+
+        #[test]
+        fn evaluate_outgoing_peels_extra_then_save_then_consume() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(8.0).with_desire_needs(8.0),
+            );
+            pop.property.insert(
+                500,
+                PopPRow::new(12.0).with_target(8.0).with_desire_needs(5.0),
+            );
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 1.0);
+            history.salability.insert(500, 0.2);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -8.0)
+                .with_good(500, 10.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            // Extra 4 at 0.6 + save 3 at 0.8 + consume 3 at 1.0 = 7.8 given.
+            // Incoming consume bag at full AMV = 8. keep 8/7.8.
+            assert!((keep - 8.0 / 7.8).abs() < 1e-12);
+        }
+
+        #[test]
+        fn evaluate_outgoing_unused_haircut_lets_illiquid_pay_for_need() {
+            let mut pop = make_pop();
+            pop.property.insert(
+                100,
+                PopPRow::new(0.0).with_target(5.0).with_desire_needs(5.0),
+            );
+            pop.property.insert(200, PopPRow::new(100.0));
+            let mut history = make_default_market_history();
+            history.salability.insert(100, 1.0);
+            history.salability.insert(200, 0.05);
+            let deal = crate::game::deal::ProposedDeal::new(Actor::Pop(0), Actor::Firm(2))
+                .with_good(100, -5.0)
+                .with_good(200, 100.0);
+            let keep = super::super::deal::pop_amv_percent_keep(
+                &pop,
+                &deal,
+                crate::game::deal::DealRole::Buyer,
+                &history,
+            );
+            // Given 100 * 0.05 = 5, received consume 5, keep 1.0
+            assert!((keep - 1.0).abs() < 1e-12);
+            let factuals = make_default_factuals();
+            let (own, other) = buy_and_offer();
             assert_eq!(
                 pop.evaluate(&deal, &own, &other, &history, &factuals),
                 DealResponse::Accept
@@ -5333,6 +5653,7 @@ mod pop {
             );
             pop.pay_transport(11.5, &factuals);
             assert!((pop.property[&9].quantity - 8.5).abs() < 1e-12);
+            assert!((pop.property[&9].consumed - 11.5).abs() < 1e-12);
         }
     }
 }

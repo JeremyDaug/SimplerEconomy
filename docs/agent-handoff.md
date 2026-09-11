@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-09
+**Updated:** 2026-09-10
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -30,22 +30,27 @@ invariants and traps, not a substitute for the code.
   is volume, not rot). Each market day AMV is rescaled so one unit of
   each tradeable good averages 10.0 (after salability, then the close).
   Firm AMV quotes scale with it; recorded trail samples do not.
-  A pop that receives a used/desired good ignores
-  the AMV floor; unused-only keep is 0.50 after the salability haircut.
+  After the market day each pop records a buy stop (`market` / `money` /
+  `transport`) if shop shortfalls remain.
+  Pop keep: incoming bag uses consume / save / extra-desired / unused
+  (0 / 25 / 50 / 100 salability penalty, best category lifts the bag).
+  Outgoing units peel extra → save → consume at those same factors. The
+  0.50 floor always applies (no floor-drop).
 - Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
   production phases are stubs.
 - `Firm::plan` rewrites production and property targets (realized profit, sell
   success). Pace is `planning_lerp_rate`. Own quote, not lerp-to-market.
-- Time is good id 0 (untradeable, transport 1.0). Pops get 64 * household labor
-  at `Pop::start_day`.
+- Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
+  at `Pop::start_day`. Live intramarket friction is 1 (`TRANSACTION_COST + bulk`).
+  Goods have per-unit mass/volume in `goods.toml`.
 - Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
   [`Market::budget_labor`]. Time AMV is stamped from contracts (hours-weighted
   wage AMV), not goods matching. Firms do **not** rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`. Processes are
   1 Time → 15 of each good (Time is process 28).
-- Tester CLI is **paused** unless asked. Living roster loads from `data/init/`
-  (one household pop and one remainder-owner firm per world good). Opening AMV 10.0 / salability 0.3 on every good.
+- Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
+  (one household pop and one remainder-owner firm per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 10.0 / salability 0.3 on every good.
   Grouped consume desires (basic/common/luxury) are 1 unit per member
   (5 units), duplicated onto every pop. **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
@@ -111,7 +116,7 @@ Match the user's task. Stay in those files.
 | Market day, matching, AMV, salability, order priority | [`market.md`](handoff/market.md) | `market.rs`, `marketorder.rs` |
 | Deals, tenders, keep, transport, whole units | [`deals.md`](handoff/deals.md) | `deal.rs`, `pop/deal.rs` |
 | Pop consume, shop/save, desires, sentiment | [`pops.md`](handoff/pops.md) | `pop.rs`, `pop/orders.rs`, `desire.rs`, `pop_property.rs` |
-| Tester CLI, `day`, CSV | [`tester.md`](handoff/tester.md) | `examples/market_tester/` |
+| Tester CLI, `day`, CSV | [`tester.md`](handoff/tester.md) | `examples/market_tester/`, `examples/pop_tester/` |
 | World data, config, factuals | [`world.md`](handoff/world.md) | `factuals.rs`, `config.rs`, `data/world/` |
 | Init pops/firms (scenario) | [`world.md`](handoff/world.md) | `init.rs`, `data/init/` |
 | PlayState / turn wiring | [`turns.md`](handoff/turns.md) | `playstate.rs` |

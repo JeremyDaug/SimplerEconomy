@@ -1,8 +1,9 @@
 use crate::game::actor::Actor;
+use crate::game::config::deal_constants;
 use crate::game::deal::{
-    collect_tenders, deal_goods_tradeable, evaluate_amv_floor, form_buy_proposal,
+    collect_tenders, deal_goods_tradeable, evaluate_keep_ratio, form_buy_proposal,
     transport_cover_on_hand, transport_spend_plan, with_transport_budget, DealMaker,
-    DealResponse, ProposedDeal,
+    DealResponse, DealRole, ProposedDeal,
 };
 use crate::game::factuals::Factuals;
 use crate::game::market::MarketHistory;
@@ -58,10 +59,11 @@ impl DealMaker for Pop {
     /// # Evaluate
     ///
     /// Returns Accept or Reject for this deal as this pop.
-    /// Receiving a desire / shop-target good ignores the AMV floor. Unused
-    /// received goods are haircut by salability and must keep 0.50 AMV.
-    /// Buyers accept windfalls.
-    /// Does not move stock.
+    /// Incoming: best received category sets the haircut for the whole bag
+    /// (consume shortfall, else save shortfall, else extra-desired, else
+    /// unused). Outgoing: given units peel extra → save → consume at
+    /// 0 / 25 / 50 / 100 salability penalty. The 0.50 keep floor always
+    /// applies. Buyers accept windfalls. Does not move stock.
     fn evaluate(
         &self,
         deal: &ProposedDeal,
@@ -79,18 +81,8 @@ impl DealMaker for Pop {
         if !deal_goods_tradeable(deal, factuals) {
             return DealResponse::Reject;
         }
-        let wants_received = deal
-            .goods_received(role)
-            .any(|(good, _)| pop_uses_good(self, good));
-        evaluate_amv_floor(
-            deal,
-            role,
-            history,
-            factuals.config.deal.pop_amv_unused_keep,
-            0.0,
-            wants_received,
-            |good| pop_uses_good(self, good),
-        )
+        let keep = pop_amv_percent_keep(self, deal, role, history);
+        evaluate_keep_ratio(role, keep, factuals.config.deal.pop_amv_unused_keep)
     }
 
     /// # Finalize
@@ -125,16 +117,20 @@ impl DealMaker for Pop {
             .map(|(id, row)| (*id, row.quantity))
             .collect();
         for (id, sub) in transport_spend_plan(amount, factuals, on_hand) {
+            debug_assert!(sub >= 0.0 && sub.is_finite(), "transport spend must be >= 0.0");
             if let Some(row) = self.property.get_mut(&id) {
                 row.quantity = (row.quantity - sub).max(0.0);
+                row.consumed += sub;
+                if row.reserved > row.quantity {
+                    row.reserved = row.quantity;
+                }
             }
         }
     }
 }
 
-/// Returns true if this pop has a shop_target or desire target for `good`.
-/// Those goods skip the salability haircut when received.
-fn pop_uses_good(pop: &Pop, good: usize) -> bool {
+/// True if `good` has a shop target or is on any desire list.
+fn pop_good_is_desired(pop: &Pop, good: usize) -> bool {
     if pop
         .property
         .get(&good)
@@ -145,6 +141,128 @@ fn pop_uses_good(pop: &Pop, good: usize) -> bool {
     pop.desires.iter().flatten().any(|desire| {
         desire.target.iter().any(|target| target.good == good)
     })
+}
+
+/// `1 - penalty * (1 - S)`. Penalty 0/0.25/0.50/1 => consume/save/extra/unused.
+fn pop_amv_factor(penalty: f64, salability: f64) -> f64 {
+    debug_assert!(
+        (0.0..=1.0).contains(&penalty),
+        "salability penalty must be in 0..=1"
+    );
+    1.0 - penalty * (1.0 - salability)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PopBagKind {
+    Unused,
+    ExtraDesired,
+    Save,
+    Consume,
+}
+
+fn pop_row_bands(pop: &Pop, good: usize) -> (f64, f64, f64) {
+    let Some(row) = pop.property.get(&good) else {
+        return (0.0, 0.0, 0.0);
+    };
+    debug_assert!(row.quantity.is_finite(), "quantity must be finite");
+    debug_assert!(row.desire_needs.is_finite(), "desire_needs must be finite");
+    debug_assert!(row.shop_target.is_finite(), "shop_target must be finite");
+    let have = row.quantity.max(0.0);
+    let consume_end = row.desire_needs.max(0.0);
+    let extra_start = row.shop_target.max(consume_end);
+    let need = have.min(consume_end);
+    let save = (have.min(extra_start) - consume_end).max(0.0);
+    let extra = (have - extra_start).max(0.0);
+    (need, save, extra)
+}
+
+fn pop_received_kind(pop: &Pop, good: usize) -> PopBagKind {
+    let Some(row) = pop.property.get(&good) else {
+        if pop_good_is_desired(pop, good) {
+            return PopBagKind::ExtraDesired;
+        }
+        return PopBagKind::Unused;
+    };
+    if row.desire_needs > row.quantity {
+        return PopBagKind::Consume;
+    }
+    if row.shop_target > row.quantity {
+        return PopBagKind::Save;
+    }
+    if pop_good_is_desired(pop, good) {
+        PopBagKind::ExtraDesired
+    } else {
+        PopBagKind::Unused
+    }
+}
+
+/// Best received category across the bag (consume > save > extra-desired > unused).
+fn pop_bag_kind(pop: &Pop, deal: &ProposedDeal, role: DealRole) -> PopBagKind {
+    let mut best = PopBagKind::Unused;
+    for (good, qty) in deal.goods_received(role) {
+        debug_assert!(qty >= 0.0 && qty.is_finite(), "received qty must be >= 0.0");
+        best = best.max(pop_received_kind(pop, good));
+    }
+    best
+}
+
+fn pop_received_factor(kind: PopBagKind, salability: f64) -> f64 {
+    match kind {
+        PopBagKind::Consume => 1.0,
+        PopBagKind::Save => {
+            pop_amv_factor(deal_constants::POP_AMV_SAVE_PENALTY, salability)
+        }
+        PopBagKind::ExtraDesired => {
+            pop_amv_factor(deal_constants::POP_AMV_UNNEEDED_PENALTY, salability)
+        }
+        PopBagKind::Unused => salability,
+    }
+}
+
+/// Given units peel extra → save → consume. Remainder uses extra-desired
+/// if the good is desired, else unused.
+fn pop_given_amv(pop: &Pop, history: &MarketHistory, good: usize, qty: f64) -> f64 {
+    debug_assert!(qty >= 0.0 && qty.is_finite(), "given qty must be >= 0.0");
+    let price = history.price(good);
+    let salability = history.salability(good);
+    let (need, save, extra) = pop_row_bands(pop, good);
+    let extra_factor = if pop_good_is_desired(pop, good) {
+        pop_amv_factor(deal_constants::POP_AMV_UNNEEDED_PENALTY, salability)
+    } else {
+        salability
+    };
+    let save_factor = pop_amv_factor(deal_constants::POP_AMV_SAVE_PENALTY, salability);
+    let from_extra = qty.min(extra);
+    let rest = qty - from_extra;
+    let from_save = rest.min(save);
+    let rest = rest - from_save;
+    let from_need = rest.min(need);
+    let from_over = rest - from_need;
+    (from_extra + from_over) * price * extra_factor
+        + from_save * price * save_factor
+        + from_need * price
+}
+
+/// Received AMV / given AMV for this pop.
+pub(crate) fn pop_amv_percent_keep(
+    pop: &Pop,
+    deal: &ProposedDeal,
+    role: DealRole,
+    history: &MarketHistory,
+) -> f64 {
+    let mut given = 0.0;
+    for (good, qty) in deal.goods_given(role) {
+        given += pop_given_amv(pop, history, good, qty);
+    }
+    if given <= 0.0 {
+        return f64::INFINITY;
+    }
+    let kind = pop_bag_kind(pop, deal, role);
+    let mut received = 0.0;
+    for (good, qty) in deal.goods_received(role) {
+        received += qty * history.price(good) * pop_received_factor(kind, history.salability(good));
+    }
+    received / given
 }
 
 /// Returns how many units of `good` this pop can tender (0 if it is `targeted_good`).

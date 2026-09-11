@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
+use crate::game::deal::transport_cover_on_hand;
 use crate::game::factuals::Factuals;
+use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::{compose_sell_priority_with, MarketOrder};
-use crate::game::pop_property::PopPRow;
+use crate::game::pop_property::{BuyStopReason, PopPRow};
 use crate::game::util::{whole_units, whole_units_up};
 
 use super::Pop;
@@ -231,6 +233,63 @@ impl Pop {
         self.stamp_named_counters(&mut orders, market_history);
         self.current_orders.extend(orders.iter().cloned());
         orders
+    }
+
+    /// Transport cover for another shopping trip. Time uses unreserved
+    /// stock; other transport goods use on-hand quantity.
+    pub(crate) fn shopping_cover(&self, factuals: &Factuals) -> f64 {
+        transport_cover_on_hand(
+            self.property.iter().map(|(&id, row)| {
+                let qty = if id == TIME {
+                    row.available().max(0.0)
+                } else {
+                    row.quantity.max(0.0)
+                };
+                (id, qty)
+            }),
+            factuals,
+        )
+    }
+
+    /// Why this pop is done buying: transport door, no payment goods, or
+    /// remaining wants are unavailable. `None` if shop shortfalls are filled.
+    pub(crate) fn classify_buy_stop(
+        &self,
+        factuals: &Factuals,
+        market_history: &MarketHistory,
+        unavailable: &HashSet<usize>,
+        door: f64,
+    ) -> Option<BuyStopReason> {
+        debug_assert!(door >= 0.0 && door.is_finite(), "door must be >= 0.0");
+        if !self.has_buyable_shop_shortfall(factuals, None) {
+            return None;
+        }
+        if self.shopping_cover(factuals) + 1e-12 < door {
+            return Some(BuyStopReason::Transport);
+        }
+        if self.has_buyable_shop_shortfall(factuals, Some(unavailable)) {
+            if self.current_excess_value(market_history) <= 1e-12 {
+                return Some(BuyStopReason::Money);
+            }
+            return None;
+        }
+        Some(BuyStopReason::Market)
+    }
+
+    fn has_buyable_shop_shortfall(&self, factuals: &Factuals, skip: Option<&HashSet<usize>>) -> bool {
+        for (&id, row) in &self.property {
+            if !factuals.find_good(id).is_buyable() {
+                continue;
+            }
+            if skip.is_some_and(|set| set.contains(&id)) {
+                continue;
+            }
+            let short = (row.shop_target - row.quantity).max(0.0);
+            if whole_units_up(short) > 0.0 {
+                return true;
+            }
+        }
+        false
     }
 
     /// Raises `reserved` toward on-hand shop / desire keep so just-bought

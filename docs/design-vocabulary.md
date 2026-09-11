@@ -21,7 +21,7 @@ and `docs/proposals/`.
 | Pop consumption patterns | ascetic, affluent |
 | Satisfaction and fill | desire sat, tier sat, SOL, sat units, sat boost, common surplus, luxury oversat |
 | Sentiment | sentiment, axes, sentiment shift |
-| Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, held, update sentiments, stored effects |
+| Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, held, update sentiments, stored effects, buy stop |
 | World data | world data, init data, save data, factuals, gameplay config, game state, actor, pop, household, institution, firm, firm property row, firm records, state |
 | Exchange | deal, take tenders, whole units, Time, labor contract, take good, make change, deal response, AMV drift, AMV history, salability update, AMV keep, order priority, friction / transport, order tries, write / set, player resources |
 
@@ -226,8 +226,8 @@ Savings does not fence reserves or consumption.
 ### Consume / consumption
 **Preferred:** consume, consumption  
 
-**Meaning:** Goods that have been used to satisfy desires and have been moved into the consumed category.
-**Code:** `Pop::consume`, `satisfy_one_desire`
+**Meaning:** Goods that have been used to satisfy desires and have been moved into the consumed category. Intramarket transport spend also moves into `consumed` (not leftover stock).
+**Code:** `Pop::consume`, `satisfy_one_desire`, `DealMaker::pay_transport`
 
 ### Liquid wealth
 **Preferred:** liquid wealth, mobile wealth
@@ -276,6 +276,18 @@ liquid wealth. Fear scales **substitutability**: a calm pop may hold that
 AMV in highly salable goods; a fearful pop wants more of it as the specific
 basket goods.
 **Code:** `PopRecords::savings_ratio`
+
+### Buy stop
+**Preferred:** buy stop, stop reason  
+**Avoid:** halt reason, shop fail
+
+**Meaning:** Why a pop stopped posting buy/requests today. `None` if
+shop shortfalls are filled. **Market:** remaining wants are on
+unavailable goods (no seller). **Money:** remaining wants are still
+available but free-stock AMV is gone. **Transport:** not enough
+transport cover for the door / wagon bill.
+
+**Code:** `BuyStopReason`, `PopRecords::buy_stop`, `Pop::classify_buy_stop`
 
 ### Time preference
 **Preferred:** time preference
@@ -677,18 +689,21 @@ does not raise salability.
 **Preferred:** AMV keep, keep ratio  
 **Avoid:** ratio alone
 
-**Meaning:** `received AMV / given AMV` for one side of a deal. Given goods
-are always full market AMV. Received goods the actor will **use** (pop
-desire / shop target, firm `use_target`) are full AMV; anything else is
-`AMV * salability` (coins at 1.0 count in full, leftover copper is
-discounted). A pop that receives any used/desired good ignores the AMV
-floor. Unused-only pop baskets must keep `0.50` after the haircut. Firm
-min keep `0.50` (up to 50% AMV loss), with a need-catch down to `0.25`
-when the firm has a purchase or use target on a received good. Buyers
-accept windfalls (`keep >= 1.0`); they do not seek a more equitable split.
+**Meaning:** `received AMV / given AMV` for one side of a deal. Firm given
+goods are always full market AMV. Firm received `use_target` goods are
+full AMV; anything else is `AMV * salability`. Pop given units peel extra
+→ save → consume at salability penalties 0 / 0.25 / 0.50 / 1.0. Pop
+received bag takes the best category: consume shortfall (`quantity <
+desire_needs`) => full AMV; else save shortfall (`quantity <
+shop_target`) => quarter penalty; else extra-desired (shop target or
+desire list) => half penalty; else the full haircut. Factor is `1 - p *
+(1 - S)`. The pop 0.50 keep floor always applies. Firm min keep `0.50`
+(up to 50% AMV loss), with a need-catch down to `0.25` when the firm has
+a purchase or use target on a received good. Buyers accept windfalls
+(`keep >= 1.0`); they do not seek a more equitable split.
 
-**Code:** `deal_constants`, `evaluate_amv_floor`, `evaluate_pop_amv`,
-`amv_percent_keep`
+**Code:** `deal_constants`, `evaluate_amv_floor`, `evaluate_keep_ratio`,
+`pop_amv_percent_keep`, `amv_percent_keep`
 
 ### Order priority
 **Preferred:** order priority, market priority  
@@ -709,7 +724,14 @@ transport_needed = TRANSACTION_COST + bulk * market.friction
 bulk = Sum(|qty| * good.bulk())   // bulk = mass + 400 * volume
 ```
 
-`TRANSACTION_COST` is a flat **unit** count (currently 1). `market.friction` is 0 on a one-hex market. Buyer pays. Seller never receives the spent units. Excess transport stays with the buyer. Each transport good's **Transport tag** carries efficiency (1.0 = time baseline); cover is `qty * efficiency`. The bill and the spend may be fractional. Exchanging a transport-tagged good (the deal map) is still **whole units**.
+`TRANSACTION_COST` is a flat **unit** count (currently 1). Live
+`market.friction` is 1 (one transport-cover per bulk). Buyer pays. Seller
+never receives the spent units. Excess transport stays with the buyer.
+Each transport good's **Transport tag** carries efficiency (1.0 = time
+baseline); cover is `qty * efficiency`. The bill and the spend may be
+fractional. Exchanging a transport-tagged good (the deal map) is still
+**whole units**. `Good.bulk()` is `mass + 400 * volume` (kg and m³ per
+game unit). Time has bulk 0.
 
 **Wash / failed meeting:** spend only `TRANSACTION_COST` from **on-hand** transport (cannot use goods this deal would have brought in). Then renew or close.
 

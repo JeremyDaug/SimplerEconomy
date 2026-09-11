@@ -73,6 +73,7 @@ exchange_salability_min = 0.6
 sell_exchange_edge = 0.1
 buy_try_limit = 2
 transaction_cost = 1.0
+friction = 1.0
 amv_accept_blend = 0.25
 amv_reject_blend = 0.10
 amv_reject_demand_edge = 1.1

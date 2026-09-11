@@ -553,6 +553,10 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
         assert!((factuals.find_good(1).decay_rate - 0.4).abs() < 1e-12);
+        assert!((factuals.find_good(1).mass - 1.0).abs() < 1e-12);
+        assert!((factuals.find_good(1).volume - 0.0015).abs() < 1e-12);
+        assert!((factuals.find_good(1).bulk() - 1.6).abs() < 1e-12);
+        assert!(factuals.find_good(0).bulk().abs() < 1e-12);
         assert_eq!(factuals.find_good(5).name, "gold_token");
         assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
     }

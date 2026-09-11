@@ -48,6 +48,9 @@ demographic ids only. Do not reopen the household-rates model.
   **all** of that tier; otherwise walk until overdraw and skip the next.
   Skip `unavailable` on requests only. Extra desire buys are
   `next_shopping_trip`, not morning.
+- Buy stop (`PopRecords::buy_stop`) after the market day: `market` if
+  remaining shop is unavailable, `money` if shop remains and free AMV is
+  gone, `transport` if the door cannot be paid. `None` if shop is filled.
 - Tender freeze: salability first, then lowest desire importance. Listed
   offer units (and `reserved`) are not tenderable. Sell size floors; buy size
   ceils. Offers name the first remaining request as `counter_offer`; requests

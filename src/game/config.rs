@@ -171,6 +171,9 @@ pub mod market_constants {
     /// Flat transport units charged per meeting (success or wash).
     /// 1 for the current town scale. Later: scale with size. Not AMV.
     pub const TRANSACTION_COST: f64 = 1.0;
+    /// Bulk multiplier on the wagon bill. `transport_needed = TRANSACTION_COST
+    /// + bulk * FRICTION`. 1.0 = one transport-cover per bulk. Not AMV.
+    pub const FRICTION: f64 = 1.0;
 
     /// How hard a successful exchange pulls both sides' AMV toward the
     /// midpoint of the basket (0 = no move, 1 = snap).
@@ -200,14 +203,20 @@ pub mod market_constants {
 
 /// Deal-making AMV acceptance floors and tender cutoffs.
 ///
-/// Values are **keep ratios** (`received AMV / given AMV`). A pop that
-/// receives a used/desired good ignores the AMV floor. Unused received
-/// goods use [`POP_AMV_UNUSED_KEEP`]. Buyers still accept windfalls
-/// (`keep >= 1.0`).
+/// Values are **keep ratios** (`received AMV / given AMV`). Pop received
+/// bags take the best of consume / save / extra-desired / unused. Given
+/// units peel extra → save → consume. The 0.50 floor always applies
+/// (no floor-drop). Buyers still accept windfalls (`keep >= 1.0`).
 pub mod deal_constants {
-    /// Pop AMV keep when every received good is unused. `0.50` = at most
-    /// 50% AMV loss after the salability haircut.
+    /// Pop AMV keep floor. `0.50` = at most 50% AMV loss after the
+    /// received-side haircut.
     pub const POP_AMV_UNUSED_KEEP: f64 = 0.50;
+    /// Salability penalty share on save-band units (incoming bag or
+    /// outgoing peel). `0.25` => AMV * `(0.75 + 0.25 * salability)`.
+    pub const POP_AMV_SAVE_PENALTY: f64 = 0.25;
+    /// Salability penalty share on extra-desired units. `0.50` =>
+    /// AMV * `(0.5 + 0.5 * salability)`.
+    pub const POP_AMV_UNNEEDED_PENALTY: f64 = 0.50;
     /// Firm minimum AMV keep. `0.50` = accept up to 50% AMV loss.
     pub const FIRM_AMV_MIN_KEEP: f64 = 0.50;
     /// When a firm deal cannot land in [`FIRM_AMV_MIN_KEEP`] but the firm
@@ -852,6 +861,9 @@ pub struct MarketConfig {
     pub buy_try_limit: u32,
     /// Flat transport units charged per meeting. Default 1.0. Must be >= 0. Not AMV.
     pub transaction_cost: f64,
+    /// Multiplier on deal bulk for the wagon bill. Default 1.0. Must be >= 0.
+    /// Not AMV. Testers use 1 so bulk is extra Time cover per unit moved.
+    pub friction: f64,
     /// Successful-exchange AMV pull toward basket midpoint. Default 0.25. Bound 0..=1.
     pub amv_accept_blend: f64,
     /// Rejected-meeting AMV pull (sought up, tenders down). Default 0.10. Bound 0..=1.
@@ -884,6 +896,7 @@ impl Default for MarketConfig {
             sell_exchange_edge: market_constants::SELL_EXCHANGE_EDGE,
             buy_try_limit: market_constants::BUY_TRY_LIMIT,
             transaction_cost: market_constants::TRANSACTION_COST,
+            friction: market_constants::FRICTION,
             amv_accept_blend: market_constants::AMV_ACCEPT_BLEND,
             amv_reject_blend: market_constants::AMV_REJECT_BLEND,
             amv_reject_demand_edge: market_constants::AMV_REJECT_DEMAND_EDGE,
@@ -918,6 +931,7 @@ impl MarketConfig {
         }
         in_range(problems, "market.sell_exchange_edge", self.sell_exchange_edge, 0.0, 0.5);
         at_least(problems, "market.transaction_cost", self.transaction_cost, 0.0);
+        at_least(problems, "market.friction", self.friction, 0.0);
         in_range(problems, "market.amv_accept_blend", self.amv_accept_blend, 0.0, 1.0);
         in_range(problems, "market.amv_reject_blend", self.amv_reject_blend, 0.0, 1.0);
         above(problems, "market.amv_reject_demand_edge", self.amv_reject_demand_edge, 0.0);
