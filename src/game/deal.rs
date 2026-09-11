@@ -145,8 +145,8 @@ impl ProposedDeal {
     ///
     /// AMV is `|qty| * price` first, then the role's sign picks the bucket
     /// (seller adds the map, buyer subtracts it). Given goods use full AMV. Received
-    /// goods `uses` marks skip the salability haircut; others are AMV *
-    /// salability.
+    /// goods `uses` marks skip the salability haircut; others use
+    /// [`crate::game::config::salability_quote_factor`].
     fn amv_sides(
         &self,
         role: DealRole,
@@ -160,7 +160,7 @@ impl ProposedDeal {
             // TODO, consider adding salability here, may be unneeded, but just a thought.
             let mut price = history.price(good);
             if signed_qty > 0.0 && !uses(good) {
-                price *= history.salability(good);
+                price *= crate::game::config::salability_quote_factor(history.salability(good));
             }
             let amv = qty.abs() * price;
             if signed_qty > 0.0 {
@@ -307,7 +307,8 @@ pub trait DealMaker {
 ///
 /// Keep is computed by [`ProposedDeal::amv_percent_keep`]. Goods this role
 /// **gives** are always full market AMV. Goods they **receive** use full AMV
-/// when `uses` is true (consume / process input); otherwise AMV * salability.
+/// when `uses` is true (consume / process input); otherwise AMV *
+/// [`crate::game::config::salability_quote_factor`].
 ///
 /// Accepts if any of:
 /// 1. Buyer and keep >= 1.0 (received AMV >= given; a windfall, no equity

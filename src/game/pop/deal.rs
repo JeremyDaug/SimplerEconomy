@@ -143,13 +143,14 @@ fn pop_good_is_desired(pop: &Pop, good: usize) -> bool {
     })
 }
 
-/// `1 - penalty * (1 - S)`. Penalty 0/0.25/0.50/1 => consume/save/extra/unused.
+/// `1 - penalty * (1 - quote(S))`. Penalty 0/0.25/0.50/1 => consume/save/extra/unused.
 fn pop_amv_factor(penalty: f64, salability: f64) -> f64 {
     debug_assert!(
         (0.0..=1.0).contains(&penalty),
         "salability penalty must be in 0..=1"
     );
-    1.0 - penalty * (1.0 - salability)
+    let quote = crate::game::config::salability_quote_factor(salability);
+    1.0 - penalty * (1.0 - quote)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -215,7 +216,7 @@ fn pop_received_factor(kind: PopBagKind, salability: f64) -> f64 {
         PopBagKind::ExtraDesired => {
             pop_amv_factor(deal_constants::POP_AMV_UNNEEDED_PENALTY, salability)
         }
-        PopBagKind::Unused => salability,
+        PopBagKind::Unused => crate::game::config::salability_quote_factor(salability),
     }
 }
 
@@ -229,7 +230,7 @@ fn pop_given_amv(pop: &Pop, history: &MarketHistory, good: usize, qty: f64) -> f
     let extra_factor = if pop_good_is_desired(pop, good) {
         pop_amv_factor(deal_constants::POP_AMV_UNNEEDED_PENALTY, salability)
     } else {
-        salability
+        crate::game::config::salability_quote_factor(salability)
     };
     let save_factor = pop_amv_factor(deal_constants::POP_AMV_SAVE_PENALTY, salability);
     let from_extra = qty.min(extra);

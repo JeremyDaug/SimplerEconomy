@@ -1046,7 +1046,7 @@ impl Pop {
 
     /// # Property Liquid Wealth
     /// 
-    /// Spendable wealth: `Sum(qty * price * salability)` for tradeable goods.
+    /// Spendable wealth: `Sum(qty * price * quote(S))` for tradeable goods.
     /// Missing prices default to `1.0`. Missing salability defaults to
     /// [`crate::game::config::market_constants::SALABILITY_DEFAULT`].
     pub fn property_liquid_wealth(&self, market_history: &MarketHistory, factuals: &Factuals) -> f64 {
@@ -1061,7 +1061,9 @@ impl Pop {
             let salability = market_history.salability(*good_id);
             debug_assert!(price.is_finite(), "Market price must be finite.");
             debug_assert!(salability.is_finite(), "Market salability must be finite.");
-            total += row.quantity * price * salability;
+            total += row.quantity
+                * price
+                * crate::game::config::salability_quote_factor(salability);
         }
         total
     }
@@ -2133,10 +2135,6 @@ mod pop {
 
     fn make_default_factuals() -> Factuals {
         let mut factuals = Factuals::new();
-        factuals.goods.insert(
-            TIME,
-            make_good(TIME, "time".to_string()).with_transport_efficiency(1.0),
-        );
         factuals.goods.insert(100, make_good(100, "Test Good".to_string()));
         factuals.goods.insert(101, make_good(101, "Test Good 2".to_string()));
         factuals.goods.insert(200, make_good(200, "Test Good 3".to_string()));
@@ -2161,12 +2159,20 @@ mod pop {
         use super::*;
         use crate::game::pop::BuyStopReason;
 
+        fn with_time_transport(mut factuals: Factuals) -> Factuals {
+            factuals.goods.insert(
+                TIME,
+                make_good(TIME, "time".to_string()).with_transport_efficiency(1.0),
+            );
+            factuals
+        }
+
         #[test]
         fn filled_shop_has_no_stop() {
             let mut pop = make_pop();
             pop.property.insert(100, PopPRow::new(10.0).with_target(10.0));
             pop.property.insert(TIME, PopPRow::new(10.0));
-            let factuals = make_default_factuals();
+            let factuals = with_time_transport(make_default_factuals());
             let history = make_default_market_history();
             assert_eq!(
                 pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
@@ -2178,7 +2184,7 @@ mod pop {
         fn no_door_cover_is_transport() {
             let mut pop = make_pop();
             pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
-            let factuals = make_default_factuals();
+            let factuals = with_time_transport(make_default_factuals());
             let history = make_default_market_history();
             assert_eq!(
                 pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
@@ -2191,7 +2197,7 @@ mod pop {
             let mut pop = make_pop();
             pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
             pop.property.insert(TIME, PopPRow::new(10.0));
-            let factuals = make_default_factuals();
+            let factuals = with_time_transport(make_default_factuals());
             let history = make_default_market_history();
             assert_eq!(
                 pop.classify_buy_stop(&factuals, &history, &HashSet::new(), 1.0),
@@ -2205,7 +2211,7 @@ mod pop {
             pop.property.insert(100, PopPRow::new(0.0).with_target(10.0));
             pop.property.insert(500, PopPRow::new(10.0));
             pop.property.insert(TIME, PopPRow::new(10.0));
-            let factuals = make_default_factuals();
+            let factuals = with_time_transport(make_default_factuals());
             let history = make_default_market_history();
             let mut unavailable = HashSet::new();
             unavailable.insert(100);
@@ -5417,7 +5423,7 @@ mod pop {
                 crate::game::deal::DealRole::Buyer,
                 &history,
             );
-            // Half penalty at S=0.4 => 0.7
+            // Extra-desired at S=0.4 => 0.5 + 0.5*0.4 = 0.7
             assert!((keep - 0.7).abs() < 1e-12);
         }
 
@@ -5510,7 +5516,7 @@ mod pop {
                 crate::game::deal::DealRole::Seller,
                 &history,
             );
-            // Shop filled: desired not needed. Whole bag at 0.5 + 0.5*0.2 = 0.6.
+            // Shop filled: extra-desired at S=0.2 => 0.5 + 0.5*0.2 = 0.6
             assert!((keep - 0.6).abs() < 1e-12);
         }
 
@@ -5559,7 +5565,6 @@ mod pop {
                 &history,
             );
             // Extra 4 at 0.6 + save 3 at 0.8 + consume 3 at 1.0 = 7.8 given.
-            // Incoming consume bag at full AMV = 8. keep 8/7.8.
             assert!((keep - 8.0 / 7.8).abs() < 1e-12);
         }
 

@@ -11,10 +11,10 @@ use simpler_economy::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
 use simpler_economy::game::sentiment::Sentiment;
 
 /// Opening AMV for every world good. No price spread at start.
-pub(crate) const OPENING_AMV: f64 = 10.0;
+pub(crate) const OPENING_AMV: f64 = 100.0;
 /// Opening salability for every world good. Below the exchange floor, so
 /// nothing starts as money.
-pub(crate) const OPENING_SALABILITY: f64 = 0.3;
+pub(crate) const OPENING_SALABILITY: f64 = 0.1;
 
 /// Per pop id, the morning stock cap: process output good and `amount * target`.
 pub(crate) type MorningOutputs = HashMap<usize, Vec<(usize, f64)>>;

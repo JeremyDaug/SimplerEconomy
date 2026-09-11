@@ -709,6 +709,7 @@ impl Market {
             &report.unmatched_buys,
             &factuals.config.market,
         );
+        self.nudge_amv_from_imbalance(&factuals.config.market);
         self.market_days = self.market_days.saturating_add(1);
         self.update_salability(&factuals.config.market);
         let period = factuals.config.market.amv_rescale_period;
@@ -959,7 +960,8 @@ impl Market {
             if !accept.is_finite() {
                 continue;
             }
-            good.set_salability(lerp(good.salability, accept, blend));
+            let target = accept * market_constants::SALABILITY_MAX;
+            good.set_salability(lerp(good.salability, target, blend));
         }
     }
 
@@ -984,7 +986,7 @@ impl Market {
             debug_assert!(decayed.is_finite() && volume.is_finite(), "decay rot must be finite");
             debug_assert!(decayed >= 0.0, "decayed must be >= 0.0");
             let rot_frac = (decayed / volume).clamp(0.0, 1.0);
-            let cap = 1.0 - rot_frac;
+            let cap = market_constants::SALABILITY_MAX * (1.0 - rot_frac);
             let Some(good) = self.goods.get_mut(&id) else {
                 continue;
             };
@@ -1027,65 +1029,50 @@ impl Market {
             return;
         }
 
+        let s_sold = self.market_good_mut(target, cfg).salability.max(1e-9);
+        let pay_qty: f64 = pays.iter().map(|(_, qty, _)| *qty).sum();
+        let s_pay = if pay_qty > 0.0 {
+            pays.iter()
+                .map(|(id, qty, _)| {
+                    *qty * self.market_good_mut(*id, cfg).salability.max(1e-9)
+                })
+                .sum::<f64>()
+                / pay_qty
+        } else {
+            s_sold
+        };
+
         let mid = 0.5 * (given_total + pay_total);
-        let new_target = lerp(target_amv, mid / filled, blend);
+        let sold_blend = (blend * 2.0 * s_pay / (s_sold + s_pay)).min(1.0);
+        let new_target = lerp(target_amv, mid / filled, sold_blend);
         self.market_good_mut(target, cfg).set_amv_min(new_target, cfg.amv_min_abs);
 
         let scale = mid / pay_total;
         for (id, _, amv) in pays {
+            let s_i = self.market_good_mut(id, cfg).salability.max(1e-9);
+            let pay_blend = (blend * 2.0 * s_sold / (s_i + s_sold)).min(1.0);
             let implied = amv * scale;
             self.market_good_mut(id, cfg)
-                .set_amv_min(lerp(amv, implied, blend), cfg.amv_min_abs);
+                .set_amv_min(lerp(amv, implied, pay_blend), cfg.amv_min_abs);
         }
     }
 
-    /// Raises the sought good's AMV and lowers each tender's AMV.
-    /// Tender down-push scales with tender AMV offered per sought AMV
-    /// (`qty * AMV`), not raw units.
-    fn drift_amv_on_reject(
+    /// Lowers salability on goods that failed as payment. Does not move AMV.
+    fn drift_salability_on_reject(
         &mut self,
         target: usize,
         goods: &HashMap<usize, f64>,
         cfg: &crate::game::config::MarketConfig,
     ) {
-        let sought = goods.get(&target).copied().unwrap_or(0.0).abs();
-        if sought <= 0.0 {
-            return;
-        }
-        let blend = cfg.amv_reject_blend;
-        let edge = cfg.amv_reject_demand_edge;
-        let sought_amv = self.market_good_mut(target, cfg).amv;
-        let given = (sought * sought_amv).abs();
-        self.market_good_mut(target, cfg)
-            .set_amv_min(lerp(sought_amv, sought_amv * edge, blend), cfg.amv_min_abs);
+        let blend = cfg.salability_blend;
         for (&id, &qty) in goods {
             if id == target || qty <= 0.0 {
                 continue;
             }
-            let pay_amv = self.market_good_mut(id, cfg).amv;
-            let paid = (qty * pay_amv).abs();
-            let ratio = if given > 0.0 {
-                paid / given
-            } else {
-                qty / sought
-            };
-            let down_blend = (blend * ratio).min(1.0);
+            let old = self.market_good_mut(id, cfg).salability;
             self.market_good_mut(id, cfg)
-                .set_amv_min(lerp(pay_amv, pay_amv / edge, down_blend), cfg.amv_min_abs);
+                .set_salability(lerp(old, 0.0, blend));
         }
-    }
-
-    /// Raises the sought good's AMV when a meeting produced no basket.
-    fn drift_amv_on_no_proposal(
-        &mut self,
-        target: usize,
-        cfg: &crate::game::config::MarketConfig,
-    ) {
-        let blend = cfg.amv_reject_blend;
-        let edge = cfg.amv_reject_demand_edge;
-        let old = self.market_good_mut(target, cfg).amv;
-        self.market_good_mut(target, cfg)
-            .set_amv_min(lerp(old, old * edge, blend), cfg.amv_min_abs);
     }
 
     /// Moves AMV from leftover and unmatched orders after the match loop.
@@ -1159,6 +1146,40 @@ impl Market {
             };
             self.market_good_mut(good, cfg)
                 .set_amv_min(new, cfg.amv_min_abs);
+        }
+    }
+
+    /// ±`amv_imbalance_kick` on each tradeable good toward heavier opening
+    /// demand vs supply. Live kick is **flat ±1 AMV**. Tie (including both 0)
+    /// does not move. Time skipped.
+    ///
+    /// Deferred if flat ±1 is too strong on cheap goods: (1) ±1% of |AMV|
+    /// (`old * 0.01`) — scale-invariant, but the bottom sagged in a seed-1
+    /// 60-day compare; (2) asymmetric +1 demand / −1% supply — rescue cheap
+    /// goods people still want, don't hammer a glut by a flat dollar.
+    fn nudge_amv_from_imbalance(&mut self, cfg: &MarketConfig) {
+        let kick = cfg.amv_imbalance_kick;
+        if kick <= 0.0 {
+            return;
+        }
+        let mut ids: Vec<usize> = self.goods.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            if id == TIME {
+                continue;
+            }
+            let (demand, supply, old) = {
+                let Some(row) = self.goods.get(&id) else {
+                    continue;
+                };
+                (row.demand, row.supply, row.amv)
+            };
+            if (demand - supply).abs() <= 0.0 {
+                continue;
+            }
+            let delta = if demand > supply { kick } else { -kick };
+            self.market_good_mut(id, cfg)
+                .set_amv_min(old + delta, cfg.amv_min_abs);
         }
     }
 
@@ -1287,10 +1308,10 @@ impl Market {
     /// 1. Buyer [`DealMaker::buy`] names a basket. That proposal is the buyer's accept.
     /// 2. Seller [`DealMaker::evaluate`]s it.
     /// 3. Accept: record fill stats, drift AMV on [`MarketGood`] toward the
-    ///    basket midpoint, [`DealMaker::finalize`] both inventories, push
-    ///    leftover order amounts back onto `buys` / `sells`.
-    /// 4. Reject / no proposal: drift AMV (sought up, tenders down on reject),
-    ///    wash. On reject, cut the sell/offer weight by
+    ///    basket midpoint (more salable goods move less), [`DealMaker::finalize`]
+    ///    both inventories, push leftover order amounts back onto `buys` / `sells`.
+    /// 4. Reject: lower salability on tenders (not AMV). No-proposal: no AMV
+    ///    and no salability change. Wash. On reject, cut the sell/offer weight by
     ///    `sell_reject_weight` (same day only). Charge
     ///    [`market_constants::TRANSACTION_COST`]
     ///    transport from on-hand. Push `sell_order` back onto `sells`.
@@ -1325,7 +1346,6 @@ impl Market {
         let Some(proposal) = as_deal_maker(pops, firms, buy_order.origin)
             .buy(&buy_order, &sell_order, history, factuals)
         else {
-            self.drift_amv_on_no_proposal(target, &factuals.config.market);
             let transport = wash_transport(factuals);
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
@@ -1350,7 +1370,7 @@ impl Market {
         if verdict != DealResponse::Accept {
             // TODO: Counteroffer haggling. The rewrite is seller-approved; the
             // buyer would then evaluate it (or a close-out). Wash for now.
-            self.drift_amv_on_reject(target, &proposal.goods, &factuals.config.market);
+            self.drift_salability_on_reject(target, &proposal.goods, &factuals.config.market);
             let transport = wash_transport(factuals);
             let mut sell_order = sell_order;
             sell_order.apply_reject_weight_penalty(
@@ -1811,7 +1831,7 @@ impl MarketGood {
     /// New row using loaded salability default. AMV still starts at 1.0.
     pub fn from_config(cfg: &MarketConfig) -> Self {
         let mut good = Self::new();
-        good.salability = cfg.salability_default.clamp(0.0, 1.0);
+        good.salability = cfg.salability_default.clamp(0.0, market_constants::SALABILITY_MAX);
         good
     }
 
@@ -1845,13 +1865,13 @@ impl MarketGood {
         self.amv_history.iter().copied().collect()
     }
 
-    /// Sets salability, clamped to `0.0..=1.0`.
+    /// Sets salability, clamped to `0.0..=`[`market_constants::SALABILITY_MAX`].
     pub fn set_salability(&mut self, salability: f64) {
         debug_assert!(salability.is_finite(), "salability must be finite");
-        self.salability = salability.clamp(0.0, 1.0);
+        self.salability = salability.clamp(0.0, market_constants::SALABILITY_MAX);
     }
 
-    /// Sets salability, clamped to `0.0..=1.0`.
+    /// Sets salability, clamped to `0.0..=`[`market_constants::SALABILITY_MAX`].
     pub fn with_salability(mut self, salability: f64) -> Self {
         self.set_salability(salability);
         self
@@ -2190,8 +2210,12 @@ mod market_good_should {
     }
 
     #[test]
-    fn clamps_salability_to_unit_interval() {
-        assert_eq!(MarketGood::new().with_salability(1.5).salability, 1.0);
+    fn clamps_salability_to_max() {
+        assert_eq!(MarketGood::new().with_salability(1.5).salability, 1.5);
+        assert_eq!(
+            MarketGood::new().with_salability(2.5).salability,
+            market_constants::SALABILITY_MAX
+        );
         assert_eq!(MarketGood::new().with_salability(-0.2).salability, 0.0);
         assert_eq!(MarketGood::new().with_salability(0.4).salability, 0.4);
         assert_eq!(MarketGood::new().with_salability(0.0).salability, 0.0);
@@ -2205,7 +2229,7 @@ mod market_good_should {
         good.set_amv(0.0);
         assert_eq!(good.amv, -min);
         good.set_salability(2.0);
-        assert_eq!(good.salability, 1.0);
+        assert_eq!(good.salability, 2.0);
         good.set_production(3.0);
         assert_eq!(good.production, 3.0);
     }
@@ -2255,12 +2279,12 @@ mod cap_salability_from_decay_should {
     }
 
     #[test]
-    fn ten_percent_rot_caps_at_point_nine() {
-        let mut market = market_with(1.0, 1.0);
+    fn ten_percent_rot_caps_at_max_times_kept() {
+        let mut market = market_with(2.0, 1.0);
         let mut rot = HashMap::new();
         rot.insert(GRAIN, (1.0, 10.0));
         market.cap_salability_from_decay(&rot);
-        assert!((market.goods[&GRAIN].salability - 0.9).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].salability - 1.8).abs() < 1e-12);
     }
 
     #[test]
@@ -2587,6 +2611,7 @@ mod run_market_day_should {
             .with_good(test_good(GRAIN, "grain"))
             .with_good(test_good(COIN, "coin"));
         facts.config.market.amv_rescale_period = 0;
+        facts.config.market.amv_imbalance_kick = 0.0;
         facts
     }
 
@@ -2707,11 +2732,12 @@ mod run_market_day_should {
         assert!((firms[&1].property[&COIN].quantity - 4.0).abs() < 1e-12);
         assert!((firms[&1].property[&GRAIN].sold - 4.0).abs() < 1e-12);
         assert!(pops[&1].current_orders.is_empty());
-        // Even AMV basket: no accept drift. Coin fully accepted: salability stays 1.
+        // Even AMV basket: no accept drift. Coin fully accepted: S lerps toward max.
         // Leftover grain sell does not move AMV (leftover_blend 0).
         assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
         assert!((market.goods[&COIN].amv - 1.0).abs() < 1e-12);
-        assert!((market.goods[&COIN].salability - 1.0).abs() < 1e-12);
+        let coin_s = lerp(1.0, market_constants::SALABILITY_MAX, market_constants::SALABILITY_BLEND);
+        assert!((market.goods[&COIN].salability - coin_s).abs() < 1e-12);
         assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
     }
 
@@ -2836,10 +2862,8 @@ mod run_market_day_should {
         assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
         // Three deal attempts (initial + two auto-renews), then close-out.
         assert!((market.goods[&GRAIN].requests - 12.0).abs() < 1e-12);
-        // Rejected meetings raise sought grain and lower tendered coin.
-        // Leftover unsold grain does not cut AMV (leftover_blend 0).
-        assert!(market.goods[&GRAIN].amv > 1.0);
-        assert!(market.goods[&COIN].amv < 1.0);
+        // Rejected meetings do not move AMV (rescale still equalizes).
+        assert!((market.goods[&GRAIN].amv - market.goods[&COIN].amv).abs() < 1e-9);
         // Coin was tendered and never accepted.
         assert!(market.goods[&COIN].salability < 0.2);
     }
@@ -3081,8 +3105,8 @@ mod run_market_day_should {
 
         market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
-        // Coin fully accepted as payment: 0.5 -> lerp toward 1.0.
-        let expected = lerp(0.5, 1.0, market_constants::SALABILITY_BLEND);
+        // Coin fully accepted as payment: 0.5 -> lerp toward SALABILITY_MAX.
+        let expected = lerp(0.5, market_constants::SALABILITY_MAX, market_constants::SALABILITY_BLEND);
         assert!((market.goods[&COIN].salability - expected).abs() < 1e-12);
         assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
     }
@@ -3113,11 +3137,11 @@ mod run_market_day_should {
 
         market.run_market_day(&facts, &mut pops, &mut firms, &mut rng());
         assert_eq!(market.market_days, 1);
-        assert!((market.goods[&GRAIN].amv - 10.0).abs() < 1e-12);
-        assert!((market.goods[&COIN].amv - 10.0).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].amv - 100.0).abs() < 1e-12);
+        assert!((market.goods[&COIN].amv - 100.0).abs() < 1e-12);
         let trail = market.goods[&GRAIN].amv_trail();
         assert!((trail[0] - 1.0).abs() < 1e-12);
-        assert!((trail[trail.len() - 1] - 10.0).abs() < 1e-12);
+        assert!((trail[trail.len() - 1] - 100.0).abs() < 1e-12);
     }
 
     #[test]
@@ -3134,26 +3158,25 @@ mod run_market_day_should {
         let mut pops = HashMap::new();
         market.run_market_day(&facts, &mut pops, &mut firms, &mut rng());
         let row = &firms[&1].property[&GRAIN];
-        assert!((row.amv_target - 20.0).abs() < 1e-12);
-        assert!((row.average_cost - 20.0).abs() < 1e-12);
+        assert!((row.amv_target - 200.0).abs() < 1e-12);
+        assert!((row.average_cost - 200.0).abs() < 1e-12);
     }
 
     #[test]
-    fn reject_tender_down_push_scales_with_amv_not_units() {
+    fn reject_lowers_tender_salability_not_amv() {
         let mut market = priced_market();
         market.goods.get_mut(&GRAIN).unwrap().set_amv(20.0);
         market.goods.get_mut(&COIN).unwrap().set_amv(1.0);
+        market.goods.get_mut(&COIN).unwrap().set_salability(1.0);
+        let grain_amv = market.goods[&GRAIN].amv;
         let cfg = crate::game::config::MarketConfig::default();
         let mut goods = HashMap::new();
         goods.insert(GRAIN, -1.0);
         goods.insert(COIN, 20.0);
-        market.drift_amv_on_reject(GRAIN, &goods, &cfg);
-        // AMV-fair 20 coin for 1 grain: ratio 1, blend 0.10, not a full snap.
-        let coin = market.goods[&COIN].amv;
-        let unit_snap = 1.0 / cfg.amv_reject_demand_edge;
-        assert!(coin > 0.99, "got {coin}");
-        assert!(coin < 1.0);
-        assert!(coin > unit_snap);
+        market.drift_salability_on_reject(GRAIN, &goods, &cfg);
+        assert!((market.goods[&GRAIN].amv - grain_amv).abs() < 1e-12);
+        let expected = lerp(1.0, 0.0, cfg.salability_blend);
+        assert!((market.goods[&COIN].salability - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -3261,7 +3284,11 @@ mod run_market_day_should {
         );
         market.goods.insert(
             COIN,
-            MarketGood::new().with_amv(1.0).with_salability(0.2),
+            MarketGood::new().with_amv(1.0).with_salability(0.0),
+        );
+        market.goods.insert(
+            CARGO,
+            MarketGood::new().with_amv(1.0).with_salability(0.0),
         );
         market.pops.insert(1);
         market.firms.insert(1);
@@ -3486,5 +3513,41 @@ mod run_market_day_should {
         )];
         market.drift_amv_on_book_pressure(&[], &[], &unmatched, &cfg);
         assert!((market.goods[&TIME].amv - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imbalance_kick_raises_amv_when_demand_exceeds_supply() {
+        let mut market = priced_market();
+        market.goods.get_mut(&GRAIN).unwrap().set_demand(10.0);
+        market.goods.get_mut(&GRAIN).unwrap().set_supply(4.0);
+        let cfg = crate::game::config::MarketConfig::default();
+        market.nudge_amv_from_imbalance(&cfg);
+        assert!((market.goods[&GRAIN].amv - 2.0).abs() < 1e-12);
+        assert!((market.goods[&COIN].amv - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imbalance_kick_cuts_amv_when_supply_exceeds_demand() {
+        let mut market = priced_market();
+        market.goods.get_mut(&GRAIN).unwrap().set_amv(10.0);
+        market.goods.get_mut(&GRAIN).unwrap().set_demand(4.0);
+        market.goods.get_mut(&GRAIN).unwrap().set_supply(10.0);
+        let cfg = crate::game::config::MarketConfig::default();
+        market.nudge_amv_from_imbalance(&cfg);
+        assert!((market.goods[&GRAIN].amv - 9.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imbalance_kick_skips_ties_and_time() {
+        let mut market = priced_market();
+        market.goods.insert(TIME, MarketGood::new().with_amv(5.0));
+        market.goods.get_mut(&TIME).unwrap().set_demand(9.0);
+        market.goods.get_mut(&TIME).unwrap().set_supply(1.0);
+        market.goods.get_mut(&GRAIN).unwrap().set_demand(3.0);
+        market.goods.get_mut(&GRAIN).unwrap().set_supply(3.0);
+        let cfg = crate::game::config::MarketConfig::default();
+        market.nudge_amv_from_imbalance(&cfg);
+        assert!((market.goods[&TIME].amv - 5.0).abs() < 1e-12);
+        assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
     }
 }

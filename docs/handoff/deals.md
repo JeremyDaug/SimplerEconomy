@@ -29,12 +29,12 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
   void the basket.
 - **Make change** is returning excess, not `take_tenders`.
 - Keep = received AMV / given AMV. Firm given goods are full AMV. Firm
-  received `use_target` skips salability; others * salability. Pop given
-  units peel extra → save → consume at 0 / 25 / 50 / 100 salability
-  penalty (extra-desired vs unused on the leftover). Pop received bag
+  received `use_target` skips salability; others use `salability_quote_factor`
+  (full AMV at S>=1, linear `AMV * S` below). Pop given units peel extra → save
+  → consume at 0 / 25 / 50 / 100 of the remaining haircut. Pop received bag
   takes the best category: consume shortfall (`quantity < desire_needs`)
   => full AMV; else save shortfall (`quantity < shop_target`) => quarter
-  penalty; else extra-desired => half penalty; else full salability. The
+  penalty; else extra-desired => half penalty; else the quote factor. The
   0.50 floor **always** applies (no floor-drop). Firm min `0.50` with a
   need-catch to `0.25` when `purchase_target` or `use_target`.
   Merchant restock is a **need**, not a use (still takes the haircut).

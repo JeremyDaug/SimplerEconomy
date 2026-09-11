@@ -35,6 +35,7 @@ default off).
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml` (1 Time → 15
 of the output, one process per good; Time is process 28). Starting pops and
 firms: `data/init/` (`InitData`). Opening AMV/sal: `roster.rs`.
+Opening AMV 100.0 / salability 0.1 (`roster.rs`).
 Living roster: one pop and one firm per world good, 1 household each.
 Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop28-time`); `pop1` still parses.
 Firm labels match (`firm1-grain`, `firm1`); `firm 1` still parses.
@@ -50,7 +51,7 @@ duplicated onto every pop at 1 unit per member (5 units). **No** opening
 writes shop targets. Each morning: `start_day` Time
 (`TIME_PER_LABOR` 64 * household labor). Specialty output comes from the
 firm (`FIRM_HOURS` 10; `pop.id % n_goods`; pop 28's firm makes Time and
-cannot sell it). `DAILY_OUTPUT` is 0. Opening AMV is 10.0 and salability 0.3 on every good (no money good,
+cannot sell it). `DAILY_OUTPUT` is 0. Opening AMV is 100.0 and salability 0.1 on every good (no money good,
 no price spread). Coin is `gold_token`; iron ore is `iron`.
 
 Home is a short summary. Pages: `stock` / `orders` / `processes` / `amv` /

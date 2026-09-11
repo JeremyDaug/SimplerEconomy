@@ -26,9 +26,12 @@ invariants and traps, not a substitute for the code.
   until trips emit nothing, then tombstones. Listed offer units and
   `reserved` are not tenderable. World goods use per-good `decay_rate` in
   `goods.toml`.
-  After decay, salability is capped at `1 - decayed/volume` (eaten stock
-  is volume, not rot). Each market day AMV is rescaled so one unit of
-  each tradeable good averages 10.0 (after salability, then the close).
+  After decay, salability is capped at `2 * (1 - decayed/volume)`.
+  AMV drifts on accept (more salable goods move less) and a ±1 kick toward
+  heavier opening demand vs supply. Reject lowers
+  tender salability, not AMV. Salability is 0..=2 (par at 1, currency at 1.8).
+  Each market day AMV is rescaled so one unit of
+  each tradeable good averages 100.0 (after salability, then the close).
   Firm AMV quotes scale with it; recorded trail samples do not.
   After the market day each pop records a buy stop (`market` / `money` /
   `transport`) if shop shortfalls remain.
@@ -50,7 +53,7 @@ invariants and traps, not a substitute for the code.
 - World goods, processes, and config load from `data/world/`. Processes are
   1 Time → 15 of each good (Time is process 28).
 - Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
-  (one household pop and one remainder-owner firm per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 10.0 / salability 0.3 on every good.
+  (one household pop and one remainder-owner firm per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
   Grouped consume desires (basic/common/luxury) are 1 unit per member
   (5 units), duplicated onto every pop. **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
@@ -65,14 +68,14 @@ invariants and traps, not a substitute for the code.
   coin/inputs); default off.
   Desire amounts do not rise with success.
   Luxury shop_target adds an extra level and leftover liquid above save.
-  AMV moves from meetings only (accept / reject / no-proposal). Reject
-  tender down-push is tender AMV / sought AMV, not raw units. Leftover
-  book blend is 0. Volume-scaled leftover collapsed AMV to the bounce
-  floor; do not turn it back on unless asked.
+  AMV moves on accept (salability-weighted) plus a flat ±1 demand/supply
+  kick. Reject lowers tender salability, not AMV. Leftover book blend is 0.
+  Volume-scaled leftover collapsed AMV to the bounce floor; do not turn it
+  back on unless asked.
   CSV is market + trades always; pops/firms only when flagged (`csv on`).
-  **Checkpoint:** zero-endowment intramarket barter holds a 50-day run
-  with clustered AMVs. Do not retune leftover AMV or re-add the 1-of-each
-  grant unless asked.
+  **Checkpoint:** with mean 100 and ±1 imbalance kick, a 180-day pop_tester
+  run held AMVs off the bounce (gold ~12, tools ~300). Do not retune leftover
+  AMV or re-add the 1-of-each grant unless asked.
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.

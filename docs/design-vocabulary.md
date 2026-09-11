@@ -631,19 +631,17 @@ retries on this pairing. First-pass impls return Accept or Reject only.
 **Preferred:** AMV drift  
 **Avoid:** restamp prices, average price (that is realized fill price)
 
-**Meaning:** Live `MarketGood.amv` moves as meetings resolve. Intra-day orders and
-evaluate still read the opening `MarketHistory` snapshot. A successful basket
-lerps both sides toward the midpoint of sold-AMV vs payment-AMV. A seller
-reject raises the sought good (demand edge 1.1) and lowers each tender,
-harder when more tender **AMV** was offered per sought AMV (not raw units).
-No-proposal raises the
-sought good only. Leftover and unmatched books do **not** move AMV
-(live `amv_leftover_blend` 0). Vault AMV is trial-and-error on meetings.
+**Meaning:** Live `MarketGood.amv` moves on **accept** only. Intra-day orders
+and evaluate still read the opening `MarketHistory` snapshot. A successful
+basket lerps both sides toward the midpoint of sold-AMV vs payment-AMV,
+with more salable goods taking a smaller share of the blend. Reject and
+no-proposal do **not** move AMV (they write salability). Leftover-book
+blend is 0. After the books close, each tradeable good gets ±`amv_imbalance_kick`
+(default **flat 1.0 AMV**) toward whichever of opening demand vs supply is
+larger. Deferred: ±1% of |AMV|, or +1 demand / −1% supply. Seed-1 60-day
+logs: `compare_flat1_*` vs `compare_pct1_*` (percent let the bottom sag).
 
-**Code:** `Market::drift_amv_on_accept`, `drift_amv_on_reject`,
-`drift_amv_on_no_proposal`,
-`market_constants::AMV_ACCEPT_BLEND`, `AMV_REJECT_BLEND`,
-`AMV_REJECT_DEMAND_EDGE`
+**Code:** `Market::drift_amv_on_accept`, `market_constants::AMV_ACCEPT_BLEND`
 
 ### AMV rescale
 **Preferred:** AMV rescale
@@ -651,7 +649,7 @@ sought good only. Leftover and unmatched books do **not** move AMV
 
 **Meaning:** Every `amv_rescale_period` completed market days (default 1),
 multiply live AMV and average_price so the unweighted mean of one unit of
-each tradeable good equals `amv_rescale_mean` (default 10.0). Time is
+each tradeable good equals `amv_rescale_mean` (default 100.0). Time is
 skipped. Period 0 disables. A unit-normalization for readability; relative
 AMVs stay the same. The AMV trail is **not** rewritten (closes already sit
 in that day's mean units). Firm `amv_target`, cost basis, and AMV bounds
@@ -676,14 +674,15 @@ end-of-day closes. Intra-day drift is not recorded tick-by-tick. Caps at
 **Preferred:** salability update  
 **Avoid:** AMV drift (that is value, not how easy it is to spend)
 
-**Meaning:** Day-end rolling lerp of salability toward `payment / tender` for
-goods that were offered as payment. No tender means no change. Volume and
-fill-rate of demand are not this pass. After decay, live salability is
-capped at `1 - decayed / volume` (consumed is volume, not rot). The cap
-does not raise salability.
+**Meaning:** Salability is `0..=2`. Below 1 the quote is discounted
+linearly (`AMV * S`); at 1+ keep uses full AMV; at 1.8+ the good is currency
+(sticky AMV). A reject lowers tender salability. Day-end lerp toward
+`(payment/tender) * 2` when tender > 0. After decay, cap at
+`2 * (1 - decayed/volume)`. The cap does not raise salability.
 
-**Code:** `Market::update_salability`, `Market::cap_salability_from_decay`,
-`market_constants::SALABILITY_BLEND`
+**Code:** `Market::update_salability`, `Market::drift_salability_on_reject`,
+`Market::cap_salability_from_decay`, `salability_quote_factor`,
+`market_constants::SALABILITY_MAX`, `SALABILITY_PAR`, `CURRENCY_SALABILITY`
 
 ### AMV keep
 **Preferred:** AMV keep, keep ratio  
@@ -691,7 +690,8 @@ does not raise salability.
 
 **Meaning:** `received AMV / given AMV` for one side of a deal. Firm given
 goods are always full market AMV. Firm received `use_target` goods are
-full AMV; anything else is `AMV * salability`. Pop given units peel extra
+full AMV; anything else is AMV times `salability_quote_factor` (full at
+S>=1, `AMV * S` below). Pop given units peel extra
 → save → consume at salability penalties 0 / 0.25 / 0.50 / 1.0. Pop
 received bag takes the best category: consume shortfall (`quantity <
 desire_needs`) => full AMV; else save shortfall (`quantity <

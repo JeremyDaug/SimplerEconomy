@@ -152,11 +152,18 @@ pub mod market_constants {
     /// Zero is never stored. A setter that would land inside `(-AMV_MIN_ABS,
     /// AMV_MIN_ABS)` bounces that far past 0 from the previous sign
     /// (positive -> slightly negative, negative -> slightly positive).
-    pub const AMV_MIN_ABS: f64 = 0.00001;
+    pub const AMV_MIN_ABS: f64 = 0.0000001;
 
     /// Default salability for a new or unrecorded good.
     /// Below [`EXCHANGE_SALABILITY_MIN`], so unknown goods are not till money.
     pub const SALABILITY_DEFAULT: f64 = 0.4;
+    /// Maximum salability. `0..=1` is discounted / discovering price;
+    /// `1..=2` is at-par AMV; [`CURRENCY_SALABILITY`] is agreed money.
+    pub const SALABILITY_MAX: f64 = 2.0;
+    /// At or above this, keep uses full AMV (no liquidity haircut).
+    pub const SALABILITY_PAR: f64 = 1.0;
+    /// At or above this, the good is market-agreed currency (sticky AMV).
+    pub const CURRENCY_SALABILITY: f64 = 1.8;
     /// Minimum salability to treat on-hand stock as exchange tender.
     pub const EXCHANGE_SALABILITY_MIN: f64 = 0.6;
     /// When a pile is both sold and exchanged, each side keeps at least this
@@ -176,9 +183,10 @@ pub mod market_constants {
     pub const FRICTION: f64 = 1.0;
 
     /// How hard a successful exchange pulls both sides' AMV toward the
-    /// midpoint of the basket (0 = no move, 1 = snap).
+    /// midpoint of the basket (0 = no move, 1 = snap). More salable goods
+    /// take a smaller share of this blend.
     pub const AMV_ACCEPT_BLEND: f64 = 0.25;
-    /// How hard a rejected meeting pulls AMV (sought up, tenders down).
+    /// Unused for AMV. Reject/no-proposal do not move AMV.
     pub const AMV_REJECT_BLEND: f64 = 0.10;
     /// Sought-good up-push is this times the tender down-push (demand edge).
     pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
@@ -190,12 +198,15 @@ pub mod market_constants {
     /// Skip leftover AMV when both books have leftover and
     /// `|buy - sell| / (buy + sell)` is below this (0.10 = 10%).
     pub const AMV_LEFTOVER_BAND: f64 = 0.10;
+    /// Day-end ±AMV kick toward the heavier of opening demand vs supply.
+    /// 1.0 is 1% of the 100 mean. Tie (including both 0) does not move.
+    pub const AMV_IMBALANCE_KICK: f64 = 1.0;
     /// Day-end lerp of salability toward payment/tender (0 = no move, 1 = snap).
     pub const SALABILITY_BLEND: f64 = 0.25;
     /// Market days between unweighted AMV rescales. 0 disables. 1 = every day.
     pub const AMV_RESCALE_PERIOD: u32 = 1;
     /// Target mean AMV of one unit of each good after a rescale.
-    pub const AMV_RESCALE_MEAN: f64 = 10.0;
+    pub const AMV_RESCALE_MEAN: f64 = 100.0;
 
     /// Compile-time max ring slots for [`crate::game::market::MarketGood`] AMV history.
     pub const AMV_HISTORY_MAX: usize = 16;
@@ -212,10 +223,10 @@ pub mod deal_constants {
     /// received-side haircut.
     pub const POP_AMV_UNUSED_KEEP: f64 = 0.50;
     /// Salability penalty share on save-band units (incoming bag or
-    /// outgoing peel). `0.25` => AMV * `(0.75 + 0.25 * salability)`.
+    /// outgoing peel), applied to the remaining quote-factor gap.
     pub const POP_AMV_SAVE_PENALTY: f64 = 0.25;
-    /// Salability penalty share on extra-desired units. `0.50` =>
-    /// AMV * `(0.5 + 0.5 * salability)`.
+    /// Salability penalty share on extra-desired units, applied to the
+    /// remaining quote-factor gap.
     pub const POP_AMV_UNNEEDED_PENALTY: f64 = 0.50;
     /// Firm minimum AMV keep. `0.50` = accept up to 50% AMV loss.
     pub const FIRM_AMV_MIN_KEEP: f64 = 0.50;
@@ -223,10 +234,17 @@ pub mod deal_constants {
     /// needs the received goods (purchase or use target), fall back to this
     /// keep ratio.
     pub const FIRM_AMV_NEED_KEEP: f64 = 0.25;
-    /// Salability at or above this is highly salable (money-like). Buy
+    /// Salability at or above this is preferred tender (at-par). Buy
     /// proposals fill from these (plus the seller's named counter) before
     /// offering lower-salability goods.
-    pub const HIGH_SALABILITY: f64 = 0.8;
+    pub const HIGH_SALABILITY: f64 = 1.0;
+}
+
+/// Keep haircut from salability. At or above [`market_constants::SALABILITY_PAR`]
+/// the factor is 1.0. Below par it is linear (`AMV * S`).
+pub fn salability_quote_factor(salability: f64) -> f64 {
+    debug_assert!(salability.is_finite(), "salability must be finite");
+    salability.clamp(0.0, market_constants::SALABILITY_PAR)
 }
 
 /// Named intramarket order-priority slots.
@@ -877,12 +895,15 @@ pub struct MarketConfig {
     /// Skip leftover AMV when both sides leftover and the imbalance is below this.
     /// Default 0.10. Bound 0..=1.
     pub amv_leftover_band: f64,
+    /// ±AMV added to each good toward heavier opening demand vs supply.
+    /// Default 1.0. Must be >= 0. Tie does not move.
+    pub amv_imbalance_kick: f64,
     /// Day-end lerp of salability toward payment/tender. Default 0.25. Bound 0..=1.
     pub salability_blend: f64,
     /// Market days between unweighted AMV rescales. Default 1 (every day).
     /// 0 disables.
     pub amv_rescale_period: u32,
-    /// Target mean AMV of one unit of each good after a rescale. Default 10.0.
+    /// Target mean AMV of one unit of each good after a rescale. Default 100.0.
     /// Must be > 0.
     pub amv_rescale_mean: f64,
 }
@@ -902,6 +923,7 @@ impl Default for MarketConfig {
             amv_reject_demand_edge: market_constants::AMV_REJECT_DEMAND_EDGE,
             amv_leftover_blend: market_constants::AMV_LEFTOVER_BLEND,
             amv_leftover_band: market_constants::AMV_LEFTOVER_BAND,
+            amv_imbalance_kick: market_constants::AMV_IMBALANCE_KICK,
             salability_blend: market_constants::SALABILITY_BLEND,
             amv_rescale_period: market_constants::AMV_RESCALE_PERIOD,
             amv_rescale_mean: market_constants::AMV_RESCALE_MEAN,
@@ -912,13 +934,19 @@ impl Default for MarketConfig {
 impl MarketConfig {
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "market.amv_min_abs", self.amv_min_abs, 0.0);
-        in_range(problems, "market.salability_default", self.salability_default, 0.0, 1.0);
+        in_range(
+            problems,
+            "market.salability_default",
+            self.salability_default,
+            0.0,
+            market_constants::SALABILITY_MAX,
+        );
         in_range(
             problems,
             "market.exchange_salability_min",
             self.exchange_salability_min,
             0.0,
-            1.0,
+            market_constants::SALABILITY_MAX,
         );
         if self.salability_default.is_finite()
             && self.exchange_salability_min.is_finite()
@@ -937,6 +965,7 @@ impl MarketConfig {
         above(problems, "market.amv_reject_demand_edge", self.amv_reject_demand_edge, 0.0);
         in_range(problems, "market.amv_leftover_blend", self.amv_leftover_blend, 0.0, 1.0);
         in_range(problems, "market.amv_leftover_band", self.amv_leftover_band, 0.0, 1.0);
+        at_least(problems, "market.amv_imbalance_kick", self.amv_imbalance_kick, 0.0);
         in_range(problems, "market.salability_blend", self.salability_blend, 0.0, 1.0);
         above(problems, "market.amv_rescale_mean", self.amv_rescale_mean, 0.0);
     }
@@ -954,8 +983,8 @@ pub struct DealConfig {
     /// Looser keep when the firm needs a received good. Default 0.25.
     /// Bound 0..=1. Must be <= `firm_amv_min_keep`.
     pub firm_amv_need_keep: f64,
-    /// Salability at or above this is money-like for buy tenders. Default 0.8.
-    /// Bound 0..=1. Must be >= market `exchange_salability_min`.
+    /// Salability at or above this is preferred tender (at-par). Default 1.0.
+    /// Bound 0..=2. Must be >= market `exchange_salability_min`.
     pub high_salability: f64,
 }
 
@@ -982,7 +1011,13 @@ impl DealConfig {
             "deal.firm_amv_min_keep",
             self.firm_amv_min_keep,
         );
-        in_range(problems, "deal.high_salability", self.high_salability, 0.0, 1.0);
+        in_range(
+            problems,
+            "deal.high_salability",
+            self.high_salability,
+            0.0,
+            market_constants::SALABILITY_MAX,
+        );
     }
 }
 

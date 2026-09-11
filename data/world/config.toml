@@ -67,7 +67,7 @@ trend_legitimacy_rise = 0.03
 trend_legitimacy_fall = 0.05
 
 [market]
-amv_min_abs = 0.00001
+amv_min_abs = 0.0000001
 salability_default = 0.4
 exchange_salability_min = 0.6
 sell_exchange_edge = 0.1
@@ -79,15 +79,16 @@ amv_reject_blend = 0.10
 amv_reject_demand_edge = 1.1
 amv_leftover_blend = 0.0
 amv_leftover_band = 0.10
+amv_imbalance_kick = 1.0
 salability_blend = 0.25
 amv_rescale_period = 1
-amv_rescale_mean = 10.0
+amv_rescale_mean = 100.0
 
 [deal]
 pop_amv_unused_keep = 0.50
 firm_amv_min_keep = 0.50
 firm_amv_need_keep = 0.25
-high_salability = 0.8
+high_salability = 1.0
 
 [market_priority]
 institution_before_firms = 1.0

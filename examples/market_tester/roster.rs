@@ -18,10 +18,10 @@ use simpler_economy::game::workforce::Workforce;
 use super::*;
 
 /// Opening AMV for every world good. No price spread at start.
-pub(crate) const OPENING_AMV: f64 = 10.0;
+pub(crate) const OPENING_AMV: f64 = 100.0;
 /// Opening salability for every world good. Below the exchange floor, so
 /// nothing starts as money.
-pub(crate) const OPENING_SALABILITY: f64 = 0.3;
+pub(crate) const OPENING_SALABILITY: f64 = 0.1;
 
 /// Morning grant of every non-Time good.
 pub(crate) const DAILY_ENDOWMENT: f64 = 0.0;
