@@ -156,3 +156,5 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
   From [this conversation](https://grok.com/share/c2hhcmQtMw_e2b20412-fa4e-4d6e-ad1e-29cf133c819e): simpler household size edits, less hassle when defs change, addresses household total-pop jumps.
 - [ ] Store market id on `Pop`  
   Pops do not wander except during migration. A `market_id` field (updated when they move) would replace the evening `pop_to_market` map. Defer until migration leaves write.
+- [ ] Pop savings update (backburner)  
+  Landed model is days of cheapest basic+common basket (`savings_ratio`), fear-split liquid vs specific goods, durability-scaled save AMV. `time_preference` is lerped and unused. Different savings logic was on the table; park until asked. Code: `Pop::rewrite_shop_and_save_targets`, `Pop::update_planning`.
