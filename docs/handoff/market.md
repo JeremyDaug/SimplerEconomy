@@ -30,6 +30,7 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
    from per-household total AMV vs market max, then sliced by consume
    `shop_tier` (basic, then common, then luxury) inside the pop band.
    `Pop::create_orders` itself still writes `POP_START` as a placeholder.
+   Matching sorts firm buys ahead of pop buys before those numbers.
 2. **Collate** opening supply/demand/buyers/suppliers. Zero day exchange
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).
@@ -60,9 +61,10 @@ buy stop (`market` / `money` / `transport`) if shop shortfalls remain.
 
 ## Matching
 
-One pass, **does not mutate** the books. Buys by priority (lowest first); sells
-by target good id. Only the **front** buy-priority group (shuffled). At most
-**one** weighted sell. Coincidence doubles that sell's weight for this pick
+One pass, **does not mutate** the books. Buys by **firm-before-pop**, then
+priority (lowest first); sells by target good id. Firm and pop buys never
+share a front group, even at the same numeric priority. Only the **front**
+buy-priority group (shuffled). At most **one** weighted sell. Coincidence doubles that sell's weight for this pick
 only when both named counters match (`SELL_COINCIDENCE_WEIGHT = 2.0`). Pop
 request/offer may name a counter **good** without an amount.
 Self-trade skipped. No other-origin seller -> `unmatched_buys` (may be several).
@@ -72,8 +74,10 @@ Do not batch several deals. RNG: `rand` 0.9.
 ## Order priority
 
 Two uses: buy/request is FCFS (**lower first**, RNG among ties); sell/offer is
-weight (**higher more likely**). Buy bands (pops `[4, 5)`, firms `[2, 3)`) are
-`debug_assert`ed on **buys** only. Sells only need `priority > 0`.
+weight (**higher more likely**). **Firm buys always match before pop buys**,
+even if a pop order has a lower numeric priority. Buy bands (pops `[4, 5)`,
+firms `[2, 3)`) are `debug_assert`ed on **buys** only. Sells only need
+`priority > 0`.
 
 Pop buy rank: **per household**, **total AMV**, not liquid. Richest -> band
 start. Institutions `1` / `3` / `5`. Merchants `[2, 2.5)`, producers `[2.5, 3)`.

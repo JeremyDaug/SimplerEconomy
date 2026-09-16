@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use circular_buffer::CircularBuffer;
@@ -97,11 +98,42 @@ pub struct MarketDayReport {
     pub leftover_sells: Vec<MarketOrder>,
 }
 
-/// Length of the leading run of buys that share `buys[0].priority`.
+fn is_firm_buy(order: &MarketOrder) -> bool {
+    matches!(order.origin, Actor::Firm(_))
+}
+
+fn is_pop_buy(order: &MarketOrder) -> bool {
+    matches!(order.origin, Actor::Pop(_))
+}
+
+/// Firm buys always queue before pop buys. Other origins keep numeric
+/// order priority (lower first).
+fn cmp_buy_order(a: &MarketOrder, b: &MarketOrder) -> Ordering {
+    match (is_firm_buy(a), is_pop_buy(a), is_firm_buy(b), is_pop_buy(b)) {
+        (true, _, _, true) => Ordering::Less,
+        (_, true, true, _) => Ordering::Greater,
+        _ => a
+            .priority
+            .partial_cmp(&b.priority)
+            .unwrap_or(Ordering::Equal),
+    }
+}
+
+/// Length of the leading run of buys that share `buys[0]`'s queue slot.
+/// Firm and pop buys never share a front group, even at the same numeric
+/// priority.
 fn front_priority_group_len(buys: &[MarketOrder]) -> usize {
     let best = buys[0].priority;
+    let firm_front = is_firm_buy(&buys[0]);
+    let pop_front = is_pop_buy(&buys[0]);
     let mut n = 1;
     while n < buys.len() && buys[n].priority == best {
+        if firm_front && is_pop_buy(&buys[n]) {
+            break;
+        }
+        if pop_front && is_firm_buy(&buys[n]) {
+            break;
+        }
         n += 1;
     }
     n
@@ -492,6 +524,9 @@ pub struct Market {
     /// [`Market::run_market_day`]. AMV rescale uses this against
     /// [`MarketConfig::amv_rescale_period`].
     pub market_days: u32,
+    /// Unfilled buy/request units by good at market close (leftover book plus
+    /// unmatched). Plan treats this as remaining demand, not a sell miss.
+    pub leftover_buy: HashMap<usize, f64>,
 }
 
 impl Market {
@@ -506,6 +541,7 @@ impl Market {
             friction: 0.0,
             unavailable_goods: HashSet::new(),
             market_days: 0,
+            leftover_buy: HashMap::new(),
         }
     }
 
@@ -536,7 +572,8 @@ impl Market {
     ///
     /// 1. Collect orders from member pops and firms (`create_orders`). Pop
     ///    buy/request order priority is written from per-household wealth.
-    ///    Institution and state orders are not collected yet.
+    ///    Firm buys always match before pop buys. Institution and state
+    ///    orders are not collected yet.
     /// 2. Collate opening supply, demand, buyers, and suppliers onto
     ///    [`MarketGood`] rows.
     /// 3. Waves until shopping trips emit nothing:
@@ -603,11 +640,7 @@ impl Market {
                 steps += 1;
                 debug_assert!(steps < 1_000_000, "market day failed to terminate");
 
-                buys.sort_by(|a, b| {
-                    a.priority
-                        .partial_cmp(&b.priority)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                buys.sort_by(cmp_buy_order);
                 sells.sort_by_key(|order| order.target);
 
                 let batch = Self::match_orders_with_coincidence(
@@ -727,6 +760,7 @@ impl Market {
 
         report.leftover_buys = buys;
         report.leftover_sells = sells;
+        self.stamp_leftover_buy(&report.leftover_buys, &report.unmatched_buys);
         self.drift_amv_on_book_pressure(
             &report.leftover_buys,
             &report.leftover_sells,
@@ -1629,8 +1663,9 @@ impl Market {
     /// One pass over the **front** buy-priority group. Does not mutate the
     /// lists; the caller removes, updates, or reinserts after.
     ///
-    /// `buys` must be sorted by order priority (lowest first, FCFS). `sells`
-    /// must be sorted by target good id. The front group is shuffled. At most
+    /// `buys` must be sorted firm-before-pop, then order priority (lowest
+    /// first, FCFS). `sells` must be sorted by target good id. The front
+    /// group is shuffled. Firm and pop buys never share a front group. At most
     /// **one** match (weighted sell of that good; coincidence doubles this pick
     /// only). Every front-group buy with no other-origin seller is listed in
     /// `unmatched_buys` so the caller can update those while the one deal
@@ -1659,8 +1694,9 @@ impl Market {
             return OrderMatchBatch::empty();
         }
         debug_assert!(
-            buys.windows(2).all(|w| w[0].priority <= w[1].priority),
-            "buys must be sorted by priority, lowest first"
+            buys.windows(2)
+                .all(|w| cmp_buy_order(&w[0], &w[1]) != Ordering::Greater),
+            "buys must be sorted firm-before-pop, then priority lowest first"
         );
         debug_assert!(
             sells.windows(2).all(|w| w[0].target <= w[1].target),
@@ -1728,8 +1764,18 @@ impl Market {
             history.purchased.insert(good_id, good.purchased);
             history.amv_trails.insert(good_id, good.amv_trail());
         }
+        history.leftover_buy = self.leftover_buy.clone();
         history.friction = self.friction;
         history
+    }
+
+    fn stamp_leftover_buy(&mut self, leftover: &[MarketOrder], unmatched: &[MarketOrder]) {
+        self.leftover_buy.clear();
+        for order in leftover.iter().chain(unmatched) {
+            if order.target_amount > 0.0 {
+                *self.leftover_buy.entry(order.target).or_insert(0.0) += order.target_amount;
+            }
+        }
     }
 }
 
@@ -1750,6 +1796,8 @@ pub struct MarketHistory {
     pub purchased: HashMap<usize, f64>,
     /// Oldest-to-newest AMV closes. Empty = unknown trend and volatility.
     pub amv_trails: HashMap<usize, Vec<f64>>,
+    /// Unfilled buy/request units by good at market close. Missing = 0.
+    pub leftover_buy: HashMap<usize, f64>,
 }
 
 impl Default for MarketHistory {
@@ -1819,7 +1867,13 @@ impl MarketHistory {
             default_salability: market_constants::SALABILITY_DEFAULT,
             purchased: HashMap::new(),
             amv_trails: HashMap::new(),
+            leftover_buy: HashMap::new(),
         }
+    }
+
+    /// Unfilled buy/request units for `good_id` at market close, or 0.
+    pub fn leftover_buy(&self, good_id: usize) -> f64 {
+        self.leftover_buy.get(&good_id).copied().unwrap_or(0.0)
     }
 
     /// Price for `good_id`, or 1.0 if missing.
@@ -2213,6 +2267,7 @@ mod market_lookups_should {
             friction: 0.0,
             unavailable_goods: HashSet::new(),
             market_days: 0,
+            leftover_buy: HashMap::new(),
         };
         market.goods.insert(5, MarketGood::new().with_amv(3.0));
         let mut markets = HashMap::new();
@@ -2517,6 +2572,15 @@ mod match_orders_should {
         MarketOrder::request_order(Actor::Pop(pop), good, amount, priority)
     }
 
+    fn firm_request(firm: usize, good: usize, amount: f64, priority: f64) -> MarketOrder {
+        MarketOrder::request_order(Actor::Firm(firm), good, amount, priority)
+    }
+
+    fn sorted_buys(mut buys: Vec<MarketOrder>) -> Vec<MarketOrder> {
+        buys.sort_by(cmp_buy_order);
+        buys
+    }
+
     fn offer(pop: usize, good: usize, amount: f64, priority: f64) -> MarketOrder {
         MarketOrder::offer_order(Actor::Pop(pop), good, -amount, priority)
     }
@@ -2572,6 +2636,47 @@ mod match_orders_should {
         let batch = Market::match_orders(&buys, &sells, &mut rng());
         assert_eq!(batch.unmatched_buys, vec![0]);
         assert!(batch.matched.is_none());
+    }
+
+    #[test]
+    fn firm_buy_matches_before_pop_buy_of_the_same_good() {
+        let buys = sorted_buys(vec![
+            request(1, 10, 1.0, market_priority::POP_START),
+            firm_request(1, 10, 1.0, market_priority::FIRM_PRODUCER),
+        ]);
+        let sells = vec![offer(2, 10, 1.0, market_priority::POP_START)];
+        let batch = Market::match_orders(&buys, &sells, &mut rng());
+        assert_eq!(batch.matched, Some(pair(0, 0)));
+        assert!(is_firm_buy(&buys[0]));
+        assert!(is_pop_buy(&buys[1]));
+        assert!(batch.unmatched_buys.is_empty());
+    }
+
+    #[test]
+    fn firm_buy_matches_before_a_pop_with_lower_numeric_priority() {
+        let buys = sorted_buys(vec![
+            request(1, 10, 1.0, 0.0),
+            firm_request(1, 10, 1.0, market_priority::FIRM_PRODUCER),
+        ]);
+        let sells = vec![offer(2, 10, 1.0, market_priority::POP_START)];
+        let batch = Market::match_orders(&buys, &sells, &mut rng());
+        assert_eq!(batch.matched, Some(pair(0, 0)));
+        assert!(is_firm_buy(&buys[0]));
+        assert!(is_pop_buy(&buys[1]));
+    }
+
+    #[test]
+    fn pop_does_not_join_a_firm_front_group_at_the_same_priority() {
+        let buys = sorted_buys(vec![
+            firm_request(1, 10, 1.0, market_priority::FIRM_PRODUCER),
+            request(1, 11, 1.0, market_priority::FIRM_PRODUCER),
+        ]);
+        let sells = vec![offer(2, 11, 1.0, market_priority::POP_START)];
+        let batch = Market::match_orders(&buys, &sells, &mut rng());
+        assert_eq!(batch.unmatched_buys, vec![0]);
+        assert!(batch.matched.is_none());
+        assert!(is_firm_buy(&buys[0]));
+        assert!(is_pop_buy(&buys[1]));
     }
 
     #[test]

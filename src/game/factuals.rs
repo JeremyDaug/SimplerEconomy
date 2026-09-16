@@ -491,7 +491,7 @@ mod factuals_should {
     use super::*;
     use crate::game::config::GameConfig;
     use crate::game::effects::ProcessEffect;
-    use crate::game::good::GoodTag;
+    use crate::game::good::{GoodTag, TIME};
     use crate::game::process::InputType;
     use crate::game::{culture::Culture, religion::Religion, species::Species};
     use std::path::PathBuf;
@@ -552,13 +552,13 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!((factuals.find_good(0).transport_efficiency() - 1.0).abs() < 1e-12);
         assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
-        assert!((factuals.find_good(1).decay_rate - 0.4).abs() < 1e-12);
+        assert!((factuals.find_good(1).decay_rate - 0.12).abs() < 1e-12);
         assert!((factuals.find_good(1).mass - 1.0).abs() < 1e-12);
         assert!((factuals.find_good(1).volume - 0.0015).abs() < 1e-12);
         assert!((factuals.find_good(1).bulk() - 1.6).abs() < 1e-12);
         assert!(factuals.find_good(0).bulk().abs() < 1e-12);
         assert_eq!(factuals.find_good(5).name, "gold_token");
-        assert!((factuals.find_good(5).decay_rate - 0.01).abs() < 1e-12);
+        assert!((factuals.find_good(5).decay_rate - 0.005).abs() < 1e-12);
     }
 
     #[test]
@@ -566,23 +566,56 @@ tags = ["untradeable", { transport = 2.0 }]
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         assert!(!factuals.goods.is_empty());
         assert_eq!(factuals.processes.len(), factuals.goods.len());
+        const RAW_EXTRACTS: &[&str] = &[
+            "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal",
+            "clay",
+        ];
         for process in factuals.processes.values() {
-            assert_eq!(process.inputs.len(), 1);
-            assert_eq!(process.inputs[0].good, 0);
-            assert!((process.inputs[0].amount - 1.0).abs() < 1e-12);
-            assert!(matches!(process.inputs[0].input_type, InputType::Destroyed));
+            let time_in = process
+                .inputs
+                .iter()
+                .find(|input| input.good == TIME)
+                .expect("Time input");
+            assert!(time_in.amount > 0.0 && time_in.amount <= 1.0);
+            assert!(matches!(time_in.input_type, InputType::Destroyed));
+            assert!(!time_in.is_optional());
             assert_eq!(process.outputs.len(), 1);
-            assert!((process.outputs[0].amount - 15.0).abs() < 1e-12);
+            assert!(process.outputs[0].amount > 0.0 && process.outputs[0].amount <= 8.0);
+            let output_name = factuals
+                .goods
+                .get(&process.outputs[0].good)
+                .map(|good| good.name.as_str())
+                .unwrap_or("");
+            let time_only = process.outputs[0].good == TIME
+                || RAW_EXTRACTS.contains(&output_name);
+            let material = process
+                .inputs
+                .iter()
+                .any(|input| input.good != TIME);
+            if time_only {
+                assert!(!material, "{} should be Time-only", process.name);
+            } else {
+                assert!(material, "{} needs a material input", process.name);
+            }
         }
         let grain = factuals.processes.get(&1).expect("make grain");
         assert_eq!(grain.name, "make grain");
         assert_eq!(grain.outputs[0].good, 1);
+        assert_eq!(grain.inputs.len(), 1);
+        assert!((grain.inputs[0].amount - 0.5).abs() < 1e-12);
+        assert!((grain.outputs[0].amount - 6.0).abs() < 1e-12);
         let pots = factuals.processes.get(&27).expect("make pots");
         assert_eq!(pots.name, "make pots");
         assert_eq!(pots.outputs[0].good, 27);
+        assert_eq!(pots.inputs.len(), 3);
+        assert_eq!(pots.inputs[1].good, 26);
+        assert_eq!(pots.inputs[2].good, 23);
+        assert!((pots.outputs[0].amount - 1.0).abs() < 1e-12);
         let time = factuals.processes.get(&28).expect("make time");
         assert_eq!(time.name, "make time");
         assert_eq!(time.outputs[0].good, 0);
+        assert_eq!(time.inputs.len(), 1);
+        assert!((time.outputs[0].amount - 1.0).abs() < 1e-12);
         assert_eq!(factuals.config, GameConfig::default());
         assert_eq!(factuals.config.labor.worker_share, 0.30);
     }

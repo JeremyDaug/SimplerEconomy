@@ -4,12 +4,18 @@
 //! from world factuals and from a later compressed save. Defaults keep the
 //! files short (shared desires/starter, remainder owner, name from output).
 //! Firm `target` is process iterations; opening stock is three decay-adjusted
-//! days of each output (`OPENING_COVER_DAYS`) so day 1 can run. Live remainder
-//! fence is still `firm.operations_cover`. Hours default to target * Time input.
+//! days of each output (`OPENING_COVER_DAYS`) so day 1 can sell. Required
+//! non-Time inputs get four days (`OPENING_INPUT_DAYS`) with `use_target` set
+//! to one day's recipe use so they are not sold. Live remainder fence is still
+//! `firm.operations_cover`. Hours default to target * Time input.
 
 /// Days of output stocked at kickoff (decay-adjusted). Live `stock_target`
 /// still follows `operations_cover` after the first plan.
 pub const OPENING_COVER_DAYS: f64 = 3.0;
+
+/// Days of required non-Time inputs stocked at kickoff. Quantity and
+/// `stock_target` are this many days of recipe use; `use_target` is one day.
+pub const OPENING_INPUT_DAYS: f64 = 4.0;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -214,7 +220,41 @@ impl InitData {
             firms.push(build_firm(file, factuals)?);
         }
         firms.sort_by_key(|firm| firm.id);
+        grant_opening_specialty(&mut pops, &firms, factuals);
         Ok(Self { pops, firms })
+    }
+}
+
+/// One day of the matching remainder firm's daily output, so pops can tender
+/// on day 1. Time output is skipped (untradeable).
+fn grant_opening_specialty(pops: &mut [Pop], firms: &[Firm], factuals: &Factuals) {
+    for pop in pops.iter_mut() {
+        let Some(firm) = firms.iter().find(|firm| firm.id == pop.id) else {
+            continue;
+        };
+        let Some(line) = firm.production_line.first() else {
+            continue;
+        };
+        let Some(process) = factuals.processes.get(&line.process) else {
+            continue;
+        };
+        let target = line.target.unwrap_or(0.0);
+        if target <= 0.0 {
+            continue;
+        }
+        for output in &process.outputs {
+            if output.good == TIME {
+                continue;
+            }
+            let qty = output.amount * target;
+            if qty <= 0.0 {
+                continue;
+            }
+            if pop.property.contains_key(&output.good) {
+                continue;
+            }
+            pop.property.insert(output.good, PopPRow::new(qty));
+        }
     }
 }
 
@@ -412,6 +452,20 @@ fn build_firm(file: FirmFile, factuals: &Factuals) -> Result<Firm, InitLoadError
             ),
         );
     }
+    for input in process.requirements() {
+        if input.good == TIME {
+            continue;
+        }
+        let daily = input.amount * target;
+        if daily <= 0.0 {
+            continue;
+        }
+        let qty = daily * OPENING_INPUT_DAYS;
+        let row = firm.property.entry(input.good).or_insert_with(FirmPRow::new);
+        row.quantity += qty;
+        row.use_target += daily;
+        row.stock_target += qty;
+    }
     Ok(firm)
 }
 
@@ -551,30 +605,62 @@ target = 10.0
         assert_eq!(pop.desires[0].len(), 3);
         assert_eq!(pop.desires[1].len(), 5);
         assert_eq!(pop.desires[2].len(), 2);
+        let time_pop = data.pops.iter().find(|p| p.id == 28).expect("pop 28");
+        assert!(
+            time_pop
+                .property
+                .get(&TIME)
+                .map(|row| row.quantity)
+                .unwrap_or(0.0)
+                .abs()
+                < 1e-12
+        );
         let firm = data.firms.iter().find(|f| f.id == 1).expect("firm 1");
         assert_eq!(firm.name, "firm1-grain");
-        assert!((firm.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
-        assert!((firm.production_line[0].last_iterations - 10.0).abs() < 1e-12);
+        let grain_target = firm.production_line[0].target.unwrap();
+        assert!((grain_target - 16.0).abs() < 1e-12);
+        assert!((firm.production_line[0].last_iterations - grain_target).abs() < 1e-12);
         assert!((firm.production_line[0].last_success_rate - 1.0).abs() < 1e-12);
         let grain_decay = factuals.goods[&1].decay_rate;
         let hold = FirmPRow::operations_hold_days(OPENING_COVER_DAYS, grain_decay);
-        assert!((firm.property[&1].quantity - 150.0 * hold).abs() < 1e-12);
-        assert!((firm.property[&1].stock_target - 150.0 * hold).abs() < 1e-12);
-        assert!((firm.property[&1].sell_target - 150.0).abs() < 1e-12);
+        let grain_daily = factuals.processes[&1].outputs[0].amount * grain_target;
+        assert!((pop.property[&1].quantity - grain_daily).abs() < 1e-12);
+        assert!((firm.property[&1].quantity - grain_daily * hold).abs() < 1e-12);
+        assert!((firm.property[&1].stock_target - grain_daily * hold).abs() < 1e-12);
+        assert!((firm.property[&1].sell_target - grain_daily).abs() < 1e-12);
+        assert!((firm.property[&1].use_target - 0.0).abs() < 1e-12);
+        let bread = data.firms.iter().find(|f| f.id == 3).expect("firm 3");
+        let bread_target = bread.production_line[0].target.unwrap();
+        assert!((bread_target - 8.0).abs() < 1e-12);
+        assert!(bread.production_line[0].inputs.contains(&TIME));
+        assert!(bread.production_line[0].inputs.contains(&1));
+        assert!(bread.production_line[0].inputs.contains(&2));
+        let bread_proc = &factuals.processes[&bread.production_line[0].process];
+        for input in bread_proc.requirements() {
+            if input.good == TIME {
+                continue;
+            }
+            let daily = input.amount * bread_target;
+            let row = bread.property.get(&input.good).expect("opening input");
+            assert!((row.use_target - daily).abs() < 1e-12);
+            assert!((row.quantity - daily * OPENING_INPUT_DAYS).abs() < 1e-12);
+            assert!((row.stock_target - daily * OPENING_INPUT_DAYS).abs() < 1e-12);
+            assert!((row.sell_target - 0.0).abs() < 1e-12);
+        }
         let n_goods = factuals.goods.len();
         assert_eq!(data.pops.len(), n_goods * 2);
         assert_eq!(data.firms.len(), n_goods * 2);
         let time = data.firms.iter().find(|f| f.id == 28).expect("firm 28");
         assert!(time.property.is_empty());
-        assert!((time.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
+        assert!((time.production_line[0].target.unwrap() - 8.0).abs() < 1e-12);
         let twin = data.firms.iter().find(|f| f.id == 29).expect("firm 29");
         assert_eq!(twin.name, "firm29-grain");
         assert_eq!(twin.owners.owner, Actor::Pop(29));
-        assert!((twin.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
+        assert!((twin.production_line[0].target.unwrap() - 16.0).abs() < 1e-12);
         let cabin = data.firms.iter().find(|f| f.id == 8).expect("firm 8");
-        assert!((cabin.production_line[0].target.unwrap() - 1.0).abs() < 1e-12);
+        assert!((cabin.production_line[0].target.unwrap() - 2.0).abs() < 1e-12);
         let cabin2 = data.firms.iter().find(|f| f.id == 36).expect("firm 36");
-        assert!((cabin2.production_line[0].target.unwrap() - 1.0).abs() < 1e-12);
+        assert!((cabin2.production_line[0].target.unwrap() - 2.0).abs() < 1e-12);
         let time2 = data.firms.iter().find(|f| f.id == 56).expect("firm 56");
         assert!(time2.property.is_empty());
         assert_eq!(time2.owners.owner, Actor::Pop(56));

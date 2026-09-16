@@ -6,8 +6,10 @@
 //! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
 //! `orders`, and `processes` open full pages. `day` / `day N` runs the
 //! calendar loop, including pop decay, salability rot cap, then
-//! `record_keeping`. Firms are remainder owner-operators: 10 Time for
-//! 150 specialty output (cabins 1 Time / 15 output), no wage basket.
+//! `record_keeping`. Firms are remainder owner-operators: hours follow
+//! target * Time input (target 8; grain/wood 16, water 20, cabins 2), no
+//! wage basket. Crafted recipes take material inputs and two days of
+//! opening input stock; raw extracts take Time only.
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
 //! `csv` shows the files; `csv <name>` changes the stem.
@@ -648,7 +650,13 @@ mod day_should {
             assert_eq!(firm.production_line.len(), 1);
             let line = &firm.production_line[0];
             assert_eq!(line.process, process_id);
-            assert_eq!(line.inputs, vec![TIME]);
+            let required: Vec<usize> = session.factuals.processes[&process_id]
+                .inputs
+                .iter()
+                .filter(|input| !input.is_optional())
+                .map(|input| input.good)
+                .collect();
+            assert_eq!(line.inputs, required);
             let target = line.target.unwrap();
             let time_in = session.factuals.processes[&process_id]
                 .inputs
@@ -688,6 +696,21 @@ mod day_should {
                 assert!((row.stock_target - buffer).abs() < 1e-9);
                 assert!((row.sell_target - daily).abs() < 1e-9);
             }
+            let process = &session.factuals.processes[&process_id];
+            for input in process.requirements() {
+                if input.good == TIME {
+                    continue;
+                }
+                let daily_use = input.amount * target;
+                let row = firm.property.get(&input.good).expect("opening input stock");
+                assert!((row.use_target - daily_use).abs() < 1e-9);
+                assert!(
+                    (row.quantity - daily_use * simpler_economy::game::init::OPENING_INPUT_DAYS)
+                        .abs()
+                        < 1e-9
+                );
+                assert!((row.sell_target - 0.0).abs() < 1e-9);
+            }
             assert_eq!(firm.workforce.len(), 1);
             assert_eq!(firm.workforce[0].id, firm.id);
             assert!((firm.workforce[0].hours - target * time_in).abs() < 1e-9);
@@ -700,7 +723,8 @@ mod day_should {
         let grain = session.factuals.processes.get(&1).expect("make grain");
         assert_eq!(grain.name, "make grain");
         assert_eq!(grain.outputs[0].good, GRAIN);
-        assert!((grain.outputs[0].amount - 15.0).abs() < 1e-9);
+        assert_eq!(grain.inputs.len(), 1);
+        assert_eq!(grain.inputs[0].good, TIME);
         let time = session
             .factuals
             .processes
@@ -728,20 +752,35 @@ mod day_should {
     }
 
     #[test]
-    fn living_pops_have_no_opening_stock() {
+    fn living_pops_have_specialty_opening_stock() {
         let session = boot_session();
+        let n_goods = session.factuals.goods.len();
         for pop in &session.pops {
-            for (&id, row) in &pop.property {
-                if id == TIME {
-                    continue;
-                }
+            let good = produced_good_id(pop.id, n_goods);
+            if good == TIME {
                 assert!(
-                    row.quantity.abs() < 1e-9,
-                    "pop {} good {id} qty {}",
-                    pop.id,
-                    row.quantity
+                    pop.property
+                        .get(&TIME)
+                        .map(|row| row.quantity)
+                        .unwrap_or(0.0)
+                        .abs()
+                        < 1e-9
                 );
+                continue;
             }
+            let firm = session
+                .firms
+                .iter()
+                .find(|firm| firm.id == pop.id)
+                .expect("matching firm");
+            let process = &session.factuals.processes[&firm.production_line[0].process];
+            let daily = process.outputs[0].amount * firm.production_line[0].target.unwrap();
+            let qty = pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0);
+            assert!(
+                (qty - daily).abs() < 1e-9,
+                "pop {} good {good} qty {qty} daily {daily}",
+                pop.id
+            );
         }
     }
 

@@ -1150,7 +1150,7 @@ mod settle_labor_contracts_should {
     use crate::game::actor::Actor;
     use crate::game::factuals::Factuals;
     use crate::game::firm::{FirmPRow, ProductionLine};
-    use crate::game::good::TIME;
+    use crate::game::good::{Good, TIME};
     use crate::game::household::Household;
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
@@ -1575,8 +1575,23 @@ mod settle_labor_contracts_should {
         let mut history = MarketHistory::new();
         history.prices.insert(PLANK, 1.0);
         history.salability.insert(PLANK, 0.3);
+        let mut factuals = mill_factuals();
+        factuals.goods.insert(
+            PLANK,
+            Good {
+                id: PLANK,
+                name: "plank".into(),
+                class: None,
+                decay_rate: 0.0,
+                decay_result: HashMap::new(),
+                mass: 1.0,
+                volume: 1.0,
+                tags: Default::default(),
+                categories: vec![],
+            },
+        );
 
-        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &mill_factuals());
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
 
         let owner = report.owner.expect("remainder owner");
         assert_eq!(owner.paid.get(&PLANK).copied().unwrap_or(0.0), 7.0);

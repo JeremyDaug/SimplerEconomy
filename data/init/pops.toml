@@ -2,7 +2,8 @@
 # Goods may be names or ids. Optional starter and [[desires]] apply to every pop.
 # A pop's own property overrides starter. household defaults to 1.
 # Keep starter/pops above [[desires]] so they stay root keys.
-# No opening stock; boot record_keeping writes shop targets from desires.
+# Opening stock is one day of the matching firm's output (Time skipped).
+# Boot record_keeping writes shop targets from desires.
 # Two pops per world good (ids 1..=n and n+1..=2n). Specialty is id % n_goods.
 
 pops = [

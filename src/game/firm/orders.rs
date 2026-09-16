@@ -57,12 +57,10 @@ impl Firm {
     /// or above the exchange floor), even if not on-hand. Tied money
     /// salability prefers the lower id. Buy orders still name an on-hand
     /// exchange good.
-    /// 
-    /// TODO: Ideally, a firm should have counteroffer goods that it wants
-    /// to recieve for it's inputs. It should prioritize getting up to 1 day's 
-    /// worth of inputs for each produciton line, focusing on the most valuable
-    /// first. Once itt has 1 day for all of it's needs, it defaults to highest
-    /// salability good instead.
+    ///
+    /// Until every process input has a day's `use_target` on hand, output
+    /// (and other non-use stock) is moved from sell/liquidate into exchange
+    /// so it can pay for those inputs. After that, selling is unchanged.
     pub fn create_orders(
         &self,
         history: &MarketHistory,
@@ -76,6 +74,7 @@ impl Firm {
             }
         }
 
+        let splits = self.on_hand_splits(history, factuals);
         let mut plans: Vec<RowPlan> = Vec::new();
         let mut merchant_like = false;
 
@@ -91,8 +90,7 @@ impl Firm {
             let salability = history.salability(good);
             let market_amv = history.price(good);
             let mid = row.mid_amv(market_amv);
-            let sell_plan = self.posted_sell_qty(good, history, factuals);
-            let split = classify_on_hand(row, salability, &factuals.config.market, sell_plan);
+            let split = splits.get(&good).copied().unwrap_or_else(OnHandSplit::empty);
             let buy_qty = whole_units(if unavailable.contains(&good) {
                 0.0
             } else {
@@ -278,6 +276,28 @@ impl Firm {
 
         orders
     }
+
+    /// Per-good sell / exchange / liquidate after reserving output as
+    /// payment for a day's missing process inputs.
+    pub(super) fn on_hand_splits(
+        &self,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> HashMap<usize, OnHandSplit> {
+        let mut splits = HashMap::new();
+        for (&good, row) in &self.property {
+            if !factuals.find_good(good).is_buyable() {
+                continue;
+            }
+            let sell_plan = self.posted_sell_qty(good, history, factuals);
+            splits.insert(
+                good,
+                classify_on_hand(row, history.salability(good), &factuals.config.market, sell_plan),
+            );
+        }
+        divert_output_to_input_tender(&mut splits, self, history, factuals);
+        splits
+    }
 }
 
 /// Per-row shopping plan built by [`Firm::create_orders`].
@@ -295,14 +315,15 @@ struct RowPlan {
 }
 
 /// Split of free on-hand stock for [`classify_on_hand`].
+#[derive(Clone, Copy)]
 pub(super) struct OnHandSplit {
     pub(super) sell: f64,
-    exchange: f64,
+    pub(super) exchange: f64,
     pub(super) liquidate: f64,
 }
 
 impl OnHandSplit {
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             sell: 0.0,
             exchange: 0.0,
@@ -381,6 +402,81 @@ pub(super) fn classify_on_hand(
         }
     } else {
         OnHandSplit::empty()
+    }
+}
+
+/// AMV of process inputs still short of one day's `use_target`.
+fn input_day_shortfall_amv(
+    firm: &Firm,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> f64 {
+    let mut amv = 0.0;
+    for (&good, row) in &firm.property {
+        if row.use_target <= 0.0 {
+            continue;
+        }
+        if !factuals.find_good(good).is_buyable() {
+            continue;
+        }
+        let price = history.price(good);
+        if price <= 0.0 {
+            continue;
+        }
+        let short = (row.use_target - row.quantity.max(0.0)).max(0.0);
+        amv += short * price;
+    }
+    amv
+}
+
+/// Move sell/liquidate on non-use goods into exchange until a day's input
+/// shortfall is funded.
+fn divert_output_to_input_tender(
+    splits: &mut HashMap<usize, OnHandSplit>,
+    firm: &Firm,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) {
+    let mut need_amv = input_day_shortfall_amv(firm, history, factuals);
+    if need_amv <= 0.0 {
+        return;
+    }
+    let mut goods: Vec<usize> = splits
+        .keys()
+        .copied()
+        .filter(|&good| {
+            firm.property
+                .get(&good)
+                .is_some_and(|row| row.use_target <= 0.0)
+        })
+        .collect();
+    goods.sort_by(|a, b| {
+        history
+            .salability(*b)
+            .partial_cmp(&history.salability(*a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(b))
+    });
+    for good in goods {
+        if need_amv <= 0.0 {
+            break;
+        }
+        let price = history.price(good);
+        if price <= 0.0 {
+            continue;
+        }
+        let split = splits.get_mut(&good).expect("split");
+        let available = split.sell + split.liquidate;
+        if available <= 0.0 {
+            continue;
+        }
+        let take = available.min(whole_units_up(need_amv / price));
+        let from_sell = take.min(split.sell);
+        split.sell -= from_sell;
+        let from_liq = (take - from_sell).min(split.liquidate);
+        split.liquidate -= from_liq;
+        split.exchange += from_sell + from_liq;
+        need_amv -= (from_sell + from_liq) * price;
     }
 }
 

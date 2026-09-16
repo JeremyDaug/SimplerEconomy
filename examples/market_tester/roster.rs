@@ -27,7 +27,8 @@ pub(crate) const OPENING_SALABILITY: f64 = 0.1;
 pub(crate) const DAILY_ENDOWMENT: f64 = 0.0;
 /// Morning pop specialty grant. 0: firms produce the day's output.
 pub(crate) const DAILY_OUTPUT: f64 = 0.0;
-/// Time units the owner-operator works. 10 Time * 15 output = 150 units.
+/// Time units the unused specialty-firm helper works. Hours stay fixed;
+/// target is `FIRM_HOURS / Time input`.
 pub(crate) const FIRM_HOURS: f64 = 10.0;
 
 /// Bulk scale for unused firm helpers. Households, line targets, hours, and
@@ -259,7 +260,7 @@ pub(crate) fn process_id_for_output(factuals: &Factuals, output: usize) -> usize
 }
 
 /// One owner-operator firm for this pop's specialty. Remainder owner, no
-/// wage basket; they work `FIRM_HOURS` Time for the 1 Time -> 15 recipe.
+/// wage basket; they work `FIRM_HOURS` Time. Line inputs follow the recipe.
 #[allow(dead_code)]
 pub(crate) fn make_specialty_firm(pop_id: usize, factuals: &Factuals) -> Firm {
     let n_goods = factuals.goods.len();
@@ -299,8 +300,14 @@ pub(crate) fn make_specialty_firm(pop_id: usize, factuals: &Factuals) -> Firm {
             .with_workers(1.0, 1.0)
             .with_hours(FIRM_HOURS),
     );
+    let inputs: Vec<usize> = process
+        .inputs
+        .iter()
+        .filter(|input| !input.is_optional())
+        .map(|input| input.good)
+        .collect();
     firm.production_line
-        .push(dummy_line(process_id, target, vec![TIME]));
+        .push(dummy_line(process_id, target, inputs));
     let output_amt = process
         .outputs
         .first()

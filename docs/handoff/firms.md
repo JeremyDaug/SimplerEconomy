@@ -26,7 +26,7 @@ call it out, do not "fix" the live order unless asked.
 ## Invariants
 
 - `reserve` is a stockpile guarantee (`sync_reserve` = `min(quantity, reserve_target)`). Not pop `reserved`.
-- `stock_target` is decay-adjusted `operations_cover` days (default 5): shrink the hold when a full pile would lose more than one day's output to rot; overshoot when it would not. Remainder leftover uses that fence. Wages may raid it down to today's use or sell plan (`wage_fence`). Recap does not fill output stock. Init opening stock is `OPENING_COVER_DAYS` (3) decay-adjusted days of output, not the live fence, with `sell_target` equal to one day's output.
+- Output `stock_target` is decay-adjusted `operations_cover` days (default 5): shrink the hold when a full pile would lose more than one day's output to rot; overshoot when it would not. Remainder leftover uses that fence. Input `stock_target` is decay-adjusted `input_cover` days of use (default 4) and is **not** reduced by output on hand. Wages may raid it down to today's use or sell plan (`wage_fence`). Recap does not fill output stock. Init opening stock is `OPENING_COVER_DAYS` (3) decay-adjusted days of output, not the live fence, plus `OPENING_INPUT_DAYS` (4) of required non-Time inputs. Excess output above `output_cover` days (default 1) is added to `sell_target` and may post even when salability * daily output is smaller.
 - Cold / idle `target` 0 stays 0 until something actually sells. Do not treat a dead shop as a restart problem unless asked.
 - In-kind remainder/wage transfers record `placed` at market AMV. Sell success and realized profit credit `min(placed, stock_fence)` plus market `sold`. Dump above the fence is not a hit.
 - `sellable` = `quantity - max(reserve, reserve_target)`. `free_for_market` adds stock/use fences when `use_target` > 0.
@@ -55,7 +55,9 @@ do not invent a third model.
 
 A line starting from 0 snaps to at least 1 iteration. Missing inputs throttle
 the run (`last_missing_goods`). `plan` walks quota toward last iterations
-on a run miss (floor 1).
+on a run miss (floor 1), except a missing-input day or leftover buy demand
+for the output keeps aim and quota. An idle `target` 0 restarts at 1 when
+leftover buys exist for that output.
 
 ## Plan
 
@@ -73,12 +75,17 @@ on a run miss (floor 1).
    only on a blended hit. Raise quota is skipped when the line is underwater
    unless extra units are predicted to sell. Near-tied scores pick the step
    closer to a full clear. Stay / quote-only days lerp quota toward `aim`.
-   A run miss still walks quota toward last iterations. Shrink step matches
+   A run miss still walks quota toward last iterations unless the miss is
+   missing inputs or the output still has leftover buys (keep operating
+   scale). Shrink step matches
    growth (`shrink_rate` 0.10). Orbit live market AMV by ±`quote_orbit`.
-   Cold-start keeps the line. `target: None` stays None.
+   Cold-start keeps the line unless leftover buys exist for an output, in
+   which case an idle line snaps to 1 iteration. `target: None` stays None.
 3. **Rollup:** input use/stock/purchase/reserve, AMV bounds, merchant restock.
-   `stock_target` is `operations_cover` days of output, with remaining days
-   as input cover. Does not overwrite output sell/AMV from adjust. Merchant-only rows restock
+   Output `stock_target` is `operations_cover` days. Input cover is
+   `input_cover` days of use, not leftover after output. Excess output above
+   `output_cover` days is added to `sell_target`. Does not overwrite output
+   AMV from adjust. Merchant-only rows restock
    what sold and keep `amv_bound` None. Till / barter with no recipe role: leave
    alone.
 
@@ -98,15 +105,20 @@ counters ceil; bid/ask AMV stays fractional.
 On-hand `free_for_market` is sell / exchange / liquidate:
 
 - **Exchange** if salability >= `0.6`. High-sal leftover with no purchase/sell/use is till money, not a dump.
-- **Sell** if posted sell > 0. Posted sell is `min(sell_target, max market
-  salability * daily output)` for goods this firm makes; unconstrained
-  `sell_target` otherwise. Sell-success still uses `sell_target`.
+- **Sell** if posted sell > 0. Posted sell is `min(sell_target, max(max market
+  salability * daily output, excess above output_cover days))` for goods this
+  firm makes; unconstrained `sell_target` otherwise. Sell-success still uses
+  `sell_target`.
 - **Both:** lerp 90/10 sell/exchange at 0.6 to 10/90 at 1.0. Exchange rounds half-up; sell is the remainder, capped at posted sell (overflow stays exchange).
 - **Liquidate** if free stock, no purchase/sell/use, salability below 0.6. Always **offer**, never priced sells.
 
 Dual buy+sell: producers (`use_target` > 0) buy only the stock-target shortfall
 and sell only free excess. Merchants emit full `purchase_target` even above
 stock. A sell-plan good can still tender its **exchange** slice.
+
+Until every process input has a day's `use_target` on hand, output (and
+other non-use stock) is pulled from sell/liquidate into exchange so it can
+pay for that shortfall. After that, selling is unchanged.
 
 Budget is optimistic (last buy may overdraw). No spendable AMV -> no buys.
 Non-positive AMV is not spendable and not a legal counter. Production inputs

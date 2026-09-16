@@ -959,7 +959,21 @@ impl Firm {
         if made <= 0.0 {
             return sell;
         }
-        sell.min(history.max_salability() * made)
+        let velocity = history.max_salability() * made;
+        let decay = factuals
+            .goods
+            .get(&good)
+            .map(|g| g.decay_rate)
+            .unwrap_or(1.0);
+        let hold = made
+            * FirmPRow::operations_hold_days(factuals.config.firm.output_cover, decay);
+        let qty = self
+            .property
+            .get(&good)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        let excess = (qty - hold).max(0.0);
+        sell.min(velocity.max(excess))
     }
 
     /// AMV of on-hand goods above stock, growth, and posted sell, skipping Time.
@@ -2036,13 +2050,11 @@ fn firm_tenderable(
     // A sell-plan good with no proven money still needs that leftover as
     // payment. Morning sell qty plus a later reclassify can overdraw if
     // salability rose; freeze the morning split later if that bites.
-    let sell_plan = firm.posted_sell_qty(good, history, factuals);
-    let split = orders::classify_on_hand(
-        row,
-        history.salability(good),
-        &factuals.config.market,
-        sell_plan,
-    );
+    let split = firm
+        .on_hand_splits(history, factuals)
+        .get(&good)
+        .copied()
+        .unwrap_or_else(orders::OnHandSplit::empty);
     (row.free_for_market() - split.sell - split.liquidate).max(0.0)
 }
 
@@ -2105,6 +2117,7 @@ mod firm {
             friction: 0.0,
             unavailable_goods: HashSet::new(),
             market_days: 0,
+            leftover_buy: HashMap::new(),
         }
     }
 
@@ -3353,6 +3366,26 @@ mod firm {
         }
 
         #[test]
+        fn posts_full_sell_target_when_excess_beats_the_sal_cap() {
+            let process = Process::new(1, "mill", 0)
+                .with_input(ProcessInput::new(10, 1.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 15.0, true));
+            let mut factuals = make_factuals_with_process(process);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+            let mut firm = Firm::new(1, "mill".into(), 42, hexx::Hex::new(0, 0));
+            let mut line = empty_production_line(1);
+            line.target = Some(10.0);
+            firm.production_line.push(line);
+            firm.property.insert(
+                20,
+                FirmPRow::new().with_sell_target(150.0).with_quantity(400.0),
+            );
+            let history = history_sal(&[(20, 0.3)]);
+            assert!((firm.posted_sell_qty(20, &history, &factuals) - 150.0).abs() < 1e-12);
+        }
+
+        #[test]
         fn leaves_sell_target_when_the_firm_does_not_make_the_good() {
             let factuals = Factuals::new();
             let mut firm = Firm::new(1, "shop".into(), 42, hexx::Hex::new(0, 0));
@@ -3420,14 +3453,14 @@ mod firm {
             assert_eq!(firm.production_line[0].target, Some(4.0));
             let wood = &firm.property[&10];
             assert_eq!(wood.use_target, 8.0);
-            // 2.5 days of plank on hand (10/4); input days = 5 - 2.5.
-            assert_eq!(wood.stock_target, 20.0);
-            assert_eq!(wood.purchase_target, 10.0);
+            // 4 days of wood use (8/day); output on hand does not reduce it.
+            assert_eq!(wood.stock_target, 32.0);
+            assert_eq!(wood.purchase_target, 22.0);
             assert_eq!(wood.amv_bound, FirmAmvBound::Maximum(2.5));
             let plank = &firm.property[&20];
             assert_eq!(plank.use_target, 0.0);
             assert_eq!(plank.stock_target, 20.0);
-            assert_eq!(plank.sell_target, 4.0);
+            assert_eq!(plank.sell_target, 6.0);
             assert_eq!(plank.amv_bound, FirmAmvBound::Minimum(2.0));
             let coin = &firm.property[&5];
             assert_eq!(coin.purchase_target, 0.0);
@@ -3455,6 +3488,29 @@ mod firm {
         }
 
         #[test]
+        fn leftover_buys_are_not_a_sell_miss() {
+            let (factuals, mut history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 0.0, 4.0, 4.0);
+            firm.production_line[0].aim = 4.0;
+            firm.property.get_mut(&20).unwrap().amv_target = 5.0;
+            firm.property.get_mut(&20).unwrap().quantity = 0.0;
+            history.leftover_buy.insert(20, 10.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+        }
+
+        #[test]
+        fn idle_line_restarts_when_leftover_buys_exist() {
+            let (factuals, mut history) = miller_world();
+            let mut firm = miller_firm(0.0);
+            history.leftover_buy.insert(20, 5.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(1.0));
+            assert!(firm.production_line[0].aim >= 1.0);
+        }
+
+        #[test]
         fn quiet_mid_clear_keeps_the_line_target() {
             let (factuals, history) = miller_world();
             let mut firm = miller_firm(4.0);
@@ -3473,11 +3529,11 @@ mod firm {
             plank.amv_target = 5.0;
             firm.plan(&factuals, &history);
             assert_eq!(firm.production_line[0].target, Some(4.0));
-            assert_eq!(firm.property[&20].sell_target, 4.0);
+            assert_eq!(firm.property[&20].sell_target, 20.0);
         }
 
         #[test]
-        fn missing_inputs_walk_quota_toward_actual() {
+        fn missing_inputs_keep_quota_and_aim() {
             let (factuals, history) = miller_world();
             let mut firm = miller_firm(4.0);
             firm.production_line[0].aim = 4.0;
@@ -3487,8 +3543,10 @@ mod firm {
             firm.property.get_mut(&10).unwrap().quantity = 0.0;
             firm.plan(&factuals, &history);
             let got = firm.production_line[0].target.unwrap();
-            assert!((got - 3.6).abs() < 1e-12, "got {got}");
+            assert!((got - 4.0).abs() < 1e-12, "got {got}");
+            assert!((firm.production_line[0].aim - 4.0).abs() < 1e-12);
             assert_eq!(firm.property[&20].growth_target, 0.0);
+            assert_eq!(firm.property[&10].purchase_target, 32.0);
         }
 
         #[test]
@@ -3521,7 +3579,7 @@ mod firm {
             firm.plan(&factuals, &history);
             assert_eq!(firm.property[&20].stock_target, 300.0);
             assert_eq!(firm.property[&TIME].use_target, 4.0);
-            assert_eq!(firm.property[&TIME].stock_target, 20.0);
+            assert_eq!(firm.property[&TIME].stock_target, 16.0);
             assert_eq!(firm.property[&TIME].purchase_target, 0.0);
         }
 
@@ -3532,8 +3590,28 @@ mod firm {
             firm.property.get_mut(&20).unwrap().quantity = 0.0;
             firm.plan(&factuals, &history);
             assert_eq!(firm.property[&20].stock_target, 20.0);
-            assert_eq!(firm.property[&10].stock_target, 40.0);
-            assert_eq!(firm.property[&10].purchase_target, 30.0);
+            assert_eq!(firm.property[&10].stock_target, 32.0);
+            assert_eq!(firm.property[&10].purchase_target, 22.0);
+        }
+
+        #[test]
+        fn output_on_hand_does_not_cut_input_cover() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.property.get_mut(&20).unwrap().quantity = 40.0;
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.property[&10].stock_target, 32.0);
+            assert_eq!(firm.property[&10].purchase_target, 22.0);
+        }
+
+        #[test]
+        fn sell_target_dumps_excess_above_output_cover() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.property.get_mut(&20).unwrap().quantity = 20.0;
+            firm.plan(&factuals, &history);
+            // 4/day, 1 day hold, 16 excess; quota sell is 4.
+            assert_eq!(firm.property[&20].sell_target, 16.0);
         }
 
         #[test]
@@ -3852,6 +3930,7 @@ mod firm {
             mark_hit(&mut firm, 4.0, 4.0, 4.0);
             firm.production_line[0].aim = 4.0;
             firm.property.get_mut(&20).unwrap().amv_target = 5.0;
+            firm.property.get_mut(&20).unwrap().quantity = 0.0;
             firm.plan(&factuals, &history);
             assert_eq!(firm.production_line[0].target, Some(5.0));
             assert_eq!(firm.property[&20].sell_target, 5.0);
@@ -3865,6 +3944,7 @@ mod firm {
             mark_hit(&mut firm, 0.0, 4.0, 4.0);
             firm.production_line[0].aim = 4.0;
             firm.property.get_mut(&20).unwrap().amv_target = 5.0;
+            firm.property.get_mut(&20).unwrap().quantity = 0.0;
             firm.plan(&factuals, &history);
             assert_eq!(firm.production_line[0].target, Some(3.0));
             assert_eq!(firm.property[&20].sell_target, 3.0);
@@ -3989,21 +4069,83 @@ mod firm {
             let history = make_history(&[(10, 1.0, 0.4), (20, 2.0, 0.4)]);
             let orders = firm.create_orders(&history, &factuals, &HashSet::new());
 
+            // 2 AMV of wood still short of the day's use; 1 plank (price 2)
+            // stays exchange so the wood buy can pay.
             assert_eq!(orders.len(), 2);
             assert!(orders[0].is_sell_order());
             assert_eq!(orders[0].target, 20);
-            assert_eq!(orders[0].target_amount, -12.0);
+            assert_eq!(orders[0].target_amount, -11.0);
             assert_eq!(orders[0].counter_offer, Some(10));
             assert_eq!(
                 orders[0].priority,
-                compose_sell_priority(market_priority::FIRM_PRODUCER, 12.0, 0.0)
+                compose_sell_priority(market_priority::FIRM_PRODUCER, 11.0, 0.0)
             );
-            assert!(orders[1].is_request_order());
+            assert!(orders[1].is_buy_order());
             assert_eq!(orders[1].target, 10);
             assert_eq!(orders[1].target_amount, 6.0);
+            assert_eq!(orders[1].counter_offer, Some(20));
             assert_eq!(orders[1].priority, market_priority::FIRM_PRODUCER);
             assert_eq!(firm.property[&10].quantity, 4.0);
             assert_eq!(firm.property[&20].quantity, 12.0);
+        }
+
+        #[test]
+        fn holds_output_as_tender_until_a_day_of_input() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(0.0)
+                    .with_purchase_target(8.0)
+                    .with_use_target(8.0)
+                    .with_stock_target(8.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(12.0)
+                    .with_sell_target(12.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.1), (20, 1.0, 0.1)]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let outgoing = orders_for(&orders, 20);
+            assert_eq!(outgoing.len(), 1);
+            assert_eq!(outgoing[0].target_amount, -4.0);
+            let buy = orders.iter().find(|order| order.target == 10).expect("wood buy");
+            assert_eq!(buy.target_amount, 8.0);
+            assert_eq!(buy.counter_offer, Some(20));
+        }
+
+        #[test]
+        fn sells_output_once_a_day_of_input_is_on_hand() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(8.0)
+                    .with_purchase_target(0.0)
+                    .with_use_target(8.0)
+                    .with_stock_target(8.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(12.0)
+                    .with_sell_target(12.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.1), (20, 1.0, 0.1)]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let outgoing = orders_for(&orders, 20);
+            assert_eq!(outgoing.len(), 1);
+            assert_eq!(outgoing[0].target_amount, -12.0);
         }
 
         #[test]

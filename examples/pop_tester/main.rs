@@ -652,18 +652,31 @@ mod day_should {
     }
 
     #[test]
-    fn living_pops_have_no_opening_stock() {
+    fn living_pops_have_specialty_opening_stock() {
         let session = boot_session();
         for pop in &session.pops {
-            for (&id, row) in &pop.property {
-                if id == TIME {
+            let grants = session
+                .morning_outputs
+                .get(&pop.id)
+                .cloned()
+                .unwrap_or_default();
+            for (good, cap) in grants {
+                if good == TIME {
+                    assert!(
+                        pop.property
+                            .get(&TIME)
+                            .map(|row| row.quantity)
+                            .unwrap_or(0.0)
+                            .abs()
+                            < 1e-9
+                    );
                     continue;
                 }
+                let qty = pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0);
                 assert!(
-                    row.quantity.abs() < 1e-9,
-                    "pop {} good {id} qty {}",
-                    pop.id,
-                    row.quantity
+                    (qty - cap).abs() < 1e-9,
+                    "pop {} good {good} qty {qty} cap {cap}",
+                    pop.id
                 );
             }
         }

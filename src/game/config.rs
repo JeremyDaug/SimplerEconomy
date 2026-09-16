@@ -359,14 +359,14 @@ pub mod firm_constants {
     /// Shrink a miss by this fraction of its target. Matches growth so a cut
     /// is not a bigger step than a raise.
     pub const SHRINK_RATE: f64 = 0.10;
-    /// Input `stock_target` in days of `use_target` (2.0 = two days of inputs).
-    /// Unused by `Firm::plan` after operations cover; kept for old world toml.
-    pub const INPUT_COVER: f64 = 2.0;
-    /// Output leftover baseline in days of expected production.
-    /// Unused by `Firm::plan` after operations cover; kept for old world toml.
-    pub const OUTPUT_COVER: f64 = 0.5;
-    /// Days of operations to retain (`stock_target` / remainder fence).
-    /// Outputs and inputs share this budget; output on hand reduces input days.
+    /// Input `stock_target` in days of expected use. Buy until this floor is
+    /// met. Independent of output on hand.
+    pub const INPUT_COVER: f64 = 4.0;
+    /// Output units kept as a sell-hold, in days of expected production.
+    /// Excess above this is posted for sale even when salability is low.
+    pub const OUTPUT_COVER: f64 = 1.0;
+    /// Days of output to retain as the remainder fence (`stock_target`).
+    /// Inputs no longer share this budget.
     pub const OPERATIONS_COVER: f64 = 5.0;
     /// Input `reserve_target` in days of `use_target` when supply is reliable.
     pub const RESERVE_COVER: f64 = 0.5;
@@ -1278,14 +1278,13 @@ pub struct FirmConfig {
     /// Shrink a miss by this fraction of its target. Default 0.10.
     /// Bound 0..=1.
     pub shrink_rate: f64,
-    /// Input stock target in days of use. Default 2.0. Must be >= 0.
-    /// Unused by `Firm::plan`; `operations_cover` is the fence.
+    /// Input stock target in days of use. Default 4.0. Must be >= 0.
+    /// Buy until this floor is met; output on hand does not reduce it.
     pub input_cover: f64,
-    /// Output units kept on hand, in days of expected production. Default 0.5.
-    /// Must be >= 0. Unused by `Firm::plan`; `operations_cover` is the fence.
+    /// Output hold in days of expected production. Default 1.0. Must be >= 0.
+    /// Excess above this is posted for sale.
     pub output_cover: f64,
-    /// Days of operations to retain as `stock_target`. Default 5.0. Must be >= 0.
-    /// Output on hand counts as days already converted and reduces input cover.
+    /// Days of output to retain as the remainder fence. Default 5.0. Must be >= 0.
     pub operations_cover: f64,
     /// Reliable-supply reserve in days of use. Default 0.5. Must be >= 0.
     pub reserve_cover: f64,

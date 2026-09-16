@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-15
+**Updated:** 2026-09-16
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -22,12 +22,15 @@ invariants and traps, not a substitute for the code.
   scales with durability (decay 1.0 => no save). Consume always eats
   common on-hand; luxury is skipped unless basic is complete.
   `run_market_day` parks hopeless front-group buys then keeps matching
-  later bands. Pop buy priority is wealth rank sliced by consume tier
-  (basic, then common, then luxury). Then waves `next_shopping_trip` (skip
+  later bands. Firm buys always match before pop buys. Until a day's
+  process inputs are on hand, firm output is held as exchange (payment)
+  instead of posted sell. Pop buy priority is
+  wealth rank sliced by consume tier (basic, then common, then luxury). Then waves `next_shopping_trip` (skip
   parked/unavailable goods and try the next target or tier; stop buying if
   the shop is only unavailable) until trips emit nothing, then tombstones. Listed offer units and
   `reserved` are not tenderable. World goods use per-good `decay_rate` in
-  `goods.toml`.
+  `goods.toml` (Time 1.0; other rates pulled back so a few days of stock
+  survive; food still rots faster than metal).
   Luxury leftover shop is capped at one extra luxury level of the cheapest
   luxury good. After decay, salability is capped at `2 * (1 - decayed/volume)`.
   AMV drifts on accept (more salable goods move less) and a ±1 kick toward
@@ -52,14 +55,20 @@ invariants and traps, not a substitute for the code.
   (0.10). Stay / quote-only days lerp quota toward aim. Quotes orbit live
   market AMV by ±`quote_orbit` (default 10%). Recipe `amv_bound` is a cost
   floor, not the quote. Firm keep uses the quote as bid/ask.
-  `stock_target` is decay-adjusted `operations_cover` days of `aim` (shrink
-  hold when rot would eat more than one day's output; overshoot otherwise).
-  Remainder leftover uses that fence; wages may raid it down to today's
-  use/sell plan. Init opening stock is `OPENING_COVER_DAYS` (3) decay-adjusted
-  days of output, not the live five-day fence. Recap does not fill output stock.
+  Output `stock_target` is decay-adjusted `operations_cover` days of `aim`
+  (remainder fence). Input `stock_target` is decay-adjusted `input_cover`
+  days of use and is not reduced by output on hand. Excess output above
+  `output_cover` days is posted for sale even when salability * daily is
+  smaller. Remainder leftover uses the output fence; wages may raid it down
+  to today's use/sell plan. Init opening stock is `OPENING_COVER_DAYS` (3)
+  decay-adjusted days of output, not the live five-day fence, plus
+  `OPENING_INPUT_DAYS` (4) of required non-Time inputs. Recap does not fill
+  output stock.
   In-kind remainder/wage transfers record `placed` at market AMV; sell
   success credits `min(placed, stock_fence)` plus sold. A run miss walks
-  quota toward last iterations. `growth_target` is the expansion gap on a
+  quota toward last iterations unless the miss is missing inputs or leftover
+  buys still want the output (keep operating scale). Idle `target` 0
+  restarts at 1 when leftover buys exist. `growth_target` is the expansion gap on a
   grow, else 0.
 - Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
   at `Pop::start_day`. Live intramarket friction is 1 (`TRANSACTION_COST + bulk`).
@@ -78,18 +87,24 @@ invariants and traps, not a substitute for the code.
   rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`. Processes are
-  1 Time → 15 of each good (Time is process 28).
+  one recipe per good (Time is process 28). Raw extracts (grain, water, gold,
+  wood, iron, copper, tin, bronze, coal, clay) and the Time dummy take Time
+  only. Crafted recipes take Time plus at least one destroyed material.
+  Outputs are a few units; Time input is usually below 1.0.
 - Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
   (two household pops and two remainder-owner firms per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
   Grouped consume desires (basic food/hydration/heating, common housing
   plus utility/food/materials/health, luxury) are 1 unit per member
   (5 units), duplicated onto every pop. **No** opening 1-of-each kit
-  (init starter empty; `DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
+  (init starter empty; `DAILY_ENDOWMENT` 0). Pops open with one day of the
+  matching firm's output (Time skipped). Each morning: `start_day` Time, then specialty
   grant is 0 (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pops 28 and 56
   are Time and cannot sell it). Each firm is that pop's remainder
-  owner-operator: 10 Time (cabins 1), no wage basket, 1 Time → 15 line
-  (150 output, cabins 15). Opening stock is three decay-adjusted days of
-  process output. Posted firm sells cap at max market salability times
+  owner-operator: hours = target * Time input (target 8; grain/wood 16,
+  water 20, cabins 2), no wage basket. Crafted lines list material inputs;
+  raw extracts list Time only. Opening stock is three decay-adjusted days of
+  process output plus four days of required non-Time inputs (`use_target` =
+  one day's recipe use). Posted firm sells cap at max market salability times
   daily output; remainder leftover is extra above that. Remainder owners
   cover an AMV shortfall on a loss. Coin is `gold_token`; iron ore is `iron`.
   `keep_alive on` is an emergency firm subsidy (1-iteration floor +
@@ -105,6 +120,13 @@ invariants and traps, not a substitute for the code.
   **Checkpoint:** with mean 100 and ±1 imbalance kick, a 180-day pop_tester
   run held AMVs off the bounce (gold ~12, tools ~300). Do not retune leftover
   AMV or re-add the 1-of-each grant unless asked.
+  60-day `market_tester` after input recipes: extractors live, one-line
+  processors starve on input deals (keep / no tender). Decay pullback and
+  leftover-buy plan keep `want` up; they do not clear grain into bakeries.
+
+**Next (named, not started):** diversify barter firms (single-process
+remainder shops are too risky in a thin market). Slow salability movement
+so it lags. Do not add subsistence plots or firm-pop contracts unless asked.
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
@@ -115,8 +137,9 @@ produce, then consume, then plan. Call it out; do not silently "fix" either side
 (`quantity` rots, then `held` joins `quantity`) -> salability rot cap ->
 pop `record_keeping` -> firm `record_keeping` (`plan`) ->
 `Market::budget_labor`.
-With goods decaying 1.0, planning **after** decay is required; otherwise
-shop_targets fence stock that will not exist next morning and nobody offers.
+`held` skips tonight's rot and joins `quantity` after on-hand decay, so
+today's output is on the next market day. Planning **after** decay is still
+required so shop_targets do not fence stock that will rot overnight.
 
 ---
 
@@ -168,8 +191,9 @@ init/save data; class demographics; capital amortization; AMV as a matching
 weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": wire PlayState `phase_intra_market_day` to
-`run_market_day`. Hiring/creation is skipped on purpose.
+If they ask "what's next": diversify barter firms, then slow salability
+movement. PlayState `phase_intra_market_day` is still unwired. Hiring/creation
+is skipped on purpose.
 
 ---
 

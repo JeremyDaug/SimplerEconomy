@@ -108,8 +108,12 @@ impl Firm {
     /// 2. [`Self::apply_plan_adjustments`]: walk one step on quote or quota
     ///    (or stay) by predicted profit. Quiet days lerp quota toward `aim`.
     ///    A line at 0 that is starting snaps to at least 1 iteration.
+    ///    Missing inputs keep aim and quota (a supply miss is not a scale miss).
+    ///    Leftover buys for an output are remaining demand: not a sell miss,
+    ///    and an idle line restarts at 1 iteration.
     /// 3. [`Self::rewrite_property_targets`]: input use/stock/purchase/reserve,
-    ///    AMV bounds, merchant restock.
+    ///    AMV bounds, merchant restock. Input cover is a floor; excess output
+    ///    above `output_cover` days is added to `sell_target`.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
         let cfg = factuals.config.firm;
         let info = self.gather_plan_info(factuals, history);
@@ -198,6 +202,20 @@ impl Firm {
             }
         }
 
+        for facts in &info.lines {
+            if facts.target != Some(0.0) {
+                continue;
+            }
+            if !line_has_leftover_demand(facts, &info.goods) {
+                continue;
+            }
+            desired_line[facts.index] = Some(1.0);
+            let line = &mut self.production_line[facts.index];
+            if line.aim <= 0.0 {
+                line.aim = 1.0;
+            }
+        }
+
         for good in info.goods.values() {
             if good.maker_lines.is_empty() {
                 continue;
@@ -238,7 +256,9 @@ impl Firm {
                 continue;
             }
             if facts.cold {
-                desired_line[facts.index] = facts.target;
+                if !line_has_leftover_demand(facts, &info.goods) {
+                    desired_line[facts.index] = facts.target;
+                }
                 continue;
             }
             if desired_line[facts.index].is_some() {
@@ -330,11 +350,12 @@ impl Firm {
     /// `reserve_target`, `amv_bound`, `amv_target`, and `margin` on property
     /// rows from current production-line targets and today's bought / sold.
     ///
-    /// `stock_target` is decay-adjusted [`FirmConfig::operations_cover`] days
-    /// of operations (shrink the hold when rot would eat more than one day's
-    /// output; overshoot when it would not). Output on hand counts as days
-    /// already converted and reduces input days. Wages may raid this buffer;
-    /// remainder still respects it.
+    /// Output `stock_target` is decay-adjusted [`FirmConfig::operations_cover`]
+    /// days (remainder fence). Input `stock_target` is decay-adjusted
+    /// [`FirmConfig::input_cover`] days of use and is not reduced by output
+    /// on hand. Excess output above [`FirmConfig::output_cover`] days is
+    /// added to `sell_target`. Wages may raid the buffer; remainder still
+    /// respects output `stock_target`.
     fn rewrite_property_targets(
         &mut self,
         factuals: &Factuals,
@@ -347,7 +368,6 @@ impl Firm {
             recipe_flows_at(&self.production_line, factuals, line_operation_iters);
         let bounds = recipe_bounds(&self.production_line, factuals, history);
         let cover = cfg.operations_cover;
-        let output_days = operation_output_days(&self.property, &make_ops);
 
         let mut goods: HashSet<usize> = self.property.keys().copied().collect();
         goods.extend(use_qty.keys().copied());
@@ -411,13 +431,14 @@ impl Firm {
                 .get(&good_id)
                 .map(|g| g.decay_rate)
                 .unwrap_or(1.0);
-            let hold_days = FirmPRow::operations_hold_days(cover, decay);
+            let output_hold_days = FirmPRow::operations_hold_days(cover, decay);
+            let input_hold_days = FirmPRow::operations_hold_days(cfg.input_cover, decay);
+            let dump_hold_days = FirmPRow::operations_hold_days(cfg.output_cover, decay);
             if made_ops > 0.0 {
-                row.stock_target = made_ops * hold_days;
+                row.stock_target = made_ops * output_hold_days;
             }
             if used > 0.0 || used_ops > 0.0 {
-                let input_days = (hold_days - output_days).max(0.0);
-                let input_stock = used_ops * input_days;
+                let input_stock = used_ops * input_hold_days;
                 row.stock_target = if made_ops > 0.0 {
                     row.stock_target.max(input_stock)
                 } else {
@@ -442,6 +463,11 @@ impl Firm {
                 row.purchase_target = 0.0;
             } else {
                 row.purchase_target = 0.0;
+            }
+
+            if made_ops > 0.0 && used_ops <= 0.0 {
+                let excess = (qty - made_ops * dump_hold_days).max(0.0);
+                row.sell_target = row.sell_target.max(excess);
             }
 
             if made <= 0.0 && used > 0.0 {
@@ -535,6 +561,7 @@ struct GoodFacts {
     sell_rejects_avg: f64,
     sell_no_proposal_avg: f64,
     average_cost: f64,
+    leftover_buy: f64,
     maker_lines: Vec<usize>,
 }
 
@@ -584,6 +611,7 @@ fn good_facts_from_row(
         sell_rejects_avg: row.map(|r| r.sell_rejects_avg).unwrap_or(0.0),
         sell_no_proposal_avg: row.map(|r| r.sell_no_proposal_avg).unwrap_or(0.0),
         average_cost: row.map(|r| r.average_cost.max(0.0)).unwrap_or(0.0),
+        leftover_buy: history.leftover_buy(good),
         maker_lines: Vec::new(),
     }
 }
@@ -663,7 +691,9 @@ fn plan_walk(good: &GoodFacts, lines: &[LineFacts], cfg: &FirmConfig) -> WalkCho
         current_qty.max(good.produced).max(sold)
     };
     let strong = plan > 0.0 && sold / plan >= cfg.sell_success_grow;
-    let miss = plan > 0.0 && sold / plan < cfg.sell_success_shrink;
+    let miss = good.leftover_buy <= 0.0
+        && plan > 0.0
+        && sold / plan < cfg.sell_success_shrink;
     let underwater = plan > 0.0 && sold * quote + 1e-12 < current_qty.max(plan) * cost;
 
     let raise_q = clamp_quote_orbit(quote * (1.0 + plan_step(cfg.growth_rate)), market, band);
@@ -930,9 +960,12 @@ fn line_run_miss(facts: &LineFacts) -> bool {
     if target <= 0.0 {
         return false;
     }
-    facts.missing_inputs
-        || facts.last_iterations + 1e-9 < target * (1.0 - firm_constants::TURNOVER_BAND)
-            && facts.last_iterations + 1e-9 < target
+    // A missing-input day is a supply miss, not a scale miss.
+    if facts.missing_inputs {
+        return false;
+    }
+    facts.last_iterations + 1e-9 < target * (1.0 - firm_constants::TURNOVER_BAND)
+        && facts.last_iterations + 1e-9 < target
 }
 
 fn step_toward_actual(current: f64, actual: f64, rate: f64) -> f64 {
@@ -952,7 +985,21 @@ fn line_sell_measured(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>) -> b
     })
 }
 
+fn line_has_leftover_demand(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>) -> bool {
+    facts.outputs.iter().any(|(good, amount)| {
+        *amount > 0.0
+            && *good != crate::game::good::TIME
+            && goods.get(good).is_some_and(|g| g.leftover_buy > 0.0)
+    })
+}
+
 fn line_sell_miss(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>, cfg: &FirmConfig) -> bool {
+    if facts.missing_inputs {
+        return false;
+    }
+    if line_has_leftover_demand(facts, goods) {
+        return false;
+    }
     line_sell_measured(facts, goods)
         && facts.outputs.iter().any(|(good, _)| {
             goods.get(good).is_some_and(|g| {
@@ -970,6 +1017,12 @@ fn line_sell_miss(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>, cfg: &Fi
 /// otherwise last completed iterations (quiet / strong keep operating scale).
 fn line_aim_evidence(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>, miss: bool) -> f64 {
     let actual = facts.last_iterations.max(0.0);
+    if facts.missing_inputs {
+        return facts.target.unwrap_or(0.0).max(actual);
+    }
+    if line_has_leftover_demand(facts, goods) {
+        return facts.target.unwrap_or(0.0).max(actual);
+    }
     if !miss {
         return actual;
     }
@@ -1245,30 +1298,6 @@ fn is_cost_input(input: &ProcessInput) -> bool {
         input.input_type,
         InputType::Destroyed | InputType::Consumed
     )
-}
-
-/// Days of expected output already on hand: min over made goods of
-/// `quantity / daily make`. 0 when the firm makes nothing.
-fn operation_output_days(
-    property: &HashMap<usize, FirmPRow>,
-    make_qty: &HashMap<usize, f64>,
-) -> f64 {
-    let mut days: Option<f64> = None;
-    for (&good, &made) in make_qty {
-        if made <= 0.0 {
-            continue;
-        }
-        let qty = property
-            .get(&good)
-            .map(|row| row.quantity.max(0.0))
-            .unwrap_or(0.0);
-        let d = qty / made;
-        days = Some(match days {
-            None => d,
-            Some(prev) => prev.min(d),
-        });
-    }
-    days.unwrap_or(0.0)
 }
 
 /// Returns `(use_qty, make_qty)`: per-good input units and output units for
