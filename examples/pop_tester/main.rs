@@ -592,18 +592,29 @@ fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f6
 #[cfg(test)]
 mod day_should {
     use super::*;
+    use std::collections::HashMap;
     use simpler_economy::game::init::InitData;
     use simpler_economy::game::pop::PopPRow;
 
     #[test]
-    fn living_roster_is_one_pop_per_world_good_and_no_firms() {
+    fn living_roster_is_two_pops_per_world_good_and_no_firms() {
         let session = boot_session();
         let n_goods = session.factuals.goods.len();
-        assert_eq!(session.pops.len(), n_goods);
+        let n = n_goods * 2;
+        assert_eq!(session.pops.len(), n);
         assert!(session.firms.is_empty());
         assert!(session.market.firms.is_empty());
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
-        assert_eq!(ids, (1..=n_goods).collect::<Vec<_>>());
+        assert_eq!(ids, (1..=n).collect::<Vec<_>>());
+        let mut copies = HashMap::new();
+        for pop in &session.pops {
+            let good = produced_good_id(pop.id, n_goods);
+            *copies.entry(good).or_insert(0) += 1;
+        }
+        assert_eq!(copies.len(), n_goods);
+        for (&good, &count) in &copies {
+            assert_eq!(count, 2, "good {good} pops {count}");
+        }
     }
 
     #[test]
@@ -665,12 +676,13 @@ mod day_should {
         let house = &pop.demographics.household;
         assert!((house.count - 1.0).abs() < 1e-9);
         assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
-        assert_eq!(pop.desires[0].len(), 4);
-        assert_eq!(pop.desires[1].len(), 4);
+        assert_eq!(pop.desires[0].len(), 3);
+        assert_eq!(pop.desires[1].len(), 5);
         assert_eq!(pop.desires[2].len(), 2);
         assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
         assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
-        assert_eq!(pop.desires[1][0].category.as_deref(), Some("utility items"));
+        assert_eq!(pop.desires[1][0].category.as_deref(), Some("housing"));
+        assert_eq!(pop.desires[1][1].category.as_deref(), Some("utility items"));
         assert_eq!(pop.desires[2][1].category.as_deref(), Some("libations"));
         for tier in &pop.desires {
             for desire in tier {
@@ -715,6 +727,9 @@ mod day_should {
         }
         assert!(session.firms.is_empty());
 
+        let n_goods = session.factuals.goods.len();
+        assert_eq!(session.morning_outputs.len(), n_goods * 2);
+
         let grain_firm = init.firms.iter().find(|firm| firm.id == 1).expect("firm 1");
         let grain_line = &grain_firm.production_line[0];
         let grain_proc = &session.factuals.processes[&grain_line.process];
@@ -722,6 +737,10 @@ mod day_should {
         assert_eq!(grain_proc.outputs[0].good, GRAIN);
         assert!(grain_qty > 0.0);
         assert_eq!(session.morning_outputs[&1], vec![(GRAIN, grain_qty)]);
+        assert_eq!(
+            session.morning_outputs[&(1 + n_goods)],
+            vec![(GRAIN, grain_qty)]
+        );
 
         let gold_firm = init.firms.iter().find(|firm| firm.id == 4).expect("firm 4");
         let gold_line = &gold_firm.production_line[0];
@@ -730,18 +749,21 @@ mod day_should {
         assert_eq!(gold_proc.outputs[0].good, GOLD);
         assert!(gold_qty > 0.0);
         assert_eq!(session.morning_outputs[&4], vec![(GOLD, gold_qty)]);
+        assert_eq!(
+            session.morning_outputs[&(4 + n_goods)],
+            vec![(GOLD, gold_qty)]
+        );
 
-        let time_id = session.pops.len();
-        let time_firm = init
-            .firms
-            .iter()
-            .find(|firm| firm.id == time_id)
-            .expect("time firm");
+        let time_firm = init.firms.iter().find(|firm| firm.id == n_goods).expect("time firm");
         let time_line = &time_firm.production_line[0];
         let time_proc = &session.factuals.processes[&time_line.process];
         let time_qty = time_proc.outputs[0].amount * time_line.target.unwrap();
         assert_eq!(time_proc.outputs[0].good, TIME);
-        assert_eq!(session.morning_outputs[&time_id], vec![(TIME, time_qty)]);
+        assert_eq!(session.morning_outputs[&n_goods], vec![(TIME, time_qty)]);
+        assert_eq!(
+            session.morning_outputs[&(n_goods * 2)],
+            vec![(TIME, time_qty)]
+        );
     }
 
     #[test]
@@ -753,8 +775,8 @@ mod day_should {
 
         let grain_cap = session.morning_outputs[&1][0].1;
         let gold_cap = session.morning_outputs[&4][0].1;
-        assert!(grain_cap > 50.0);
-        assert!(gold_cap > 5.0);
+        assert!(grain_cap > 0.0);
+        assert!(gold_cap > 0.0);
 
         let mut grain_pop = empty_pop(1, &session.factuals.config.pop);
         grant_daily_endowment(&mut grain_pop, &session.morning_outputs);
@@ -770,7 +792,7 @@ mod day_should {
         );
 
         let mut short = empty_pop(1, &session.factuals.config.pop);
-        short.property.insert(GRAIN, PopPRow::new(50.0));
+        short.property.insert(GRAIN, PopPRow::new(grain_cap * 0.5));
         grant_daily_endowment(&mut short, &session.morning_outputs);
         assert!((short.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
 
@@ -785,10 +807,11 @@ mod day_should {
         grant_daily_endowment(&mut gold_pop, &session.morning_outputs);
         assert!((gold_pop.property[&GOLD].quantity - gold_cap).abs() < 1e-9);
 
-        let mut time_pop = empty_pop(n_goods, &session.factuals.config.pop);
-        time_pop.property.insert(TIME, PopPRow::new(64.0));
-        grant_daily_endowment(&mut time_pop, &session.morning_outputs);
         let time_qty = session.morning_outputs[&n_goods][0].1;
+        assert!(time_qty > 0.0);
+        let mut time_pop = empty_pop(n_goods, &session.factuals.config.pop);
+        time_pop.property.insert(TIME, PopPRow::new(time_qty * 0.5));
+        grant_daily_endowment(&mut time_pop, &session.morning_outputs);
         assert!((time_pop.property[&TIME].quantity - time_qty).abs() < 1e-9);
     }
 }

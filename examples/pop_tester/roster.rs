@@ -53,7 +53,7 @@ pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, sala
     history.salability.insert(good, salability);
 }
 
-/// Specialty good this pop's matching firm makes. Pop 28 wraps onto Time (0).
+/// Specialty good this pop's matching firm makes. Pop 28 and 56 wrap onto Time (0).
 pub(crate) fn produced_good_id(pop_id: usize, n_goods: usize) -> usize {
     debug_assert!(n_goods > 0, "world catalog must not be empty");
     pop_id % n_goods

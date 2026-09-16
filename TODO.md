@@ -130,6 +130,7 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
 - [ ] Firm
   - [x] Planning (v0 `Firm::plan` with records + confidence; tester `day` and PlayState record-keeping)
   - [ ] AMV quotes as own strategy beyond the current nudge; price vs volume on undersell; firm strategy later
+  - [ ] Tighten household-need keep: owner/workforce consume-shortfall currently skips the salability haircut in full. Later: scale that skip with market salability (max or mean of needed goods), score only the shortfall amount at full AMV, and/or shrink the snapshot by decay so firms do not vacuum rotting food as payment.
   - [ ] Management Logic
   - [ ] Internal Organization and structure
 - [ ] The Graphics

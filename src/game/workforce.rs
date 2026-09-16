@@ -263,6 +263,7 @@ impl Workforce {
             }
             firm.debit_good(term.good, give);
             let unit = history.price(term.good);
+            firm.record_placed(term.good, give, unit);
             pop.credit_good(term.good, give, unit);
             *paid.entry(term.good).or_insert(0.0) += give;
             paid_amv += give * unit;
@@ -415,18 +416,23 @@ impl LaborSettlement {
     /// or post market orders.
     ///
     /// 1. Remainder owner on a loss (yesterday profit AMV <= 0) covers the
-    ///    AMV shortfall between needs (recipe inputs, wage basket, stock
-    ///    fence) and on-hand goods. Goods come from the owner's unreserved
+    ///    AMV shortfall between needs (recipe inputs, wage basket, **input**
+    ///    stock fence) and on-hand goods. Output `stock_target` is retain-only
+    ///    and is not recapped. Goods come from the owner's unreserved
     ///    stock, whole units, skipping Time: missing inputs, missing wage
     ///    goods, production outputs, then exchange goods. Contributed inputs
     ///    and outputs are fenced so leftover remainder cannot take them back
     ///    the same morning; wage and exchange goods stay spendable.
     /// 2. For each living workforce pop, cap hours by on-hand Time and
     ///    `work_time_fraction`, pay the wage basket (scaling terms first, then
-    ///    flat; whole units) from stock above the stock fence, and move Time
-    ///    to the firm in proportion to AMV paid / AMV promised.
-    /// 3. Stock fence is `max(stock_target, reserve_target)` and is never spent.
-    ///    Wages may raid `growth_target`. Profit shares cannot.
+    ///    flat; whole units) from stock above the wage floor. Hired workers
+    ///    move Time in proportion to AMV paid / AMV promised. A remainder
+    ///    owner on the roster always gives claimed hours (owner-operator
+    ///    contract), even if unpaid. After wages, a remainder owner tops up
+    ///    any remaining recipe Time shortfall from their own Time.
+    /// 3. Remainder stock fence is `max(stock_target, reserve_target)`.
+    ///    Wages may raid the operations buffer down to today's use or sell
+    ///    plan (plus reserve) and may raid `growth_target`. Profit shares cannot.
     /// 4. After wages, pay worker profit shares of yesterday's
     ///    `sold_amv - sold_cost_amv` from goods above stock, growth, and
     ///    posted sell, highest salability first, skipping Time.
@@ -436,7 +442,8 @@ impl LaborSettlement {
     ///    * daily output)` for goods this firm makes. Leftover till is extra
     ///    above that, paid high-salability first.
     ///
-    /// Partial pay withholds Time linearly in AMV. Missing pops are skipped.
+    /// Hired-worker partial pay withholds Time linearly in AMV. Remainder
+    /// owner-operators always give hours. Missing pops are skipped.
     pub fn settle(
         firm: &mut Firm,
         pops: &mut HashMap<usize, Pop>,
@@ -487,7 +494,9 @@ impl LaborSettlement {
                 row_report.promised_amv = promised_amv;
                 row_report.paid_amv = paid_amv;
                 row_report.paid = paid;
-                let fill = if promised_amv <= 0.0 {
+                let owner_hours_due = firm.owners.remainder
+                    && firm.owners.pop_id() == Some(pop_id);
+                let fill = if owner_hours_due || promised_amv <= 0.0 {
                     1.0
                 } else {
                     (paid_amv / promised_amv).clamp(0.0, 1.0)
@@ -498,6 +507,18 @@ impl LaborSettlement {
             }
 
             report.workers.push(row_report);
+        }
+
+        if firm.owners.remainder {
+            if let Some(owner_id) = firm.owners.pop_id() {
+                if let Some(pop) = pops.get_mut(&owner_id) {
+                    let given = firm.cover_remainder_time(pop, factuals);
+                    if given > 0.0 {
+                        recap_paid_amv += given * history.price(TIME).max(0.0);
+                        *recap.entry(TIME).or_insert(0.0) += given;
+                    }
+                }
+            }
         }
 
         if profit_amv > 0.0 {
@@ -772,6 +793,11 @@ impl Firm {
             if good == TIME {
                 continue;
             }
+            // Output operations buffer is retain-only. Recap fills input
+            // stock and today's recipe/wages, not five days of finished goods.
+            if row.use_target <= 0.0 {
+                continue;
+            }
             let fence = row.stock_fence();
             if fence > 0.0 {
                 let entry = need.entry(good).or_insert(0.0);
@@ -914,6 +940,27 @@ impl Firm {
             remaining -= got;
         }
         (want, paid_amv, paid)
+    }
+
+    /// Remainder owner tops up recipe Time the firm is still short after
+    /// wages. Unit transfer, not AMV. 0 when the owner has no Time left.
+    fn cover_remainder_time(&mut self, pop: &mut Pop, factuals: &Factuals) -> f64 {
+        let need = self.plan_time_need(factuals);
+        if need <= 0.0 {
+            return 0.0;
+        }
+        let have = self
+            .property
+            .get(&TIME)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        let want = (need - have).max(0.0);
+        if want <= 0.0 {
+            return 0.0;
+        }
+        let given = pop.take_time(want);
+        self.credit_time(given);
+        given
     }
 
     /// Recipe inputs and outputs that are not a missing wage good. Fenced so
@@ -1168,6 +1215,7 @@ mod settle_labor_contracts_should {
             target: Some(target),
             inputs: vec![WOOD],
             historical_productivity: 0.0,
+            aim: 0.0,
             last_success_rate: 0.0,
             last_iterations: 0.0,
             last_effects: vec![],
@@ -1240,7 +1288,8 @@ mod settle_labor_contracts_should {
             COIN,
             FirmPRow::new()
                 .with_quantity(10.0)
-                .with_stock_target(8.0),
+                .with_stock_target(8.0)
+                .with_sell_target(8.0),
         );
         let mut pops = HashMap::from([(2, with_time(make_pop(2), 48.0))]);
         let history = history_prices(&[(COIN, 1.0)]);
@@ -1251,6 +1300,106 @@ mod settle_labor_contracts_should {
         assert!((report.workers[0].paid_amv - 2.0).abs() < 1e-12);
         assert!((report.workers[0].time_given - 2.0).abs() < 1e-12);
         assert_eq!(firm.property[&COIN].quantity, 8.0);
+    }
+
+    #[test]
+    fn remainder_owner_operator_gives_hours_when_unpaid() {
+        let worker = Workforce::new(3)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder()
+            .with_workforce(worker);
+        let mut pops = HashMap::from([(3, with_time(make_pop(3), 48.0))]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &Factuals::new());
+
+        assert!(report.workers[0].paid.is_empty());
+        assert!((report.workers[0].time_given - 10.0).abs() < 1e-12);
+        assert_eq!(
+            firm.property.get(&TIME).map(|row| row.quantity).unwrap_or(0.0),
+            10.0
+        );
+        assert!((pops[&3].property[&TIME].quantity - 38.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn remainder_owner_covers_missing_recipe_time() {
+        let worker = Workforce::new(2)
+            .with_hours(10.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder()
+            .with_workforce(worker);
+        firm.production_line.push(ProductionLine {
+            process: 1,
+            target: Some(5.0),
+            inputs: vec![TIME],
+            historical_productivity: 0.0,
+            aim: 5.0,
+            last_success_rate: 1.0,
+            last_iterations: 5.0,
+            last_effects: vec![],
+            last_missing_goods: vec![],
+            last_amv_consumed: 0.0,
+            last_amv_produced: 0.0,
+        });
+        let mut factuals = Factuals::new();
+        factuals.processes.insert(
+            1,
+            Process::new(1, "farm", 0)
+                .with_input(ProcessInput::new(
+                    TIME,
+                    2.0,
+                    true,
+                    InputType::Destroyed,
+                    false,
+                ))
+                .with_output(ProcessOutput::new(1, 15.0, true)),
+        );
+        let mut pops = HashMap::from([
+            (2, with_time(make_pop(2), 48.0)),
+            (3, with_time(make_pop(3), 48.0)),
+        ]);
+        let history = history_prices(&[(COIN, 1.0), (TIME, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
+
+        assert_eq!(report.workers[0].time_given, 0.0);
+        assert_eq!(
+            firm.property.get(&TIME).map(|row| row.quantity).unwrap_or(0.0),
+            10.0
+        );
+        assert!((pops[&2].property[&TIME].quantity - 48.0).abs() < 1e-12);
+        assert!((pops[&3].property[&TIME].quantity - 38.0).abs() < 1e-12);
+        let owner = report.owner.expect("remainder");
+        assert_eq!(owner.recap.get(&TIME).copied().unwrap_or(0.0), 10.0);
+    }
+
+    #[test]
+    fn wages_raid_the_operations_buffer() {
+        let worker = Workforce::new(2)
+            .with_hours(6.0)
+            .with_payment(PaymentTerm::new(COIN, 1.0));
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_workforce(worker);
+        firm.property.insert(
+            COIN,
+            FirmPRow::new()
+                .with_quantity(10.0)
+                .with_stock_target(8.0)
+                .with_sell_target(2.0),
+        );
+        let mut pops = HashMap::from([(2, with_time(make_pop(2), 48.0))]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &Factuals::new());
+
+        assert_eq!(report.workers[0].paid[&COIN], 6.0);
+        assert_eq!(firm.property[&COIN].quantity, 4.0);
     }
 
     #[test]
@@ -1339,6 +1488,51 @@ mod settle_labor_contracts_should {
         assert!(owner.remainder);
         assert_eq!(owner.paid[&COIN], 13.0);
         assert_eq!(firm.property[&COIN].quantity, 7.0);
+    }
+
+    #[test]
+    fn remainder_does_not_take_the_operations_buffer() {
+        let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.production_line.push(mill_line(5.0));
+        firm.property.insert(
+            PLANK,
+            FirmPRow::operations_opening(5.0, 5.0, 0.0),
+        );
+        let mut pops = HashMap::from([(3, make_pop(3))]);
+        let history = history_prices(&[(PLANK, 1.0)]);
+        let factuals = mill_factuals();
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
+
+        assert_eq!(firm.property[&PLANK].quantity, 25.0);
+        assert_eq!(firm.property[&PLANK].placed, 0.0);
+        let owner = report.owner.expect("remainder");
+        assert_eq!(owner.paid.get(&PLANK).copied().unwrap_or(0.0), 0.0);
+        assert_eq!(pops[&3].property.get(&PLANK).map(|r| r.quantity).unwrap_or(0.0), 0.0);
+    }
+
+    #[test]
+    fn remainder_records_in_kind_as_placed() {
+        let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.property.insert(
+            COIN,
+            FirmPRow::new()
+                .with_quantity(20.0)
+                .with_stock_target(2.0)
+                .with_growth_target(5.0),
+        );
+        let mut pops = HashMap::from([(3, make_pop(3))]);
+        let history = history_prices(&[(COIN, 1.0)]);
+
+        LaborSettlement::settle(&mut firm, &mut pops, &history, &Factuals::new());
+
+        assert_eq!(firm.property[&COIN].placed, 13.0);
+        assert_eq!(firm.property[&COIN].placed_amv, 13.0);
+        assert_eq!(firm.property[&COIN].placed_credited(), 2.0);
     }
 
     #[test]
@@ -1601,6 +1795,32 @@ mod settle_labor_contracts_should {
     }
 
     #[test]
+    fn remainder_cover_skips_output_operations_fence() {
+        let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.production_line.push(mill_line(5.0));
+        firm.property.insert(
+            PLANK,
+            FirmPRow::new()
+                .with_quantity(0.0)
+                .with_stock_target(100.0),
+        );
+        let owner = with_good(make_pop(3), PLANK, 100.0);
+        let mut pops = HashMap::from([(3, owner)]);
+        let history = history_prices(&[(WOOD, 1.0), (PLANK, 1.0)]);
+        let factuals = mill_factuals();
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
+
+        let owner = report.owner.expect("cover");
+        assert!((owner.recap_amv - 10.0).abs() < 1e-12);
+        assert_eq!(owner.recap.get(&PLANK).copied().unwrap_or(0.0), 10.0);
+        assert_eq!(firm.property[&PLANK].quantity, 10.0);
+        assert_eq!(pops[&3].property[&PLANK].quantity, 90.0);
+    }
+
+    #[test]
     fn limited_owner_does_not_cover_a_shortfall() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
@@ -1723,6 +1943,7 @@ mod budget_labor_should {
             target: Some(target),
             inputs: vec![],
             historical_productivity: 0.0,
+            aim: 0.0,
             last_success_rate: 0.0,
             last_iterations: 0.0,
             last_effects: vec![],

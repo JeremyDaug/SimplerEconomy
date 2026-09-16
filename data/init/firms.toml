@@ -2,6 +2,9 @@
 # process is a name or id. remainder defaults true. owner defaults to the firm id.
 # target is process iterations. Opening stock is each output * target (yesterday
 # succeeded). Hours default to target * Time input. Time output is not stocked.
+# Two remainder-owner firms per process (ids 1..=n and n+1..=2n). Owner defaults
+# to the firm id, so each copy has its own household.
+# Default target 10 (150 output). Cabin lines start at 1 (15 output).
 
 firms = [
     { id = 1, process = "make grain", target = 10 },
@@ -11,7 +14,7 @@ firms = [
     { id = 5, process = "make gold_token", target = 10 },
     { id = 6, process = "make jewelry", target = 10 },
     { id = 7, process = "make wood", target = 10 },
-    { id = 8, process = "make cabins", target = 3 },
+    { id = 8, process = "make cabins", target = 1 },
     { id = 9, process = "make wood_tools", target = 10 },
     { id = 10, process = "make buckets", target = 10 },
     { id = 11, process = "make iron", target = 10 },
@@ -32,4 +35,32 @@ firms = [
     { id = 26, process = "make clay", target = 10 },
     { id = 27, process = "make pots", target = 10 },
     { id = 28, process = "make time", target = 10 },
+    { id = 29, process = "make grain", target = 10 },
+    { id = 30, process = "make water", target = 10 },
+    { id = 31, process = "make bread", target = 10 },
+    { id = 32, process = "make gold", target = 10 },
+    { id = 33, process = "make gold_token", target = 10 },
+    { id = 34, process = "make jewelry", target = 10 },
+    { id = 35, process = "make wood", target = 10 },
+    { id = 36, process = "make cabins", target = 1 },
+    { id = 37, process = "make wood_tools", target = 10 },
+    { id = 38, process = "make buckets", target = 10 },
+    { id = 39, process = "make iron", target = 10 },
+    { id = 40, process = "make iron_tools", target = 10 },
+    { id = 41, process = "make copper", target = 10 },
+    { id = 42, process = "make tin", target = 10 },
+    { id = 43, process = "make bronze", target = 10 },
+    { id = 44, process = "make bronze_tools", target = 10 },
+    { id = 45, process = "make blades", target = 10 },
+    { id = 46, process = "make bronze_mirror", target = 10 },
+    { id = 47, process = "make bronze_token", target = 10 },
+    { id = 48, process = "make iron_token", target = 10 },
+    { id = 49, process = "make copper_token", target = 10 },
+    { id = 50, process = "make tin_token", target = 10 },
+    { id = 51, process = "make coal", target = 10 },
+    { id = 52, process = "make charcoal", target = 10 },
+    { id = 53, process = "make beer", target = 10 },
+    { id = 54, process = "make clay", target = 10 },
+    { id = 55, process = "make pots", target = 10 },
+    { id = 56, process = "make time", target = 10 },
 ]

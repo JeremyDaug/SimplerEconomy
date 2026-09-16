@@ -49,7 +49,7 @@ pub(crate) fn init_data_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/init")
 }
 
-/// Builds the living roster: one pop and one remainder-owner firm per world
+/// Builds the living roster: two pops and two remainder-owner firms per world
 /// good, each pop one default household (5 members).
 pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
     let factuals = Factuals::load_from_path(world_data_path())
@@ -75,7 +75,7 @@ pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, sala
     history.salability.insert(good, salability);
 }
 
-/// Specialty good this pop produces each morning. Pop 28 wraps onto Time (0).
+/// Specialty good this pop produces each morning. Pop 28 and 56 wrap onto Time (0).
 pub(crate) fn produced_good_id(pop_id: usize, n_goods: usize) -> usize {
     debug_assert!(n_goods > 0, "world catalog must not be empty");
     pop_id % n_goods
@@ -180,7 +180,7 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         amount,
         &[(WOOD, 1.0), (CHARCOAL, 1.25), (COAL, 1.5)],
     ));
-    pop.desires[0].push(make_consume_desire(3, "housing", amount, &[(CABINS, 1.0)]));
+    pop.desires[1].push(make_consume_desire(3, "housing", amount, &[(CABINS, 1.0)]));
     pop.desires[1].push(make_consume_desire(
         4,
         "utility items",
@@ -306,13 +306,20 @@ pub(crate) fn make_specialty_firm(pop_id: usize, factuals: &Factuals) -> Firm {
         .first()
         .map(|row| row.amount)
         .unwrap_or(0.0);
-    let opening = target * output_amt;
-    if good != TIME && opening > 0.0 {
+    let daily = target * output_amt;
+    if good != TIME && daily > 0.0 {
+        let decay = factuals
+            .goods
+            .get(&good)
+            .map(|g| g.decay_rate)
+            .unwrap_or(1.0);
         firm.property.insert(
             good,
-            FirmPRow::new()
-                .with_quantity(opening)
-                .with_sell_target(opening),
+            FirmPRow::operations_opening(
+                daily,
+                factuals.config.firm.operations_cover,
+                decay,
+            ),
         );
     }
     firm
@@ -324,6 +331,7 @@ fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine
         target: Some(target),
         inputs,
         historical_productivity: 0.0,
+        aim: 0.0,
         last_success_rate: 0.0,
         last_iterations: 0.0,
         last_effects: vec![],

@@ -11,7 +11,7 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
 | `buy` / `evaluate` / `finalize` | Landed. `buy` and `evaluate` are **read-only**; `finalize` mutates inventory |
 | `sell` | Identity. No rewrite / haggling |
 | Verdicts | Accept / Reject only. Change / Counteroffer / HardReject exist unused |
-| Make change | Reserved, no helper |
+| Make change | Firm `sell` after Accept: drop unused tender units while keep > 1. Pop `sell` is still identity |
 | `take_good` | Landed on Pop and Firm |
 
 ## Traps
@@ -28,17 +28,16 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
   tenders. Payment AMV above `amv_target` or the row buy cap does **not**
   void the basket.
 - **Make change** is returning excess, not `take_tenders`.
-- Keep = received AMV / given AMV. Firm given goods are full AMV. Firm
-  received `use_target` skips salability; others use `salability_quote_factor`
-  (full AMV at S>=1, linear `AMV * S` below). Pop given units peel extra → save
-  → consume at 0 / 25 / 50 / 100 of the remaining haircut. Pop received bag
-  takes the best category: consume shortfall (`quantity < desire_needs`)
-  => full AMV; else save shortfall (`quantity < shop_target`) => quarter
-  penalty; else extra-desired => half penalty; else the quote factor. The
-  0.50 floor **always** applies (no floor-drop). Firm min `0.50` with a
-  need-catch to `0.25` when `purchase_target` or `use_target`.
-  Merchant restock is a **need**, not a use (still takes the haircut).
-  Buyers accept windfalls (`keep >= 1.0`).
+- Keep = received AMV / given AMV. Firm **given** goods use the row **quote**
+  (ask) when `amv_target` is set, else market AMV. Firm **received** goods
+  use the quote bid when set, else market AMV, then peel need → stock →
+  growth → unused at 0 / 25 / 50 / 100 of the salability haircut (no bag
+  sweetener). After Accept, firm `sell` returns unused tenders until keep
+  is about 1.0 (make change).
+  Pop given units peel extra → save → consume at those same factors. Pop
+  received bag still takes the best category (sweetener). The 0.50 floor
+  **always** applies. Firm min `0.50` with a need-catch to `0.25` when any
+  inbound good still has need room. Buyers accept windfalls (`keep >= 1.0`).
 - `finalize` does not raise reserve toward stock and does not edit orders.
   Firm records bought/sold AMV and blends `average_cost` at market AMV on inflows.
 - `take_good` removes the property row and returns qty (`0` if missing).

@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-10
+**Updated:** 2026-09-15
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -22,11 +22,14 @@ invariants and traps, not a substitute for the code.
   scales with durability (decay 1.0 => no save). Consume always eats
   common on-hand; luxury is skipped unless basic is complete.
   `run_market_day` parks hopeless front-group buys then keeps matching
-  later bands, then waves `next_shopping_trip`
-  until trips emit nothing, then tombstones. Listed offer units and
+  later bands. Pop buy priority is wealth rank sliced by consume tier
+  (basic, then common, then luxury). Then waves `next_shopping_trip` (skip
+  parked/unavailable goods and try the next target or tier; stop buying if
+  the shop is only unavailable) until trips emit nothing, then tombstones. Listed offer units and
   `reserved` are not tenderable. World goods use per-good `decay_rate` in
   `goods.toml`.
-  After decay, salability is capped at `2 * (1 - decayed/volume)`.
+  Luxury leftover shop is capped at one extra luxury level of the cheapest
+  luxury good. After decay, salability is capped at `2 * (1 - decayed/volume)`.
   AMV drifts on accept (more salable goods move less) and a ±1 kick toward
   heavier opening demand vs supply. Reject lowers
   tender salability, not AMV. Salability is 0..=2 (par at 1, currency at 1.8).
@@ -41,33 +44,59 @@ invariants and traps, not a substitute for the code.
   0.50 floor always applies (no floor-drop).
 - Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
   production phases are stubs.
-- `Firm::plan` rewrites production and property targets (realized profit, sell
-  success). Pace is `planning_lerp_rate`. Own quote, not lerp-to-market.
+- `Firm::plan` rewrites production and property targets. Line `aim` lerps
+  toward throughput. Then one walk step (raise/cut quote or quota, or stay)
+  scored as predicted `sold * quote - qty * cost` from the EMA of market
+  sold and meeting mix (remainder `placed` is not demand). Cuts only on a
+  blended miss; raises only on a blended hit. Shrink step matches growth
+  (0.10). Stay / quote-only days lerp quota toward aim. Quotes orbit live
+  market AMV by ±`quote_orbit` (default 10%). Recipe `amv_bound` is a cost
+  floor, not the quote. Firm keep uses the quote as bid/ask.
+  `stock_target` is decay-adjusted `operations_cover` days of `aim` (shrink
+  hold when rot would eat more than one day's output; overshoot otherwise).
+  Remainder leftover uses that fence; wages may raid it down to today's
+  use/sell plan. Init opening stock is `OPENING_COVER_DAYS` (3) decay-adjusted
+  days of output, not the live five-day fence. Recap does not fill output stock.
+  In-kind remainder/wage transfers record `placed` at market AMV; sell
+  success credits `min(placed, stock_fence)` plus sold. A run miss walks
+  quota toward last iterations. `growth_target` is the expansion gap on a
+  grow, else 0.
 - Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
   at `Pop::start_day`. Live intramarket friction is 1 (`TRANSACTION_COST + bulk`).
   Goods have per-unit mass/volume in `goods.toml`.
+- Remainder owner-operators always give claimed hours (even unpaid) and
+  top up remaining recipe Time. Hired workers still withhold Time when
+  unpaid.
+- Firm reject lowers tender salability at `salability_firm_reject_scale`
+  (default 0.25) of the pop blend. Firm received units peel need → stock →
+  growth → unused (no bag sweetener). After Accept, firms make change
+  (return unused tenders until keep ~ 1). Pop leftover offers keep a 25%
+  wallet floor.
 - Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
-  [`Market::budget_labor`]. Time AMV is stamped from contracts (hours-weighted
-  wage AMV), not goods matching. Firms do **not** rewrite wages from Time AMV
+  [`Market::budget_labor`]. Time AMV lerps toward paid AMV / hours
+  (`time_amv_blend` 0.15); unpaid hours vote the going rate. Firms do **not**
+  rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`. Processes are
   1 Time → 15 of each good (Time is process 28).
 - Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
-  (one household pop and one remainder-owner firm per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
-  Grouped consume desires (basic/common/luxury) are 1 unit per member
+  (two household pops and two remainder-owner firms per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
+  Grouped consume desires (basic food/hydration/heating, common housing
+  plus utility/food/materials/health, luxury) are 1 unit per member
   (5 units), duplicated onto every pop. **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Each morning: `start_day` Time, then specialty
-  grant is 0 (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pop 28 is Time
-  and is the untradeable control). Each firm is that pop's remainder
-  owner-operator: 10 Time, no wage basket, 1 Time → 15 line (150 output).
-  Opening stock is process outputs times line target (yesterday succeeded;
-  10 x 15 = 150). Posted firm sells cap at max market salability times
+  grant is 0 (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pops 28 and 56
+  are Time and cannot sell it). Each firm is that pop's remainder
+  owner-operator: 10 Time (cabins 1), no wage basket, 1 Time → 15 line
+  (150 output, cabins 15). Opening stock is three decay-adjusted days of
+  process output. Posted firm sells cap at max market salability times
   daily output; remainder leftover is extra above that. Remainder owners
   cover an AMV shortfall on a loss. Coin is `gold_token`; iron ore is `iron`.
   `keep_alive on` is an emergency firm subsidy (1-iteration floor +
   coin/inputs); default off.
   Desire amounts do not rise with success.
-  Luxury shop_target adds an extra level and leftover liquid above save.
+  Luxury leftover shop is capped at one extra luxury level of the cheapest
+  luxury good.
   AMV moves on accept (salability-weighted) plus a flat ±1 demand/supply
   kick. Reject lowers tender salability, not AMV. Leftover book blend is 0.
   Volume-scaled leftover collapsed AMV to the bounce floor; do not turn it

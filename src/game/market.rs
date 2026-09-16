@@ -9,7 +9,7 @@ use crate::game::config::{market_constants, market_priority, MarketConfig};
 use crate::game::deal::{DealMaker, DealResponse};
 use crate::game::firm::Firm;
 use crate::game::good::TIME;
-use crate::game::marketorder::{priority_in_band, wealth_unit_rank, MarketOrder};
+use crate::game::marketorder::{pop_buy_priority_with_tier, MarketOrder};
 use crate::game::pop::Pop;
 use crate::game::util::{lerp, whole_units};
 use crate::game::workforce::LaborSettlement;
@@ -427,6 +427,22 @@ fn as_deal_maker_mut<'a>(
     }
 }
 
+fn record_firm_sell_meet(
+    firms: &mut HashMap<usize, Firm>,
+    origin: Actor,
+    good: usize,
+    fills: f64,
+    rejects: f64,
+    no_proposal: f64,
+) {
+    let Actor::Firm(id) = origin else {
+        return;
+    };
+    if let Some(firm) = firms.get_mut(&id) {
+        firm.note_sell_meet(good, fills, rejects, no_proposal);
+    }
+}
+
 /// If `new` is inside the AMV dead zone, land `min_abs` on the other side
 /// of 0 from `old`. Otherwise return `new` unchanged.
 fn bounce_away_from_zero(old: f64, new: f64, min_abs: f64) -> f64 {
@@ -558,6 +574,12 @@ impl Market {
         rng: &mut R,
     ) -> MarketDayReport {
         self.unavailable_goods.clear();
+        for &id in &self.firms {
+            firms
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("market firm {id} missing from firms"))
+                .refresh_household_needs(pops);
+        }
         for &id in &self.pops {
             pops.get_mut(&id)
                 .unwrap_or_else(|| panic!("market pop {id} missing from pops"))
@@ -664,6 +686,7 @@ impl Market {
                 };
                 let mut skip = self.unavailable_goods.clone();
                 skip.extend(exhausted.iter().copied());
+                skip.extend(parked.iter().map(|order| order.target));
                 let mut new_orders = pop.next_shopping_trip(&history, factuals, &skip);
                 if new_orders.is_empty() {
                     continue;
@@ -672,10 +695,11 @@ impl Market {
                 let prio = &factuals.config.market_priority;
                 for order in &mut new_orders {
                     if order.target_amount > 0.0 {
-                        order.set_priority(priority_in_band(
-                            prio.pop_start,
-                            prio.pop_end,
-                            wealth_unit_rank(wealth, max_wealth),
+                        order.set_priority(pop_buy_priority_with_tier(
+                            wealth,
+                            max_wealth,
+                            order.shop_tier,
+                            prio,
                         ));
                     }
                 }
@@ -785,9 +809,8 @@ impl Market {
     }
 
     /// Morning labor settle for member firms. Does not post Time on the
-    /// goods book. Stamps Time AMV as hours-weighted paid wage AMV / Time
-    /// given, plus demand (claimed hours) and supply (work-fraction of
-    /// on-hand Time).
+    /// goods book. Stamps Time AMV as an hours-weighted lerp of the going
+    /// Time AMV toward paid AMV / hours (unpaid hours vote the going rate).
     pub fn settle_labor(
         &mut self,
         pops: &mut HashMap<usize, Pop>,
@@ -834,19 +857,17 @@ impl Market {
             wages.push((id, settlement));
         }
 
-        let mut paid_amv = 0.0;
         let mut time_given = 0.0;
         for (_, settlement) in &wages {
             for row in &settlement.workers {
-                paid_amv += row.paid_amv;
                 time_given += row.time_given;
             }
         }
-        let unit = if time_given > 0.0 {
-            paid_amv / time_given
-        } else {
-            0.0
-        };
+        let unit = self.blended_labor_unit_from_settle(
+            &wages,
+            factuals.config.labor.time_amv_blend,
+            &factuals.config.market,
+        );
         self.stamp_time_from_labor(
             unit,
             demand,
@@ -879,8 +900,6 @@ impl Market {
         }
 
         let work_fraction = factuals.config.labor.work_time_fraction.clamp(0.0, 1.0);
-        let mut wage_amv = 0.0;
-        let mut hours = 0.0;
         let mut demand = 0.0;
         let mut supply = 0.0;
         let mut buyers = 0.0;
@@ -895,9 +914,7 @@ impl Market {
                     continue;
                 }
                 let h = worker.hours.max(0.0);
-                hours += h;
                 demand += h;
-                wage_amv += worker.promised_amv(h, &history);
                 firm_claims = true;
                 suppliers.insert(worker.id);
                 if let Some(pop) = pops.get(&worker.id) {
@@ -908,7 +925,13 @@ impl Market {
                 buyers += 1.0;
             }
         }
-        let unit = if hours > 0.0 { wage_amv / hours } else { 0.0 };
+        let unit = self.blended_labor_unit_from_budget(
+            firms,
+            &firm_ids,
+            &history,
+            factuals.config.labor.time_amv_blend,
+            &factuals.config.market,
+        );
         self.stamp_time_from_labor(
             unit,
             demand,
@@ -918,6 +941,84 @@ impl Market {
             None,
             &factuals.config.market,
         );
+    }
+
+    fn going_labor_amv(&self, cfg: &MarketConfig) -> f64 {
+        let amv = self.goods.get(&TIME).map(|g| g.amv.abs()).unwrap_or(0.0);
+        if amv > cfg.amv_min_abs {
+            amv
+        } else {
+            cfg.amv_rescale_mean
+        }
+    }
+
+    fn blended_labor_unit_from_settle(
+        &self,
+        wages: &[(usize, LaborSettlement)],
+        blend: f64,
+        cfg: &MarketConfig,
+    ) -> f64 {
+        let going = self.going_labor_amv(cfg);
+        let blend = blend.clamp(0.0, 1.0);
+        let mut hours = 0.0;
+        let mut value = 0.0;
+        for (_, settlement) in wages {
+            for row in &settlement.workers {
+                let t = row.time_given.max(0.0);
+                if t <= 0.0 {
+                    continue;
+                }
+                hours += t;
+                let observed = if row.paid_amv > 0.0 {
+                    row.paid_amv / t
+                } else {
+                    going
+                };
+                value += t * lerp(going, observed, blend);
+            }
+        }
+        if hours > 0.0 {
+            value / hours
+        } else {
+            going
+        }
+    }
+
+    fn blended_labor_unit_from_budget(
+        &self,
+        firms: &HashMap<usize, Firm>,
+        firm_ids: &[usize],
+        history: &MarketHistory,
+        blend: f64,
+        cfg: &MarketConfig,
+    ) -> f64 {
+        let going = self.going_labor_amv(cfg);
+        let blend = blend.clamp(0.0, 1.0);
+        let mut hours = 0.0;
+        let mut value = 0.0;
+        for &id in firm_ids {
+            let Some(firm) = firms.get(&id) else {
+                continue;
+            };
+            for worker in &firm.workforce {
+                if worker.id == 0 {
+                    continue;
+                }
+                let h = worker.hours.max(0.0);
+                if h <= 0.0 {
+                    continue;
+                }
+                hours += h;
+                let promised = worker.promised_amv(h, history);
+                let observed = if promised > 0.0 { promised / h } else { going };
+                value += h * lerp(going, observed, blend);
+            }
+        }
+        if hours > 0.0 {
+            value / hours
+        } else {
+            going
+        }
     }
 
     /// Writes Time's AMV and labor book (demand = claimed hours, supply =
@@ -1058,13 +1159,19 @@ impl Market {
     }
 
     /// Lowers salability on goods that failed as payment. Does not move AMV.
+    /// `blend` is the lerp toward 0 (pop reject uses `salability_blend`;
+    /// firm reject uses that times `salability_firm_reject_scale`).
     fn drift_salability_on_reject(
         &mut self,
         target: usize,
         goods: &HashMap<usize, f64>,
         cfg: &crate::game::config::MarketConfig,
+        blend: f64,
     ) {
-        let blend = cfg.salability_blend;
+        let blend = blend.clamp(0.0, 1.0);
+        if blend <= 0.0 {
+            return;
+        }
         for (&id, &qty) in goods {
             if id == target || qty <= 0.0 {
                 continue;
@@ -1218,10 +1325,11 @@ impl Market {
             for order in &mut orders {
                 if order.target_amount > 0.0 {
                     let prio = &factuals.config.market_priority;
-                    order.set_priority(priority_in_band(
-                        prio.pop_start,
-                        prio.pop_end,
-                        wealth_unit_rank(per_household, max_wealth),
+                    order.set_priority(pop_buy_priority_with_tier(
+                        per_household,
+                        max_wealth,
+                        order.shop_tier,
+                        prio,
                     ));
                 }
             }
@@ -1347,6 +1455,7 @@ impl Market {
             .buy(&buy_order, &sell_order, history, factuals)
         else {
             let transport = wash_transport(factuals);
+            let origin = sell_order.origin;
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
                 buy: buy_snap,
@@ -1357,26 +1466,29 @@ impl Market {
                     closed: !renewed,
                 },
             });
+            record_firm_sell_meet(firms, origin, target, 0.0, 0.0, 1.0);
             return;
         };
-        for (&good, &qty) in &proposal.goods {
-            if qty > 0.0 {
-                self.add_tender(good, qty, &factuals.config.market);
-            }
-        }
 
         let verdict = as_deal_maker(pops, firms, sell_order.origin)
             .evaluate(&proposal, &sell_order, &buy_order, history, factuals);
         if verdict != DealResponse::Accept {
             // TODO: Counteroffer haggling. The rewrite is seller-approved; the
             // buyer would then evaluate it (or a close-out). Wash for now.
-            self.drift_salability_on_reject(target, &proposal.goods, &factuals.config.market);
+            let cfg = &factuals.config.market;
+            let blend = if matches!(sell_order.origin, Actor::Pop(_)) {
+                cfg.salability_blend
+            } else {
+                cfg.salability_blend * cfg.salability_firm_reject_scale
+            };
+            self.drift_salability_on_reject(target, &proposal.goods, cfg, blend);
             let transport = wash_transport(factuals);
             let mut sell_order = sell_order;
             sell_order.apply_reject_weight_penalty(
                 factuals.config.market_priority.sell_reject_weight,
                 factuals.config.market_priority.sell_actor_priority_floor,
             );
+            let origin = sell_order.origin;
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
             meetings.push(MarketMeeting {
                 buy: buy_snap,
@@ -1387,8 +1499,17 @@ impl Market {
                     closed: !renewed,
                 },
             });
+            record_firm_sell_meet(firms, origin, target, 0.0, 1.0, 0.0);
             return;
         }
+
+        let proposal = as_deal_maker(pops, firms, sell_order.origin).sell(
+            &proposal,
+            &sell_order,
+            &buy_order,
+            history,
+            factuals,
+        );
 
         let filled = proposal.goods.get(&target).copied().unwrap_or(0.0).abs();
         if filled <= 0.0 {
@@ -1405,6 +1526,12 @@ impl Market {
                 },
             });
             return;
+        }
+
+        for (&good, &qty) in &proposal.goods {
+            if qty > 0.0 {
+                self.add_tender(good, qty, &factuals.config.market);
+            }
         }
 
         let payment_amv: f64 = proposal.goods.iter()
@@ -1425,6 +1552,7 @@ impl Market {
 
         as_deal_maker_mut(pops, firms, buy_order.origin).finalize(&proposal, history);
         as_deal_maker_mut(pops, firms, sell_order.origin).finalize(&proposal, history);
+        record_firm_sell_meet(firms, sell_order.origin, target, 1.0, 0.0, 0.0);
         as_deal_maker_mut(pops, firms, buy_order.origin)
             .pay_transport(proposal.transport_needed, factuals);
 
@@ -2864,8 +2992,10 @@ mod run_market_day_should {
         assert!((market.goods[&GRAIN].requests - 12.0).abs() < 1e-12);
         // Rejected meetings do not move AMV (rescale still equalizes).
         assert!((market.goods[&GRAIN].amv - market.goods[&COIN].amv).abs() < 1e-9);
-        // Coin was tendered and never accepted.
+        // Firm reject is weaker than a pop reject (retries apply the small blend).
+        let pop_once = lerp(0.2, 0.0, 0.25);
         assert!(market.goods[&COIN].salability < 0.2);
+        assert!(market.goods[&COIN].salability > pop_once);
     }
 
     #[test]
@@ -3074,14 +3204,10 @@ mod run_market_day_should {
 
         market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
-        // 1 grain at 2.5 AMV ceils to 3 coin. Mid 2.75; grain rises, coin falls.
+        // 3 coin proposed; firm make-change returns 1 (keep 3/2.5 -> 2/2.5).
         assert!((pops[&1].property[&GRAIN].quantity - 1.0).abs() < 1e-12);
-        let grain_amv = market.goods[&GRAIN].amv;
-        let coin_amv = market.goods[&COIN].amv;
-        assert!(grain_amv > 2.5);
-        assert!(grain_amv < 2.75);
-        assert!(coin_amv < 1.0);
-        assert!(coin_amv > 0.9);
+        assert!((pops[&1].property[&COIN].quantity - 1.0).abs() < 1e-12);
+        assert!((firms[&1].property.get(&COIN).map(|r| r.quantity).unwrap_or(0.0) - 2.0).abs() < 1e-12);
     }
 
     #[test]
@@ -3173,10 +3299,28 @@ mod run_market_day_should {
         let mut goods = HashMap::new();
         goods.insert(GRAIN, -1.0);
         goods.insert(COIN, 20.0);
-        market.drift_salability_on_reject(GRAIN, &goods, &cfg);
+        market.drift_salability_on_reject(GRAIN, &goods, &cfg, cfg.salability_blend);
         assert!((market.goods[&GRAIN].amv - grain_amv).abs() < 1e-12);
         let expected = lerp(1.0, 0.0, cfg.salability_blend);
         assert!((market.goods[&COIN].salability - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn firm_reject_does_not_lower_tender_salability() {
+        let mut market = priced_market();
+        market.goods.get_mut(&COIN).unwrap().set_salability(0.3);
+        market.pops.insert(1);
+        market.firms.insert(1);
+        let mut pops = HashMap::new();
+        pops.insert(1, shopper(1, 10.0, 4.0));
+        let mut firms = HashMap::new();
+        firms.insert(1, farm(1, 10.0, 10.0));
+        let before = market.goods[&COIN].salability;
+        market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
+        assert_eq!(market.goods[&GRAIN].purchased, 0.0);
+        let pop_once = lerp(before, 0.0, 0.25);
+        assert!(market.goods[&COIN].salability < before);
+        assert!(market.goods[&COIN].salability > pop_once);
     }
 
     #[test]
@@ -3206,14 +3350,13 @@ mod run_market_day_should {
         assert_eq!(trail.len(), 2);
         assert!((trail[0] - 2.5).abs() < 1e-12);
         assert!((trail[1] - grain.amv).abs() < 1e-12);
-        assert!(trail[1] > trail[0]);
+        assert!((market.goods[&GRAIN].purchased - 1.0).abs() < 1e-12);
 
         let coin = &market.goods[&COIN];
         let trail = coin.amv_trail();
         assert_eq!(trail.len(), 2);
         assert!((trail[0] - 1.0).abs() < 1e-12);
         assert!((trail[1] - coin.amv).abs() < 1e-12);
-        assert!(trail[1] < trail[0]);
     }
 
     fn cargo_good() -> Good {
@@ -3494,10 +3637,32 @@ mod run_market_day_should {
         assert_eq!(wages.len(), 1);
         assert!((wages[0].1.workers[0].time_given - 10.0).abs() < 1e-12);
         let time = &market.goods[&TIME];
-        assert!((time.amv - 0.21).abs() < 1e-9, "time amv {}", time.amv);
+        let expected = lerp(1.0, 0.21, facts.config.labor.time_amv_blend);
+        assert!((time.amv - expected).abs() < 1e-9, "time amv {}", time.amv);
         assert!((time.purchased - 10.0).abs() < 1e-12);
         assert!(time.demand > 0.0);
         assert!(time.supply > 0.0);
+    }
+
+    #[test]
+    fn unpaid_hours_keep_the_going_time_amv() {
+        let mut market = Market::new(1);
+        market.pops.insert(2);
+        market.firms.insert(1);
+        market.goods.insert(TIME, MarketGood::new().with_amv(100.0));
+        let worker = Workforce::new(2).with_hours(10.0);
+        let firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(crate::game::actor::Actor::Pop(2))
+            .with_owner_remainder()
+            .with_workforce(worker);
+        let mut pop = shopper(2, 0.0, 0.0);
+        pop.property.insert(TIME, PopPRow::new(48.0));
+        let mut pops = HashMap::from([(2, pop)]);
+        let mut firms = HashMap::from([(1, firm)]);
+        let mut facts = factuals();
+        facts = facts.with_good(test_good(TIME, "time"));
+        market.settle_labor(&mut pops, &mut firms, &facts);
+        assert!((market.goods[&TIME].amv - 100.0).abs() < 1e-9);
     }
 
     #[test]

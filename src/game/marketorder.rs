@@ -59,6 +59,11 @@ pub struct MarketOrder {
     /// [`crate::game::config::market_constants::BUY_TRY_LIMIT`] retries,
     /// a further failure closes the order out.
     pub tries: u32,
+
+    /// Consume-tier this pop request was posted from (0 basic, 1 common,
+    /// 2 luxury). Stamped into buy priority so basics match before commons
+    /// before luxuries. Ignored on sells/offers and firm buys.
+    pub shop_tier: u8,
 }
 
 /// Predefined state / player insert points along the market-day order.
@@ -146,6 +151,24 @@ pub fn pop_priority_from_rank_with(
     cfg: &crate::game::config::MarketPriorityConfig,
 ) -> f64 {
     priority_in_band(cfg.pop_start, cfg.pop_end, unit_rank)
+}
+
+/// Pop buy priority: wealth rank inside a consume-tier slice of the pop band.
+/// Basic (0), then common (1), then luxury (2). Lower still goes first.
+/// Slices stay inside `[pop_start, pop_end)`.
+pub fn pop_buy_priority_with_tier(
+    wealth: f64,
+    max_wealth: f64,
+    shop_tier: u8,
+    cfg: &crate::game::config::MarketPriorityConfig,
+) -> f64 {
+    let rank = wealth_unit_rank(wealth, max_wealth);
+    let span = cfg.pop_end - cfg.pop_start;
+    let n = 3.0;
+    let t = f64::from(shop_tier.min(2));
+    let lo = cfg.pop_start + span * t / n;
+    let hi = cfg.pop_start + span * (t + 1.0) / n;
+    priority_in_band(lo, hi, rank)
 }
 
 /// Pop order priority from per-household total AMV vs the market's richest.
@@ -270,6 +293,7 @@ impl MarketOrder {
             counter_offer_amount: Some(counter_offer_amount),
             priority,
             tries: 0,
+            shop_tier: 0,
         }
     }
 
@@ -291,6 +315,7 @@ impl MarketOrder {
             counter_offer_amount: Some(counter_offer_amount),
             priority,
             tries: 0,
+            shop_tier: 0,
         }
     }
 
@@ -309,6 +334,7 @@ impl MarketOrder {
             counter_offer_amount: None,
             priority,
             tries: 0,
+            shop_tier: 0,
         }
     }
 
@@ -327,7 +353,14 @@ impl MarketOrder {
             counter_offer_amount: None,
             priority,
             tries: 0,
+            shop_tier: 0,
         }
+    }
+
+    /// Consume tier for a pop request (0 basic, 1 common, 2 luxury).
+    pub fn with_shop_tier(mut self, shop_tier: u8) -> Self {
+        self.shop_tier = shop_tier;
+        self
     }
 
     /// Sets how many failed deals this buy/request has already retried.
@@ -467,7 +500,24 @@ mod market_order_should {
         assert_eq!(order.target_amount, 2.0);
         assert_eq!(order.priority, market_priority::POP_START);
         assert_eq!(order.tries, 0);
+        assert_eq!(order.shop_tier, 0);
         assert!(order.is_request_order());
+    }
+
+    #[test]
+    fn consume_tier_slices_the_pop_band_basic_then_common_then_luxury() {
+        let cfg = crate::game::config::MarketPriorityConfig::default();
+        let mid_basic = pop_buy_priority_with_tier(50.0, 100.0, 0, &cfg);
+        let mid_common = pop_buy_priority_with_tier(50.0, 100.0, 1, &cfg);
+        let mid_luxury = pop_buy_priority_with_tier(50.0, 100.0, 2, &cfg);
+        let poor_basic = pop_buy_priority_with_tier(0.0, 100.0, 0, &cfg);
+        let rich_common = pop_buy_priority_with_tier(100.0, 100.0, 1, &cfg);
+        assert!(mid_basic < mid_common && mid_common < mid_luxury);
+        assert!(
+            poor_basic <= rich_common,
+            "{poor_basic} vs {rich_common}"
+        );
+        assert!(mid_basic >= cfg.pop_start && mid_luxury < cfg.pop_end);
     }
 
     #[test]

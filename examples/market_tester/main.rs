@@ -1,13 +1,13 @@
 //! CLI box for probing a market day.
 //!
 //! Startup loads goods, processes, and config from `data/world/`, builds a
-//! living roster (one household pop and one remainder-owner firm per world good,
-//! grouped consume desires), and loads books from
+//! living roster (two household pops and two remainder-owner firms per world
+//! good, grouped consume desires), and loads books from
 //! [`Pop::create_orders`]. The home screen is a short summary. `stock`,
 //! `orders`, and `processes` open full pages. `day` / `day N` runs the
 //! calendar loop, including pop decay, salability rot cap, then
 //! `record_keeping`. Firms are remainder owner-operators: 10 Time for
-//! 150 specialty output, no wage basket.
+//! 150 specialty output (cabins 1 Time / 15 output), no wage basket.
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
 //! `csv` shows the files; `csv <name>` changes the stem.
@@ -614,17 +614,28 @@ fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f6
 #[cfg(test)]
 mod day_should {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
-    fn living_roster_is_one_pop_per_world_good() {
+    fn living_roster_is_two_pops_and_firms_per_world_good() {
         let session = boot_session();
         let n_goods = session.factuals.goods.len();
-        assert_eq!(session.pops.len(), n_goods);
-        assert_eq!(session.firms.len(), n_goods);
+        let n = n_goods * 2;
+        assert_eq!(session.pops.len(), n);
+        assert_eq!(session.firms.len(), n);
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
-        assert_eq!(ids, (1..=n_goods).collect::<Vec<_>>());
+        assert_eq!(ids, (1..=n).collect::<Vec<_>>());
         let firm_ids: Vec<usize> = session.firms.iter().map(|firm| firm.id).collect();
         assert_eq!(firm_ids, ids);
+        let mut copies = HashMap::new();
+        for firm in &session.firms {
+            let good = produced_good_id(firm.id, n_goods);
+            *copies.entry(good).or_insert(0) += 1;
+        }
+        assert_eq!(copies.len(), n_goods);
+        for (&good, &count) in &copies {
+            assert_eq!(count, 2, "good {good} firms {count}");
+        }
     }
 
     #[test]
@@ -650,8 +661,19 @@ mod day_should {
                 assert!((line.last_success_rate - 1.0).abs() < 1e-9);
             }
             let output_amt = session.factuals.processes[&process_id].outputs[0].amount;
-            let opening = target * output_amt;
-            if good == TIME || opening <= 0.0 {
+            let daily = target * output_amt;
+            let decay = session
+                .factuals
+                .goods
+                .get(&good)
+                .map(|g| g.decay_rate)
+                .unwrap_or(1.0);
+            let buffer = daily
+                * simpler_economy::game::firm::FirmPRow::operations_hold_days(
+                    simpler_economy::game::init::OPENING_COVER_DAYS,
+                    decay,
+                );
+            if good == TIME || daily <= 0.0 {
                 assert!(
                     firm.property
                         .get(&good)
@@ -662,8 +684,9 @@ mod day_should {
                 );
             } else {
                 let row = firm.property.get(&good).expect("opening output stock");
-                assert!((row.quantity - opening).abs() < 1e-9);
-                assert!((row.sell_target - opening).abs() < 1e-9);
+                assert!((row.quantity - buffer).abs() < 1e-9);
+                assert!((row.stock_target - buffer).abs() < 1e-9);
+                assert!((row.sell_target - daily).abs() < 1e-9);
             }
             assert_eq!(firm.workforce.len(), 1);
             assert_eq!(firm.workforce[0].id, firm.id);
@@ -729,12 +752,13 @@ mod day_should {
         let house = &pop.demographics.household;
         assert!((house.count - 1.0).abs() < 1e-9);
         assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
-        assert_eq!(pop.desires[0].len(), 4);
-        assert_eq!(pop.desires[1].len(), 4);
+        assert_eq!(pop.desires[0].len(), 3);
+        assert_eq!(pop.desires[1].len(), 5);
         assert_eq!(pop.desires[2].len(), 2);
         assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
         assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
-        assert_eq!(pop.desires[1][0].category.as_deref(), Some("utility items"));
+        assert_eq!(pop.desires[1][0].category.as_deref(), Some("housing"));
+        assert_eq!(pop.desires[1][1].category.as_deref(), Some("utility items"));
         assert_eq!(pop.desires[2][1].category.as_deref(), Some("libations"));
         for tier in &pop.desires {
             for desire in tier {

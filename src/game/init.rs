@@ -3,8 +3,13 @@
 //! Human-editable scenario TOML: pops, firms, starting property. Separate
 //! from world factuals and from a later compressed save. Defaults keep the
 //! files short (shared desires/starter, remainder owner, name from output).
-//! Firm `target` is process iterations; opening stock is each output times
-//! that target (yesterday succeeded). Hours default to target * Time input.
+//! Firm `target` is process iterations; opening stock is three decay-adjusted
+//! days of each output (`OPENING_COVER_DAYS`) so day 1 can run. Live remainder
+//! fence is still `firm.operations_cover`. Hours default to target * Time input.
+
+/// Days of output stocked at kickoff (decay-adjusted). Live `stock_target`
+/// still follows `operations_cover` after the first plan.
+pub const OPENING_COVER_DAYS: f64 = 3.0;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -377,6 +382,7 @@ fn build_firm(file: FirmFile, factuals: &Factuals) -> Result<Firm, InitLoadError
         target: Some(target),
         inputs,
         historical_productivity: 0.0,
+        aim: target,
         last_success_rate: if succeeded { 1.0 } else { 0.0 },
         last_iterations: if succeeded { target } else { 0.0 },
         last_effects: vec![],
@@ -388,15 +394,22 @@ fn build_firm(file: FirmFile, factuals: &Factuals) -> Result<Firm, InitLoadError
         if output.good == TIME {
             continue;
         }
-        let qty = output.amount * target;
-        if qty <= 0.0 {
+        let daily = output.amount * target;
+        if daily <= 0.0 {
             continue;
         }
+        let decay = factuals
+            .goods
+            .get(&output.good)
+            .map(|g| g.decay_rate)
+            .unwrap_or(1.0);
         firm.property.insert(
             output.good,
-            FirmPRow::new()
-                .with_quantity(qty)
-                .with_sell_target(qty),
+            FirmPRow::operations_opening(
+                daily,
+                OPENING_COVER_DAYS,
+                decay,
+            ),
         );
     }
     Ok(firm)
@@ -522,7 +535,9 @@ target = 10.0
         assert!((firm.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
         assert!((firm.production_line[0].last_iterations - 10.0).abs() < 1e-12);
         assert!((firm.production_line[0].last_success_rate - 1.0).abs() < 1e-12);
-        assert!((firm.property[&1].quantity - 150.0).abs() < 1e-12);
+        // tiny grain has default decay 1.0: hold nothing overnight.
+        assert!((firm.property[&1].quantity - 0.0).abs() < 1e-12);
+        assert!((firm.property[&1].stock_target - 0.0).abs() < 1e-12);
         assert!((firm.property[&1].sell_target - 150.0).abs() < 1e-12);
     }
 
@@ -533,18 +548,36 @@ target = 10.0
         let init_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/init");
         let data = InitData::load_from_path(&init_dir, &factuals).expect("init dir");
         let pop = data.pops.iter().find(|p| p.id == 1).expect("pop 1");
-        assert_eq!(pop.desires[0].len(), 4);
-        assert_eq!(pop.desires[1].len(), 4);
+        assert_eq!(pop.desires[0].len(), 3);
+        assert_eq!(pop.desires[1].len(), 5);
         assert_eq!(pop.desires[2].len(), 2);
         let firm = data.firms.iter().find(|f| f.id == 1).expect("firm 1");
         assert_eq!(firm.name, "firm1-grain");
         assert!((firm.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
         assert!((firm.production_line[0].last_iterations - 10.0).abs() < 1e-12);
         assert!((firm.production_line[0].last_success_rate - 1.0).abs() < 1e-12);
-        assert!((firm.property[&1].quantity - 150.0).abs() < 1e-12);
+        let grain_decay = factuals.goods[&1].decay_rate;
+        let hold = FirmPRow::operations_hold_days(OPENING_COVER_DAYS, grain_decay);
+        assert!((firm.property[&1].quantity - 150.0 * hold).abs() < 1e-12);
+        assert!((firm.property[&1].stock_target - 150.0 * hold).abs() < 1e-12);
+        assert!((firm.property[&1].sell_target - 150.0).abs() < 1e-12);
+        let n_goods = factuals.goods.len();
+        assert_eq!(data.pops.len(), n_goods * 2);
+        assert_eq!(data.firms.len(), n_goods * 2);
         let time = data.firms.iter().find(|f| f.id == 28).expect("firm 28");
         assert!(time.property.is_empty());
         assert!((time.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
+        let twin = data.firms.iter().find(|f| f.id == 29).expect("firm 29");
+        assert_eq!(twin.name, "firm29-grain");
+        assert_eq!(twin.owners.owner, Actor::Pop(29));
+        assert!((twin.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);
+        let cabin = data.firms.iter().find(|f| f.id == 8).expect("firm 8");
+        assert!((cabin.production_line[0].target.unwrap() - 1.0).abs() < 1e-12);
+        let cabin2 = data.firms.iter().find(|f| f.id == 36).expect("firm 36");
+        assert!((cabin2.production_line[0].target.unwrap() - 1.0).abs() < 1e-12);
+        let time2 = data.firms.iter().find(|f| f.id == 56).expect("firm 56");
+        assert!(time2.property.is_empty());
+        assert_eq!(time2.owners.owner, Actor::Pop(56));
     }
 
     #[test]

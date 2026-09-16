@@ -169,6 +169,9 @@ pub mod market_constants {
     /// When a pile is both sold and exchanged, each side keeps at least this
     /// share (0.1 = 10%). Salability lerps the rest.
     pub const SELL_EXCHANGE_EDGE: f64 = 0.1;
+    /// After tender-cover, at least this share of leftover free units stays
+    /// unlisted so `buy()` still has a wallet. Offers take the rest.
+    pub const TENDER_WALLET_FLOOR: f64 = 0.25;
 
     /// Failed-deal retries a buy/request may take. `tries` starts at 0.
     /// After this many renewals a further failure closes the order
@@ -203,6 +206,9 @@ pub mod market_constants {
     pub const AMV_IMBALANCE_KICK: f64 = 1.0;
     /// Day-end lerp of salability toward payment/tender (0 = no move, 1 = snap).
     pub const SALABILITY_BLEND: f64 = 0.25;
+    /// Firm reject lerp is this times [`SALABILITY_BLEND`]. Pop reject uses
+    /// the full blend. 0.25 = a quarter as hard as a pop reject.
+    pub const SALABILITY_FIRM_REJECT_SCALE: f64 = 0.25;
     /// Market days between unweighted AMV rescales. 0 disables. 1 = every day.
     pub const AMV_RESCALE_PERIOD: u32 = 1;
     /// Target mean AMV of one unit of each good after a rescale.
@@ -339,6 +345,9 @@ pub mod labor_constants {
     /// Inclusive top of the "barely profitable" hold band. Above this, a calm
     /// firm may add a product bonus. Below 1.0 is unprofitable (trim flats).
     pub const WAGE_HOLD_MAX: f64 = 1.15;
+    /// Lerp of Time AMV toward today's paid-AMV/hours. Unpaid hours vote
+    /// the going Time AMV so a token dump cannot snap the labor unit.
+    pub const TIME_AMV_BLEND: f64 = 0.15;
 }
 
 /// Firm production-plan rewrite (end of day / planning phase).
@@ -347,12 +356,18 @@ pub mod firm_constants {
     pub const PLANNING_LERP_RATE: f64 = 0.15;
     /// Grow a hit sell plan by this fraction of `sell_target`.
     pub const GROWTH_RATE: f64 = 0.10;
-    /// Shrink an unprofitable line's restock aim by this fraction of its target.
-    pub const SHRINK_RATE: f64 = 0.20;
+    /// Shrink a miss by this fraction of its target. Matches growth so a cut
+    /// is not a bigger step than a raise.
+    pub const SHRINK_RATE: f64 = 0.10;
     /// Input `stock_target` in days of `use_target` (2.0 = two days of inputs).
+    /// Unused by `Firm::plan` after operations cover; kept for old world toml.
     pub const INPUT_COVER: f64 = 2.0;
-    /// Output units kept on hand, in days of expected production.
+    /// Output leftover baseline in days of expected production.
+    /// Unused by `Firm::plan` after operations cover; kept for old world toml.
     pub const OUTPUT_COVER: f64 = 0.5;
+    /// Days of operations to retain (`stock_target` / remainder fence).
+    /// Outputs and inputs share this budget; output on hand reduces input days.
+    pub const OPERATIONS_COVER: f64 = 5.0;
     /// Input `reserve_target` in days of `use_target` when supply is reliable.
     pub const RESERVE_COVER: f64 = 0.5;
     /// Extra reserve cover when today's purchases missed the old purchase target.
@@ -378,7 +393,9 @@ pub mod firm_constants {
     pub const PROFIT_LOW: f64 = 0.80;
     /// Above this AMV-out/AMV-in, profitability is high.
     pub const PROFIT_HIGH: f64 = 1.20;
-    /// Own quote vs market AMV band (0.10 = +/- 10%).
+    /// Own quote vs market AMV band (0.10 = +/- 10%). Planning clamps
+    /// `amv_target` to this orbit; recipe `amv_bound` is a cost safety line,
+    /// not the quote.
     pub const PRICE_BAND: f64 = 0.10;
     /// Market-share floor of the "respectable" band.
     pub const SHARE_LOW: f64 = 0.10;
@@ -900,6 +917,9 @@ pub struct MarketConfig {
     pub amv_imbalance_kick: f64,
     /// Day-end lerp of salability toward payment/tender. Default 0.25. Bound 0..=1.
     pub salability_blend: f64,
+    /// Multiplier on salability_blend for firm-seller rejects. Default 0.25.
+    /// Bound 0..=1. Pop rejects use 1.0.
+    pub salability_firm_reject_scale: f64,
     /// Market days between unweighted AMV rescales. Default 1 (every day).
     /// 0 disables.
     pub amv_rescale_period: u32,
@@ -925,6 +945,7 @@ impl Default for MarketConfig {
             amv_leftover_band: market_constants::AMV_LEFTOVER_BAND,
             amv_imbalance_kick: market_constants::AMV_IMBALANCE_KICK,
             salability_blend: market_constants::SALABILITY_BLEND,
+            salability_firm_reject_scale: market_constants::SALABILITY_FIRM_REJECT_SCALE,
             amv_rescale_period: market_constants::AMV_RESCALE_PERIOD,
             amv_rescale_mean: market_constants::AMV_RESCALE_MEAN,
         }
@@ -967,6 +988,13 @@ impl MarketConfig {
         in_range(problems, "market.amv_leftover_band", self.amv_leftover_band, 0.0, 1.0);
         at_least(problems, "market.amv_imbalance_kick", self.amv_imbalance_kick, 0.0);
         in_range(problems, "market.salability_blend", self.salability_blend, 0.0, 1.0);
+        in_range(
+            problems,
+            "market.salability_firm_reject_scale",
+            self.salability_firm_reject_scale,
+            0.0,
+            1.0,
+        );
         above(problems, "market.amv_rescale_mean", self.amv_rescale_mean, 0.0);
     }
 }
@@ -1205,6 +1233,9 @@ pub struct LaborConfig {
     /// Days between [`crate::game::firm::Firm::budget_labor`] rewrites.
     /// 1 = every day. 0 skips. No hire/fire; hours and wage amounts only.
     pub budget_interval: u32,
+    /// Lerp of Time AMV toward paid AMV / hours. Default 0.15. Bound 0..=1.
+    /// Unpaid hours count at the going Time AMV.
+    pub time_amv_blend: f64,
 }
 
 impl Default for LaborConfig {
@@ -1214,6 +1245,7 @@ impl Default for LaborConfig {
             worker_share: labor_constants::WORKER_SHARE,
             work_time_fraction: labor_constants::WORK_TIME_FRACTION,
             budget_interval: labor_constants::BUDGET_INTERVAL,
+            time_amv_blend: labor_constants::TIME_AMV_BLEND,
         }
     }
 }
@@ -1229,6 +1261,7 @@ impl LaborConfig {
             0.0,
             1.0,
         );
+        in_range(problems, "labor.time_amv_blend", self.time_amv_blend, 0.0, 1.0);
     }
 }
 
@@ -1242,14 +1275,18 @@ pub struct FirmConfig {
     /// Grow a hit sell plan by this fraction of `sell_target`. Default 0.10.
     /// Bound 0..=1.
     pub growth_rate: f64,
-    /// Shrink an unprofitable line's restock aim by this fraction. Default 0.20.
+    /// Shrink a miss by this fraction of its target. Default 0.10.
     /// Bound 0..=1.
     pub shrink_rate: f64,
     /// Input stock target in days of use. Default 2.0. Must be >= 0.
+    /// Unused by `Firm::plan`; `operations_cover` is the fence.
     pub input_cover: f64,
     /// Output units kept on hand, in days of expected production. Default 0.5.
-    /// Must be >= 0.
+    /// Must be >= 0. Unused by `Firm::plan`; `operations_cover` is the fence.
     pub output_cover: f64,
+    /// Days of operations to retain as `stock_target`. Default 5.0. Must be >= 0.
+    /// Output on hand counts as days already converted and reduces input cover.
+    pub operations_cover: f64,
     /// Reliable-supply reserve in days of use. Default 0.5. Must be >= 0.
     pub reserve_cover: f64,
     /// Extra reserve cover when purchases missed. Default 0.5. Must be >= 0.
@@ -1257,6 +1294,9 @@ pub struct FirmConfig {
     /// Fractional move of the firm's own `amv_target` on a miss or sell-out.
     /// Default 0.05. Bound 0..=1.
     pub amv_nudge: f64,
+    /// Quote stays within this fraction of live market AMV (0.10 = +/- 10%).
+    /// Default 0.10. Bound 0..=1. Recipe floors do not clamp the quote.
+    pub quote_orbit: f64,
     /// Default dual-row margin when margin is still 0. Default 0.05. Bound 0..=1.
     pub default_margin: f64,
     /// EMA blend for rolling average toward on-hand quantity. Default 0.25.
@@ -1281,9 +1321,11 @@ impl Default for FirmConfig {
             shrink_rate: firm_constants::SHRINK_RATE,
             input_cover: firm_constants::INPUT_COVER,
             output_cover: firm_constants::OUTPUT_COVER,
+            operations_cover: firm_constants::OPERATIONS_COVER,
             reserve_cover: firm_constants::RESERVE_COVER,
             miss_reserve_bonus: firm_constants::MISS_RESERVE_BONUS,
             amv_nudge: firm_constants::AMV_NUDGE,
+            quote_orbit: firm_constants::PRICE_BAND,
             default_margin: firm_constants::DEFAULT_MARGIN,
             rolling_avg_weight: firm_constants::ROLLING_AVG_WEIGHT,
             sell_success_grow: firm_constants::SELL_SUCCESS_GROW,
@@ -1300,9 +1342,11 @@ impl FirmConfig {
         in_range(problems, "firm.shrink_rate", self.shrink_rate, 0.0, 1.0);
         at_least(problems, "firm.input_cover", self.input_cover, 0.0);
         at_least(problems, "firm.output_cover", self.output_cover, 0.0);
+        at_least(problems, "firm.operations_cover", self.operations_cover, 0.0);
         at_least(problems, "firm.reserve_cover", self.reserve_cover, 0.0);
         at_least(problems, "firm.miss_reserve_bonus", self.miss_reserve_bonus, 0.0);
         in_range(problems, "firm.amv_nudge", self.amv_nudge, 0.0, 1.0);
+        in_range(problems, "firm.quote_orbit", self.quote_orbit, 0.0, 1.0);
         in_range(problems, "firm.default_margin", self.default_margin, 0.0, 1.0);
         in_range(problems, "firm.rolling_avg_weight", self.rolling_avg_weight, 0.0, 1.0);
         in_range(problems, "firm.sell_success_grow", self.sell_success_grow, 0.0, 1.0);

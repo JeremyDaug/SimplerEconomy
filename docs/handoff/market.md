@@ -13,7 +13,7 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 | `match_orders` | One success per pass, front buy-priority group only |
 | AMV drift + leftover book pressure | **Accept only** plus a **flat ±1** opening demand/supply kick (`amv_imbalance_kick`). Reject and no-proposal do not move AMV. Leftover-book blend is **0** (off). Intra-day evaluate uses frozen `history()`. Accept blend is salability-weighted (more salable goods move less). |
 | AMV rescale | Each market day, unweighted mean of one unit of each tradeable good is scaled to 100.0 after salability, then the close is recorded. Time skipped. Trail is not rewritten. Firm AMV quotes/cost basis scale with it. Vault does not have this; it is a unit-normalization for readability |
-| Salability | Range `0..=2`. `0..=1` discounted/discovering; `>=1` at-par (no keep haircut); `>=1.8` currency. Reject lowers tender S. Day-end lerp toward `(payment/tender)*2` when tender > 0. After decay, cap at `2 * (1 - decayed/volume)`. |
+| Salability | Range `0..=2`. `0..=1` discounted/discovering; `>=1` at-par (no keep haircut); `>=1.8` currency. Reject lowers tender S; **firm** reject uses `salability_firm_reject_scale` (default 0.25) of the pop blend. Day-end lerp toward `(payment/tender)*2` when tender > 0. After decay, cap at `2 * (1 - decayed/volume)`. |
 | AMV history ring | Seed opening AMV; push close after daily rescale. Do not rescale old samples. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
@@ -27,8 +27,9 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 `self.firms`. Lookups via `as_deal_maker(_mut)`; member ids are `expect`ed.
 
 1. **Collect** `Pop` / `Firm` `create_orders`. Pop buy priority is **written**
-   from per-household total AMV vs market max. `Pop::create_orders` itself still
-   writes `POP_START` (4.0) as a placeholder.
+   from per-household total AMV vs market max, then sliced by consume
+   `shop_tier` (basic, then common, then luxury) inside the pop band.
+   `Pop::create_orders` itself still writes `POP_START` as a placeholder.
 2. **Collate** opening supply/demand/buyers/suppliers. Zero day exchange
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).
@@ -37,10 +38,10 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
    book. Matched: buyer `buy`, seller `evaluate`;
    accept -> `finalize` + wagon bill; leftover orders scale down.
    Then each pop with transport cover for the door runs
-   `next_shopping_trip` (open/parked request => offer only). Wash-closed
-   goods are skipped that day (not the same as parked/no-seller). If
-   anything posted, parked buys return and rematch. If not, parked ->
-   `unavailable_goods`. Firms do not re-emit. See `deals.md`.
+   `next_shopping_trip` (skip parked, wash-closed, and unavailable goods
+   and try the next target/tier; an open request on a still-available
+   good is offer-only). If anything posted, parked buys return and rematch.
+   If not, parked -> `unavailable_goods`. Firms do not re-emit. See `deals.md`.
 4. **Cleanup:** clear member pops' `current_orders`; leftover books are
    reported (leftover_blend 0); **flat ±1 AMV** toward heavier opening
    demand vs supply (deferred: ±1% of |AMV|, or +1 demand / −1% supply);

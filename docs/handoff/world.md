@@ -14,8 +14,9 @@ Read this only for factuals, `data/world/` TOML, or gameplay config.
 Split: **world data** (factuals) vs **init data** (scenario kickoff) vs **save
 data** (later, compressed, not for hand-editing). Init files stay short:
 shared desires, optional starter, one line per pop/firm, names or ids, defaults for
-owner/remainder/household. Current scenario has no opening pop stock. Firm `target` is process iterations; opening
-stock is each process output times that target (yesterday succeeded; Time
+owner/remainder/household. Current scenario has two pops and two remainder-owner
+firms per world good, line `target` 10 (cabins 1), no opening pop stock. Firm `target` is process iterations; opening
+stock is three decay-adjusted days of each process output (yesterday succeeded; Time
 output skipped). Hours default to target * Time input. Root arrays
 (`starter`, `pops`) must sit above `[[desires]]` so they are not swallowed
 by the last desire table. Duplicate good or process ids error. Duplicate

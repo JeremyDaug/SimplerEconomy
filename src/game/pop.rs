@@ -1487,8 +1487,8 @@ impl Pop {
     /// whether the wallet covers common/luxury. Savings is `savings_ratio`
     /// days of the cheapest basic+common basket, scaled by durability
     /// (`1 - decay_rate`); fully decaying goods get no save. Liquid parks
-    /// salability-first, then durability. Luxury leftover dump only if
-    /// leftover AMV remains.
+    /// salability-first, then durability. Leftover AMV may top up the cheapest
+    /// luxury shop, capped at one extra luxury level of that good.
     fn rewrite_shop_and_save_targets(
         &mut self,
         factuals: &Factuals,
@@ -1503,14 +1503,15 @@ impl Pop {
         let basic_need = Self::consume_need(&self.desires[0], &mut on_hand, factuals);
         let common_need = Self::consume_need(&self.desires[1], &mut on_hand, factuals);
         let mut luxury_need = HashMap::new();
+        let mut extra_luxury = HashMap::new();
         if self.desires.len() > 2 {
             luxury_need = Self::consume_need(&self.desires[2], &mut on_hand, factuals);
-            let extra = Self::consume_need(
+            extra_luxury = Self::consume_need(
                 &self.desires[2],
                 &mut HashMap::new(),
                 factuals,
             );
-            Self::merge_need(&mut luxury_need, extra);
+            Self::merge_need(&mut luxury_need, extra_luxury.clone());
         }
 
         let mut consume_need: HashMap<usize, f64> = HashMap::new();
@@ -1634,8 +1635,12 @@ impl Pop {
                     factuals,
                     market_history,
                 ) {
-                    *consume_need.entry(good_id).or_insert(0.0) += leftover_amv / price;
-                    goods.insert(good_id);
+                    let extra_units = extra_luxury.get(&good_id).copied().unwrap_or(0.0);
+                    let dump = (leftover_amv / price).min(extra_units);
+                    if dump > 0.0 {
+                        *consume_need.entry(good_id).or_insert(0.0) += dump;
+                        goods.insert(good_id);
+                    }
                 }
             }
         }
@@ -2262,6 +2267,30 @@ mod pop {
         }
 
         #[test]
+        fn stamps_shop_tier_from_the_desire_tier() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.insert(500, PopPRow::new(200.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
+            let req = |id| {
+                orders
+                    .iter()
+                    .find(|o| o.target == id && o.target_amount > 0.0)
+                    .unwrap()
+                    .shop_tier
+            };
+            assert_eq!(req(100), 0);
+            assert_eq!(req(101), 0);
+            assert_eq!(req(200), 1);
+            assert_eq!(req(201), 1);
+            assert_eq!(req(300), 2);
+        }
+
+        #[test]
         fn respect_property_filter_on_first_desires_pass() {
             let pop = make_pop();
             let pop = add_pop_desires(pop);
@@ -2328,7 +2357,7 @@ mod pop {
             assert!(orders.iter().all(|order| order.target_amount < 0.0));
             assert_eq!(orders.len(), 1);
             assert_eq!(orders[0].target, 500);
-            assert_eq!(orders[0].target_amount, -45.0);
+            assert_eq!(orders[0].target_amount, -33.0);
         }
 
         #[test]
@@ -2349,7 +2378,7 @@ mod pop {
             let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             assert_eq!(orders.len(), 1);
             assert_eq!(orders[0].target, 500);
-            assert_eq!(orders[0].target_amount, -15.0);
+            assert_eq!(orders[0].target_amount, -11.0);
         }
 
         #[test]
@@ -2396,7 +2425,7 @@ mod pop {
             assert_eq!(requests[1].target_amount, 8.0);
             assert_eq!(offers.len(), 1);
             assert_eq!(offers[0].target, 201);
-            assert_eq!(offers[0].target_amount, -12.0);
+            assert_eq!(offers[0].target_amount, -9.0);
         }
 
         #[test]
@@ -2426,7 +2455,7 @@ mod pop {
             assert_eq!(requests[0].target_amount, 10.0);
             assert_eq!(offers.len(), 1);
             assert_eq!(offers[0].target, 500);
-            assert_eq!(offers[0].target_amount, -15.0);
+            assert_eq!(offers[0].target_amount, -11.0);
         }
 
         #[test]
@@ -2482,10 +2511,10 @@ mod pop {
             let orders = pop.create_orders(&market_history, &factuals, &HashSet::new());
             let offer = orders.iter().find(|o| o.target_amount < 0.0).expect("offer");
             assert_eq!(offer.target, 500);
-            assert_eq!(offer.target_amount, -15.0);
+            assert_eq!(offer.target_amount, -11.0);
             let expected = compose_sell_priority_with(
                 factuals.config.market_priority.pop_start,
-                15.0,
+                11.0,
                 0.0,
                 factuals.config.market_priority.sell_actor_priority_floor,
                 factuals.config.market_priority.successful_sell_bonus,
@@ -2545,9 +2574,62 @@ mod pop {
             assert_eq!(requests[0].target_amount, 10.0);
             assert_eq!(offers.len(), 1);
             assert_eq!(offers[0].target, 500);
-            assert_eq!(offers[0].target_amount, -10.0);
+            assert_eq!(offers[0].target_amount, -7.0);
             assert_eq!(offers[0].counter_offer, Some(100));
             assert_eq!(requests[0].counter_offer, Some(500));
+        }
+
+        #[test]
+        fn skips_unavailable_and_posts_the_next_shop_good() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.insert(500, PopPRow::new(20.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let mut skip = HashSet::new();
+            skip.insert(100);
+            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
+            let request = orders.iter().find(|o| o.target_amount > 0.0).expect("request");
+            assert_eq!(request.target, 101);
+            assert_eq!(request.target_amount, 10.0);
+        }
+
+        #[test]
+        fn open_request_on_an_unavailable_good_does_not_block_the_next() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.insert(500, PopPRow::new(20.0));
+            pop.current_orders.push(MarketOrder::request_order(
+                Actor::Pop(0),
+                100,
+                10.0,
+                market_priority::POP_START,
+            ));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let mut skip = HashSet::new();
+            skip.insert(100);
+            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
+            let request = orders.iter().find(|o| o.target_amount > 0.0).expect("request");
+            assert_eq!(request.target, 101);
+        }
+
+        #[test]
+        fn does_not_extra_desire_when_remaining_shop_is_unavailable() {
+            let pop = make_pop();
+            let pop = add_pop_desires(pop);
+            let mut pop = add_pop_targets(pop);
+            pop.property.insert(500, PopPRow::new(20.0));
+
+            let factuals = make_default_factuals();
+            let market_history = make_default_market_history();
+            let skip: HashSet<usize> = [100, 101, 200, 201, 300].into_iter().collect();
+            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
+            assert!(orders.iter().all(|o| o.target_amount < 0.0));
         }
 
         #[test]
@@ -2569,7 +2651,7 @@ mod pop {
             assert!(orders.iter().all(|o| o.target_amount < 0.0));
             assert_eq!(orders.len(), 1);
             assert_eq!(orders[0].target, 500);
-            assert_eq!(orders[0].target_amount, -16.0);
+            assert_eq!(orders[0].target_amount, -12.0);
         }
 
         #[test]
@@ -2608,7 +2690,7 @@ mod pop {
             assert_eq!(requests[0].target_amount, 10.0);
             assert_eq!(offers.len(), 1);
             assert_eq!(offers[0].target, 500);
-            assert_eq!(offers[0].target_amount, -10.0);
+            assert_eq!(offers[0].target_amount, -7.0);
         }
 
         #[test]
@@ -3712,8 +3794,29 @@ mod pop {
 
             pop.record_keeping(&factuals, &history);
 
-            // Unsatisfied 2 + extra level 2 + leftover 100 AMV at price 1.
-            assert!(pop.property[&300].shop_target >= 104.0);
+            // Unsatisfied 2 + extra level 2 + leftover dump capped at one extra
+            // level (2), not the full 100 AMV at price 1.
+            let got = pop.property[&300].shop_target;
+            assert!((got - 6.0).abs() < 1e-12, "got {got}");
+        }
+
+        #[test]
+        fn leftover_luxury_dump_cannot_exceed_one_extra_level() {
+            let mut pop = make_pop();
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                2.0,
+            ));
+            pop.property.insert(300, PopPRow::new(0.0));
+            pop.property.insert(500, PopPRow::new(10_000.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            let got = pop.property[&300].shop_target;
+            assert!(got <= 6.0 + 1e-12, "got {got}");
         }
 
         #[test]

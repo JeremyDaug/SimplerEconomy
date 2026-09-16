@@ -433,21 +433,23 @@ Per-good warehouse ledger. Groups: stock, planning targets, exchange, production
 
 | Preferred | Meaning | Code |
 |-----------|---------|------|
-| **stock target** | Operating inventory after shopping (producers: before production; merchants: before selling) | `stock_target` |
+| **stock target** | Secondary operations want: decay-adjusted [`operations_cover`] days of expected daily flow. Perishable goods shrink the hold; durables overshoot so the cover survives one night. Remainder leftover respects this fence. Wages may raid it down to today's use or sell plan. Outputs and inputs share the budget; output on hand reduces input days | `stock_target`, `operations_hold_days` |
+| **operations cover** | Days of operations to aim to hold (default 5). Adjusted for decay before it becomes `stock_target`. Remainder leftover uses the adjusted fence; wages use a one-day operating floor. Recap fills input stock and today's recipe/wages, not the output pile | `operations_cover`, `FirmConfig::operations_cover` |
 | **reserve** (firm) | Live stockpile guarantee; still in `quantity`; not offered for sale. Synced ASAP to `min(quantity, reserve_target)`. Not the same as pop `reserved` (today's consume earmark) | `reserve` |
 | **reserve target** | Policy floor for the stockpile guarantee. Planning raises or lowers it from missed purchase/sell/use targets | `reserve_target` |
 | **purchase target** / **sell target** | Units to buy / sell today. Independent so merchants can buy-for-resale | `purchase_target`, `sell_target` |
 | **use target** | Sum of production-line targets for this good (rollup, not a budget). Lines budget themselves | `use_target` |
-| **full line** | One complete process iteration (the recipe as written). A line starting from 0 snaps to at least 1 so the day's output can be sold under whole-unit exchange | `next_line_target` in `Firm::plan` |
+| **full line** | One complete process iteration (the recipe as written). A line starting from 0 snaps to at least 1 so the day's output can be sold under whole-unit exchange | `next_line_target` / `step_quota` in `Firm::plan` |
+| **aim** | Expected recurring production-line scale in iterations. Plan lerps this toward throughput evidence. The day's **quota** (`target`) steps ±10/20% around it on a hit or miss, and lerps toward aim on quiet days | `ProductionLine.aim` |
 | **keep-alive** | Emergency subsidy: collapsed lines floor at 1 iteration; missing recipe inputs and a coin float are credited. Default off (`firm.keep_alive` / tester `keep_alive on`) | `Firm::apply_keep_alive` |
 | **average cost** | Inventory cost basis (AMV of purchases and of goods that went into producing the stock). Not today's unit buy price | `average_cost` |
 | **average price** | Realized average sale AMV | `average_price` |
 | **bought AMV** / **sold AMV** | Total AMV spent / received today. Unit AMV = total / units | `bought_amv`, `sold_amv` |
-| **AMV target** | Standing unit AMV for buying and/or selling. If the row both buys and sells, this is the midpoint and margin splits bid from ask. `Firm::plan` nudges this as the firm's own quote (not a lerp onto live market AMV). Confidence scales how fast it moves | `amv_target` |
-| **AMV bound** | Recipe-derived planning guidestone. **None** = not a process input or output (barter / till / merchant restock). **Minimum** = sell floor on an output. **Maximum** = buy cap on an input. **MinMax** = both, for an in-firm intermediate (produced and used here). `Firm::plan` writes residual WTP as the buy cap and input-cost rollup as the sell floor. Bounds do **not** skip, clamp, or void trades: `create_orders` posts the row's own bid/ask even when market AMV is above the cap, and `form_buy_proposal` / `Firm::buy` still form a basket when payment AMV is above the bound. Later: headroom vs market for shrinking a line | `amv_bound`, `FirmAmvBound` |
+| **AMV target** | Firm **quote**: the exchange unit AMV this row wants. Plan walks it (or quota) by predicted profit and clamps it to ±`quote_orbit` (default 10%) of live market AMV. Used as bid/ask in `Firm::evaluate` keep (ask when giving, bid when receiving). Not the recipe cost floor. Not a lerp onto market AMV | `amv_target`, `quote_orbit` |
+| **AMV bound** | Recipe-derived **cost safety line**, not the quote. **None** / **Minimum** (sell floor) / **Maximum** (buy cap) / **MinMax**. Plan still writes it. It does not clamp `amv_target` and does not skip trades | `amv_bound`, `FirmAmvBound` |
 | **available** (firm) | `quantity - reserve` | `FirmPRow::available` |
 | **sellable** | `quantity - max(reserve, reserve_target)`, floored at 0 | `FirmPRow::sellable` |
-| **sell success** | How much of today's sell plan sold: `sold / sell_target`. If `sell_target` is 0, `sold / produced`. Not an order **fill**. Not `SUCCESSFUL_SELL_BONUS` (that is a sell-weight add after a matched sell). At or above `sell_success_grow` (0.80) is strong demand (may grow sell/production). Below `sell_success_shrink` (0.50) is a miss. Between the two is quiet | `sell_success` local and `FirmRecords.sell_success`; tunables `sell_success_grow` / `sell_success_shrink` |
+| **sell success** | How much of today's sell plan was disposed: `(sold + placed_credited) / sell_target`. If `sell_target` is 0, that over `produced`. **Sold** is market deals. **Placed** is in-kind to workers or the remainder owner at market AMV, credited only up to the operations fence (a dump above the fence is not a hit). Not an order **fill**. Not `SUCCESSFUL_SELL_BONUS`. At or above `sell_success_grow` (0.80) is strong demand. Below `sell_success_shrink` (0.50) is a miss. Between the two is quiet | `sell_success`, `placed`, `placed_credited`; tunables `sell_success_grow` / `sell_success_shrink` |
 
 ### Firm records
 **Preferred:** firm records  
@@ -457,7 +459,8 @@ Rolled-up day memory for planning, written in `Firm::record_keeping` before `Fir
 
 | Preferred | Meaning | Code |
 |-----------|---------|------|
-| **realized profit** | Sold AMV vs cost of what sold: firm-wide `sold_amv / sold_cost_amv`, per-good `sold_unit_amv / average_cost`. 0 if the row meant to sell and sold nothing. Not process AMV-out / AMV-in (that is **productivity**, used to rank peer lines) | `profit_ratio`, `profit_avg`; `realized_profit_of` |
+| **realized profit** | Disposed AMV vs cost: market `sold_amv` plus fence-capped `placed_amv` over that qty times `average_cost`. 0 if the row meant to sell and disposed nothing. Not process AMV-out / AMV-in (**productivity**) | `profit_ratio`, `profit_avg`; `realized_profit_of` |
+| **placed** | In-kind transfer to workers or remainder owner at market AMV, not a deal price. Planning credits `min(placed, stock_fence)` | `placed`, `placed_amv`, `Firm::record_placed` |
 
 Firm **consumed** covers both Destroyed and Consumed process inputs; decay products of Consumed inputs are recorded as **produced** on the result goods. Capital is recorded as **used**, not consumed. Factors are not moved.
 
@@ -580,17 +583,25 @@ Wages do not yet track market Time AMV (pops cannot move or resize).
 **Avoid:** unlimited profit (stock fence and growth still hold), trigger
 
 **Meaning:** Flag on [`Owners`] (`remainder`). The living owner pop takes
-leftover till after wages, worker profit shares, **stock fence**,
+leftover till after wages, worker profit shares, **stock fence**
+(operations cover on inputs and outputs),
 **growth target**, and **posted sell**. Posted sell is `min(sell_target,
 max market salability * daily output)` for goods the firm makes. Direct owner-operator. Distinct from **profit share**
 (`profit_share` 0..=1 of yesterday `sold_amv - sold_cost_amv`): a limited
 dividend / partial owner / LLC, where the firm keeps the rest. Remainder
 runs even when yesterday's profit is 0. Paid high salability first, skipping
-Time. On a loss (yesterday profit AMV <= 0) the remainder owner also covers
-the AMV shortfall between needs (recipe inputs, wage basket, stock fence)
-and on-hand goods, from unreserved stock, whole units, skipping Time:
-missing inputs, missing wage goods, production outputs, then exchange.
-Limited owners do not cover. `Firm::plan` does not write `growth_target` yet.
+Time. Those units record as `placed` at market AMV; planning credits only
+up to the operations fence. Owner-operator hours are always due: a remainder
+owner on the workforce gives claimed Time even if unpaid. After wages they
+also top up any remaining recipe Time shortfall from their own Time. On a
+loss (yesterday profit AMV <= 0) they cover the AMV shortfall between needs
+(recipe inputs, wage basket, **input** stock fence) and on-hand goods, from
+unreserved stock, whole units: missing inputs, missing wage goods,
+production outputs, then exchange. Time recap is a unit transfer, not AMV.
+Output operations stock is retain-only and is not recapped.
+Limited owners do not cover. `Firm::plan` writes `growth_target` as extra
+output above `aim` on a grow decision, and 0 when the line is missing,
+shrinking, or quiet.
 
 **Code:** `Owners.remainder`, `Firm::with_owner_remainder`,
 `LaborSettlement::settle`

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::game::actor::Actor;
 use crate::game::deal::transport_cover_on_hand;
 use crate::game::factuals::Factuals;
+use crate::game::config::market_constants;
 use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::{compose_sell_priority_with, MarketOrder};
@@ -131,15 +132,17 @@ impl Pop {
     /// that one good (ceil request, floor offer) so later fills can scale the
     /// same order down instead of re-emitting.
     ///
-    /// Request pick: remaining desire-shop shortfall, then parked shop, then
-    /// one extra desire load that was not on the shop plan. Offer pick: after
-    /// covering that request's AMV, the lowest-importance leftover free good.
+    /// Request pick: remaining desire-shop shortfall, then parked shop.
+    /// Skip `unavailable` (no seller / parked miss / wash-closed) and try
+    /// the next target, then the next consume tier. If this tier has nothing
+    /// buyable and a higher tier is gated, stop buying (offers may still
+    /// re-up). Extra desire loads only run when the shop plan is filled.
     ///
     /// Caller should sync [`Self::current_orders`] to this pop's live book
-    /// first. If a request is still open (including a parked miss), only an
-    /// offer is considered. Otherwise one new request is posted, then one
-    /// offer. Cover AMV includes still-open requests so the trip does not
-    /// list the last tender.
+    /// first. An open request on a still-available good blocks a new
+    /// request (offer only). A request whose good is unavailable does not.
+    /// Cover AMV includes still-open requests so the trip does not list
+    /// the last tender.
     pub fn next_shopping_trip(
         &mut self,
         market_history: &MarketHistory,
@@ -153,7 +156,9 @@ impl Pop {
         let mut seen = HashSet::new();
         let mut remaining_budget = f64::MAX;
         let mut request_amv = request_amv_of(self.current_orders.iter(), market_history);
-        let has_request = self.current_orders.iter().any(|order| order.target_amount > 0.0);
+        let has_request = self.current_orders.iter().any(|order| {
+            order.target_amount > 0.0 && !unavailable.contains(&order.target)
+        });
 
         if !has_request {
             self.push_shop_requests(
@@ -210,7 +215,7 @@ impl Pop {
                     1,
                 );
             }
-            if orders.is_empty() {
+            if orders.is_empty() && !self.has_buyable_shop_shortfall(factuals, None) {
                 self.push_one_extra_desire_request(
                     &mut orders,
                     &mut request_amv,
@@ -433,6 +438,7 @@ impl Pop {
                         unavailable,
                         pop_start,
                         true,
+                        tier as u8,
                     );
                 }
             }
@@ -443,7 +449,9 @@ impl Pop {
             .property
             .iter()
             .filter(|(id, row)| {
-                !seen.contains(id) && row.shop_target > 0.0
+                !seen.contains(id)
+                    && row.shop_target > 0.0
+                    && !self.desire_targets_good(**id)
             })
             .map(|(&id, _)| id)
             .collect();
@@ -463,8 +471,15 @@ impl Pop {
                 unavailable,
                 pop_start,
                 false,
+                0,
             );
         }
+    }
+
+    fn desire_targets_good(&self, good: usize) -> bool {
+        self.desires.iter().flatten().any(|desire| {
+            desire.target.iter().any(|target| target.good == good)
+        })
     }
 
     fn has_shop_shortfall(&self, tier: usize) -> bool {
@@ -495,6 +510,7 @@ impl Pop {
         unavailable: &HashSet<usize>,
         pop_start: f64,
         require_row: bool,
+        shop_tier: u8,
     ) {
         if seen.contains(&good) || unavailable.contains(&good) {
             return;
@@ -514,12 +530,15 @@ impl Pop {
         }
         seen.insert(good);
         let cost = purchase * market_history.price(good);
-        orders.push(MarketOrder::request_order(
-            Actor::Pop(self.id),
-            good,
-            purchase,
-            pop_start,
-        ));
+        orders.push(
+            MarketOrder::request_order(
+                Actor::Pop(self.id),
+                good,
+                purchase,
+                pop_start,
+            )
+            .with_shop_tier(shop_tier),
+        );
         *remaining_budget -= cost;
         *request_amv += cost;
     }
@@ -578,12 +597,15 @@ impl Pop {
                         continue;
                     }
                     let cost = purchase * market_history.price(target.good);
-                    orders.push(MarketOrder::request_order(
-                        Actor::Pop(self.id),
-                        target.good,
-                        purchase,
-                        pop_start,
-                    ));
+                    orders.push(
+                        MarketOrder::request_order(
+                            Actor::Pop(self.id),
+                            target.good,
+                            purchase,
+                            pop_start,
+                        )
+                        .with_shop_tier(tier_idx as u8),
+                    );
                     *request_amv += cost;
                     return;
                 }
@@ -640,9 +662,15 @@ impl Pop {
 
         let prio = &factuals.config.market_priority;
         for item in leftovers {
+            let offer = crate::game::util::whole_units(
+                item.units * (1.0 - market_constants::TENDER_WALLET_FLOOR),
+            );
+            if offer < 1.0 {
+                continue;
+            }
             let weight = compose_sell_priority_with(
                 pop_start,
-                item.units,
+                offer,
                 0.0,
                 prio.sell_actor_priority_floor,
                 prio.successful_sell_bonus,
@@ -650,7 +678,7 @@ impl Pop {
             orders.push(MarketOrder::offer_order(
                 Actor::Pop(self.id),
                 item.good,
-                -item.units,
+                -offer,
                 weight,
             ));
         }

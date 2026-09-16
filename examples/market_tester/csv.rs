@@ -670,10 +670,14 @@ mod csv_should {
         assert_eq!(fmt_actor(Actor::Pop(1)), "pop1-grain");
         assert_eq!(fmt_actor(Actor::Pop(18)), "pop18-bronze_mirror");
         assert_eq!(fmt_actor(Actor::Pop(28)), "pop28-time");
+        assert_eq!(fmt_actor(Actor::Pop(29)), "pop29-grain");
+        assert_eq!(fmt_actor(Actor::Pop(56)), "pop56-time");
         assert_eq!(csv_actor_col(Actor::Pop(1)), "pop1_grain");
         assert_eq!(fmt_actor(Actor::Firm(1)), "firm1-grain");
         assert_eq!(fmt_actor(Actor::Firm(18)), "firm18-bronze_mirror");
         assert_eq!(fmt_actor(Actor::Firm(28)), "firm28-time");
+        assert_eq!(fmt_actor(Actor::Firm(29)), "firm29-grain");
+        assert_eq!(fmt_actor(Actor::Firm(56)), "firm56-time");
         assert_eq!(csv_actor_col(Actor::Firm(1)), "firm1_grain");
     }
 

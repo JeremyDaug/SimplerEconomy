@@ -10,8 +10,10 @@ are skipped on purpose.
 ## Time (good id 0)
 
 Id 0 on purpose (exception to "0 means none" for goods). Transport 1.0.
-**Untradeable.** Not on `MarketOrder`s. Time AMV is stamped from labor
-contracts (hours-weighted wage AMV), not leftover book pressure. Decays
+**Untradeable.** Not on `MarketOrder`s. Time AMV is an hours-weighted lerp
+of the going Time AMV toward paid AMV / hours (`labor.time_amv_blend`,
+default 0.15). Unpaid hours vote the going rate so a token dump cannot snap
+the labor unit. Not leftover book pressure. Decays
 100%/day into nothing. Pops receive `TIME_PER_LABOR`
 (48) * household labor at `Pop::start_day` (adult 1.0, elder 0.7, child 0.3).
 Every world process spends a little time as a destroyed input. Pops cannot buy
@@ -29,8 +31,9 @@ PlayState labor fire is still a stub.
 - One pop, one employer. A firm may have several worker pops.
 - Hours are Time units. Scaling pay is per time unit; **flat** is a lump paid
   last.
-- Short till: never spend the **stock fence** (`stock_target` /
-  `reserve_target`). Wages may raid **growth target**. Worker profit share
+- Short till: remainder never spends the **stock fence** (`stock_target` /
+  `reserve_target`). Wages may raid the operations buffer down to today's
+  use or sell plan, and may raid **growth target**. Worker profit share
   of yesterday `sold_amv - sold_cost_amv` is paid after wages. Owner is
   either **remainder** (leftover till, owner-operator) or a limited
   **profit share** (dividend / partial owner). Remainder is cut first after
@@ -44,7 +47,10 @@ PlayState labor fire is still a stub.
   so leftover remainder cannot take them back the same morning. Limited
   owners do not cover. Vault `Firms.md` does not spell this out; Owners
   rustdoc already says they are accountable for losses.
-- Partial pay withholds Time linearly in AMV paid / AMV promised.
+- Hired-worker partial pay withholds Time linearly in AMV paid / AMV promised.
+  Remainder owner-operators always give claimed hours. After wages, the
+  remainder owner tops up any remaining recipe Time shortfall from their
+  own Time (unit transfer, not AMV).
 - `growth_target` is read at settle; `Firm::plan` does not write it yet.
 
 `work_time_fraction` 0.5 is a **cap** on claimed Time (stand-in until culture /

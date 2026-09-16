@@ -24,7 +24,7 @@ shortfall; already-at-cap stock is left alone), then market / consume /
 decay / pop `record_keeping`. `day N` stops if any good AMV is negative
 and prints the day and those goods. No firm production, plan, or
 `keep_alive`.
-Caps follow init firm `target` × process output (Time output caps pop 28).
+Caps follow init firm `target` × process output (Time output caps pops 28 and 56).
 
 ## Market tester
 
@@ -36,21 +36,22 @@ default off).
 of the output, one process per good; Time is process 28). Starting pops and
 firms: `data/init/` (`InitData`). Opening AMV/sal: `roster.rs`.
 Opening AMV 100.0 / salability 0.1 (`roster.rs`).
-Living roster: one pop and one firm per world good, 1 household each.
-Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop28-time`); `pop1` still parses.
-Firm labels match (`firm1-grain`, `firm1`); `firm 1` still parses.
+Living roster: two pops and two firms per world good, 1 household each.
+Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop28-time`, `pop29-grain`); `pop1` still parses.
+Firm labels match (`firm1-grain`, `firm29-grain`, `firm1`); `firm 1` still parses.
 Each firm is the matching pop's remainder owner-operator, one specialty line,
-`target` 10 (150 output), no wage basket. Opening stock is process outputs
-times line target (sell target matches opening qty; posted sell is capped
-by max market salability * daily output; Time starts empty). Pop morning specialty
+`target` 10 (150 output) except cabins at `target` 1 (15 output), no wage basket. Opening stock is three decay-adjusted
+days of process output (`OPENING_COVER_DAYS`) with `stock_target` matching that
+buffer and `sell_target` equal to one day's output; posted sell is capped
+by max market salability * daily output; Time starts empty. Pop morning specialty
 grant is 0.
-Grouped consume desires (basic food/hydration/heating/housing, common
-utility/improved food/materials/health, luxury shiny tokens/libations) are
+Grouped consume desires (basic food/hydration/heating, common
+housing/utility/improved food/materials/health, luxury shiny tokens/libations) are
 duplicated onto every pop at 1 unit per member (5 units). **No** opening
 1-of-each kit (init starter empty; `DAILY_ENDOWMENT` 0). Boot `record_keeping`
 writes shop targets. Each morning: `start_day` Time
 (`TIME_PER_LABOR` 64 * household labor). Specialty output comes from the
-firm (`FIRM_HOURS` 10; `pop.id % n_goods`; pop 28's firm makes Time and
+firm (hours = target * Time input, so 10 Time, cabins 1; `pop.id % n_goods`; pops 28 and 56 make Time and
 cannot sell it). `DAILY_OUTPUT` is 0. Opening AMV is 100.0 and salability 0.1 on every good (no money good,
 no price spread). Coin is `gold_token`; iron ore is `iron`.
 
@@ -95,9 +96,9 @@ stats, and AMV (now, day diff, trail trend, salability). `day N` adds a one-line
 after the loop.
 
 Working pops emit **requests and leftover offers**, with desires set
-outright (not from demographics). No merchants. `build_world` returns one
-remainder-owner firm per pop; line `target` 10 (hours follow Time input)
-and opening stock is outputs times target. No cargo goods. Leftover AMV is lib (`market.md`), not tester.
+outright (not from demographics). No merchants. `build_world` returns two remainder-owner firms per good (one per pop);
+line `target` 10 except cabins at 1 (hours follow Time input) and opening stock is three
+decay-adjusted days of output. No cargo goods. Leftover AMV is lib (`market.md`), not tester.
 
 ## CSV
 

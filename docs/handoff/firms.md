@@ -9,7 +9,7 @@ realized profit, AMV bound). Do not copy them here.
 | Piece | Status |
 |-------|--------|
 | `FirmPRow` + helpers | Landed |
-| `run_production` | Landed + tests. Tester `day` calls it. Living roster firms work 10 Time for 150 output. PlayState production still `todo!()` |
+| `run_production` | Landed + tests. Tester `day` calls it. Living roster firms work 10 Time for 150 output (cabins 1 Time / 15). PlayState production still `todo!()` |
 | Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
 | `record_keeping` | Rolling average + `FirmRecords`, then `plan` |
@@ -26,6 +26,9 @@ call it out, do not "fix" the live order unless asked.
 ## Invariants
 
 - `reserve` is a stockpile guarantee (`sync_reserve` = `min(quantity, reserve_target)`). Not pop `reserved`.
+- `stock_target` is decay-adjusted `operations_cover` days (default 5): shrink the hold when a full pile would lose more than one day's output to rot; overshoot when it would not. Remainder leftover uses that fence. Wages may raid it down to today's use or sell plan (`wage_fence`). Recap does not fill output stock. Init opening stock is `OPENING_COVER_DAYS` (3) decay-adjusted days of output, not the live fence, with `sell_target` equal to one day's output.
+- Cold / idle `target` 0 stays 0 until something actually sells. Do not treat a dead shop as a restart problem unless asked.
+- In-kind remainder/wage transfers record `placed` at market AMV. Sell success and realized profit credit `min(placed, stock_fence)` plus market `sold`. Dump above the fence is not a hit.
 - `sellable` = `quantity - max(reserve, reserve_target)`. `free_for_market` adds stock/use fences when `use_target` > 0.
 - `clear_day_flows` is day start (totals stay visible overnight). `decay_goods`
   returns `used` then decays `quantity`, then moves `held` into `quantity`.
@@ -34,8 +37,8 @@ call it out, do not "fix" the live order unless asked.
 
 Helpers: `available`, `sellable`, `free_for_market`, `purchase_qty`, `mid_amv`,
 `bid_amv` / `ask_amv`, labor fences `stock_fence` / `wage_spendable` /
-`profit_spendable`. `growth_target` is read at labor settle; `plan` does not
-write it yet.
+`profit_spendable`. `plan` writes `growth_target` as the expansion gap
+(quota above aim) on a grow decision, else 0.
 
 ## Production
 
@@ -51,7 +54,8 @@ blends consumed-input AMV only — used capital is not in that blend
 do not invent a third model.
 
 A line starting from 0 snaps to at least 1 iteration. Missing inputs throttle
-the run (`last_missing_goods`); they do **not** shrink the line in `plan`.
+the run (`last_missing_goods`). `plan` walks quota toward last iterations
+on a run miss (floor 1).
 
 ## Plan
 
@@ -59,15 +63,22 @@ the run (`last_missing_goods`); they do **not** shrink the line in `plan`.
 `planning_lerp_rate` (growth/shrink steps are `growth_rate` / `shrink_rate`).
 
 1. **Gather:** line **productivity** (process AMV-out / AMV-in, peer rank);
-   per output **realized profit** (sold unit AMV / average cost), sell success,
-   stockpile vs `output_cover`, decay, own vs market AMV. Competitor quotes are
-   `None` until other firms are passed in.
-2. **Adjust:** from a quiet baseline, nudge sell plan and own quote. **Do not
-   grow sell or production unless sell success >= `sell_success_grow`.** Then
-   equalize peer lines and align output to the sell plan. Cold-start keeps the
-   line and the sell plan. `target: None` stays None.
+   per output **realized profit**, market `sold`, sell-meeting counts, own vs
+   market AMV. Competitor quotes are `None` until other firms are passed in.
+2. **Adjust:** `aim` lerps toward throughput evidence. Then one walk step
+   (raise/cut quote, raise/cut quota, or stay) scored as
+   `expected_sold * quote - qty * unit_cost`. Expected sold uses the EMA of
+   market `sold` (`sold_avg`, not remainder `placed`) and blended meeting
+   counts. Cuts only fire on a blended miss (`sell_success_shrink`); raises
+   only on a blended hit. Raise quota is skipped when the line is underwater
+   unless extra units are predicted to sell. Near-tied scores pick the step
+   closer to a full clear. Stay / quote-only days lerp quota toward `aim`.
+   A run miss still walks quota toward last iterations. Shrink step matches
+   growth (`shrink_rate` 0.10). Orbit live market AMV by ±`quote_orbit`.
+   Cold-start keeps the line. `target: None` stays None.
 3. **Rollup:** input use/stock/purchase/reserve, AMV bounds, merchant restock.
-   Does not overwrite output sell/AMV from adjust. Merchant-only rows restock
+   `stock_target` is `operations_cover` days of output, with remaining days
+   as input cover. Does not overwrite output sell/AMV from adjust. Merchant-only rows restock
    what sold and keep `amv_bound` None. Till / barter with no recipe role: leave
    alone.
 
