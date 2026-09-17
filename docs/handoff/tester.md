@@ -36,18 +36,20 @@ default off).
 of the output, one process per good; Time is process 28). Starting pops and
 firms: `data/init/` (`InitData`). Opening AMV/sal: `roster.rs`.
 Opening AMV 100.0 / salability 0.1 (`roster.rs`).
-Living roster: two pops and two firms per world good, 1 household each.
-Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop28-time`, `pop29-grain`); `pop1` still parses.
-Firm labels match (`firm1-grain`, `firm29-grain`, `firm1`); `firm 1` still parses.
-Each firm is the matching pop's remainder owner-operator, one specialty line,
-`target` 10 (150 output) except cabins at `target` 1 (15 output), no wage basket. Opening stock is three decay-adjusted
+Living roster: eight remainder owner-operators (grain, water, bread, gold,
+wood, cabins; two grain, two water). 1 household each.
+Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop3-bread`); `pop1` still parses.
+Firm labels match (`firm1-grain`, `firm3-bread`, `firm1`); `firm 1` still parses.
+Each firm is the matching pop's remainder owner-operator, one specialty line
+plus three subsistence lines, `target` 8 on grain/water/wood, 5 on bread/gold,
+2 on cabins, no wage basket. Opening stock is three decay-adjusted
 days of process output (`OPENING_COVER_DAYS`) with `stock_target` matching that
 buffer and `sell_target` equal to one day's output; posted sell is capped
 by max market salability * daily output; Time starts empty. Pop morning specialty
 grant is 0.
-Grouped consume desires (basic food/hydration/heating, common
-housing/utility/improved food/materials/health, luxury shiny tokens/libations) are
-duplicated onto every pop at 1 unit per member (5 units). **No** opening
+Village consume desires (basic food/hydration/heating, common housing plus
+improved food, luxury gold) are duplicated onto every pop: 1 unit per member
+(5 units) except housing (1 cabin per household). **No** opening
 1-of-each kit (init starter empty; `DAILY_ENDOWMENT` 0). Boot `record_keeping`
 writes shop targets. Each morning: `start_day` Time
 (`TIME_PER_LABOR` 64 * household labor). Specialty output comes from the

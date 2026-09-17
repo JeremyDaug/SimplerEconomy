@@ -94,6 +94,9 @@ pub struct Firm {
     /// Refreshed at market open. Incoming units fill this (and `use_target`)
     /// at full AMV, then stock/growth bands, then unused haircut.
     pub household_needs: HashMap<usize, f64>,
+    /// Owner household headcount, cached at labor settle. 0 if unknown.
+    /// Self-supplying remainder shops use this to floor subsistence lines.
+    pub owner_household_size: f64,
 }
 
 /// # Firm Records
@@ -119,6 +122,9 @@ pub struct FirmRecords {
     pub sell_success: f64,
     /// EMA of [`Self::sell_success`].
     pub sell_success_avg: f64,
+    /// Share of today's disposed AMV that was in-kind (`placed_amv / (placed_amv + sold_amv)`).
+    /// 0 if nothing was placed or sold. A reading, not a garden policy.
+    pub self_supply: f64,
 }
 
 impl Default for FirmRecords {
@@ -131,6 +137,7 @@ impl Default for FirmRecords {
             profit_avg: 1.0,
             sell_success: 1.0,
             sell_success_avg: 1.0,
+            self_supply: 0.0,
         }
     }
 }
@@ -454,6 +461,7 @@ impl Firm {
             records: FirmRecords::new(),
             transport_spent: 0.0,
             household_needs: HashMap::new(),
+            owner_household_size: 0.0,
         }
     }
 
@@ -539,7 +547,9 @@ impl Firm {
             self.apply_keep_alive_float(factuals);
         }
 
-        for i in 0..self.production_line.len() {
+        self.pay_complexity_time(factuals);
+        let order = self.production_run_order(factuals, market);
+        for i in order {
             if factuals.config.firm.keep_alive {
                 self.apply_keep_alive_line(factuals, i);
             }
@@ -646,6 +656,88 @@ impl Firm {
         }
 
         effects
+    }
+
+    /// Destroyed Time for the firm-wide complexity tax, taken before any
+    /// line runs so overhead limits how much production can follow.
+    fn pay_complexity_time(&mut self, factuals: &Factuals) {
+        let need = self.complexity_time_need(factuals);
+        if need <= 0.0 {
+            return;
+        }
+        let have = self
+            .property
+            .get(&TIME)
+            .map(|row| row.production_stock())
+            .unwrap_or(0.0);
+        let take = need.min(have.max(0.0));
+        if take <= 0.0 {
+            return;
+        }
+        let row = self.property.entry(TIME).or_insert_with(FirmPRow::new);
+        row.take_for_production(take);
+        row.consumed += take;
+        row.sync_reserve();
+    }
+
+    /// Run lines that feed other lines' required inputs first, then higher
+    /// recipe AMV profit, so `held` can pay the next recipe the same day.
+    fn production_run_order(&self, factuals: &Factuals, market: &Market) -> Vec<usize> {
+        let mut needed = HashSet::new();
+        for line in &self.production_line {
+            if line.target.unwrap_or(0.0) <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for input in &process.inputs {
+                if input.good == TIME
+                    || input.is_optional()
+                    || matches!(input.input_type, crate::game::process::InputType::Factor)
+                {
+                    continue;
+                }
+                needed.insert(input.good);
+            }
+        }
+        let price = |good: usize| {
+            market
+                .goods
+                .get(&good)
+                .map(|row| row.amv.max(0.0))
+                .unwrap_or(0.0)
+        };
+        let mut order: Vec<usize> = (0..self.production_line.len()).collect();
+        order.sort_by(|&a, &b| {
+            let feed = |i: usize| {
+                factuals
+                    .processes
+                    .get(&self.production_line[i].process)
+                    .is_some_and(|process| {
+                        process
+                            .outputs
+                            .iter()
+                            .any(|output| needed.contains(&output.good))
+                    })
+            };
+            let profit = |i: usize| {
+                factuals
+                    .processes
+                    .get(&self.production_line[i].process)
+                    .map(|process| process.recipe_profit_ratio(price))
+                    .unwrap_or(0.0)
+            };
+            feed(b)
+                .cmp(&feed(a))
+                .then_with(|| {
+                    profit(b)
+                        .partial_cmp(&profit(a))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then(a.cmp(&b))
+        });
+        order
     }
 
     /// Emergency keep-alive wage float: floor hours at 1 and credit coin.
@@ -1077,6 +1169,9 @@ pub struct ProductionLine {
     /// Snapshot of Abstract Market Value (AMV) for every good that was **produced**
     /// (outputs + decay) during the last production run.
     pub last_amv_produced: f64,
+    /// Consecutive plan days this line sat at `target` 0 with no leftover-buy
+    /// demand. Specialized lines drop after [`FirmConfig::abandon_idle_days`].
+    pub idle_days: u32,
 }
 
 /// # Firm AMV Bound
@@ -2076,7 +2171,7 @@ mod firm {
     use crate::game::factuals::Factuals;
     use crate::game::good::Good; // if you need Good defs
     use crate::game::market::{Market, MarketGood};
-    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect};
+    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessEffect, ProcessTag};
     use std::collections::{HashMap, HashSet};
     use crate::game::firm::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
 
@@ -2138,10 +2233,12 @@ mod firm {
             last_missing_goods: vec![],
             last_amv_consumed: 0.0,
             last_amv_produced: 0.0,
+            idle_days: 0,
         }
     }
 
     mod run_production_should {
+        use crate::game::good::TIME;
         use crate::game::process::InputEffect;
         use super::*;
 
@@ -2172,6 +2269,7 @@ mod firm {
                 last_missing_goods: vec![],
                 last_amv_consumed: 0.0,
                 last_amv_produced: 0.0,
+                idle_days: 0,
             });
 
             let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0)]);
@@ -2444,6 +2542,7 @@ mod firm {
                 last_missing_goods: vec![],
                 last_amv_consumed: 0.0,
                 last_amv_produced: 0.0,
+                idle_days: 0,
             });
 
             let market = make_market_with_amvs(&[(30, 2.0), (40, 8.0)]);
@@ -2496,6 +2595,7 @@ mod firm {
                 last_missing_goods: vec![],
                 last_amv_consumed: 0.0,
                 last_amv_produced: 0.0,
+                idle_days: 0,
             });
 
             let market = make_market_with_amvs(&[(10, 5.0), (20, 12.0), (50, 100.0)]);
@@ -2539,6 +2639,7 @@ mod firm {
                 last_missing_goods: vec![],
                 last_amv_consumed: 0.0,
                 last_amv_produced: 0.0,
+                idle_days: 0,
             });
 
             let market = make_market_with_amvs(&[(10, 3.0), (99, 50.0)]);
@@ -2574,6 +2675,7 @@ mod firm {
                 last_missing_goods: vec![1],
                 last_amv_consumed: 10.0,
                 last_amv_produced: 0.0,
+                idle_days: 0,
             });
 
             let market = make_market_with_amvs(&[]);
@@ -2905,6 +3007,80 @@ mod firm {
             assert_eq!(firm.property[&30].held, 4.0);
             assert_eq!(firm.property[&30].quantity, 0.0);
         }
+
+        #[test]
+        fn input_line_runs_before_consumer() {
+            let mill = Process::new(1, "mill", 0)
+                .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+            let farm = Process::new(2, "farm", 0)
+                .with_tag(ProcessTag::subsistence(0.25))
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(10, 2.0, true));
+            let mut factuals = make_factuals_with_process(mill);
+            factuals.processes.insert(2, farm);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+            factuals.config.firm.complexity_time_factor = 0.0;
+
+            let mut firm = Firm::new(1, "mill".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner_remainder();
+            firm.property.insert(TIME, FirmPRow::new().with_quantity(0.5));
+            firm.property.insert(10, FirmPRow::new().with_quantity(0.0));
+            let mut mill_line = empty_production_line(1);
+            mill_line.target = Some(1.0);
+            let mut farm_line = empty_production_line(2);
+            farm_line.target = Some(1.0);
+            firm.production_line.push(mill_line);
+            firm.production_line.push(farm_line);
+
+            let market = make_market_with_amvs(&[(10, 1.0), (20, 1.0), (TIME, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[1].last_iterations, 1.0);
+            assert_eq!(firm.production_line[0].last_iterations, 1.0);
+            assert_eq!(firm.property[&20].held, 1.0);
+        }
+
+        #[test]
+        fn complexity_tax_is_taken_before_lines() {
+            let mill = Process::new(1, "mill", 0)
+                .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(20, 1.0, true));
+            let farm = Process::new(2, "farm", 0)
+                .with_tag(ProcessTag::subsistence(0.25))
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(10, 2.0, true));
+            let mut factuals = make_factuals_with_process(mill);
+            factuals.processes.insert(2, farm);
+            factuals.goods.insert(10, make_good(10, "wood", HashMap::new()));
+            factuals.goods.insert(20, make_good(20, "plank", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+            factuals.config.firm.complexity_time_factor = 0.05;
+
+            let mut firm = Firm::new(1, "mill".into(), 42, hexx::Hex::new(0, 0));
+            firm.property.insert(TIME, FirmPRow::new().with_quantity(10.0));
+            firm.property.insert(10, FirmPRow::new().with_quantity(0.0));
+            let mut mill_line = empty_production_line(1);
+            mill_line.target = Some(1.0);
+            let mut farm_line = empty_production_line(2);
+            farm_line.target = Some(1.0);
+            firm.production_line.push(mill_line);
+            firm.production_line.push(farm_line);
+
+            let market = make_market_with_amvs(&[(10, 1.0), (20, 1.0), (TIME, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            let tax = firm.complexity_time_need(&factuals);
+            assert!(tax > 0.0);
+            let consumed = firm.property[&TIME].consumed;
+            assert!(
+                consumed + 1e-12 >= 0.5 + tax,
+                "consumed {consumed} tax {tax}"
+            );
+        }
+
     }
 
     mod firm_prow_should {
@@ -3485,6 +3661,137 @@ mod firm {
             let mut firm = miller_firm(0.0);
             firm.plan(&factuals, &history);
             assert_eq!(firm.production_line[0].target, Some(0.0));
+            assert_eq!(firm.production_line[0].idle_days, 1);
+        }
+
+        #[test]
+        fn specialized_idle_line_is_abandoned_after_idle_days() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(0.0);
+            for _ in 0..factuals.config.firm.abandon_idle_days {
+                firm.plan(&factuals, &history);
+            }
+            assert!(firm.production_line.is_empty());
+        }
+
+        #[test]
+        fn idle_line_is_abandoned_even_if_subsistence() {
+            let (mut factuals, history) = miller_world();
+            factuals.processes.get_mut(&1).unwrap().tags.insert(
+                crate::game::process::ProcessTag::subsistence(0.25),
+            );
+            let mut firm = miller_firm(0.0);
+            for _ in 0..factuals.config.firm.abandon_idle_days {
+                firm.plan(&factuals, &history);
+            }
+            assert!(firm.production_line.is_empty());
+        }
+
+        #[test]
+        fn leftover_buys_reset_idle_days() {
+            let (factuals, mut history) = miller_world();
+            let mut firm = miller_firm(0.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].idle_days, 1);
+            history.leftover_buy.insert(20, 5.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(1.0));
+            assert_eq!(firm.production_line[0].idle_days, 0);
+        }
+
+        fn add_farm(factuals: &mut Factuals) {
+            factuals.processes.insert(
+                2,
+                Process::new(2, "farm", 0)
+                    .with_tag(ProcessTag::subsistence(0.25))
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(10, 2.0, true)),
+            );
+        }
+
+        fn remainder_with_farm(farm_target: f64) -> Firm {
+            let mut firm = miller_firm(4.0).with_owner_remainder();
+            firm.owner_household_size = 5.0;
+            let mut farm = empty_production_line(2);
+            farm.target = Some(farm_target);
+            firm.production_line.push(farm);
+            firm
+        }
+
+        #[test]
+        fn owner_need_restarts_an_idle_preferred_line() {
+            let (mut factuals, history) = miller_world();
+            add_farm(&mut factuals);
+            let mut firm = remainder_with_farm(0.0);
+            firm.household_needs.insert(10, 5.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[1].target, Some(1.0));
+            assert!(firm.property[&10].use_target >= 5.0);
+        }
+
+        #[test]
+        fn weaker_duplicate_recipe_walks_down() {
+            let (mut factuals, history) = miller_world();
+            add_farm(&mut factuals);
+            factuals.processes.insert(
+                3,
+                Process::new(3, "extract", 0)
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(10, 6.0, true)),
+            );
+            let mut firm = remainder_with_farm(2.0);
+            let mut extract = empty_production_line(3);
+            extract.target = Some(2.0);
+            firm.production_line.push(extract);
+            let mut history = history;
+            history.leftover_buy.insert(10, 8.0);
+            firm.plan(&factuals, &history);
+            assert!(
+                firm.production_line[1].target.unwrap() < 2.0,
+                "farm stayed {}",
+                firm.production_line[1].target.unwrap()
+            );
+            assert!(firm.production_line[2].target.unwrap() >= 2.0);
+        }
+
+        #[test]
+        fn amv_profit_beats_time_efficiency_for_preferred_recipe() {
+            let (mut factuals, mut history) = miller_world();
+            history.prices.insert(TIME, 1.0);
+            history.prices.insert(5, 10.0);
+            add_farm(&mut factuals);
+            factuals.goods.insert(5, make_good(5, "gold", HashMap::new()));
+            factuals.processes.insert(
+                3,
+                Process::new(3, "rich farm", 0)
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(5, 10.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(10, 3.0, true)),
+            );
+            let mut firm = remainder_with_farm(2.0);
+            let mut rich = empty_production_line(3);
+            rich.target = Some(2.0);
+            firm.production_line.push(rich);
+            history.leftover_buy.insert(10, 8.0);
+            firm.plan(&factuals, &history);
+            assert!(
+                firm.production_line[2].target.unwrap() < 2.0,
+                "expensive recipe stayed {}",
+                firm.production_line[2].target.unwrap()
+            );
+            assert!(firm.production_line[1].target.unwrap() >= 2.0);
+        }
+
+        #[test]
+        fn time_miss_cuts_quota_toward_last_run() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.production_line[0].last_iterations = 1.0;
+            firm.production_line[0].last_success_rate = 0.25;
+            firm.production_line[0].last_missing_goods = vec![TIME];
+            firm.plan(&factuals, &history);
+            let got = firm.production_line[0].target.unwrap();
+            assert!((got - 3.7).abs() < 1e-12, "got {got}");
         }
 
         #[test]
@@ -4087,6 +4394,33 @@ mod firm {
             assert_eq!(orders[1].priority, market_priority::FIRM_PRODUCER);
             assert_eq!(firm.property[&10].quantity, 4.0);
             assert_eq!(firm.property[&20].quantity, 12.0);
+        }
+
+        #[test]
+        fn fenced_output_can_tender_for_missing_input() {
+            let mut firm = empty_firm();
+            firm.property.insert(
+                10,
+                FirmPRow::new()
+                    .with_quantity(0.0)
+                    .with_use_target(6.0)
+                    .with_purchase_target(6.0),
+            );
+            firm.property.insert(
+                20,
+                FirmPRow::new()
+                    .with_quantity(6.0)
+                    .with_use_target(6.0)
+                    .with_sell_target(6.0),
+            );
+            firm.production_line.push(empty_production_line(1));
+            firm.production_line[0].inputs = vec![10];
+
+            let factuals = make_factuals_goods(&[10, 20]);
+            let history = make_history(&[(10, 1.0, 0.4), (20, 2.0, 0.4)]);
+            let orders = firm.create_orders(&history, &factuals, &HashSet::new());
+            let buy = orders.iter().find(|order| order.target == 10).expect("wood buy");
+            assert_eq!(buy.counter_offer, Some(20));
         }
 
         #[test]

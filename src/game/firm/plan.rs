@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::config::{firm_constants, FirmConfig};
 use crate::game::factuals::Factuals;
+use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::process::{InputType, ProcessInput};
 use crate::game::util::lerp;
@@ -40,10 +41,14 @@ impl Firm {
         let mut sold_cost = 0.0;
         let mut sold_units = 0.0;
         let mut sell_plan = 0.0;
+        let mut placed_amv = 0.0;
+        let mut market_sold_amv = 0.0;
         for row in self.property.values_mut() {
             let credited = row.placed_credited();
             let credited_amv = row.placed_credited_amv();
             sold_amv += row.sold_amv + credited_amv;
+            placed_amv += row.placed_amv.max(0.0);
+            market_sold_amv += row.sold_amv.max(0.0);
             bought_amv += row.bought_amv;
             if row.sold > 0.0 || credited > 0.0 {
                 sold_cost += (row.sold + credited) * row.average_cost.max(0.0);
@@ -94,6 +99,12 @@ impl Firm {
         self.records.profit_avg = lerp(self.records.profit_avg, profit, cfg.rolling_avg_weight);
         self.records.sell_success_avg =
             lerp(self.records.sell_success_avg, success, cfg.rolling_avg_weight);
+        let disposed = placed_amv + market_sold_amv;
+        self.records.self_supply = if disposed > 0.0 {
+            (placed_amv / disposed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
 
     /// # Plan
@@ -109,8 +120,9 @@ impl Firm {
     ///    (or stay) by predicted profit. Quiet days lerp quota toward `aim`.
     ///    A line at 0 that is starting snaps to at least 1 iteration.
     ///    Missing inputs keep aim and quota (a supply miss is not a scale miss).
-    ///    Leftover buys for an output are remaining demand: not a sell miss,
-    ///    and an idle line restarts at 1 iteration.
+    ///    Leftover buys, owner consume shortfall, and in-shop recipe input
+    ///    need are remaining demand: not a sell miss, and an idle preferred
+    ///    line restarts at 1 iteration. Weaker duplicate recipes walk down.
     /// 3. [`Self::rewrite_property_targets`]: input use/stock/purchase/reserve,
     ///    AMV bounds, merchant restock. Input cover is a floor; excess output
     ///    above `output_cover` days is added to `sell_target`.
@@ -118,7 +130,87 @@ impl Firm {
         let cfg = factuals.config.firm;
         let info = self.gather_plan_info(factuals, history);
         self.apply_plan_adjustments(&info, history, &cfg);
+        self.abandon_idle_lines(factuals, history, &cfg);
         self.rewrite_property_targets(factuals, history, &cfg);
+        self.fence_owner_needs(factuals);
+    }
+
+    /// Remainder owner-operator whose disposed AMV is mostly in-kind.
+    /// A reading (`placed / (placed + sold)`), not a garden policy.
+    pub fn is_self_supplying(&self, cfg: &FirmConfig) -> bool {
+        self.owners.remainder
+            && self.records.self_supply + 1e-12 >= cfg.self_supply_threshold
+    }
+
+    /// Fence goods this shop makes that the owner still needs, so leftover
+    /// remainder / sells do not dump dinner.
+    fn fence_owner_needs(&mut self, factuals: &Factuals) {
+        if !self.owners.remainder {
+            return;
+        }
+        let mut goods: Vec<(usize, f64)> = Vec::new();
+        for line in &self.production_line {
+            if line.target.unwrap_or(0.0) <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.good == TIME {
+                    continue;
+                }
+                let short = self
+                    .household_needs
+                    .get(&output.good)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                if short > 0.0 {
+                    goods.push((output.good, short));
+                }
+            }
+        }
+        for (good, short) in goods {
+            let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+            if row.use_target < short {
+                row.use_target = short;
+            }
+        }
+    }
+
+    /// Count idle days at target 0 with no leftover-buy, owner, or in-shop
+    /// input demand. Drop after `abandon_idle_days`. The firm actor is kept
+    /// even if no lines remain.
+    fn abandon_idle_lines(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        cfg: &FirmConfig,
+    ) {
+        let limit = cfg.abandon_idle_days;
+        let preferred = preferred_line_indices(&self.production_line, factuals, history);
+        let needed = in_shop_input_goods(&self.production_line, factuals);
+        for (i, line) in self.production_line.iter_mut().enumerate() {
+            let idle = matches!(line.target, Some(target) if target <= 0.0)
+                && !line_has_keep_demand(
+                    line,
+                    factuals,
+                    history,
+                    &self.household_needs,
+                    &needed,
+                    preferred.contains(&i),
+                );
+            if idle {
+                line.idle_days = line.idle_days.saturating_add(1);
+            } else {
+                line.idle_days = 0;
+            }
+        }
+        if limit == 0 {
+            return;
+        }
+        self.production_line.retain(|line| line.idle_days < limit);
     }
 
     /// Builds a read-only snapshot of line and output-good facts for planning.
@@ -140,6 +232,14 @@ impl Firm {
                 facts.maker_lines.push(i);
                 facts.planned_output += planned_iterations(line) * output.amount;
             }
+            let time_cost: f64 = process
+                .inputs
+                .iter()
+                .filter(|input| {
+                    input.good == TIME && matches!(input.input_type, InputType::Destroyed)
+                })
+                .map(|input| input.amount.max(0.0))
+                .sum();
             lines.push(LineFacts {
                 index: i,
                 target: line.target,
@@ -148,13 +248,44 @@ impl Firm {
                 last_success_rate: line.last_success_rate,
                 profitability: line_profit_ratio(line),
                 missing_inputs: !line.last_missing_goods.is_empty(),
+                missing_time: line.last_missing_goods.contains(&TIME),
+                time_cost,
+                recipe_profit: process.recipe_profit_ratio(|good| history.price(good)),
+                preferred: false,
                 cold: line.last_iterations == 0.0
                     && line.last_success_rate == 0.0
                     && line.last_missing_goods.is_empty(),
                 outputs,
             });
+            if line.target.unwrap_or(0.0) > 0.0 {
+                for input in &process.inputs {
+                    if input.good == TIME
+                        || input.is_optional()
+                        || matches!(input.input_type, InputType::Factor)
+                    {
+                        continue;
+                    }
+                    let facts = goods.entry(input.good).or_insert_with(|| {
+                        good_facts_from_row(
+                            input.good,
+                            self.property.get(&input.good),
+                            factuals,
+                            history,
+                        )
+                    });
+                    facts.internal_need += line.target.unwrap_or(0.0) * input.amount.max(0.0);
+                }
+            }
         }
-
+        for facts in goods.values_mut() {
+            facts.owner_need = self
+                .household_needs
+                .get(&facts.good)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0);
+        }
+        mark_preferred_makers(&mut lines);
         PlanGather { lines, goods }
     }
 
@@ -223,32 +354,47 @@ impl Firm {
             let all_cold = good.maker_lines.iter().all(|&i| {
                 info.lines.get(i).map(|l| l.cold).unwrap_or(true)
             });
+            let preferred: Vec<usize> = good
+                .maker_lines
+                .iter()
+                .copied()
+                .filter(|&i| info.lines[i].preferred)
+                .collect();
             if all_cold {
                 desired_amv.insert(good.good, good.own_amv);
-                continue;
-            }
-            let choice = plan_walk(good, &info.lines, cfg);
-            desired_amv.insert(good.good, choice.quote);
-            match choice.step {
-                WalkStep::RaiseQuota | WalkStep::CutQuota => {
-                    let grow = choice.step == WalkStep::RaiseQuota;
-                    for &i in &good.maker_lines {
-                        if decided[i] || info.lines[i].cold || info.lines[i].target.is_none() {
-                            continue;
+            } else {
+                let choice = plan_walk(good, &info.lines, cfg);
+                desired_amv.insert(good.good, choice.quote);
+                match choice.step {
+                    WalkStep::RaiseQuota | WalkStep::CutQuota => {
+                        let grow = choice.step == WalkStep::RaiseQuota;
+                        for &i in &preferred {
+                            if decided[i] || info.lines[i].cold || info.lines[i].target.is_none()
+                            {
+                                continue;
+                            }
+                            let current = info.lines[i].target.unwrap();
+                            let factor = if grow {
+                                1.0 + cfg.growth_rate
+                            } else {
+                                1.0 - cfg.shrink_rate
+                            };
+                            desired_line[i] = Some(step_quota(current, factor));
+                            decided[i] = true;
                         }
-                        let current = info.lines[i].target.unwrap();
-                        let factor = if grow {
-                            1.0 + cfg.growth_rate
-                        } else {
-                            1.0 - cfg.shrink_rate
-                        };
-                        desired_line[i] = Some(step_quota(current, factor));
-                        decided[i] = true;
                     }
+                    WalkStep::Stay | WalkStep::RaiseQuote | WalkStep::CutQuote => {}
                 }
-                WalkStep::Stay | WalkStep::RaiseQuote | WalkStep::CutQuote => {}
+                equalize_line_peers(&mut desired_line, &info.lines, &preferred);
             }
-            equalize_line_peers(&mut desired_line, &info.lines, &good.maker_lines);
+            for &i in &good.maker_lines {
+                if info.lines[i].preferred || decided[i] || info.lines[i].target.is_none() {
+                    continue;
+                }
+                let current = info.lines[i].target.unwrap();
+                desired_line[i] = Some(walk_quota_toward(current, 0.0, cfg));
+                decided[i] = true;
+            }
         }
 
         for facts in &info.lines {
@@ -256,7 +402,7 @@ impl Firm {
                 continue;
             }
             if facts.cold {
-                if !line_has_leftover_demand(facts, &info.goods) {
+                if !decided[facts.index] && !line_has_leftover_demand(facts, &info.goods) {
                     desired_line[facts.index] = facts.target;
                 }
                 continue;
@@ -514,6 +660,11 @@ struct LineFacts {
     last_success_rate: f64,
     profitability: f64,
     missing_inputs: bool,
+    missing_time: bool,
+    #[allow(dead_code)]
+    time_cost: f64,
+    recipe_profit: f64,
+    preferred: bool,
     cold: bool,
     outputs: Vec<(usize, f64)>,
 }
@@ -562,6 +713,8 @@ struct GoodFacts {
     sell_no_proposal_avg: f64,
     average_cost: f64,
     leftover_buy: f64,
+    owner_need: f64,
+    internal_need: f64,
     maker_lines: Vec<usize>,
 }
 
@@ -612,6 +765,8 @@ fn good_facts_from_row(
         sell_no_proposal_avg: row.map(|r| r.sell_no_proposal_avg).unwrap_or(0.0),
         average_cost: row.map(|r| r.average_cost.max(0.0)).unwrap_or(0.0),
         leftover_buy: history.leftover_buy(good),
+        owner_need: 0.0,
+        internal_need: 0.0,
         maker_lines: Vec::new(),
     }
 }
@@ -936,6 +1091,18 @@ fn output_unit_cost(good: &GoodFacts, lines: &[LineFacts]) -> f64 {
 
 /// Discrete quota step. A line at 0 that is growing snaps to 1 iteration.
 /// A 10/20% move smaller than 1 iteration becomes a 1-iteration step.
+/// Walk a quota toward `want` by one grow/shrink step.
+fn walk_quota_toward(current: f64, want: f64, cfg: &FirmConfig) -> f64 {
+    if (current - want).abs() <= 1e-12 {
+        return want.max(0.0);
+    }
+    if current < want {
+        step_quota(current, 1.0 + cfg.growth_rate).min(want)
+    } else {
+        step_quota(current, 1.0 - cfg.shrink_rate).max(want)
+    }
+}
+
 fn step_quota(current: f64, factor: f64) -> f64 {
     if current <= 0.0 {
         return if factor > 1.0 { 1.0 } else { 0.0 };
@@ -960,9 +1127,10 @@ fn line_run_miss(facts: &LineFacts) -> bool {
     if target <= 0.0 {
         return false;
     }
-    // A missing-input day is a supply miss, not a scale miss.
+    // Missing materials keep scale. Missing Time is a scale miss: walk
+    // toward last iterations so hours can move to lines that still run.
     if facts.missing_inputs {
-        return false;
+        return facts.missing_time;
     }
     facts.last_iterations + 1e-9 < target * (1.0 - firm_constants::TURNOVER_BAND)
         && facts.last_iterations + 1e-9 < target
@@ -985,11 +1153,135 @@ fn line_sell_measured(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>) -> b
     })
 }
 
+fn mark_preferred_makers(lines: &mut [LineFacts]) {
+    let mut best: HashMap<usize, f64> = HashMap::new();
+    for facts in lines.iter() {
+        for &(good, amount) in &facts.outputs {
+            if good == TIME || amount <= 0.0 {
+                continue;
+            }
+            let entry = best.entry(good).or_insert(facts.recipe_profit);
+            if facts.recipe_profit > *entry {
+                *entry = facts.recipe_profit;
+            }
+        }
+    }
+    for facts in lines.iter_mut() {
+        facts.preferred = facts.outputs.iter().any(|(good, amount)| {
+            *good != TIME
+                && *amount > 0.0
+                && best
+                    .get(good)
+                    .is_some_and(|top| facts.recipe_profit + 1e-12 >= *top)
+        });
+        if facts.outputs.is_empty() {
+            facts.preferred = true;
+        }
+    }
+}
+
+fn preferred_line_indices(
+    lines: &[ProductionLine],
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> HashSet<usize> {
+    let mut facts: Vec<LineFacts> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let process = factuals.processes.get(&line.process)?;
+            let time_cost: f64 = process
+                .inputs
+                .iter()
+                .filter(|input| {
+                    input.good == TIME && matches!(input.input_type, InputType::Destroyed)
+                })
+                .map(|input| input.amount.max(0.0))
+                .sum();
+            let outputs: Vec<(usize, f64)> = process
+                .outputs
+                .iter()
+                .map(|output| (output.good, output.amount))
+                .collect();
+            Some(LineFacts {
+                index: i,
+                target: line.target,
+                last_iterations: 0.0,
+                last_amv_consumed: 0.0,
+                last_success_rate: 0.0,
+                profitability: 0.0,
+                missing_inputs: false,
+                missing_time: false,
+                time_cost,
+                recipe_profit: process.recipe_profit_ratio(|good| history.price(good)),
+                preferred: false,
+                cold: false,
+                outputs,
+            })
+        })
+        .collect();
+    mark_preferred_makers(&mut facts);
+    facts
+        .iter()
+        .filter(|row| row.preferred)
+        .map(|row| row.index)
+        .collect()
+}
+
+fn in_shop_input_goods(lines: &[ProductionLine], factuals: &Factuals) -> HashSet<usize> {
+    let mut needed = HashSet::new();
+    for line in lines {
+        if line.target.unwrap_or(0.0) <= 0.0 {
+            continue;
+        }
+        let Some(process) = factuals.processes.get(&line.process) else {
+            continue;
+        };
+        for input in &process.inputs {
+            if input.good == TIME
+                || input.is_optional()
+                || matches!(input.input_type, InputType::Factor)
+            {
+                continue;
+            }
+            needed.insert(input.good);
+        }
+    }
+    needed
+}
+
+fn line_has_keep_demand(
+    line: &ProductionLine,
+    factuals: &Factuals,
+    history: &MarketHistory,
+    household_needs: &HashMap<usize, f64>,
+    needed: &HashSet<usize>,
+    preferred: bool,
+) -> bool {
+    if !preferred {
+        return false;
+    }
+    let Some(process) = factuals.processes.get(&line.process) else {
+        return false;
+    };
+    process.outputs.iter().any(|output| {
+        output.good != TIME
+            && (history.leftover_buy(output.good) > 0.0
+                || household_needs.get(&output.good).copied().unwrap_or(0.0) > 0.0
+                || needed.contains(&output.good))
+    })
+}
+
 fn line_has_leftover_demand(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>) -> bool {
+    if !facts.preferred {
+        return false;
+    }
     facts.outputs.iter().any(|(good, amount)| {
         *amount > 0.0
-            && *good != crate::game::good::TIME
-            && goods.get(good).is_some_and(|g| g.leftover_buy > 0.0)
+            && *good != TIME
+            && goods.get(good).is_some_and(|g| {
+                g.leftover_buy > 0.0 || g.owner_need > 0.0 || g.internal_need > 0.0
+            })
     })
 }
 
@@ -1015,9 +1307,16 @@ fn line_sell_miss(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>, cfg: &Fi
 
 /// Throughput the aim lerps toward. A miss uses sold iterations when known;
 /// otherwise last completed iterations (quiet / strong keep operating scale).
-fn line_aim_evidence(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>, miss: bool) -> f64 {
+fn line_aim_evidence(
+    facts: &LineFacts,
+    goods: &HashMap<usize, GoodFacts>,
+    miss: bool,
+) -> f64 {
     let actual = facts.last_iterations.max(0.0);
     if facts.missing_inputs {
+        if facts.missing_time {
+            return actual;
+        }
         return facts.target.unwrap_or(0.0).max(actual);
     }
     if line_has_leftover_demand(facts, goods) {

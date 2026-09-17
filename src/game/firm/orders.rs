@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::game::actor::Actor;
 use crate::game::config::MarketConfig;
 use crate::game::factuals::Factuals;
+use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::{compose_sell_priority_with, MarketOrder};
 use crate::game::util::{lerp, round_units, whole_units, whole_units_up};
@@ -429,8 +430,35 @@ fn input_day_shortfall_amv(
     amv
 }
 
-/// Move sell/liquidate on non-use goods into exchange until a day's input
-/// shortfall is funded.
+/// Goods a running line requires (not Time, not optional, not factors).
+fn recipe_input_goods(firm: &Firm, factuals: &Factuals) -> HashSet<usize> {
+    let mut needed = HashSet::new();
+    for line in &firm.production_line {
+        if let Some(process) = factuals.processes.get(&line.process) {
+            for input in &process.inputs {
+                if input.good == TIME
+                    || input.is_optional()
+                    || matches!(input.input_type, crate::game::process::InputType::Factor)
+                {
+                    continue;
+                }
+                needed.insert(input.good);
+            }
+        } else {
+            for &good in &line.inputs {
+                if good != TIME {
+                    needed.insert(good);
+                }
+            }
+        }
+    }
+    needed
+}
+
+/// Move sell/liquidate on goods that are not recipe inputs into exchange
+/// until a day's input shortfall is funded. Finished output can tender
+/// even if it is fenced for the owner, so the shop can buy what it
+/// cannot make.
 fn divert_output_to_input_tender(
     splits: &mut HashMap<usize, OnHandSplit>,
     firm: &Firm,
@@ -441,14 +469,11 @@ fn divert_output_to_input_tender(
     if need_amv <= 0.0 {
         return;
     }
+    let recipe_inputs = recipe_input_goods(firm, factuals);
     let mut goods: Vec<usize> = splits
         .keys()
         .copied()
-        .filter(|&good| {
-            firm.property
-                .get(&good)
-                .is_some_and(|row| row.use_target <= 0.0)
-        })
+        .filter(|&good| good != TIME && !recipe_inputs.contains(&good))
         .collect();
     goods.sort_by(|a, b| {
         history
@@ -467,16 +492,33 @@ fn divert_output_to_input_tender(
         }
         let split = splits.get_mut(&good).expect("split");
         let available = split.sell + split.liquidate;
-        if available <= 0.0 {
+        if available > 0.0 {
+            let take = available.min(whole_units_up(need_amv / price));
+            let from_sell = take.min(split.sell);
+            split.sell -= from_sell;
+            let from_liq = (take - from_sell).min(split.liquidate);
+            split.liquidate -= from_liq;
+            split.exchange += from_sell + from_liq;
+            need_amv -= (from_sell + from_liq) * price;
+        }
+        if need_amv <= 0.0 {
+            break;
+        }
+        // Dip into owner-fenced finished goods so the shop can still tender
+        // for inputs it cannot make.
+        let Some(row) = firm.property.get(&good) else {
+            continue;
+        };
+        let locked = (row.quantity.max(0.0) - row.free_for_market()).max(0.0);
+        if locked <= 0.0 {
             continue;
         }
-        let take = available.min(whole_units_up(need_amv / price));
-        let from_sell = take.min(split.sell);
-        split.sell -= from_sell;
-        let from_liq = (take - from_sell).min(split.liquidate);
-        split.liquidate -= from_liq;
-        split.exchange += from_sell + from_liq;
-        need_amv -= (from_sell + from_liq) * price;
+        let take = locked.min(whole_units_up(need_amv / price));
+        if take <= 0.0 {
+            continue;
+        }
+        split.exchange += take;
+        need_amv -= take * price;
     }
 }
 

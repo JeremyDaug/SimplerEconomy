@@ -684,10 +684,10 @@ mod csv_should {
     #[test]
     fn flags_specialty_prefab_names() {
         let mut session = session();
-        let msg = handle_csv_command(&mut session, &["on", "pop1-grain", "pop28-time"]);
-        assert!(msg.contains("logging pop1-grain pop28-time"), "{msg}");
+        let msg = handle_csv_command(&mut session, &["on", "pop1-grain", "pop3-bread"]);
+        assert!(msg.contains("logging pop1-grain pop3-bread"), "{msg}");
         assert!(session.csv_pops.contains(&1));
-        assert!(session.csv_pops.contains(&28));
+        assert!(session.csv_pops.contains(&3));
         let firm = handle_csv_command(&mut session, &["on", "firm1-grain"]);
         assert!(firm.contains("logging firm1-grain"), "{firm}");
         assert!(session.csv_firms.contains(&1));

@@ -425,6 +425,45 @@ passive culture/research).
 **Meaning:** A semi-autonomous org which handles and focuses on productive economic activity.
 **Code:**  `Firm`
 
+### Subsistence
+**Preferred:** subsistence  
+**Avoid:** safety plot, homestead (those are later buildings)
+
+**Meaning:** Process tag for household recipes (farm, water, forage). Time-only
+in v0. Carries a **complexity weight** (default 0.25). Untagged processes
+are specialized (weight 1.0). Weight must be **> 0**.
+**Code:** `ProcessTag::Subsistence`, `Process::is_subsistence`, `Process::complexity_weight`
+
+### Complexity weight
+**Preferred:** complexity weight  
+**Avoid:** specialization penalty (that is the later Time tax that *uses* this weight)
+
+**Meaning:** How much a process counts toward managerial Time cost.
+Specialized default 1.0, subsistence 0.25. Never zero or negative.
+Multi-line shops add `complexity_time_factor * sum(weight * iterations)`
+to labor hours. One-line shops pay 0.
+**Code:** `SPECIALIZED_WEIGHT`, `SUBSISTENCE_WEIGHT`, `Process::complexity_weight`,
+`FirmConfig::complexity_time_factor`
+
+### Abandon
+**Preferred:** abandon (a production line)  
+**Avoid:** idle (that is `target` 0 still on the firm)
+
+**Meaning:** Remove a line from the firm after it has been
+idle (`target` 0, no leftover-buy / owner shortfall / in-shop input demand)
+for `abandon_idle_days`. The firm actor stays even with no lines.
+**Code:** `ProductionLine.idle_days`, `FirmConfig::abandon_idle_days`
+
+### Specialization penalty
+**Preferred:** specialization penalty, managerial Time tax  
+**Avoid:** throughput haircut, efficiency penalty
+
+**Meaning:** Firm-wide Time overhead, paid **before** production lines run,
+scaling with `sum(weight * iterations) * complexity_time_factor`. Also
+added to labor hours so the owner brings it. One-line firms skip it. Not a
+reduction of process output. Limits how much a shop can do at once.
+**Code:** `Firm::pay_complexity_time`, `complexity_time_need`, `FirmConfig::complexity_time_factor`
+
 ### Firm property row
 **Preferred:** firm property row  
 **Code:** `FirmPRow`
@@ -579,6 +618,19 @@ Wages do not yet track market Time AMV (pops cannot move or resize).
 `budget_interval` is days between rewrites (**1 = every day**, 0 skips).
 
 **Code:** `Firm::budget_labor`, `labor.budget_interval`
+
+### Self-supply
+**Preferred:** self-supply  
+**Avoid:** fused pop-firm, subsistence pop (that is a reading, not a type)
+
+**Meaning:** Share of a firm's disposed AMV that was in-kind to the owner or
+workers: `placed_amv / (placed_amv + sold_amv)`. A reading, not a garden
+policy. Owner consume shortfall is the same kind of demand as leftover
+buys: a preferred line (best recipe AMV-out/AMV-in of that good) treats it as
+remaining demand. Weaker duplicate recipes walk down. Placed AMV already
+counts toward sell success and realized profit the same as sold, up to
+the operations fence.
+**Code:** `FirmRecords.self_supply`, `Firm::is_self_supplying`
 
 ### Owner remainder
 **Preferred:** remainder, residual claim  

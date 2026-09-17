@@ -451,6 +451,11 @@ impl LaborSettlement {
         factuals: &Factuals,
     ) -> Self {
         let work_fraction = factuals.config.labor.work_time_fraction;
+        if let Some(owner_id) = firm.owners.pop_id() {
+            if let Some(pop) = pops.get(&owner_id) {
+                firm.owner_household_size = pop.demographics.household.household_size();
+            }
+        }
         let mut report = Self::empty();
         let profit_amv = firm.records.yesterday_profit_amv();
         let mut recap_amv = 0.0;
@@ -806,6 +811,34 @@ impl Firm {
                 }
             }
         }
+        if self.owners.remainder {
+            for line in &self.production_line {
+                if line.target.unwrap_or(0.0) <= 0.0 {
+                    continue;
+                }
+                let Some(process) = factuals.processes.get(&line.process) else {
+                    continue;
+                };
+                for output in &process.outputs {
+                    if output.good == TIME {
+                        continue;
+                    }
+                    let short = self
+                        .household_needs
+                        .get(&output.good)
+                        .copied()
+                        .unwrap_or(0.0)
+                        .max(0.0);
+                    if short <= 0.0 {
+                        continue;
+                    }
+                    let entry = need.entry(output.good).or_insert(0.0);
+                    if short > *entry {
+                        *entry = short;
+                    }
+                }
+            }
+        }
         need
     }
 
@@ -843,6 +876,21 @@ impl Firm {
                 }
                 if missing(input.good) {
                     push_cover_good(&mut order, &mut seen, input.good);
+                }
+            }
+        }
+        if self.owners.remainder {
+            for line in &self.production_line {
+                if line.target.unwrap_or(0.0) <= 0.0 {
+                    continue;
+                }
+                let Some(process) = factuals.processes.get(&line.process) else {
+                    continue;
+                };
+                for output in &process.outputs {
+                    if missing(output.good) {
+                        push_cover_good(&mut order, &mut seen, output.good);
+                    }
                 }
             }
         }
@@ -1006,6 +1054,28 @@ impl Firm {
                 }
             }
         }
+        if self.owners.remainder {
+            for line in &self.production_line {
+                if line.target.unwrap_or(0.0) <= 0.0 {
+                    continue;
+                }
+                let Some(process) = factuals.processes.get(&line.process) else {
+                    continue;
+                };
+                for output in &process.outputs {
+                    if output.good != TIME
+                        && self
+                            .household_needs
+                            .get(&output.good)
+                            .copied()
+                            .unwrap_or(0.0)
+                            > 0.0
+                    {
+                        fence.insert(output.good);
+                    }
+                }
+            }
+        }
         fence
     }
 
@@ -1028,7 +1098,34 @@ impl Firm {
                 }
             }
         }
-        need
+        need + self.complexity_time_need(factuals)
+    }
+
+    /// Managerial Time on multi-line shops. Zero when only one line runs.
+    /// Firm-wide overhead, not a production line. Paid before lines run.
+    pub(crate) fn complexity_time_need(&self, factuals: &Factuals) -> f64 {
+        let factor = factuals.config.firm.complexity_time_factor;
+        if factor <= 0.0 {
+            return 0.0;
+        }
+        let mut running = 0u32;
+        let mut weighted = 0.0;
+        for line in &self.production_line {
+            let target = line.target.unwrap_or(0.0);
+            if target <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            running = running.saturating_add(1);
+            weighted += process.complexity_weight() * target;
+        }
+        if running <= 1 {
+            0.0
+        } else {
+            factor * weighted
+        }
     }
 
     /// True when remaining purchase targets are much larger than today's buys.
@@ -1153,7 +1250,7 @@ mod settle_labor_contracts_should {
     use crate::game::good::{Good, TIME};
     use crate::game::household::Household;
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
-    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
+    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessTag};
     use crate::game::sentiment::Sentiment;
 
     const COIN: usize = 5;
@@ -1222,6 +1319,7 @@ mod settle_labor_contracts_should {
             last_missing_goods: vec![],
             last_amv_consumed: 0.0,
             last_amv_produced: 0.0,
+            idle_days: 0,
         }
     }
 
@@ -1346,6 +1444,7 @@ mod settle_labor_contracts_should {
             last_missing_goods: vec![],
             last_amv_consumed: 0.0,
             last_amv_produced: 0.0,
+            idle_days: 0,
         });
         let mut factuals = Factuals::new();
         factuals.processes.insert(
@@ -1751,6 +1850,82 @@ mod settle_labor_contracts_should {
     }
 
     #[test]
+    fn remainder_cover_owner_staples_with_inputs_when_self_supplying() {
+        const GRAIN: usize = 1;
+        let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.production_line.push(mill_line(5.0));
+        firm.property.insert(
+            WOOD,
+            FirmPRow::new()
+                .with_quantity(10.0)
+                .with_stock_target(10.0),
+        );
+        firm.household_needs.insert(GRAIN, 5.0);
+        let mut farm = mill_line(1.0);
+        farm.process = 2;
+        farm.inputs.clear();
+        firm.production_line.push(farm);
+        let mut factuals = mill_factuals();
+        factuals.processes.insert(
+            2,
+            Process::new(2, "farm", 0)
+                .with_tag(ProcessTag::subsistence(0.25))
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(GRAIN, 2.0, true)),
+        );
+        let owner = with_good(make_pop(3), GRAIN, 10.0);
+        let mut pops = HashMap::from([(3, owner)]);
+        let history = history_prices(&[(WOOD, 1.0), (PLANK, 1.0), (GRAIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
+
+        let owner = report.owner.expect("cover");
+        let grain_need = pops[&3].demographics.household.household_size();
+        assert!((owner.recap.get(&GRAIN).copied().unwrap_or(0.0) - grain_need).abs() < 1e-12);
+        assert!((firm.property[&GRAIN].quantity - grain_need).abs() < 1e-12);
+    }
+
+    #[test]
+    fn remainder_cover_owner_staples_when_specialty_sold_nothing() {
+        const GRAIN: usize = 1;
+        let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
+            .with_owner(Actor::Pop(3))
+            .with_owner_remainder();
+        firm.production_line.push(mill_line(5.0));
+        firm.property.insert(
+            WOOD,
+            FirmPRow::new()
+                .with_quantity(10.0)
+                .with_stock_target(10.0),
+        );
+        firm.records.sold_amv = 0.0;
+        firm.records.sell_success = 0.0;
+        firm.household_needs.insert(GRAIN, 5.0);
+        let mut farm = mill_line(1.0);
+        farm.process = 2;
+        farm.inputs.clear();
+        firm.production_line.push(farm);
+        let mut factuals = mill_factuals();
+        factuals.processes.insert(
+            2,
+            Process::new(2, "farm", 0)
+                .with_tag(ProcessTag::subsistence(0.25))
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(GRAIN, 2.0, true)),
+        );
+        let owner = with_good(make_pop(3), GRAIN, 10.0);
+        let mut pops = HashMap::from([(3, owner)]);
+        let history = history_prices(&[(WOOD, 1.0), (PLANK, 1.0), (GRAIN, 1.0)]);
+
+        let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
+        let owner = report.owner.expect("cover");
+        let grain_need = pops[&3].demographics.household.household_size();
+        assert!((owner.recap.get(&GRAIN).copied().unwrap_or(0.0) - grain_need).abs() < 1e-12);
+    }
+
+    #[test]
     fn remainder_cover_uses_wage_goods_after_inputs() {
         let worker = Workforce::new(2)
             .with_hours(5.0)
@@ -1965,6 +2140,7 @@ mod budget_labor_should {
             last_missing_goods: vec![],
             last_amv_consumed: 0.0,
             last_amv_produced: 0.0,
+            idle_days: 0,
         }
     }
 
@@ -2065,6 +2241,21 @@ mod budget_labor_should {
         assert_eq!(firm.workforce[0].hours, 16.0);
         assert_eq!(firm.workforce[0].id, 2);
         assert_eq!(firm.workforce.len(), 1);
+    }
+
+    #[test]
+    fn complexity_time_adds_hours_when_two_lines_run() {
+        let mut firm = farm_with_hours(1.0);
+        firm.production_line.push(line(5.0));
+        let mut factuals = Factuals::new().with_process(time_process());
+        factuals.config.firm.complexity_time_factor = 0.05;
+        let pops = pops_for(&firm);
+        firm.budget_labor(&factuals, &history_coin(), &pops, 1);
+        assert!(
+            firm.workforce[0].hours > 16.0,
+            "hours {}",
+            firm.workforce[0].hours
+        );
     }
 
     #[test]

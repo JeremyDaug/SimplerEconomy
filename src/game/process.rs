@@ -1,5 +1,6 @@
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use crate::game::factuals::Factuals;
 use crate::game::household::HouseholdTarget;
@@ -30,6 +31,58 @@ pub struct Process {
     pub effects: Vec<ProcessEffect>,
     /// The technology that unlockes the process.
     pub tech_source: usize,
+    /// Process tags (subsistence, later complexity). Empty = specialized.
+    pub tags: HashSet<ProcessTag>,
+}
+
+/// Complexity weight of an untagged (specialized) process.
+pub const SPECIALIZED_WEIGHT: f64 = 1.0;
+/// Default complexity weight of a subsistence process.
+pub const SUBSISTENCE_WEIGHT: f64 = 0.25;
+
+/// # Process Tag
+///
+/// Tags for processes. Subsistence carries a complexity weight **> 0**.
+#[derive(Debug, Clone, Copy)]
+pub enum ProcessTag {
+    /// Household recipe. Weight is used later for managerial Time tax.
+    Subsistence(f64),
+}
+
+impl ProcessTag {
+    /// Subsistence tag. `weight` must be finite and **> 0**.
+    pub fn subsistence(weight: f64) -> Self {
+        debug_assert!(
+            weight > 0.0 && weight.is_finite(),
+            "complexity weight must be > 0"
+        );
+        Self::Subsistence(weight)
+    }
+
+    /// Complexity weight if this is a subsistence tag.
+    pub fn complexity_weight(self) -> f64 {
+        match self {
+            Self::Subsistence(weight) => weight,
+        }
+    }
+}
+
+impl PartialEq for ProcessTag {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Subsistence(a), Self::Subsistence(b)) => a.to_bits() == b.to_bits(),
+        }
+    }
+}
+
+impl Eq for ProcessTag {}
+
+impl Hash for ProcessTag {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        let Self::Subsistence(weight) = self;
+        weight.to_bits().hash(state);
+    }
 }
 
 impl Process {
@@ -45,6 +98,51 @@ impl Process {
             outputs: Vec::new(),
             effects: Vec::new(),
             tech_source,
+            tags: HashSet::new(),
+        }
+    }
+
+    /// Add a process tag.
+    pub fn with_tag(mut self, tag: ProcessTag) -> Self {
+        self.tags.insert(tag);
+        self
+    }
+
+    /// True if this process is tagged subsistence.
+    pub fn is_subsistence(&self) -> bool {
+        self.tags
+            .iter()
+            .any(|tag| matches!(tag, ProcessTag::Subsistence(_)))
+    }
+
+    /// Complexity weight: subsistence tag value, else [`SPECIALIZED_WEIGHT`].
+    pub fn complexity_weight(&self) -> f64 {
+        self.tags
+            .iter()
+            .find_map(|tag| match tag {
+                ProcessTag::Subsistence(weight) => Some(*weight),
+            })
+            .unwrap_or(SPECIALIZED_WEIGHT)
+    }
+
+    /// AMV-out / AMV-in of one iteration at `price`. Optional and factor
+    /// inputs are skipped. 1.0 if both sides are 0; output AMV if cost is 0.
+    pub fn recipe_profit_ratio(&self, price: impl Fn(usize) -> f64) -> f64 {
+        let mut cost = 0.0;
+        for input in &self.inputs {
+            if input.is_optional() || matches!(input.input_type, InputType::Factor) {
+                continue;
+            }
+            cost += input.amount.max(0.0) * price(input.good).max(0.0);
+        }
+        let mut output = 0.0;
+        for row in &self.outputs {
+            output += row.amount.max(0.0) * price(row.good).max(0.0);
+        }
+        if cost > 1e-12 {
+            output / cost
+        } else {
+            output
         }
     }
 

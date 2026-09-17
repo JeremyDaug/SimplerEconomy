@@ -134,3 +134,6 @@ rolling_avg_weight = 0.25
 sell_success_grow = 0.80
 sell_success_shrink = 0.50
 keep_alive = false
+abandon_idle_days = 5
+self_supply_threshold = 0.5
+complexity_time_factor = 0.05

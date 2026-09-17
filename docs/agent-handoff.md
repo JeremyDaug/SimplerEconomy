@@ -65,11 +65,19 @@ invariants and traps, not a substitute for the code.
   `OPENING_INPUT_DAYS` (4) of required non-Time inputs. Recap does not fill
   output stock.
   In-kind remainder/wage transfers record `placed` at market AMV; sell
-  success credits `min(placed, stock_fence)` plus sold. A run miss walks
-  quota toward last iterations unless the miss is missing inputs or leftover
-  buys still want the output (keep operating scale). Idle `target` 0
-  restarts at 1 when leftover buys exist. `growth_target` is the expansion gap on a
-  grow, else 0.
+  success credits `min(placed, stock_fence)` plus sold. Owner consume
+  shortfall is the same kind of demand as leftover buys. A run miss walks
+  quota toward last iterations unless the miss is missing materials or
+  leftover buys / owner need / in-shop input still want the output.
+  Missing Time is a scale miss. Idle `target` 0 restarts at 1 when that
+  demand exists and the line is the best recipe for the good. Weaker
+  duplicate recipes (lower AMV profit) walk down. Lines idle
+  `abandon_idle_days` (5) without demand are dropped. Empty firms remain;
+  tester tables print `dead/abandoned`. Production pays the firm-wide
+  complexity Time tax first, then runs input-feeding lines. Remainder
+  recap/fence uses goods the shop makes. Finished output can tender for
+  inputs the shop cannot make.
+  `growth_target` is the expansion gap on a grow, else 0.
 - Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
   at `Pop::start_day`. Live intramarket friction is 1 (`TRANSACTION_COST + bulk`).
   Goods have per-unit mass/volume in `goods.toml`.
@@ -86,22 +94,24 @@ invariants and traps, not a substitute for the code.
   (`time_amv_blend` 0.15); unpaid hours vote the going rate. Firms do **not**
   rewrite wages from Time AMV
   yet (pops cannot move or resize). PlayState labor fire is still a stub.
-- World goods, processes, and config load from `data/world/`. Processes are
-  one recipe per good (Time is process 28). Raw extracts (grain, water, gold,
-  wood, iron, copper, tin, bronze, coal, clay) and the Time dummy take Time
-  only. Crafted recipes take Time plus at least one destroyed material.
-  Outputs are a few units; Time input is usually below 1.0.
+- World goods, processes, and config load from `data/world/`. Specialized
+  recipes: one per good (Time is process 28). Subsistence farm / water /
+  forage are processes 29–31, tagged weight 0.25 (untagged 1.0, weight > 0).
+  Raw extracts take Time only as required; grain and wood may take optional
+  boosters. Crafted recipes take Time plus a destroyed material. Init
+  remainder firms auto-attach the three subsistence lines at target 2;
+  hours are the sum of all lines.
 - Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
-  (two household pops and two remainder-owner firms per world good). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
-  Grouped consume desires (basic food/hydration/heating, common housing
-  plus utility/food/materials/health, luxury) are 1 unit per member
-  (5 units), duplicated onto every pop. **No** opening 1-of-each kit
+  (eight remainder owner-operators: grain, water, bread, gold, wood, cabins;
+  two grain shops and two wells). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
+  Village consume desires (basic food/hydration/wood heat, common one cabin
+  per household plus extra bread, luxury gold) are duplicated onto every pop.
+  Food/water/heat/bread/gold are 1 unit per member (5 units). **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Pops open with one day of the
   matching firm's output (Time skipped). Each morning: `start_day` Time, then specialty
-  grant is 0 (`DAILY_OUTPUT` in `roster.rs`; `pop.id % n_goods`; pops 28 and 56
-  are Time and cannot sell it). Each firm is that pop's remainder
-  owner-operator: hours = target * Time input (target 8; grain/wood 16,
-  water 20, cabins 2), no wage basket. Crafted lines list material inputs;
+  grant is 0 (`DAILY_OUTPUT` in `roster.rs`). Each firm is that pop's remainder
+  owner-operator: hours = target * Time input (grain/water/wood 8, bread/gold 5,
+  cabins 2), no wage basket. Crafted lines list material inputs;
   raw extracts list Time only. Opening stock is three decay-adjusted days of
   process output plus four days of required non-Time inputs (`use_target` =
   one day's recipe use). Posted firm sells cap at max market salability times
@@ -124,9 +134,14 @@ invariants and traps, not a substitute for the code.
   processors starve on input deals (keep / no tender). Decay pullback and
   leftover-buy plan keep `want` up; they do not clear grain into bakeries.
 
-**Next (named, not started):** diversify barter firms (single-process
-remainder shops are too risky in a thin market). Slow salability movement
-so it lags. Do not add subsistence plots or firm-pop contracts unless asked.
+**Next (named, not started):** slow salability. Money as a standard
+(specialized firms forming immediately) waits on that. Disorganized /
+cottage-industry firms that can spin out cheaper specialized shops are a
+later firm type, not v0.
+Home production vs buy: if Time+friction to trade exceeds recipe Time,
+prefer making it; output bulk as a soft floor on that Time. Input slots /
+good class for tools is a later note. Do not add subsistence plots or
+firm-pop contracts unless asked.
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
@@ -191,9 +206,8 @@ init/save data; class demographics; capital amortization; AMV as a matching
 weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": diversify barter firms, then slow salability
-movement. PlayState `phase_intra_market_day` is still unwired. Hiring/creation
-is skipped on purpose.
+If they ask "what's next": specialization Time tax, then slow salability. PlayState `phase_intra_market_day` is still unwired.
+Hiring/creation is skipped on purpose.
 
 ---
 

@@ -1,0 +1,2357 @@
+   Compiling simpler_economy v0.1.0 (/home/jeremy/Projects/SimplerEconomy)
+warning: unused import: `HashSet`
+ --> src/game/firm.rs:1:33
+  |
+1 | use std::collections::{HashMap, HashSet};
+  |                                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `bevy::utils::default`
+ --> src/game/firmorganization.rs:1:5
+  |
+1 | use bevy::utils::default;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unreachable expression
+   --> src/playstate.rs:419:17
+    |
+418 |         map_data: todo!(),
+    |                   ------- any code following this expression is unreachable
+419 |         actors: todo!(),
+    |                 ^^^^^^^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `todo` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `factuals`
+  --> src/game/players.rs:15:42
+   |
+15 |     pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
+   |                                          ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_factuals`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `play_state`
+   --> src/playstate.rs:416:13
+    |
+416 |     let mut play_state = PlayState {
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_play_state`
+
+warning: unused variable: `commands`
+   --> src/playstate.rs:415:25
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |                         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_commands`
+
+warning: variable does not need to be mutable
+   --> src/playstate.rs:415:21
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |                     ----^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `setup_play_state` is never used
+   --> src/playstate.rs:415:4
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |    ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `simpler_economy` (lib) generated 8 warnings (run `cargo fix --lib -p simpler_economy` to apply 3 suggestions)
+warning: unused import: `simpler_economy::game::desire::DesireTargetType`
+  --> examples/market_tester/main.rs:45:5
+   |
+45 | use simpler_economy::game::desire::DesireTargetType;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `simpler_economy` (example "market_tester") generated 1 warning (run `cargo fix --example "market_tester"` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 16.05s
+     Running `target/release/examples/market_tester`
+=== market tester ===
+calendar day 0   rng: os
+goods  (amv  sal)
+  --  --------  ------  ----
+   0  time         100  0.1000
+   1  grain        100  0.1000
+   2  water        100  0.1000
+   3  bread        100  0.1000
+   4  gold         100  0.1000
+   5  gold_token     100  0.1000
+   6  jewelry      100  0.1000
+   7  wood         100  0.1000
+   8  cabins       100  0.1000
+   9  wood_tools     100  0.1000
+  10  buckets      100  0.1000
+  11  iron         100  0.1000
+  12  iron_tools     100  0.1000
+  13  copper       100  0.1000
+  14  tin          100  0.1000
+  15  bronze       100  0.1000
+  16  bronze_tools     100  0.1000
+  17  blades       100  0.1000
+  18  bronze_mirror     100  0.1000
+  19  bronze_token     100  0.1000
+  20  iron_token     100  0.1000
+  21  copper_token     100  0.1000
+  22  tin_token     100  0.1000
+  23  coal         100  0.1000
+  24  charcoal     100  0.1000
+  25  beer         100  0.1000
+  26  clay         100  0.1000
+  27  pots         100  0.1000
+
+pops   pop1-grain  pop2-water  pop3-bread  pop4-gold  pop5-gold_token  pop6-jewelry  pop7-wood  pop8-cabins  pop9-wood_tools  pop10-buckets  pop11-iron  pop12-iron_tools  pop13-copper  pop14-tin  pop15-bronze  pop16-bronze_tools  pop17-blades  pop18-bronze_mirror  pop19-bronze_token  pop20-iron_token  pop21-copper_token  pop22-tin_token  pop23-coal  pop24-charcoal  pop25-beer  pop26-clay  pop27-pots  pop28-time  pop29-grain  pop30-water  pop31-bread  pop32-gold  pop33-gold_token  pop34-jewelry  pop35-wood  pop36-cabins  pop37-wood_tools  pop38-buckets  pop39-iron  pop40-iron_tools  pop41-copper  pop42-tin  pop43-bronze  pop44-bronze_tools  pop45-blades  pop46-bronze_mirror  pop47-bronze_token  pop48-iron_token  pop49-copper_token  pop50-tin_token  pop51-coal  pop52-charcoal  pop53-beer  pop54-clay  pop55-pots  pop56-time
+firms  firm1-grain  firm2-water  firm3-bread  firm4-gold  firm5-gold_token  firm6-jewelry  firm7-wood  firm8-cabins  firm9-wood_tools  firm10-buckets  firm11-iron  firm12-iron_tools  firm13-copper  firm14-tin  firm15-bronze  firm16-bronze_tools  firm17-blades  firm18-bronze_mirror  firm19-bronze_token  firm20-iron_token  firm21-copper_token  firm22-tin_token  firm23-coal  firm24-charcoal  firm25-beer  firm26-clay  firm27-pots  firm28-time  firm29-grain  firm30-water  firm31-bread  firm32-gold  firm33-gold_token  firm34-jewelry  firm35-wood  firm36-cabins  firm37-wood_tools  firm38-buckets  firm39-iron  firm40-iron_tools  firm41-copper  firm42-tin  firm43-bronze  firm44-bronze_tools  firm45-blades  firm46-bronze_mirror  firm47-bronze_token  firm48-iron_token  firm49-copper_token  firm50-tin_token  firm51-coal  firm52-charcoal  firm53-beer  firm54-clay  firm55-pots  firm56-time
+books  0 buys / 32 sells
+csv    data/logs/prices_{market,trades}.csv
+
+stock  orders  processes  day  amv  csv  help
+
+---
+shop loaded 0 pop + 32 firm orders (0 buys, 32 sells).
+> CSV directory  data/logs/
+  inputs60_market.csv   always; one row/day; good blocks: amv, salability, average_price
+  inputs60_trades.csv   always; one row/day; good candles: open, high, low, close, volume
+  inputs60_firms.csv    off until `csv on <firm>`
+  inputs60_pops.csv     off until `csv on <pop>`
+csv <name>  changes the stem.  csv reset  wipes these files.
+csv on|off <actor>...  flag pops/firms.  csv off  clears flags.
+Header mismatch (old layout or a new flag set) needs reset or a new stem.
+> csv logging firm1-grain firm3-bread firm5-gold_token firm7-wood firm8-cabins firm12-iron_tools firm25-beer firm27-pots pop1-grain pop3-bread.
+CSV directory  data/logs/
+  inputs60_market.csv   always; one row/day; good blocks: amv, salability, average_price
+  inputs60_trades.csv   always; one row/day; good candles: open, high, low, close, volume
+  inputs60_firms.csv    flagged firm1-grain firm3-bread firm5-gold_token firm7-wood firm8-cabins firm12-iron_tools firm25-beer firm27-pots; firm profit/success, then good blocks: qty, targets, bid, ask, costs, sold, produced
+  inputs60_pops.csv     flagged pop1-grain pop3-bread; pop sat/SOL/shop/income/wealth, then good blocks: qty, shop, save, consumed
+csv <name>  changes the stem.  csv reset  wipes these files.
+csv on|off <actor>...  flag pops/firms.  csv off  clears flags.
+Header mismatch (old layout or a new flag set) needs reset or a new stem.
+> === calendar ===
+day 1  0 trades  2688 washes  wages 0 coin  SOL 1.5000
+day 2  59 trades  680 washes  wages 0 coin  SOL 2.6804
+day 3  45 trades  3927 washes  wages 2 coin  SOL 3.1358
+day 4  95 trades  3424 washes  wages 16 coin  SOL 4.6308
+day 5  159 trades  2628 washes  wages 36 coin  SOL 5.8723
+day 6  157 trades  1929 washes  wages 52 coin  SOL 5.9020
+day 7  165 trades  1755 washes  wages 51 coin  SOL 6.2890
+day 8  139 trades  1488 washes  wages 45 coin  SOL 5.4545
+day 9  163 trades  1479 washes  wages 37 coin  SOL 6.2268
+day 10  142 trades  1497 washes  wages 28 coin  SOL 5.1681
+day 11  164 trades  1176 washes  wages 35 coin  SOL 5.2359
+day 12  167 trades  942 washes  wages 31 coin  SOL 6.5064
+day 13  180 trades  378 washes  wages 27 coin  SOL 5.1596
+day 14  158 trades  330 washes  wages 25 coin  SOL 5.0874
+day 15  145 trades  333 washes  wages 19 coin  SOL 5.8362
+day 16  140 trades  417 washes  wages 10 coin  SOL 5.5837
+day 17  130 trades  411 washes  wages 14 coin  SOL 5.6019
+day 18  124 trades  435 washes  wages 16 coin  SOL 5.5121
+day 19  130 trades  552 washes  wages 17 coin  SOL 5.4881
+day 20  108 trades  876 washes  wages 13 coin  SOL 5.2953
+day 21  90 trades  900 washes  wages 6 coin  SOL 5.1934
+day 22  90 trades  1026 washes  wages 2 coin  SOL 4.9935
+day 23  87 trades  930 washes  wages 1 coin  SOL 4.9423
+day 24  86 trades  816 washes  wages 3 coin  SOL 5.3692
+day 25  81 trades  693 washes  wages 0 coin  SOL 5.1542
+day 26  76 trades  825 washes  wages 2 coin  SOL 4.5976
+day 27  63 trades  1053 washes  wages 2 coin  SOL 4.4643
+day 28  52 trades  912 washes  wages 2 coin  SOL 3.5698
+day 29  52 trades  858 washes  wages 0 coin  SOL 3.5412
+day 30  48 trades  876 washes  wages 0 coin  SOL 3.3192
+day 31  39 trades  1164 washes  wages 0 coin  SOL 3.1932
+day 32  40 trades  987 washes  wages 0 coin  SOL 3.0806
+day 33  43 trades  993 washes  wages 0 coin  SOL 2.9824
+day 34  43 trades  996 washes  wages 0 coin  SOL 3.0672
+day 35  37 trades  1065 washes  wages 0 coin  SOL 2.9360
+day 36  34 trades  1068 washes  wages 0 coin  SOL 3.0549
+day 37  34 trades  1071 washes  wages 0 coin  SOL 2.9587
+day 38  37 trades  909 washes  wages 0 coin  SOL 3.0402
+day 39  31 trades  930 washes  wages 0 coin  SOL 2.8795
+day 40  35 trades  903 washes  wages 0 coin  SOL 2.9411
+day 41  27 trades  933 washes  wages 0 coin  SOL 2.8230
+day 42  30 trades  930 washes  wages 0 coin  SOL 2.6876
+day 43  32 trades  948 washes  wages 0 coin  SOL 2.6785
+day 44  26 trades  927 washes  wages 0 coin  SOL 2.6786
+day 45  29 trades  978 washes  wages 0 coin  SOL 2.7482
+day 46  25 trades  927 washes  wages 0 coin  SOL 2.6223
+day 47  30 trades  939 washes  wages 0 coin  SOL 2.6732
+day 48  25 trades  837 washes  wages 0 coin  SOL 2.6116
+day 49  30 trades  846 washes  wages 0 coin  SOL 2.7027
+day 50  24 trades  849 washes  wages 0 coin  SOL 2.6196
+day 51  27 trades  864 washes  wages 0 coin  SOL 2.6652
+day 52  30 trades  717 washes  wages 0 coin  SOL 2.6411
+day 53  29 trades  714 washes  wages 0 coin  SOL 2.6786
+day 54  25 trades  723 washes  wages 0 coin  SOL 2.6705
+day 55  28 trades  732 washes  wages 0 coin  SOL 2.6812
+day 56  26 trades  729 washes  wages 0 coin  SOL 2.6009
+day 57  28 trades  744 washes  wages 0 coin  SOL 2.6148
+day 58  22 trades  747 washes  wages 0 coin  SOL 2.3985
+day 59  23 trades  756 washes  wages 0 coin  SOL 2.5071
+day 60  23 trades  750 washes  wages 0 coin  SOL 2.3909
+
+=== market day 60 ===
+23 trades   750 washes   1176 unmatched   leftover 0 buy / 31 sell
+haul  965.16
+----------------------------------------------------------------
+
+Unmatched  (no seller)
+  buyer                    qty good
+  --------------------  ------ --------
+  pop23-coal                 5 bread
+  pop23-coal                 3 grain
+  pop23-coal                 2 coal
+  pop23-coal                 2 charcoal
+  pop23-coal                 2 wood
+  pop11-iron                 5 bread
+  pop11-iron                 3 grain
+  pop11-iron                 2 coal
+  pop11-iron                 2 charcoal
+  pop11-iron                 2 wood
+  pop39-iron                 5 bread
+  pop39-iron                 3 grain
+  pop39-iron                 2 coal
+  pop39-iron                 2 charcoal
+  pop39-iron                 2 wood
+  pop15-bronze               5 bread
+  pop15-bronze               3 grain
+  pop15-bronze               2 coal
+  pop15-bronze               2 charcoal
+  pop15-bronze               2 wood
+  pop43-bronze               5 bread
+  pop43-bronze               3 grain
+  pop43-bronze               2 coal
+  pop43-bronze               2 charcoal
+  pop43-bronze               2 wood
+  pop42-tin                  5 bread
+  pop42-tin                  3 grain
+  pop42-tin                  2 coal
+  pop42-tin                  2 charcoal
+  pop42-tin                  4 wood
+  pop41-copper               5 bread
+  pop41-copper               3 grain
+  pop41-copper               2 coal
+  pop41-copper               2 charcoal
+  pop41-copper               4 wood
+  pop13-copper               5 bread
+  pop13-copper               3 grain
+  pop13-copper               2 coal
+  pop13-copper               2 charcoal
+  pop13-copper               4 wood
+  pop1-grain                 5 bread
+  pop1-grain                 2 coal
+  pop1-grain                 2 charcoal
+  pop1-grain                 4 wood
+  pop29-grain                5 bread
+  pop29-grain                2 coal
+  pop29-grain                2 charcoal
+  pop29-grain                4 wood
+  pop33-gold_token           5 bread
+  pop33-gold_token           3 grain
+  pop33-gold_token           2 coal
+  pop33-gold_token           2 charcoal
+  pop33-gold_token           4 wood
+  pop47-bronze_token         5 bread
+  pop47-bronze_token         3 grain
+  pop47-bronze_token         2 coal
+  pop47-bronze_token         2 charcoal
+  pop47-bronze_token         4 wood
+  pop5-gold_token            5 bread
+  pop5-gold_token            3 grain
+  pop5-gold_token            2 coal
+  pop5-gold_token            2 charcoal
+  pop5-gold_token            4 wood
+  pop49-copper_token         5 bread
+  pop49-copper_token         3 grain
+  pop49-copper_token         2 coal
+  pop49-copper_token         2 charcoal
+  pop49-copper_token         4 wood
+  pop50-tin_token            5 bread
+  pop50-tin_token            3 grain
+  pop50-tin_token            2 coal
+  pop50-tin_token            2 charcoal
+  pop50-tin_token            4 wood
+  pop21-copper_token         5 bread
+  pop21-copper_token         3 grain
+  pop21-copper_token         2 coal
+  pop21-copper_token         2 charcoal
+  pop21-copper_token         4 wood
+  pop48-iron_token           5 bread
+  pop48-iron_token           3 grain
+  pop48-iron_token           2 coal
+  pop48-iron_token           2 charcoal
+  pop48-iron_token           4 wood
+  pop19-bronze_token         5 bread
+  pop19-bronze_token         3 grain
+  pop19-bronze_token         2 coal
+  pop19-bronze_token         2 charcoal
+  pop19-bronze_token         4 wood
+  pop22-tin_token            5 bread
+  pop22-tin_token            3 grain
+  pop22-tin_token            2 coal
+  pop22-tin_token            2 charcoal
+  pop22-tin_token            4 wood
+  pop20-iron_token           5 bread
+  pop20-iron_token           3 grain
+  pop20-iron_token           2 coal
+  pop20-iron_token           2 charcoal
+  pop20-iron_token           4 wood
+  pop52-charcoal             5 bread
+  pop52-charcoal             3 grain
+  pop52-charcoal             2 coal
+  pop52-charcoal             2 charcoal
+  pop52-charcoal             4 wood
+  pop24-charcoal             5 bread
+  pop24-charcoal             3 grain
+  pop24-charcoal             2 coal
+  pop24-charcoal             2 charcoal
+  pop24-charcoal             4 wood
+  pop30-water                5 bread
+  pop30-water                3 grain
+  pop30-water                1 coal
+  pop30-water                2 charcoal
+  pop30-water                4 wood
+  pop2-water                 5 bread
+  pop2-water                 3 grain
+  pop2-water                 2 coal
+  pop2-water                 2 charcoal
+  pop2-water                 4 wood
+  pop26-clay                 5 bread
+  pop26-clay                 3 grain
+  pop26-clay                 2 coal
+  pop26-clay                 2 charcoal
+  pop26-clay                 4 wood
+  pop54-clay                 5 bread
+  pop54-clay                 3 grain
+  pop54-clay                 2 coal
+  pop54-clay                 2 charcoal
+  pop54-clay                 4 wood
+  pop51-coal                 5 bread
+  pop51-coal                 3 grain
+  pop51-coal                 2 coal
+  pop51-coal                 2 charcoal
+  pop51-coal                 4 wood
+  pop7-wood                  5 bread
+  pop7-wood                  3 grain
+  pop7-wood                  2 coal
+  pop7-wood                  2 charcoal
+  pop7-wood                  4 wood
+  pop32-gold                 5 bread
+  pop32-gold                 3 grain
+  pop32-gold                 2 coal
+  pop32-gold                 2 charcoal
+  pop32-gold                 4 wood
+  pop35-wood                 5 bread
+  pop35-wood                 3 grain
+  pop35-wood                 2 coal
+  pop35-wood                 2 charcoal
+  pop35-wood                 4 wood
+  pop4-gold                  5 bread
+  pop4-gold                  3 grain
+  pop4-gold                  2 coal
+  pop4-gold                  2 charcoal
+  pop4-gold                  4 wood
+  pop18-bronze_mirror        5 bread
+  pop18-bronze_mirror        3 grain
+  pop18-bronze_mirror        2 coal
+  pop18-bronze_mirror        2 charcoal
+  pop18-bronze_mirror        4 wood
+  pop46-bronze_mirror        5 bread
+  pop46-bronze_mirror        3 grain
+  pop46-bronze_mirror        2 coal
+  pop46-bronze_mirror        2 charcoal
+  pop46-bronze_mirror        4 wood
+  pop12-iron_tools           5 bread
+  pop12-iron_tools           3 grain
+  pop12-iron_tools           2 coal
+  pop12-iron_tools           2 charcoal
+  pop12-iron_tools           4 wood
+  pop40-iron_tools           5 bread
+  pop40-iron_tools           3 grain
+  pop40-iron_tools           2 coal
+  pop40-iron_tools           2 charcoal
+  pop40-iron_tools           4 wood
+  pop6-jewelry               5 bread
+  pop6-jewelry               3 grain
+  pop6-jewelry               2 coal
+  pop6-jewelry               2 charcoal
+  pop6-jewelry               4 wood
+  pop34-jewelry              5 bread
+  pop34-jewelry              3 grain
+  pop34-jewelry              2 coal
+  pop34-jewelry              2 charcoal
+  pop34-jewelry              4 wood
+  pop55-pots                 5 bread
+  pop55-pots                 3 grain
+  pop55-pots                 2 coal
+  pop55-pots                 2 charcoal
+  pop55-pots                 4 wood
+  pop17-blades               5 bread
+  pop17-blades               3 grain
+  pop17-blades               2 coal
+  pop17-blades               2 charcoal
+  pop17-blades               4 wood
+  pop8-cabins                5 bread
+  pop8-cabins                3 grain
+  pop8-cabins                2 coal
+  pop8-cabins                2 charcoal
+  pop8-cabins                4 wood
+  pop28-time                 5 bread
+  pop28-time                 3 grain
+  pop28-time                 2 coal
+  pop28-time                 2 charcoal
+  pop28-time                 4 wood
+  pop31-bread                5 bread
+  pop31-bread                3 grain
+  pop31-bread                2 coal
+  pop31-bread                2 charcoal
+  pop31-bread                4 wood
+  pop53-beer                 5 bread
+  pop53-beer                 3 grain
+  pop53-beer                 2 coal
+  pop53-beer                 2 charcoal
+  pop53-beer                 4 wood
+  pop37-wood_tools           5 bread
+  pop37-wood_tools           3 grain
+  pop37-wood_tools           2 coal
+  pop37-wood_tools           2 charcoal
+  pop37-wood_tools           4 wood
+  pop56-time                 5 bread
+  pop56-time                 3 grain
+  pop56-time                 2 coal
+  pop56-time                 2 charcoal
+  pop56-time                 4 wood
+  pop10-buckets              5 bread
+  pop10-buckets              3 grain
+  pop10-buckets              2 coal
+  pop10-buckets              2 charcoal
+  pop10-buckets              4 wood
+  pop27-pots                 5 bread
+  pop27-pots                 3 grain
+  pop27-pots                 2 coal
+  pop27-pots                 2 charcoal
+  pop27-pots                 4 wood
+  pop44-bronze_tools         5 bread
+  pop44-bronze_tools         3 grain
+  pop44-bronze_tools         2 coal
+  pop44-bronze_tools         2 charcoal
+  pop44-bronze_tools         4 wood
+  pop36-cabins               5 bread
+  pop36-cabins               3 grain
+  pop36-cabins               2 coal
+  pop36-cabins               2 charcoal
+  pop36-cabins               4 wood
+  pop9-wood_tools            5 bread
+  pop9-wood_tools            3 grain
+  pop9-wood_tools            2 coal
+  pop9-wood_tools            2 charcoal
+  pop9-wood_tools            4 wood
+  pop45-blades               5 bread
+  pop45-blades               3 grain
+  pop45-blades               2 coal
+  pop45-blades               2 charcoal
+  pop45-blades               4 wood
+  pop16-bronze_tools         5 bread
+  pop16-bronze_tools         3 grain
+  pop16-bronze_tools         2 coal
+  pop16-bronze_tools         2 charcoal
+  pop16-bronze_tools         4 wood
+  pop3-bread                 5 bread
+  pop3-bread                 3 grain
+  pop3-bread                 2 coal
+  pop3-bread                 2 charcoal
+  pop3-bread                 4 wood
+  pop38-buckets              5 bread
+  pop38-buckets              3 grain
+  pop38-buckets              2 coal
+  pop38-buckets              2 charcoal
+  pop38-buckets              4 wood
+  pop25-beer                 5 bread
+  pop25-beer                 3 grain
+  pop25-beer                 2 coal
+  pop25-beer                 2 charcoal
+  pop25-beer                 4 wood
+  pop14-tin                  5 bread
+  pop14-tin                  3 grain
+  pop14-tin                  2 coal
+  pop14-tin                  2 charcoal
+  pop14-tin                  4 wood
+  pop23-coal                 2 cabins
+  pop23-coal                 2 blades
+  pop23-coal                 1 iron_tools
+  pop23-coal                 2 pots
+  pop23-coal                 2 buckets
+  pop23-coal                 2 bronze_tools
+  pop23-coal                 5 wood_tools
+  pop23-coal                12 beer
+  pop23-coal                 3 gold
+  pop23-coal                 3 bronze_mirror
+  pop11-iron                 2 cabins
+  pop11-iron                 2 blades
+  pop11-iron                 1 iron_tools
+  pop11-iron                 2 pots
+  pop11-iron                 2 buckets
+  pop11-iron                 2 bronze_tools
+  pop11-iron                 5 wood_tools
+  pop11-iron                12 beer
+  pop11-iron                 4 gold
+  pop11-iron                 3 bronze_mirror
+  pop39-iron                 2 cabins
+  pop39-iron                 2 blades
+  pop39-iron                 1 iron_tools
+  pop39-iron                 2 pots
+  pop39-iron                 2 buckets
+  pop39-iron                 2 bronze_tools
+  pop39-iron                 5 wood_tools
+  pop39-iron                12 beer
+  pop39-iron                 4 gold
+  pop39-iron                 3 bronze_mirror
+  pop15-bronze               2 cabins
+  pop15-bronze               2 blades
+  pop15-bronze               1 iron_tools
+  pop15-bronze               2 pots
+  pop15-bronze               2 buckets
+  pop15-bronze               2 bronze_tools
+  pop15-bronze               5 wood_tools
+  pop15-bronze              12 beer
+  pop15-bronze               4 gold
+  pop15-bronze               3 bronze_mirror
+  pop43-bronze               2 cabins
+  pop43-bronze               2 blades
+  pop43-bronze               1 iron_tools
+  pop43-bronze               2 pots
+  pop43-bronze               2 buckets
+  pop43-bronze               2 bronze_tools
+  pop43-bronze               5 wood_tools
+  pop43-bronze              12 beer
+  pop43-bronze               4 gold
+  pop43-bronze               3 bronze_mirror
+  pop42-tin                  2 cabins
+  pop42-tin                  1 blades
+  pop42-tin                  1 iron_tools
+  pop42-tin                  2 pots
+  pop42-tin                  2 buckets
+  pop42-tin                  2 bronze_tools
+  pop42-tin                  5 wood_tools
+  pop42-tin                  9 beer
+  pop42-tin                  2 copper
+  pop42-tin                 11 gold
+  pop42-tin                  3 bronze_mirror
+  pop41-copper               2 cabins
+  pop41-copper               1 blades
+  pop41-copper               1 iron_tools
+  pop41-copper               2 pots
+  pop41-copper               2 buckets
+  pop41-copper               2 bronze_tools
+  pop41-copper               5 wood_tools
+  pop41-copper               9 beer
+  pop41-copper              11 gold
+  pop41-copper               3 bronze_mirror
+  pop13-copper               2 cabins
+  pop13-copper               1 blades
+  pop13-copper               1 iron_tools
+  pop13-copper               2 pots
+  pop13-copper               2 buckets
+  pop13-copper               2 bronze_tools
+  pop13-copper               5 wood_tools
+  pop13-copper               9 beer
+  pop13-copper              11 gold
+  pop13-copper               3 bronze_mirror
+  pop1-grain                 2 cabins
+  pop1-grain                 1 blades
+  pop1-grain                 1 iron_tools
+  pop1-grain                 2 pots
+  pop1-grain                 2 buckets
+  pop1-grain                 2 bronze_tools
+  pop1-grain                 5 wood_tools
+  pop1-grain                 9 beer
+  pop1-grain                 2 copper
+  pop1-grain                12 gold
+  pop1-grain                 3 bronze_mirror
+  pop29-grain                2 cabins
+  pop29-grain                1 blades
+  pop29-grain                1 iron_tools
+  pop29-grain                2 pots
+  pop29-grain                2 buckets
+  pop29-grain                2 bronze_tools
+  pop29-grain                5 wood_tools
+  pop29-grain                9 beer
+  pop29-grain                2 copper
+  pop29-grain               12 gold
+  pop29-grain                3 bronze_mirror
+  pop33-gold_token           2 cabins
+  pop33-gold_token           1 blades
+  pop33-gold_token           1 iron_tools
+  pop33-gold_token           2 pots
+  pop33-gold_token           2 buckets
+  pop33-gold_token           2 bronze_tools
+  pop33-gold_token           5 wood_tools
+  pop33-gold_token           9 beer
+  pop33-gold_token           2 copper
+  pop33-gold_token          10 gold
+  pop33-gold_token           3 bronze_mirror
+  pop47-bronze_token         2 cabins
+  pop47-bronze_token         1 blades
+  pop47-bronze_token         1 iron_tools
+  pop47-bronze_token         2 pots
+  pop47-bronze_token         2 buckets
+  pop47-bronze_token         2 bronze_tools
+  pop47-bronze_token         5 wood_tools
+  pop47-bronze_token         9 beer
+  pop47-bronze_token         2 copper
+  pop47-bronze_token        11 gold
+  pop47-bronze_token         3 bronze_mirror
+  pop5-gold_token            2 cabins
+  pop5-gold_token            1 blades
+  pop5-gold_token            1 iron_tools
+  pop5-gold_token            2 pots
+  pop5-gold_token            2 buckets
+  pop5-gold_token            2 bronze_tools
+  pop5-gold_token            5 wood_tools
+  pop5-gold_token            9 beer
+  pop5-gold_token            2 copper
+  pop5-gold_token           10 gold
+  pop5-gold_token            3 bronze_mirror
+  pop49-copper_token         2 cabins
+  pop49-copper_token         1 blades
+  pop49-copper_token         1 iron_tools
+  pop49-copper_token         2 pots
+  pop49-copper_token         2 buckets
+  pop49-copper_token         2 bronze_tools
+  pop49-copper_token         5 wood_tools
+  pop49-copper_token         9 beer
+  pop49-copper_token         2 copper
+  pop49-copper_token        10 gold
+  pop49-copper_token         3 bronze_mirror
+  pop50-tin_token            2 cabins
+  pop50-tin_token            1 blades
+  pop50-tin_token            1 iron_tools
+  pop50-tin_token            2 pots
+  pop50-tin_token            2 buckets
+  pop50-tin_token            2 bronze_tools
+  pop50-tin_token            5 wood_tools
+  pop50-tin_token            9 beer
+  pop50-tin_token            2 copper
+  pop50-tin_token           10 gold
+  pop50-tin_token            3 bronze_mirror
+  pop21-copper_token         2 cabins
+  pop21-copper_token         1 blades
+  pop21-copper_token         1 iron_tools
+  pop21-copper_token         2 pots
+  pop21-copper_token         2 buckets
+  pop21-copper_token         2 bronze_tools
+  pop21-copper_token         5 wood_tools
+  pop21-copper_token         9 beer
+  pop21-copper_token         2 copper
+  pop21-copper_token        10 gold
+  pop21-copper_token         3 bronze_mirror
+  pop48-iron_token           2 cabins
+  pop48-iron_token           1 blades
+  pop48-iron_token           1 iron_tools
+  pop48-iron_token           2 pots
+  pop48-iron_token           2 buckets
+  pop48-iron_token           2 bronze_tools
+  pop48-iron_token           5 wood_tools
+  pop48-iron_token           9 beer
+  pop48-iron_token           2 copper
+  pop48-iron_token          10 gold
+  pop48-iron_token           3 bronze_mirror
+  pop19-bronze_token         2 cabins
+  pop19-bronze_token         1 blades
+  pop19-bronze_token         1 iron_tools
+  pop19-bronze_token         2 pots
+  pop19-bronze_token         2 buckets
+  pop19-bronze_token         2 bronze_tools
+  pop19-bronze_token         5 wood_tools
+  pop19-bronze_token         9 beer
+  pop19-bronze_token         2 copper
+  pop19-bronze_token        10 gold
+  pop19-bronze_token         3 bronze_mirror
+  pop22-tin_token            2 cabins
+  pop22-tin_token            1 blades
+  pop22-tin_token            1 iron_tools
+  pop22-tin_token            2 pots
+  pop22-tin_token            2 buckets
+  pop22-tin_token            2 bronze_tools
+  pop22-tin_token            5 wood_tools
+  pop22-tin_token            9 beer
+  pop22-tin_token            2 copper
+  pop22-tin_token           10 gold
+  pop22-tin_token            3 bronze_mirror
+  pop20-iron_token           2 cabins
+  pop20-iron_token           1 blades
+  pop20-iron_token           1 iron_tools
+  pop20-iron_token           2 pots
+  pop20-iron_token           2 buckets
+  pop20-iron_token           2 bronze_tools
+  pop20-iron_token           5 wood_tools
+  pop20-iron_token           9 beer
+  pop20-iron_token           2 copper
+  pop20-iron_token          10 gold
+  pop20-iron_token           3 bronze_mirror
+  pop52-charcoal             2 cabins
+  pop52-charcoal             1 blades
+  pop52-charcoal             1 iron_tools
+  pop52-charcoal             2 pots
+  pop52-charcoal             2 buckets
+  pop52-charcoal             2 bronze_tools
+  pop52-charcoal             5 wood_tools
+  pop52-charcoal             9 beer
+  pop52-charcoal             2 copper
+  pop52-charcoal            10 gold
+  pop52-charcoal             3 bronze_mirror
+  pop24-charcoal             2 cabins
+  pop24-charcoal             1 blades
+  pop24-charcoal             1 iron_tools
+  pop24-charcoal             2 pots
+  pop24-charcoal             2 buckets
+  pop24-charcoal             2 bronze_tools
+  pop24-charcoal             5 wood_tools
+  pop24-charcoal             9 beer
+  pop24-charcoal             2 copper
+  pop24-charcoal            10 gold
+  pop24-charcoal             3 bronze_mirror
+  pop30-water                2 cabins
+  pop30-water                1 blades
+  pop30-water                1 iron_tools
+  pop30-water                2 pots
+  pop30-water                2 buckets
+  pop30-water                2 bronze_tools
+  pop30-water                5 wood_tools
+  pop30-water                9 beer
+  pop30-water                2 copper
+  pop30-water                9 gold
+  pop30-water                3 bronze_mirror
+  pop2-water                 2 cabins
+  pop2-water                 1 blades
+  pop2-water                 1 iron_tools
+  pop2-water                 2 pots
+  pop2-water                 2 buckets
+  pop2-water                 2 bronze_tools
+  pop2-water                 5 wood_tools
+  pop2-water                10 beer
+  pop2-water                 2 copper
+  pop2-water                 9 gold
+  pop2-water                 3 bronze_mirror
+  pop26-clay                 2 cabins
+  pop26-clay                 1 blades
+  pop26-clay                 1 iron_tools
+  pop26-clay                 2 pots
+  pop26-clay                 2 buckets
+  pop26-clay                 2 bronze_tools
+  pop26-clay                 5 wood_tools
+  pop26-clay                12 beer
+  pop26-clay                 2 copper
+  pop26-clay                10 gold
+  pop26-clay                 3 bronze_mirror
+  pop54-clay                 2 cabins
+  pop54-clay                 1 blades
+  pop54-clay                 1 iron_tools
+  pop54-clay                 2 pots
+  pop54-clay                 2 buckets
+  pop54-clay                 2 bronze_tools
+  pop54-clay                 5 wood_tools
+  pop54-clay                11 beer
+  pop54-clay                 2 copper
+  pop54-clay                10 gold
+  pop54-clay                 3 bronze_mirror
+  pop51-coal                 2 cabins
+  pop51-coal                 2 blades
+  pop51-coal                 1 iron_tools
+  pop51-coal                 2 pots
+  pop51-coal                 2 buckets
+  pop51-coal                 2 bronze_tools
+  pop51-coal                 5 wood_tools
+  pop51-coal                11 beer
+  pop51-coal                 2 copper
+  pop51-coal                 2 tin
+  pop51-coal                 9 gold
+  pop51-coal                 3 bronze_mirror
+  pop7-wood                  2 cabins
+  pop7-wood                  1 blades
+  pop7-wood                  1 iron_tools
+  pop7-wood                  2 pots
+  pop7-wood                  2 buckets
+  pop7-wood                  2 bronze_tools
+  pop7-wood                  5 wood_tools
+  pop7-wood                  9 beer
+  pop7-wood                  2 copper
+  pop7-wood                  2 tin
+  pop7-wood                 12 gold
+  pop7-wood                  3 bronze_mirror
+  pop32-gold                 2 cabins
+  pop32-gold                 1 blades
+  pop32-gold                 1 iron_tools
+  pop32-gold                 2 pots
+  pop32-gold                 2 buckets
+  pop32-gold                 2 bronze_tools
+  pop32-gold                 5 wood_tools
+  pop32-gold                 9 beer
+  pop32-gold                 2 copper
+  pop32-gold                 2 tin
+  pop32-gold                11 gold
+  pop32-gold                 3 bronze_mirror
+  pop35-wood                 2 cabins
+  pop35-wood                 1 blades
+  pop35-wood                 1 iron_tools
+  pop35-wood                 2 pots
+  pop35-wood                 2 buckets
+  pop35-wood                 2 bronze_tools
+  pop35-wood                 5 wood_tools
+  pop35-wood                 9 beer
+  pop35-wood                 2 copper
+  pop35-wood                 2 tin
+  pop35-wood                12 gold
+  pop35-wood                 3 bronze_mirror
+  pop4-gold                  2 cabins
+  pop4-gold                  1 blades
+  pop4-gold                  1 iron_tools
+  pop4-gold                  2 pots
+  pop4-gold                  2 buckets
+  pop4-gold                  2 bronze_tools
+  pop4-gold                  5 wood_tools
+  pop4-gold                  9 beer
+  pop4-gold                  2 copper
+  pop4-gold                  2 tin
+  pop4-gold                 11 gold
+  pop4-gold                  3 bronze_mirror
+  pop18-bronze_mirror        2 cabins
+  pop18-bronze_mirror        1 blades
+  pop18-bronze_mirror        1 iron_tools
+  pop18-bronze_mirror        2 pots
+  pop18-bronze_mirror        2 buckets
+  pop18-bronze_mirror        2 bronze_tools
+  pop18-bronze_mirror        5 wood_tools
+  pop18-bronze_mirror        9 beer
+  pop18-bronze_mirror        2 copper
+  pop18-bronze_mirror        2 tin
+  pop18-bronze_mirror       10 gold
+  pop18-bronze_mirror        3 bronze_mirror
+  pop46-bronze_mirror        2 cabins
+  pop46-bronze_mirror        1 blades
+  pop46-bronze_mirror        1 iron_tools
+  pop46-bronze_mirror        2 pots
+  pop46-bronze_mirror        2 buckets
+  pop46-bronze_mirror        2 bronze_tools
+  pop46-bronze_mirror        5 wood_tools
+  pop46-bronze_mirror        9 beer
+  pop46-bronze_mirror        2 copper
+  pop46-bronze_mirror        2 tin
+  pop46-bronze_mirror       10 gold
+  pop46-bronze_mirror        3 bronze_mirror
+  pop12-iron_tools           2 cabins
+  pop12-iron_tools           1 blades
+  pop12-iron_tools           1 iron_tools
+  pop12-iron_tools           2 pots
+  pop12-iron_tools           2 buckets
+  pop12-iron_tools           2 bronze_tools
+  pop12-iron_tools           5 wood_tools
+  pop12-iron_tools           9 beer
+  pop12-iron_tools           2 copper
+  pop12-iron_tools           2 tin
+  pop12-iron_tools          10 gold
+  pop12-iron_tools           3 bronze_mirror
+  pop40-iron_tools           2 cabins
+  pop40-iron_tools           1 blades
+  pop40-iron_tools           1 iron_tools
+  pop40-iron_tools           2 pots
+  pop40-iron_tools           2 buckets
+  pop40-iron_tools           2 bronze_tools
+  pop40-iron_tools           5 wood_tools
+  pop40-iron_tools           9 beer
+  pop40-iron_tools           2 copper
+  pop40-iron_tools           2 tin
+  pop40-iron_tools          10 gold
+  pop40-iron_tools           3 bronze_mirror
+  pop6-jewelry               2 cabins
+  pop6-jewelry               1 blades
+  pop6-jewelry               1 iron_tools
+  pop6-jewelry               2 pots
+  pop6-jewelry               2 buckets
+  pop6-jewelry               2 bronze_tools
+  pop6-jewelry               5 wood_tools
+  pop6-jewelry               9 beer
+  pop6-jewelry               2 copper
+  pop6-jewelry               2 tin
+  pop6-jewelry              10 gold
+  pop6-jewelry               3 bronze_mirror
+  pop34-jewelry              2 cabins
+  pop34-jewelry              1 blades
+  pop34-jewelry              1 iron_tools
+  pop34-jewelry              2 pots
+  pop34-jewelry              2 buckets
+  pop34-jewelry              2 bronze_tools
+  pop34-jewelry              5 wood_tools
+  pop34-jewelry              9 beer
+  pop34-jewelry              2 copper
+  pop34-jewelry              2 tin
+  pop34-jewelry             10 gold
+  pop34-jewelry              3 bronze_mirror
+  pop55-pots                 2 cabins
+  pop55-pots                 1 blades
+  pop55-pots                 1 iron_tools
+  pop55-pots                 2 pots
+  pop55-pots                 2 buckets
+  pop55-pots                 2 bronze_tools
+  pop55-pots                 5 wood_tools
+  pop55-pots                 9 beer
+  pop55-pots                 2 copper
+  pop55-pots                 2 tin
+  pop55-pots                10 gold
+  pop55-pots                 3 bronze_mirror
+  pop17-blades               2 cabins
+  pop17-blades               1 blades
+  pop17-blades               1 iron_tools
+  pop17-blades               2 pots
+  pop17-blades               2 buckets
+  pop17-blades               2 bronze_tools
+  pop17-blades               5 wood_tools
+  pop17-blades               9 beer
+  pop17-blades               2 copper
+  pop17-blades               2 tin
+  pop17-blades              10 gold
+  pop17-blades               3 bronze_mirror
+  pop8-cabins                2 cabins
+  pop8-cabins                1 blades
+  pop8-cabins                1 iron_tools
+  pop8-cabins                2 pots
+  pop8-cabins                2 buckets
+  pop8-cabins                2 bronze_tools
+  pop8-cabins                5 wood_tools
+  pop8-cabins                9 beer
+  pop8-cabins                2 copper
+  pop8-cabins                2 tin
+  pop8-cabins               10 gold
+  pop8-cabins                3 bronze_mirror
+  pop28-time                 2 cabins
+  pop28-time                 1 blades
+  pop28-time                 1 iron_tools
+  pop28-time                 2 pots
+  pop28-time                 2 buckets
+  pop28-time                 2 bronze_tools
+  pop28-time                 5 wood_tools
+  pop28-time                 9 beer
+  pop28-time                 2 copper
+  pop28-time                 2 tin
+  pop28-time                10 gold
+  pop28-time                 3 bronze_mirror
+  pop31-bread                2 cabins
+  pop31-bread                1 blades
+  pop31-bread                1 iron_tools
+  pop31-bread                2 pots
+  pop31-bread                2 buckets
+  pop31-bread                2 bronze_tools
+  pop31-bread                5 wood_tools
+  pop31-bread                9 beer
+  pop31-bread                2 copper
+  pop31-bread                2 tin
+  pop31-bread               10 gold
+  pop31-bread                3 bronze_mirror
+  pop53-beer                 2 cabins
+  pop53-beer                 1 blades
+  pop53-beer                 1 iron_tools
+  pop53-beer                 2 pots
+  pop53-beer                 2 buckets
+  pop53-beer                 2 bronze_tools
+  pop53-beer                 5 wood_tools
+  pop53-beer                 9 beer
+  pop53-beer                 2 copper
+  pop53-beer                 2 tin
+  pop53-beer                10 gold
+  pop53-beer                 3 bronze_mirror
+  pop37-wood_tools           2 cabins
+  pop37-wood_tools           1 blades
+  pop37-wood_tools           1 iron_tools
+  pop37-wood_tools           2 pots
+  pop37-wood_tools           2 buckets
+  pop37-wood_tools           2 bronze_tools
+  pop37-wood_tools           5 wood_tools
+  pop37-wood_tools           9 beer
+  pop37-wood_tools           2 copper
+  pop37-wood_tools           2 tin
+  pop37-wood_tools          10 gold
+  pop37-wood_tools           3 bronze_mirror
+  pop56-time                 2 cabins
+  pop56-time                 1 blades
+  pop56-time                 1 iron_tools
+  pop56-time                 2 pots
+  pop56-time                 2 buckets
+  pop56-time                 2 bronze_tools
+  pop56-time                 5 wood_tools
+  pop56-time                 9 beer
+  pop56-time                 2 copper
+  pop56-time                 2 tin
+  pop56-time                10 gold
+  pop56-time                 3 bronze_mirror
+  pop10-buckets              2 cabins
+  pop10-buckets              1 blades
+  pop10-buckets              1 iron_tools
+  pop10-buckets              2 pots
+  pop10-buckets              2 buckets
+  pop10-buckets              2 bronze_tools
+  pop10-buckets              5 wood_tools
+  pop10-buckets              9 beer
+  pop10-buckets              2 copper
+  pop10-buckets              2 tin
+  pop10-buckets             10 gold
+  pop10-buckets              3 bronze_mirror
+  pop27-pots                 2 cabins
+  pop27-pots                 1 blades
+  pop27-pots                 1 iron_tools
+  pop27-pots                 2 pots
+  pop27-pots                 2 buckets
+  pop27-pots                 2 bronze_tools
+  pop27-pots                 5 wood_tools
+  pop27-pots                 9 beer
+  pop27-pots                 2 copper
+  pop27-pots                 2 tin
+  pop27-pots                10 gold
+  pop27-pots                 3 bronze_mirror
+  pop44-bronze_tools         2 cabins
+  pop44-bronze_tools         1 blades
+  pop44-bronze_tools         1 iron_tools
+  pop44-bronze_tools         2 pots
+  pop44-bronze_tools         2 buckets
+  pop44-bronze_tools         2 bronze_tools
+  pop44-bronze_tools         5 wood_tools
+  pop44-bronze_tools         9 beer
+  pop44-bronze_tools         2 copper
+  pop44-bronze_tools         2 tin
+  pop44-bronze_tools        10 gold
+  pop44-bronze_tools         3 bronze_mirror
+  pop36-cabins               2 cabins
+  pop36-cabins               1 blades
+  pop36-cabins               1 iron_tools
+  pop36-cabins               2 pots
+  pop36-cabins               2 buckets
+  pop36-cabins               2 bronze_tools
+  pop36-cabins               5 wood_tools
+  pop36-cabins               9 beer
+  pop36-cabins               2 copper
+  pop36-cabins               2 tin
+  pop36-cabins              10 gold
+  pop36-cabins               3 bronze_mirror
+  pop9-wood_tools            2 cabins
+  pop9-wood_tools            1 blades
+  pop9-wood_tools            1 iron_tools
+  pop9-wood_tools            2 pots
+  pop9-wood_tools            2 buckets
+  pop9-wood_tools            2 bronze_tools
+  pop9-wood_tools            5 wood_tools
+  pop9-wood_tools            9 beer
+  pop9-wood_tools            2 copper
+  pop9-wood_tools            2 tin
+  pop9-wood_tools           10 gold
+  pop9-wood_tools            3 bronze_mirror
+  pop45-blades               2 cabins
+  pop45-blades               1 blades
+  pop45-blades               1 iron_tools
+  pop45-blades               2 pots
+  pop45-blades               2 buckets
+  pop45-blades               2 bronze_tools
+  pop45-blades               5 wood_tools
+  pop45-blades               9 beer
+  pop45-blades               2 copper
+  pop45-blades               2 tin
+  pop45-blades              10 gold
+  pop45-blades               3 bronze_mirror
+  pop16-bronze_tools         2 cabins
+  pop16-bronze_tools         1 blades
+  pop16-bronze_tools         1 iron_tools
+  pop16-bronze_tools         2 pots
+  pop16-bronze_tools         2 buckets
+  pop16-bronze_tools         2 bronze_tools
+  pop16-bronze_tools         5 wood_tools
+  pop16-bronze_tools         9 beer
+  pop16-bronze_tools         2 copper
+  pop16-bronze_tools         2 tin
+  pop16-bronze_tools        10 gold
+  pop16-bronze_tools         3 bronze_mirror
+  pop3-bread                 2 cabins
+  pop3-bread                 1 blades
+  pop3-bread                 1 iron_tools
+  pop3-bread                 2 pots
+  pop3-bread                 2 buckets
+  pop3-bread                 2 bronze_tools
+  pop3-bread                 5 wood_tools
+  pop3-bread                 9 beer
+  pop3-bread                 2 copper
+  pop3-bread                 2 tin
+  pop3-bread                10 gold
+  pop3-bread                 3 bronze_mirror
+  pop38-buckets              2 cabins
+  pop38-buckets              1 blades
+  pop38-buckets              1 iron_tools
+  pop38-buckets              2 pots
+  pop38-buckets              2 buckets
+  pop38-buckets              2 bronze_tools
+  pop38-buckets              5 wood_tools
+  pop38-buckets              9 beer
+  pop38-buckets              2 copper
+  pop38-buckets              2 tin
+  pop38-buckets             10 gold
+  pop38-buckets              3 bronze_mirror
+  pop25-beer                 2 cabins
+  pop25-beer                 1 blades
+  pop25-beer                 1 iron_tools
+  pop25-beer                 2 pots
+  pop25-beer                 2 buckets
+  pop25-beer                 2 bronze_tools
+  pop25-beer                 5 wood_tools
+  pop25-beer                 9 beer
+  pop25-beer                 2 copper
+  pop25-beer                 2 tin
+  pop25-beer                10 gold
+  pop25-beer                 3 bronze_mirror
+  pop14-tin                  2 cabins
+  pop14-tin                  1 blades
+  pop14-tin                  1 iron_tools
+  pop14-tin                  2 pots
+  pop14-tin                  2 buckets
+  pop14-tin                  2 bronze_tools
+  pop14-tin                  5 wood_tools
+  pop14-tin                  9 beer
+  pop14-tin                  2 copper
+  pop14-tin                 10 gold
+  pop14-tin                  3 bronze_mirror
+  pop23-coal                 1 gold_token
+  pop23-coal                 1 copper_token
+  pop23-coal                 1 tin_token
+  pop23-coal                 1 jewelry
+  pop11-iron                 1 gold_token
+  pop11-iron                 1 copper_token
+  pop11-iron                 1 jewelry
+  pop39-iron                 1 gold_token
+  pop39-iron                 1 copper_token
+  pop39-iron                 1 jewelry
+  pop15-bronze               1 gold_token
+  pop15-bronze               1 iron_token
+  pop15-bronze               1 copper_token
+  pop15-bronze               1 jewelry
+  pop43-bronze               1 gold_token
+  pop43-bronze               1 copper_token
+  pop43-bronze               1 jewelry
+  pop42-tin                  1 gold_token
+  pop42-tin                  1 iron_token
+  pop42-tin                  1 copper_token
+  pop42-tin                  1 tin_token
+  pop42-tin                  1 jewelry
+  pop41-copper               1 gold_token
+  pop41-copper               1 iron_token
+  pop41-copper               1 copper_token
+  pop41-copper               1 jewelry
+  pop13-copper               1 gold_token
+  pop13-copper               1 iron_token
+  pop13-copper               1 copper_token
+  pop13-copper               1 jewelry
+  pop1-grain                 1 gold_token
+  pop1-grain                 1 iron_token
+  pop1-grain                 1 copper_token
+  pop1-grain                 1 tin_token
+  pop1-grain                 1 jewelry
+  pop29-grain                1 gold_token
+  pop29-grain                1 iron_token
+  pop29-grain                1 copper_token
+  pop29-grain                1 tin_token
+  pop29-grain                1 jewelry
+  pop33-gold_token           1 gold_token
+  pop33-gold_token           1 iron_token
+  pop33-gold_token           1 copper_token
+  pop33-gold_token           1 tin_token
+  pop33-gold_token           1 jewelry
+  pop47-bronze_token         1 gold_token
+  pop47-bronze_token         1 iron_token
+  pop47-bronze_token         1 copper_token
+  pop47-bronze_token         1 tin_token
+  pop47-bronze_token         1 jewelry
+  pop5-gold_token            1 gold_token
+  pop5-gold_token            1 iron_token
+  pop5-gold_token            1 copper_token
+  pop5-gold_token            1 tin_token
+  pop5-gold_token            1 jewelry
+  pop49-copper_token         1 gold_token
+  pop49-copper_token         1 iron_token
+  pop49-copper_token         1 copper_token
+  pop49-copper_token         1 tin_token
+  pop49-copper_token         1 jewelry
+  pop50-tin_token            1 gold_token
+  pop50-tin_token            1 iron_token
+  pop50-tin_token            1 copper_token
+  pop50-tin_token            1 tin_token
+  pop50-tin_token            1 jewelry
+  pop21-copper_token         1 gold_token
+  pop21-copper_token         1 iron_token
+  pop21-copper_token         1 copper_token
+  pop21-copper_token         1 tin_token
+  pop21-copper_token         1 jewelry
+  pop48-iron_token           1 gold_token
+  pop48-iron_token           1 iron_token
+  pop48-iron_token           1 copper_token
+  pop48-iron_token           1 tin_token
+  pop48-iron_token           1 jewelry
+  pop19-bronze_token         1 gold_token
+  pop19-bronze_token         1 iron_token
+  pop19-bronze_token         1 copper_token
+  pop19-bronze_token         1 tin_token
+  pop19-bronze_token         1 jewelry
+  pop22-tin_token            1 gold_token
+  pop22-tin_token            1 iron_token
+  pop22-tin_token            1 copper_token
+  pop22-tin_token            1 tin_token
+  pop22-tin_token            1 jewelry
+  pop20-iron_token           1 gold_token
+  pop20-iron_token           1 iron_token
+  pop20-iron_token           1 copper_token
+  pop20-iron_token           1 tin_token
+  pop20-iron_token           1 jewelry
+  pop52-charcoal             2 gold_token
+  pop52-charcoal             2 iron_token
+  pop52-charcoal             2 copper_token
+  pop52-charcoal             2 tin_token
+  pop52-charcoal             2 jewelry
+  pop24-charcoal             2 gold_token
+  pop24-charcoal             2 iron_token
+  pop24-charcoal             2 copper_token
+  pop24-charcoal             2 tin_token
+  pop24-charcoal             2 jewelry
+  pop30-water                1 gold_token
+  pop30-water                1 copper_token
+  pop30-water                1 jewelry
+  pop2-water                 1 gold_token
+  pop2-water                 1 copper_token
+  pop2-water                 1 jewelry
+  pop26-clay                 1 gold_token
+  pop26-clay                 1 iron_token
+  pop26-clay                 1 copper_token
+  pop26-clay                 1 jewelry
+  pop54-clay                 1 gold_token
+  pop54-clay                 1 iron_token
+  pop54-clay                 1 copper_token
+  pop54-clay                 1 jewelry
+  pop51-coal                 1 gold_token
+  pop51-coal                 1 jewelry
+  pop7-wood                  1 gold_token
+  pop7-wood                  1 iron_token
+  pop7-wood                  1 copper_token
+  pop7-wood                  1 jewelry
+  pop32-gold                 1 gold_token
+  pop32-gold                 1 iron_token
+  pop32-gold                 1 copper_token
+  pop32-gold                 1 tin_token
+  pop32-gold                 1 jewelry
+  pop35-wood                 1 gold_token
+  pop35-wood                 1 iron_token
+  pop35-wood                 1 copper_token
+  pop35-wood                 1 tin_token
+  pop35-wood                 1 jewelry
+  pop4-gold                  1 gold_token
+  pop4-gold                  1 iron_token
+  pop4-gold                  1 copper_token
+  pop4-gold                  1 tin_token
+  pop4-gold                  1 jewelry
+  pop18-bronze_mirror        2 gold_token
+  pop18-bronze_mirror        2 iron_token
+  pop18-bronze_mirror        2 copper_token
+  pop18-bronze_mirror        2 tin_token
+  pop18-bronze_mirror        2 jewelry
+  pop46-bronze_mirror        2 gold_token
+  pop46-bronze_mirror        2 iron_token
+  pop46-bronze_mirror        2 copper_token
+  pop46-bronze_mirror        2 tin_token
+  pop46-bronze_mirror        2 jewelry
+  pop12-iron_tools           2 gold_token
+  pop12-iron_tools           2 iron_token
+  pop12-iron_tools           2 copper_token
+  pop12-iron_tools           2 tin_token
+  pop12-iron_tools           2 jewelry
+  pop40-iron_tools           2 gold_token
+  pop40-iron_tools           2 iron_token
+  pop40-iron_tools           2 copper_token
+  pop40-iron_tools           2 tin_token
+  pop40-iron_tools           2 jewelry
+  pop6-jewelry               2 gold_token
+  pop6-jewelry               2 iron_token
+  pop6-jewelry               2 copper_token
+  pop6-jewelry               2 tin_token
+  pop6-jewelry               2 jewelry
+  pop34-jewelry              2 gold_token
+  pop34-jewelry              2 iron_token
+  pop34-jewelry              2 copper_token
+  pop34-jewelry              2 tin_token
+  pop34-jewelry              2 jewelry
+  pop55-pots                 2 gold_token
+  pop55-pots                 2 iron_token
+  pop55-pots                 2 copper_token
+  pop55-pots                 2 tin_token
+  pop55-pots                 2 jewelry
+  pop17-blades               2 gold_token
+  pop17-blades               2 iron_token
+  pop17-blades               2 copper_token
+  pop17-blades               2 tin_token
+  pop17-blades               2 jewelry
+  pop8-cabins                2 gold_token
+  pop8-cabins                2 iron_token
+  pop8-cabins                2 copper_token
+  pop8-cabins                2 tin_token
+  pop8-cabins                2 jewelry
+  pop28-time                 2 gold_token
+  pop28-time                 2 iron_token
+  pop28-time                 2 copper_token
+  pop28-time                 2 tin_token
+  pop28-time                 2 jewelry
+  pop31-bread                2 gold_token
+  pop31-bread                2 iron_token
+  pop31-bread                2 copper_token
+  pop31-bread                2 tin_token
+  pop31-bread                2 jewelry
+  pop53-beer                 2 gold_token
+  pop53-beer                 2 iron_token
+  pop53-beer                 2 copper_token
+  pop53-beer                 2 tin_token
+  pop53-beer                 2 jewelry
+  pop37-wood_tools           2 gold_token
+  pop37-wood_tools           2 iron_token
+  pop37-wood_tools           2 copper_token
+  pop37-wood_tools           2 tin_token
+  pop37-wood_tools           2 jewelry
+  pop56-time                 2 gold_token
+  pop56-time                 2 iron_token
+  pop56-time                 2 copper_token
+  pop56-time                 2 tin_token
+  pop56-time                 2 jewelry
+  pop10-buckets              2 gold_token
+  pop10-buckets              2 iron_token
+  pop10-buckets              2 copper_token
+  pop10-buckets              2 tin_token
+  pop10-buckets              2 jewelry
+  pop27-pots                 2 gold_token
+  pop27-pots                 2 iron_token
+  pop27-pots                 2 copper_token
+  pop27-pots                 2 tin_token
+  pop27-pots                 2 jewelry
+  pop44-bronze_tools         2 gold_token
+  pop44-bronze_tools         2 iron_token
+  pop44-bronze_tools         2 copper_token
+  pop44-bronze_tools         2 tin_token
+  pop44-bronze_tools         2 jewelry
+  pop36-cabins               2 gold_token
+  pop36-cabins               2 iron_token
+  pop36-cabins               2 copper_token
+  pop36-cabins               2 tin_token
+  pop36-cabins               2 jewelry
+  pop9-wood_tools            2 gold_token
+  pop9-wood_tools            2 iron_token
+  pop9-wood_tools            2 copper_token
+  pop9-wood_tools            2 tin_token
+  pop9-wood_tools            2 jewelry
+  pop45-blades               2 gold_token
+  pop45-blades               2 iron_token
+  pop45-blades               2 copper_token
+  pop45-blades               2 tin_token
+  pop45-blades               2 jewelry
+  pop16-bronze_tools         2 gold_token
+  pop16-bronze_tools         2 iron_token
+  pop16-bronze_tools         2 copper_token
+  pop16-bronze_tools         2 tin_token
+  pop16-bronze_tools         2 jewelry
+  pop3-bread                 2 gold_token
+  pop3-bread                 2 iron_token
+  pop3-bread                 2 copper_token
+  pop3-bread                 2 tin_token
+  pop3-bread                 2 jewelry
+  pop38-buckets              2 gold_token
+  pop38-buckets              2 iron_token
+  pop38-buckets              2 copper_token
+  pop38-buckets              2 tin_token
+  pop38-buckets              2 jewelry
+  pop25-beer                 2 gold_token
+  pop25-beer                 2 iron_token
+  pop25-beer                 2 copper_token
+  pop25-beer                 2 tin_token
+  pop25-beer                 2 jewelry
+  pop14-tin                  1 gold_token
+  pop14-tin                  1 iron_token
+  pop14-tin                  1 copper_token
+  pop14-tin                  1 tin_token
+  pop14-tin                  1 jewelry
+
+Trades
+  buyer                    qty good     | seller                pays
+  --------------------  ------ ---------+---------------------  ----------------
+  pop15-bronze               5 water    | firm2-water           1 bronze  haul 9.05
+  pop43-bronze               4 water    | pop11-iron            2 clay  haul 9.24
+  pop26-clay                 5 water    | pop11-iron            3 clay  haul 11.96
+  pop54-clay                 5 water    | firm30-water          2 clay  haul 11.96
+  pop14-tin                  2 water    | pop11-iron            1 tin  haul 4.86
+  pop14-tin                  3 water    | firm30-water          2 tin  haul 7.31
+  pop30-water                2 clay     | pop23-coal            5 water  haul 10.64
+  pop30-water                2 tin      | pop11-iron            6 water  haul 11.51
+  pop30-water                2 bronze   | pop15-bronze          11 water  haul 18.50
+  pop30-water                1 iron     | pop39-iron            6 water  haul 10.45
+  pop2-water                 2 clay     | pop39-iron            5 water  haul 10.64
+  pop2-water                 2 tin      | pop11-iron            6 water  haul 11.51
+  pop2-water                 2 bronze   | pop43-bronze          11 water  haul 18.50
+  pop2-water                 1 iron     | pop39-iron            6 water  haul 10.45
+  pop26-clay                 2 iron     | pop39-iron            6 clay  haul 11.02
+  pop26-clay                 1 bronze   | firm15-bronze         2 clay  haul 6.01
+  pop26-clay                 1 bronze   | pop15-bronze          3 clay  haul 6.01
+  pop54-clay                 2 tin      | pop11-iron            3 clay  haul 7.07
+  pop54-clay                 1 iron     | firm39-iron           2 clay  haul 6.01
+  pop54-clay                 2 bronze   | pop23-coal            5 clay  haul 9.70
+  pop14-tin                  2 bronze   | pop43-bronze          4 tin  haul 7.32
+  pop14-tin                  1 clay     | firm54-clay           1 tin  haul 3.38
+  pop14-tin                  1 bronze_token | pop43-bronze          1 tin  haul 2.07
+
+Washes
+  buyer                 good     | seller                why             end
+  --------------------  ---------+---------------------  --------------  ----------
+  pop42-tin             water    | firm30-water          no proposal     x2 open
+  pop42-tin             water    | firm2-water           no proposal     x1 closed
+  pop41-copper          water    | pop23-coal            no proposal     x1 open
+  pop41-copper          water    | firm30-water          no proposal     x2 closed
+  pop13-copper          water    | pop23-coal            no proposal     x2 open
+  pop13-copper          water    | firm30-water          no proposal     x1 closed
+  pop1-grain            water    | pop11-iron            no proposal     x1 open
+  pop1-grain            water    | firm30-water          no proposal     x1 open
+  pop1-grain            water    | pop23-coal            no proposal     x1 closed
+  pop29-grain           water    | pop23-coal            no proposal     x1 open
+  pop29-grain           water    | pop11-iron            no proposal     x1 open
+  pop29-grain           water    | firm30-water          no proposal     x1 closed
+  pop33-gold_token      water    | firm30-water          no proposal     x2 closed
+  pop33-gold_token      water    | pop11-iron            no proposal     x1 open
+  pop47-bronze_token    water    | pop11-iron            no proposal     x1 open
+  pop47-bronze_token    water    | firm30-water          no proposal     x1 open
+  pop47-bronze_token    water    | pop23-coal            no proposal     x1 closed
+  pop5-gold_token       water    | firm2-water           no proposal     x1 open
+  pop5-gold_token       water    | pop39-iron            no proposal     x1 open
+  pop5-gold_token       water    | firm30-water          no proposal     x1 closed
+  pop49-copper_token    water    | firm30-water          no proposal     x1 open
+  pop49-copper_token    water    | pop39-iron            no proposal     x1 open
+  pop49-copper_token    water    | pop11-iron            no proposal     x1 closed
+  pop50-tin_token       water    | pop39-iron            no proposal     x1 open
+  pop50-tin_token       water    | pop23-coal            no proposal     x1 open
+  pop50-tin_token       water    | firm2-water           no proposal     x1 closed
+  pop21-copper_token    water    | pop39-iron            no proposal     x1 open
+  pop21-copper_token    water    | pop23-coal            no proposal     x2 closed
+  pop48-iron_token      water    | pop39-iron            no proposal     x1 open
+  pop48-iron_token      water    | pop23-coal            no proposal     x1 open
+  pop48-iron_token      water    | pop11-iron            no proposal     x1 closed
+  pop19-bronze_token    water    | pop23-coal            no proposal     x2 closed
+  pop19-bronze_token    water    | firm30-water          no proposal     x1 open
+  pop22-tin_token       water    | pop23-coal            no proposal     x1 open
+  pop22-tin_token       water    | pop39-iron            no proposal     x1 open
+  pop22-tin_token       water    | firm30-water          no proposal     x1 closed
+  pop20-iron_token      water    | pop11-iron            no proposal     x1 open
+  pop20-iron_token      water    | firm30-water          no proposal     x2 closed
+  pop52-charcoal        water    | firm30-water          no proposal     x1 open
+  pop52-charcoal        water    | pop23-coal            no proposal     x1 open
+  pop52-charcoal        water    | firm2-water           no proposal     x1 closed
+  pop24-charcoal        water    | firm2-water           no proposal     x1 open
+  pop24-charcoal        water    | firm30-water          no proposal     x2 closed
+  pop51-coal            water    | firm30-water          no proposal     x1 open
+  pop51-coal            water    | pop11-iron            no proposal     x1 open
+  pop51-coal            water    | firm2-water           no proposal     x1 closed
+  pop7-wood             water    | firm2-water           no proposal     x1 open
+  pop7-wood             water    | pop23-coal            no proposal     x1 open
+  pop7-wood             water    | firm30-water          no proposal     x1 closed
+  pop32-gold            water    | pop23-coal            no proposal     x1 open
+  pop32-gold            water    | firm30-water          no proposal     x1 open
+  pop32-gold            water    | pop39-iron            no proposal     x1 closed
+  pop35-wood            water    | firm2-water           no proposal     x3 closed
+  pop4-gold             water    | firm2-water           no proposal     x2 closed
+  pop4-gold             water    | pop11-iron            no proposal     x1 open
+  pop18-bronze_mirror   water    | pop11-iron            no proposal     x1 open
+  pop18-bronze_mirror   water    | firm30-water          no proposal     x1 open
+  pop18-bronze_mirror   water    | firm2-water           no proposal     x1 closed
+  pop46-bronze_mirror   water    | firm30-water          no proposal     x1 open
+  pop46-bronze_mirror   water    | pop23-coal            no proposal     x1 open
+  pop46-bronze_mirror   water    | pop39-iron            no proposal     x1 closed
+  pop12-iron_tools      water    | firm2-water           no proposal     x2 closed
+  pop12-iron_tools      water    | pop23-coal            no proposal     x1 open
+  pop40-iron_tools      water    | pop23-coal            no proposal     x1 open
+  pop40-iron_tools      water    | firm30-water          no proposal     x1 open
+  pop40-iron_tools      water    | pop39-iron            no proposal     x1 closed
+  pop6-jewelry          water    | pop39-iron            no proposal     x1 open
+  pop6-jewelry          water    | firm2-water           no proposal     x1 open
+  pop6-jewelry          water    | pop23-coal            no proposal     x1 closed
+  pop34-jewelry         water    | firm30-water          no proposal     x1 open
+  pop34-jewelry         water    | pop39-iron            no proposal     x2 closed
+  pop55-pots            water    | pop11-iron            no proposal     x2 closed
+  pop55-pots            water    | pop23-coal            no proposal     x1 open
+  pop17-blades          water    | firm2-water           no proposal     x1 open
+  pop17-blades          water    | firm30-water          no proposal     x2 closed
+  pop44-bronze_tools    water    | pop11-iron            no proposal     x1 open
+  pop3-bread            water    | pop39-iron            no proposal     x2 open
+  pop44-bronze_tools    water    | pop23-coal            no proposal     x1 open
+  pop37-wood_tools      water    | pop23-coal            no proposal     x1 open
+  pop37-wood_tools      water    | pop11-iron            no proposal     x1 open
+  pop27-pots            water    | firm2-water           no proposal     x2 open
+  pop53-beer            water    | pop11-iron            no proposal     x1 open
+  pop9-wood_tools       water    | pop39-iron            no proposal     x1 open
+  pop36-cabins          water    | firm30-water          no proposal     x1 open
+  pop25-beer            water    | firm30-water          no proposal     x2 open
+  pop37-wood_tools      water    | firm30-water          no proposal     x1 closed
+  pop9-wood_tools       water    | pop23-coal            no proposal     x1 open
+  pop36-cabins          water    | pop11-iron            no proposal     x2 closed
+  pop28-time            water    | pop23-coal            no proposal     x1 open
+  pop31-bread           water    | pop23-coal            no proposal     x2 closed
+  pop31-bread           water    | pop11-iron            no proposal     x1 open
+  pop9-wood_tools       water    | firm2-water           no proposal     x1 closed
+  pop56-time            water    | pop39-iron            no proposal     x2 closed
+  pop3-bread            water    | pop23-coal            no proposal     x1 closed
+  pop8-cabins           water    | firm30-water          no proposal     x3 closed
+  pop16-bronze_tools    water    | pop39-iron            no proposal     x1 open
+  pop53-beer            water    | firm2-water           no proposal     x1 open
+  pop45-blades          water    | firm30-water          no proposal     x1 open
+  pop38-buckets         water    | firm30-water          no proposal     x1 open
+  pop25-beer            water    | firm2-water           no proposal     x1 closed
+  pop44-bronze_tools    water    | firm30-water          no proposal     x1 closed
+  pop27-pots            water    | pop39-iron            no proposal     x1 closed
+  pop10-buckets         water    | pop39-iron            no proposal     x1 open
+  pop16-bronze_tools    water    | pop23-coal            no proposal     x1 open
+  pop45-blades          water    | firm2-water           no proposal     x2 closed
+  pop56-time            water    | firm2-water           no proposal     x1 open
+  pop28-time            water    | firm30-water          no proposal     x2 closed
+  pop38-buckets         water    | pop39-iron            no proposal     x1 open
+  pop53-beer            water    | pop23-coal            no proposal     x1 closed
+  pop10-buckets         water    | firm2-water           no proposal     x2 closed
+  pop38-buckets         water    | pop11-iron            no proposal     x1 closed
+  pop16-bronze_tools    water    | firm30-water          no proposal     x1 closed
+  pop42-tin             bronze   | pop15-bronze          no proposal     x1 open
+  pop42-tin             clay     | pop23-coal            no proposal     x2 closed
+  pop42-tin             iron     | pop11-iron            no proposal     x3 closed
+  pop42-tin             bronze   | pop43-bronze          no proposal     x1 open
+  pop42-tin             clay     | firm26-clay           no proposal     x1 open
+  pop42-tin             bronze   | firm15-bronze         no proposal     x1 closed
+  pop41-copper          iron     | pop39-iron            no proposal     x1 open
+  pop41-copper          bronze   | pop23-coal            no proposal     x1 open
+  pop41-copper          iron     | firm39-iron           no proposal     x1 open
+  pop41-copper          iron     | pop11-iron            no proposal     x1 closed
+  pop41-copper          clay     | pop23-coal            no proposal     x3 closed
+  pop41-copper          tin      | pop11-iron            no proposal     x3 closed
+  pop41-copper          bronze   | pop15-bronze          no proposal     x1 open
+  pop41-copper          bronze   | pop43-bronze          no proposal     x1 closed
+  pop13-copper          clay     | pop23-coal            no proposal     x2 open
+  pop13-copper          iron     | pop39-iron            no proposal     x1 open
+  pop13-copper          clay     | firm26-clay           no proposal     x1 closed
+  pop13-copper          iron     | pop11-iron            no proposal     x2 closed
+  pop13-copper          tin      | pop11-iron            no proposal     x3 closed
+  pop13-copper          bronze   | pop15-bronze          no proposal     x2 closed
+  pop13-copper          bronze   | firm15-bronze         no proposal     x1 open
+  pop1-grain            bronze   | pop23-coal            no proposal     x1 open
+  pop1-grain            bronze   | pop15-bronze          no proposal     x1 open
+  pop1-grain            iron     | pop11-iron            no proposal     x1 open
+  pop1-grain            clay     | pop23-coal            no proposal     x2 closed
+  pop1-grain            tin      | pop11-iron            no proposal     x3 closed
+  pop1-grain            clay     | pop39-iron            no proposal     x1 open
+  pop1-grain            iron     | pop39-iron            no proposal     x1 open
+  pop1-grain            iron     | firm11-iron           no proposal     x1 closed
+  pop1-grain            bronze   | pop43-bronze          no proposal     x1 closed
+  pop29-grain           clay     | pop23-coal            no proposal     x3 closed
+  pop29-grain           iron     | pop39-iron            no proposal     x1 open
+  pop29-grain           tin      | pop11-iron            no proposal     x3 closed
+  pop29-grain           iron     | pop11-iron            no proposal     x1 open
+  pop29-grain           iron     | firm11-iron           no proposal     x1 closed
+  pop29-grain           bronze   | pop23-coal            no proposal     x1 open
+  pop29-grain           bronze   | pop43-bronze          no proposal     x1 open
+  pop29-grain           bronze   | pop15-bronze          no proposal     x1 closed
+  pop33-gold_token      tin      | pop11-iron            no proposal     x3 closed
+  pop33-gold_token      bronze   | pop15-bronze          no proposal     x2 open
+  pop33-gold_token      iron     | pop11-iron            no proposal     x1 open
+  pop33-gold_token      iron     | pop39-iron            no proposal     x2 closed
+  pop33-gold_token      bronze   | pop43-bronze          no proposal     x1 closed
+  pop33-gold_token      clay     | pop23-coal            no proposal     x2 open
+  pop33-gold_token      clay     | pop39-iron            no proposal     x1 closed
+  pop47-bronze_token    tin      | pop11-iron            no proposal     x3 closed
+  pop47-bronze_token    bronze   | pop15-bronze          no proposal     x2 open
+  pop47-bronze_token    iron     | pop11-iron            no proposal     x2 closed
+  pop47-bronze_token    iron     | pop39-iron            no proposal     x1 open
+  pop47-bronze_token    clay     | pop23-coal            no proposal     x3 closed
+  pop47-bronze_token    bronze   | pop43-bronze          no proposal     x1 closed
+  pop5-gold_token       iron     | pop39-iron            no proposal     x2 open
+  pop5-gold_token       bronze   | pop43-bronze          no proposal     x1 open
+  pop5-gold_token       clay     | pop23-coal            no proposal     x1 open
+  pop5-gold_token       clay     | firm54-clay           no proposal     x1 open
+  pop5-gold_token       tin      | pop11-iron            no proposal     x3 closed
+  pop5-gold_token       bronze   | pop23-coal            no proposal     x1 open
+  pop5-gold_token       bronze   | pop15-bronze          no proposal     x1 closed
+  pop5-gold_token       clay     | firm26-clay           no proposal     x1 closed
+  pop5-gold_token       iron     | pop11-iron            no proposal     x1 closed
+  pop49-copper_token    bronze   | pop15-bronze          no proposal     x3 closed
+  pop49-copper_token    iron     | pop39-iron            no proposal     x2 closed
+  pop49-copper_token    clay     | firm54-clay           no proposal     x2 open
+  pop49-copper_token    tin      | pop11-iron            no proposal     x3 closed
+  pop49-copper_token    iron     | pop11-iron            no proposal     x1 open
+  pop49-copper_token    clay     | firm26-clay           no proposal     x1 closed
+  pop50-tin_token       tin      | pop11-iron            no proposal     x3 closed
+  pop50-tin_token       bronze   | pop43-bronze          no proposal     x2 open
+  pop50-tin_token       bronze   | firm15-bronze         no proposal     x1 closed
+  pop50-tin_token       iron     | pop11-iron            no proposal     x2 open
+  pop50-tin_token       clay     | pop39-iron            no proposal     x1 open
+  pop50-tin_token       iron     | pop39-iron            no proposal     x1 closed
+  pop50-tin_token       clay     | pop23-coal            no proposal     x2 closed
+  pop21-copper_token    clay     | firm26-clay           no proposal     x1 open
+  pop21-copper_token    tin      | pop11-iron            no proposal     x3 closed
+  pop21-copper_token    bronze   | pop15-bronze          no proposal     x2 open
+  pop21-copper_token    bronze   | pop43-bronze          no proposal     x1 closed
+  pop21-copper_token    clay     | pop39-iron            no proposal     x1 open
+  pop21-copper_token    clay     | pop23-coal            no proposal     x1 closed
+  pop21-copper_token    iron     | pop39-iron            no proposal     x2 open
+  pop21-copper_token    iron     | firm11-iron           no proposal     x1 closed
+  pop48-iron_token      tin      | pop11-iron            no proposal     x3 closed
+  pop48-iron_token      bronze   | pop23-coal            no proposal     x1 open
+  pop48-iron_token      bronze   | pop43-bronze          no proposal     x1 open
+  pop48-iron_token      iron     | pop39-iron            no proposal     x3 closed
+  pop48-iron_token      clay     | pop23-coal            no proposal     x1 open
+  pop48-iron_token      bronze   | firm15-bronze         no proposal     x1 closed
+  pop48-iron_token      clay     | pop39-iron            no proposal     x2 closed
+  pop19-bronze_token    iron     | pop11-iron            no proposal     x2 open
+  pop19-bronze_token    clay     | pop23-coal            no proposal     x2 open
+  pop19-bronze_token    bronze   | pop43-bronze          no proposal     x1 open
+  pop19-bronze_token    bronze   | pop15-bronze          no proposal     x1 open
+  pop19-bronze_token    clay     | firm54-clay           no proposal     x1 closed
+  pop19-bronze_token    iron     | firm11-iron           no proposal     x1 closed
+  pop19-bronze_token    bronze   | firm15-bronze         no proposal     x1 closed
+  pop19-bronze_token    tin      | pop11-iron            no proposal     x3 closed
+  pop22-tin_token       tin      | pop11-iron            no proposal     x3 closed
+  pop22-tin_token       iron     | pop39-iron            no proposal     x2 closed
+  pop22-tin_token       iron     | pop11-iron            no proposal     x1 open
+  pop22-tin_token       bronze   | pop15-bronze          no proposal     x1 open
+  pop22-tin_token       clay     | pop39-iron            no proposal     x1 open
+  pop22-tin_token       bronze   | pop43-bronze          no proposal     x1 open
+  pop22-tin_token       bronze   | pop23-coal            no proposal     x1 closed
+  pop22-tin_token       clay     | pop23-coal            no proposal     x2 closed
+  pop20-iron_token      tin      | pop11-iron            no proposal     x3 closed
+  pop20-iron_token      clay     | pop23-coal            no proposal     x2 open
+  pop20-iron_token      iron     | pop39-iron            no proposal     x2 closed
+  pop20-iron_token      bronze   | pop23-coal            no proposal     x2 open
+  pop20-iron_token      clay     | firm26-clay           no proposal     x1 closed
+  pop20-iron_token      iron     | pop11-iron            no proposal     x1 open
+  pop20-iron_token      bronze   | pop43-bronze          no proposal     x1 closed
+  pop52-charcoal        tin      | pop11-iron            no proposal     x3 closed
+  pop52-charcoal        bronze   | firm15-bronze         no proposal     x1 open
+  pop52-charcoal        clay     | pop23-coal            no proposal     x1 open
+  pop52-charcoal        iron     | pop11-iron            no proposal     x2 open
+  pop52-charcoal        bronze   | pop23-coal            no proposal     x1 open
+  pop52-charcoal        clay     | firm26-clay           no proposal     x1 open
+  pop52-charcoal        clay     | pop39-iron            no proposal     x1 closed
+  pop52-charcoal        iron     | pop39-iron            no proposal     x1 closed
+  pop52-charcoal        bronze   | pop43-bronze          no proposal     x1 closed
+  pop24-charcoal        tin      | pop11-iron            no proposal     x3 closed
+  pop24-charcoal        bronze   | pop43-bronze          no proposal     x2 open
+  pop24-charcoal        clay     | pop39-iron            no proposal     x1 open
+  pop24-charcoal        iron     | pop11-iron            no proposal     x3 closed
+  pop24-charcoal        clay     | pop23-coal            no proposal     x2 closed
+  pop24-charcoal        bronze   | firm43-bronze         no proposal     x1 closed
+  pop30-water           iron     | pop39-iron            no proposal     x2 open
+  pop30-water           iron     | pop11-iron            no proposal     x1 closed
+  pop2-water            iron     | pop39-iron            no proposal     x1 open
+  pop2-water            iron     | pop11-iron            no proposal     x2 closed
+  pop26-clay            tin      | pop11-iron            no proposal     x3 closed
+  pop54-clay            iron     | pop39-iron            no proposal     x1 open
+  pop54-clay            iron     | pop11-iron            no proposal     x1 open
+  pop54-clay            iron     | firm11-iron           no proposal     x1 closed
+  pop51-coal            bronze   | pop43-bronze          no proposal     x2 closed
+  pop51-coal            iron     | pop11-iron            no proposal     x2 closed
+  pop51-coal            clay     | pop39-iron            no proposal     x1 open
+  pop51-coal            clay     | pop23-coal            no proposal     x2 closed
+  pop51-coal            iron     | pop39-iron            no proposal     x1 open
+  pop51-coal            bronze   | pop15-bronze          no proposal     x1 open
+  pop7-wood             clay     | pop23-coal            no proposal     x3 closed
+  pop7-wood             bronze   | pop15-bronze          no proposal     x1 open
+  pop7-wood             bronze   | pop43-bronze          no proposal     x2 closed
+  pop7-wood             iron     | pop39-iron            no proposal     x1 open
+  pop7-wood             iron     | firm11-iron           no proposal     x2 closed
+  pop32-gold            clay     | firm26-clay           no proposal     x1 open
+  pop32-gold            iron     | pop11-iron            no proposal     x2 closed
+  pop32-gold            iron     | pop39-iron            no proposal     x1 open
+  pop32-gold            clay     | pop23-coal            no proposal     x2 closed
+  pop32-gold            bronze   | pop23-coal            no proposal     x1 open
+  pop32-gold            bronze   | pop15-bronze          no proposal     x1 open
+  pop32-gold            bronze   | pop43-bronze          no proposal     x1 closed
+  pop35-wood            bronze   | pop43-bronze          no proposal     x3 closed
+  pop35-wood            iron     | pop11-iron            no proposal     x1 open
+  pop35-wood            iron     | pop39-iron            no proposal     x2 closed
+  pop35-wood            clay     | pop23-coal            no proposal     x2 closed
+  pop35-wood            clay     | pop39-iron            no proposal     x1 open
+  pop4-gold             clay     | pop23-coal            no proposal     x2 closed
+  pop4-gold             clay     | pop39-iron            no proposal     x1 open
+  pop4-gold             iron     | pop39-iron            no proposal     x2 open
+  pop4-gold             iron     | pop11-iron            no proposal     x1 closed
+  pop4-gold             bronze   | pop43-bronze          no proposal     x2 closed
+  pop4-gold             bronze   | pop15-bronze          no proposal     x1 open
+  pop18-bronze_mirror   iron     | pop39-iron            no proposal     x2 open
+  pop18-bronze_mirror   bronze   | pop15-bronze          no proposal     x1 open
+  pop18-bronze_mirror   bronze   | pop43-bronze          no proposal     x1 open
+  pop18-bronze_mirror   iron     | firm11-iron           no proposal     x1 closed
+  pop18-bronze_mirror   clay     | pop39-iron            no proposal     x2 open
+  pop18-bronze_mirror   bronze   | pop23-coal            no proposal     x1 closed
+  pop18-bronze_mirror   clay     | pop23-coal            no proposal     x1 closed
+  pop46-bronze_mirror   iron     | firm11-iron           no proposal     x1 open
+  pop46-bronze_mirror   clay     | firm54-clay           no proposal     x1 open
+  pop46-bronze_mirror   bronze   | pop15-bronze          no proposal     x1 open
+  pop46-bronze_mirror   iron     | pop11-iron            no proposal     x2 closed
+  pop46-bronze_mirror   clay     | pop23-coal            no proposal     x2 closed
+  pop46-bronze_mirror   bronze   | pop43-bronze          no proposal     x2 closed
+  pop12-iron_tools      bronze   | pop15-bronze          no proposal     x2 closed
+  pop12-iron_tools      bronze   | pop23-coal            no proposal     x1 open
+  pop12-iron_tools      iron     | pop39-iron            no proposal     x3 closed
+  pop12-iron_tools      clay     | pop23-coal            no proposal     x1 open
+  pop12-iron_tools      clay     | firm26-clay           no proposal     x1 open
+  pop12-iron_tools      clay     | pop39-iron            no proposal     x1 closed
+  pop40-iron_tools      clay     | pop23-coal            no proposal     x1 open
+  pop40-iron_tools      iron     | pop39-iron            no proposal     x3 closed
+  pop40-iron_tools      clay     | pop39-iron            no proposal     x1 open
+  pop40-iron_tools      clay     | firm26-clay           no proposal     x1 closed
+  pop40-iron_tools      bronze   | pop15-bronze          no proposal     x2 open
+  pop40-iron_tools      bronze   | pop23-coal            no proposal     x1 closed
+  pop6-jewelry          clay     | firm54-clay           no proposal     x1 open
+  pop6-jewelry          iron     | pop11-iron            no proposal     x1 open
+  pop6-jewelry          clay     | pop39-iron            no proposal     x1 open
+  pop6-jewelry          clay     | pop23-coal            no proposal     x1 closed
+  pop6-jewelry          iron     | firm11-iron           no proposal     x1 open
+  pop6-jewelry          iron     | pop39-iron            no proposal     x1 closed
+  pop6-jewelry          bronze   | pop43-bronze          no proposal     x1 open
+  pop6-jewelry          bronze   | firm43-bronze         no proposal     x1 open
+  pop6-jewelry          bronze   | pop23-coal            no proposal     x1 closed
+  pop34-jewelry         bronze   | pop43-bronze          no proposal     x1 open
+  pop34-jewelry         clay     | pop39-iron            no proposal     x1 open
+  pop34-jewelry         iron     | pop11-iron            no proposal     x3 closed
+  pop34-jewelry         clay     | pop23-coal            no proposal     x2 closed
+  pop34-jewelry         bronze   | pop23-coal            no proposal     x2 closed
+  pop55-pots            clay     | pop23-coal            no proposal     x3 closed
+  pop55-pots            bronze   | pop15-bronze          no proposal     x2 open
+  pop55-pots            iron     | pop39-iron            no proposal     x2 closed
+  pop55-pots            iron     | pop11-iron            no proposal     x1 open
+  pop55-pots            bronze   | pop43-bronze          no proposal     x1 closed
+  pop17-blades          iron     | pop39-iron            no proposal     x1 open
+  pop17-blades          iron     | firm11-iron           no proposal     x1 open
+  pop17-blades          iron     | pop11-iron            no proposal     x1 closed
+  pop17-blades          bronze   | pop15-bronze          no proposal     x1 open
+  pop17-blades          clay     | pop39-iron            no proposal     x2 open
+  pop17-blades          clay     | pop23-coal            no proposal     x1 closed
+  pop17-blades          bronze   | pop43-bronze          no proposal     x2 closed
+  pop45-blades          clay     | pop39-iron            no proposal     x1 open
+  pop31-bread           clay     | firm26-clay           no proposal     x1 open
+  pop31-bread           iron     | pop39-iron            no proposal     x2 closed
+  pop28-time            clay     | pop23-coal            no proposal     x3 closed
+  pop36-cabins          bronze   | pop23-coal            no proposal     x2 closed
+  pop45-blades          clay     | pop23-coal            no proposal     x2 closed
+  pop38-buckets         iron     | firm11-iron           no proposal     x1 open
+  pop10-buckets         bronze   | pop15-bronze          no proposal     x1 open
+  pop31-bread           iron     | pop11-iron            no proposal     x1 open
+  pop56-time            clay     | pop23-coal            no proposal     x2 closed
+  pop45-blades          bronze   | pop43-bronze          no proposal     x1 open
+  pop9-wood_tools       clay     | firm54-clay           no proposal     x1 open
+  pop38-buckets         bronze   | pop23-coal            no proposal     x1 open
+  pop8-cabins           iron     | pop11-iron            no proposal     x1 open
+  pop3-bread            iron     | pop11-iron            no proposal     x2 closed
+  pop27-pots            clay     | pop23-coal            no proposal     x2 open
+  pop28-time            iron     | pop39-iron            no proposal     x2 closed
+  pop25-beer            bronze   | pop43-bronze          no proposal     x1 open
+  pop45-blades          bronze   | pop23-coal            no proposal     x2 closed
+  pop8-cabins           clay     | pop23-coal            no proposal     x2 open
+  pop27-pots            iron     | pop11-iron            no proposal     x2 open
+  pop38-buckets         bronze   | pop15-bronze          no proposal     x2 closed
+  pop28-time            bronze   | pop15-bronze          no proposal     x1 open
+  pop3-bread            bronze   | pop23-coal            no proposal     x3 closed
+  pop56-time            iron     | pop39-iron            no proposal     x1 open
+  pop53-beer            iron     | firm11-iron           no proposal     x1 open
+  pop9-wood_tools       clay     | pop39-iron            no proposal     x1 open
+  pop9-wood_tools       bronze   | pop15-bronze          no proposal     x2 closed
+  pop9-wood_tools       bronze   | pop23-coal            no proposal     x1 open
+  pop27-pots            bronze   | firm43-bronze         no proposal     x1 open
+  pop44-bronze_tools    bronze   | pop43-bronze          no proposal     x2 closed
+  pop16-bronze_tools    clay     | pop39-iron            no proposal     x2 closed
+  pop25-beer            iron     | pop39-iron            no proposal     x3 closed
+  pop25-beer            bronze   | pop15-bronze          no proposal     x1 open
+  pop53-beer            clay     | pop39-iron            no proposal     x1 open
+  pop25-beer            clay     | pop23-coal            no proposal     x2 closed
+  pop10-buckets         bronze   | pop23-coal            no proposal     x1 open
+  pop37-wood_tools      bronze   | pop23-coal            no proposal     x1 open
+  pop28-time            bronze   | firm43-bronze         no proposal     x1 open
+  pop10-buckets         iron     | firm11-iron           no proposal     x1 open
+  pop37-wood_tools      bronze   | firm43-bronze         no proposal     x1 open
+  pop44-bronze_tools    iron     | pop39-iron            no proposal     x2 closed
+  pop27-pots            bronze   | pop15-bronze          no proposal     x1 open
+  pop36-cabins          clay     | pop39-iron            no proposal     x1 open
+  pop25-beer            clay     | firm26-clay           no proposal     x1 open
+  pop44-bronze_tools    iron     | firm11-iron           no proposal     x1 open
+  pop9-wood_tools       clay     | firm26-clay           no proposal     x1 closed
+  pop45-blades          iron     | pop39-iron            no proposal     x1 open
+  pop53-beer            clay     | pop23-coal            no proposal     x2 closed
+  pop10-buckets         bronze   | pop43-bronze          no proposal     x1 closed
+  pop28-time            iron     | firm11-iron           no proposal     x1 open
+  pop31-bread           clay     | pop23-coal            no proposal     x2 closed
+  pop16-bronze_tools    iron     | pop39-iron            no proposal     x2 open
+  pop44-bronze_tools    bronze   | pop15-bronze          no proposal     x1 open
+  pop44-bronze_tools    clay     | pop39-iron            no proposal     x1 open
+  pop9-wood_tools       iron     | firm11-iron           no proposal     x1 open
+  pop38-buckets         iron     | pop11-iron            no proposal     x1 open
+  pop37-wood_tools      bronze   | pop43-bronze          no proposal     x1 closed
+  pop36-cabins          bronze   | pop15-bronze          no proposal     x1 open
+  pop10-buckets         iron     | pop11-iron            no proposal     x1 open
+  pop45-blades          iron     | pop11-iron            no proposal     x2 closed
+  pop53-beer            bronze   | pop23-coal            no proposal     x1 open
+  pop31-bread           bronze   | pop15-bronze          no proposal     x2 open
+  pop10-buckets         iron     | pop39-iron            no proposal     x1 closed
+  pop3-bread            iron     | pop39-iron            no proposal     x1 open
+  pop56-time            clay     | pop39-iron            no proposal     x1 open
+  pop27-pots            clay     | pop39-iron            no proposal     x1 closed
+  pop3-bread            clay     | pop39-iron            no proposal     x1 open
+  pop16-bronze_tools    bronze   | pop23-coal            no proposal     x1 open
+  pop56-time            bronze   | pop23-coal            no proposal     x1 open
+  pop38-buckets         clay     | pop39-iron            no proposal     x1 open
+  pop25-beer            bronze   | firm43-bronze         no proposal     x1 closed
+  pop36-cabins          iron     | pop11-iron            no proposal     x1 open
+  pop9-wood_tools       iron     | pop39-iron            no proposal     x2 closed
+  pop36-cabins          iron     | pop39-iron            no proposal     x2 closed
+  pop38-buckets         clay     | pop23-coal            no proposal     x2 closed
+  pop28-time            bronze   | pop43-bronze          no proposal     x1 closed
+  pop3-bread            clay     | firm26-clay           no proposal     x1 open
+  pop16-bronze_tools    clay     | pop23-coal            no proposal     x1 open
+  pop36-cabins          clay     | pop23-coal            no proposal     x2 closed
+  pop8-cabins           iron     | pop39-iron            no proposal     x1 open
+  pop8-cabins           iron     | firm11-iron           no proposal     x1 closed
+  pop56-time            iron     | firm11-iron           no proposal     x1 open
+  pop8-cabins           bronze   | pop23-coal            no proposal     x2 open
+  pop10-buckets         clay     | firm54-clay           no proposal     x1 open
+  pop31-bread           bronze   | pop23-coal            no proposal     x1 closed
+  pop53-beer            iron     | pop11-iron            no proposal     x1 open
+  pop16-bronze_tools    bronze   | pop15-bronze          no proposal     x2 closed
+  pop8-cabins           clay     | pop39-iron            no proposal     x1 closed
+  pop27-pots            iron     | firm11-iron           no proposal     x1 closed
+  pop10-buckets         clay     | pop23-coal            no proposal     x2 closed
+  pop37-wood_tools      iron     | pop11-iron            no proposal     x2 open
+  pop44-bronze_tools    clay     | pop23-coal            no proposal     x2 closed
+  pop3-bread            clay     | firm54-clay           no proposal     x1 closed
+  pop8-cabins           bronze   | pop43-bronze          no proposal     x1 closed
+  pop53-beer            iron     | pop39-iron            no proposal     x1 closed
+  pop53-beer            bronze   | pop43-bronze          no proposal     x2 closed
+  pop56-time            iron     | pop11-iron            no proposal     x1 closed
+  pop37-wood_tools      iron     | firm11-iron           no proposal     x1 closed
+  pop56-time            bronze   | pop43-bronze          no proposal     x1 open
+  pop27-pots            bronze   | pop23-coal            no proposal     x1 closed
+  pop38-buckets         iron     | pop39-iron            no proposal     x1 closed
+  pop56-time            bronze   | pop15-bronze          no proposal     x1 closed
+  pop37-wood_tools      clay     | pop39-iron            no proposal     x1 open
+  pop16-bronze_tools    iron     | pop11-iron            no proposal     x1 closed
+  pop37-wood_tools      clay     | pop23-coal            no proposal     x1 open
+  pop37-wood_tools      clay     | firm54-clay           no proposal     x1 closed
+  pop14-tin             iron     | pop11-iron            no proposal     x2 closed
+  pop14-tin             iron     | firm11-iron           no proposal     x1 open
+  pop42-tin             bronze_token | pop11-iron            no proposal     x2 open
+  pop42-tin             bronze_token | pop23-coal            no proposal     x1 closed
+  pop41-copper          bronze_token | pop11-iron            no proposal     x1 open
+  pop41-copper          bronze_token | pop39-iron            no proposal     x1 open
+  pop41-copper          bronze_token | pop43-bronze          no proposal     x1 closed
+  pop13-copper          bronze_token | pop23-coal            no proposal     x1 open
+  pop13-copper          bronze_token | pop43-bronze          no proposal     x1 open
+  pop13-copper          bronze_token | pop15-bronze          no proposal     x1 closed
+  pop1-grain            bronze_token | pop43-bronze          no proposal     x1 open
+  pop1-grain            bronze_token | pop39-iron            no proposal     x1 open
+  pop1-grain            bronze_token | pop15-bronze          no proposal     x1 closed
+  pop29-grain           bronze_token | pop15-bronze          no proposal     x2 open
+  pop29-grain           bronze_token | pop43-bronze          no proposal     x1 closed
+  pop33-gold_token      bronze_token | pop15-bronze          no proposal     x2 open
+  pop33-gold_token      bronze_token | pop43-bronze          no proposal     x1 closed
+  pop47-bronze_token    bronze_token | pop39-iron            no proposal     x1 open
+  pop47-bronze_token    bronze_token | pop23-coal            no proposal     x1 open
+  pop47-bronze_token    bronze_token | pop43-bronze          no proposal     x1 closed
+  pop5-gold_token       bronze_token | pop15-bronze          no proposal     x2 open
+  pop5-gold_token       bronze_token | pop39-iron            no proposal     x1 closed
+  pop49-copper_token    bronze_token | pop15-bronze          no proposal     x2 open
+  pop49-copper_token    bronze_token | pop23-coal            no proposal     x1 closed
+  pop50-tin_token       bronze_token | pop15-bronze          no proposal     x2 closed
+  pop50-tin_token       bronze_token | pop39-iron            no proposal     x1 open
+  pop21-copper_token    bronze_token | pop43-bronze          no proposal     x2 open
+  pop21-copper_token    bronze_token | pop15-bronze          no proposal     x1 closed
+  pop48-iron_token      bronze_token | pop15-bronze          no proposal     x1 open
+  pop48-iron_token      bronze_token | pop11-iron            no proposal     x1 open
+  pop48-iron_token      bronze_token | pop39-iron            no proposal     x1 closed
+  pop19-bronze_token    bronze_token | pop43-bronze          no proposal     x2 closed
+  pop19-bronze_token    bronze_token | pop23-coal            no proposal     x1 open
+  pop22-tin_token       bronze_token | pop15-bronze          no proposal     x2 closed
+  pop22-tin_token       bronze_token | pop43-bronze          no proposal     x1 open
+  pop20-iron_token      bronze_token | pop23-coal            no proposal     x1 open
+  pop20-iron_token      bronze_token | pop43-bronze          no proposal     x1 open
+  pop20-iron_token      bronze_token | pop15-bronze          no proposal     x1 closed
+  pop52-charcoal        bronze_token | pop15-bronze          no proposal     x2 open
+  pop52-charcoal        bronze_token | pop39-iron            no proposal     x1 closed
+  pop24-charcoal        bronze_token | pop43-bronze          no proposal     x2 closed
+  pop24-charcoal        bronze_token | pop11-iron            no proposal     x1 open
+  pop7-wood             bronze_token | pop39-iron            no proposal     x1 open
+  pop7-wood             bronze_token | pop43-bronze          no proposal     x1 open
+  pop7-wood             bronze_token | pop15-bronze          no proposal     x1 closed
+  pop32-gold            bronze_token | pop11-iron            no proposal     x1 open
+  pop32-gold            bronze_token | pop43-bronze          no proposal     x1 open
+  pop32-gold            bronze_token | pop15-bronze          no proposal     x1 closed
+  pop35-wood            bronze_token | pop11-iron            no proposal     x2 open
+  pop35-wood            bronze_token | pop15-bronze          no proposal     x1 closed
+  pop4-gold             bronze_token | pop15-bronze          no proposal     x2 closed
+  pop4-gold             bronze_token | pop11-iron            no proposal     x1 open
+  pop18-bronze_mirror   bronze_token | pop39-iron            no proposal     x2 open
+  pop18-bronze_mirror   bronze_token | pop15-bronze          no proposal     x1 closed
+  pop46-bronze_mirror   bronze_token | pop23-coal            no proposal     x2 open
+  pop46-bronze_mirror   bronze_token | pop15-bronze          no proposal     x1 closed
+  pop12-iron_tools      bronze_token | pop39-iron            no proposal     x1 open
+  pop12-iron_tools      bronze_token | pop43-bronze          no proposal     x2 closed
+  pop40-iron_tools      bronze_token | pop39-iron            no proposal     x1 open
+  pop40-iron_tools      bronze_token | pop15-bronze          no proposal     x2 closed
+  pop6-jewelry          bronze_token | pop39-iron            no proposal     x1 open
+  pop6-jewelry          bronze_token | pop43-bronze          no proposal     x1 open
+  pop6-jewelry          bronze_token | pop23-coal            no proposal     x1 closed
+  pop34-jewelry         bronze_token | pop23-coal            no proposal     x2 open
+  pop34-jewelry         bronze_token | pop39-iron            no proposal     x1 closed
+  pop55-pots            bronze_token | pop43-bronze          no proposal     x2 open
+  pop55-pots            bronze_token | pop15-bronze          no proposal     x1 closed
+  pop17-blades          bronze_token | pop43-bronze          no proposal     x1 open
+  pop17-blades          bronze_token | pop11-iron            no proposal     x1 open
+  pop17-blades          bronze_token | pop23-coal            no proposal     x1 closed
+  pop3-bread            bronze_token | pop15-bronze          no proposal     x1 open
+  pop3-bread            bronze_token | pop39-iron            no proposal     x2 closed
+  pop8-cabins           bronze_token | pop15-bronze          no proposal     x2 open
+  pop25-beer            bronze_token | pop39-iron            no proposal     x1 open
+  pop36-cabins          bronze_token | pop43-bronze          no proposal     x1 open
+  pop37-wood_tools      bronze_token | pop23-coal            no proposal     x1 open
+  pop25-beer            bronze_token | pop43-bronze          no proposal     x1 open
+  pop45-blades          bronze_token | pop15-bronze          no proposal     x1 open
+  pop25-beer            bronze_token | pop23-coal            no proposal     x1 closed
+  pop38-buckets         bronze_token | pop23-coal            no proposal     x1 open
+  pop45-blades          bronze_token | pop43-bronze          no proposal     x1 open
+  pop38-buckets         bronze_token | pop39-iron            no proposal     x1 open
+  pop10-buckets         bronze_token | pop43-bronze          no proposal     x1 open
+  pop45-blades          bronze_token | pop39-iron            no proposal     x1 closed
+  pop56-time            bronze_token | pop39-iron            no proposal     x1 open
+  pop9-wood_tools       bronze_token | pop23-coal            no proposal     x2 closed
+  pop9-wood_tools       bronze_token | pop43-bronze          no proposal     x1 open
+  pop28-time            bronze_token | pop23-coal            no proposal     x2 closed
+  pop31-bread           bronze_token | pop39-iron            no proposal     x1 open
+  pop27-pots            bronze_token | pop39-iron            no proposal     x1 open
+  pop37-wood_tools      bronze_token | pop15-bronze          no proposal     x1 open
+  pop8-cabins           bronze_token | pop11-iron            no proposal     x1 closed
+  pop27-pots            bronze_token | pop43-bronze          no proposal     x1 open
+  pop10-buckets         bronze_token | pop15-bronze          no proposal     x2 closed
+  pop27-pots            bronze_token | pop15-bronze          no proposal     x1 closed
+  pop37-wood_tools      bronze_token | pop11-iron            no proposal     x1 closed
+  pop38-buckets         bronze_token | pop15-bronze          no proposal     x1 closed
+  pop31-bread           bronze_token | pop43-bronze          no proposal     x1 open
+  pop44-bronze_tools    bronze_token | pop15-bronze          no proposal     x1 open
+  pop56-time            bronze_token | pop11-iron            no proposal     x1 open
+  pop31-bread           bronze_token | pop23-coal            no proposal     x1 closed
+  pop16-bronze_tools    bronze_token | pop43-bronze          no proposal     x1 open
+  pop56-time            bronze_token | pop43-bronze          no proposal     x1 closed
+  pop28-time            bronze_token | pop15-bronze          no proposal     x1 open
+  pop53-beer            bronze_token | pop43-bronze          no proposal     x1 open
+  pop36-cabins          bronze_token | pop23-coal            no proposal     x1 open
+  pop16-bronze_tools    bronze_token | pop23-coal            no proposal     x1 open
+  pop53-beer            bronze_token | pop15-bronze          no proposal     x1 open
+  pop53-beer            bronze_token | pop11-iron            no proposal     x1 closed
+  pop16-bronze_tools    bronze_token | pop15-bronze          no proposal     x1 closed
+  pop36-cabins          bronze_token | pop15-bronze          no proposal     x1 closed
+  pop44-bronze_tools    bronze_token | pop39-iron            no proposal     x1 open
+  pop44-bronze_tools    bronze_token | pop11-iron            no proposal     x1 closed
+
+Leftover sells
+  seller                   qty good
+  --------------------  ------ --------
+  pop39-iron                18 water
+  pop23-coal                18 water
+  firm2-water                5 water
+  firm30-water               2 water
+  pop39-iron                50 iron
+  firm11-iron                1 iron
+  pop11-iron                66 iron
+  pop11-iron                15 iron
+  pop11-iron                 3 iron
+  pop11-iron                 1 iron
+  firm43-bronze              1 bronze
+  pop23-coal                29 bronze
+  pop15-bronze              68 bronze
+  pop43-bronze              68 bronze
+  pop15-bronze              18 bronze
+  pop43-bronze              15 bronze
+  pop15-bronze               4 bronze
+  pop43-bronze               3 bronze
+  pop15-bronze               1 bronze
+  pop43-bronze               1 bronze
+  pop23-coal                 3 bronze_token
+  pop15-bronze               6 bronze_token
+  pop39-iron                 3 bronze_token
+  pop11-iron                 1 bronze_token
+  pop43-bronze               2 bronze_token
+  pop23-coal                 1 bronze_token
+  firm26-clay                1 clay
+  pop39-iron                23 clay
+  pop23-coal               370 clay
+  pop39-iron                 3 clay
+  pop39-iron                 1 clay
+
+Outcomes
+  good            demand  supply  bought    paid     vol     amv     sal
+  -------------- ------- ------- ------- ------- ------- ------- -------
+  time               106       0     109       0     109 1949.43    0.10
+  grain              162       0       0       0       0   39.42    1.20
+  water              299      67      24      56      80   63.59    1.83
+  bread              280       0       0       0       0   31.32    0.57
+  gold               540       0       0       0       0   64.11    2.00
+  gold_token          82       0       0       0       0   79.15    1.98
+  jewelry             82       0       0       0       0   55.40    1.90
+  wood               214       0       0       0       0   64.38    0.80
+  cabins             112       0       0       0       0   32.24    0.57
+  wood_tools         280       0       0       0       0   32.01    0.57
+  buckets            112       0       0       0       0   31.33    0.10
+  iron               102     122       5       0       5  356.31    1.98
+  iron_tools          56       0       0       0       0   35.84    1.55
+  copper              98       0       0       0       0   68.08    1.98
+  tin                 98       6       6       9      15  161.12    1.99
+  bronze             102     176      10       1      11  342.66    1.98
+  bronze_tools       112       0       0       0       0   31.92    1.40
+  blades              62       0       0       0       0   38.69    1.50
+  bronze_mirror      168       0       0       0       0   41.71    1.81
+  bronze_token        72      16       1       0       1  108.39    1.96
+  iron_token          75       0       0       0       0   87.07    1.94
+  copper_token        81       0       0       0       0   79.27    1.94
+  tin_token           70       0       0       0       0   91.62    1.96
+  coal               111       0       0       0       0  524.11    1.94
+  charcoal           112       0       0       0       0   31.88    0.57
+  beer               527       0       0       0       0   31.52    0.50
+  clay                97     399       5      28      33  144.95    1.99
+  pots               112       0       0       0       0   31.91    1.20
+unavailable  beer, blades, bread, bronze_mirror, bronze_tools, buckets, cabins, charcoal, coal, copper, copper_token, gold, gold_token, grain, iron_token, iron_tools, jewelry, pots, tin, tin_token, wood, wood_tools
+
+Labor  (settle; work-time cap 50%)
+  firm                 who                   hours   time  paid
+  -------------------- -------------------- ------ ------  ------------------------
+  firm1-grain          pop1-grain                1      1  4 grain
+  firm1-grain          owner pop1-grain          -      -  remainder
+  firm2-water          pop2-water                3      3  34 water
+  firm2-water          owner pop2-water          -      -  remainder
+  firm3-bread          pop3-bread                2      2  -
+  firm3-bread          owner pop3-bread          -      -  remainder
+  firm4-gold           pop4-gold                 2      2  -
+  firm4-gold           owner pop4-gold           -      -  remainder
+  firm5-gold_token     pop5-gold_token           1      1  -
+  firm5-gold_token     owner pop5-gold_token      -      -  remainder
+  firm6-jewelry        pop6-jewelry              2      2  -
+  firm6-jewelry        owner pop6-jewelry        -      -  remainder
+  firm7-wood           pop7-wood                 2      2  -
+  firm7-wood           owner pop7-wood           -      -  remainder
+  firm8-cabins         pop8-cabins               2      2  -
+  firm8-cabins         owner pop8-cabins         -      -  remainder
+  firm9-wood_tools     pop9-wood_tools           2      2  -
+  firm9-wood_tools     owner pop9-wood_tools      -      -  remainder
+  firm10-buckets       pop10-buckets             2      2  -
+  firm10-buckets       owner pop10-buckets       -      -  remainder
+  firm11-iron          pop11-iron                4      4  15 iron
+  firm11-iron          owner pop11-iron          -      -  remainder 9 water
+  firm12-iron_tools    pop12-iron_tools          2      2  -
+  firm12-iron_tools    owner pop12-iron_tools      -      -  remainder
+  firm13-copper        pop13-copper              1      1  2 copper
+  firm13-copper        owner pop13-copper        -      -  remainder
+  firm14-tin           pop14-tin                 4      4  11 tin
+  firm14-tin           owner pop14-tin           -      -  remainder 1 clay
+  firm15-bronze        pop15-bronze              4      4  17 bronze
+  firm15-bronze        owner pop15-bronze        -      -  remainder
+  firm16-bronze_tools  pop16-bronze_tools        2      2  -
+  firm16-bronze_tools  owner pop16-bronze_tools      -      -  remainder
+  firm17-blades        pop17-blades              2      2  -
+  firm17-blades        owner pop17-blades        -      -  remainder
+  firm18-bronze_mirror pop18-bronze_mirror       2      2  -
+  firm18-bronze_mirror owner pop18-bronze_mirror      -      -  remainder
+  firm19-bronze_token  pop19-bronze_token        1      1  -
+  firm19-bronze_token  owner pop19-bronze_token      -      -  remainder
+  firm20-iron_token    pop20-iron_token          1      1  -
+  firm20-iron_token    owner pop20-iron_token      -      -  remainder
+  firm21-copper_token  pop21-copper_token        1      1  -
+  firm21-copper_token  owner pop21-copper_token      -      -  remainder
+  firm22-tin_token     pop22-tin_token           1      1  -
+  firm22-tin_token     owner pop22-tin_token      -      -  remainder
+  firm23-coal          pop23-coal                2      2  -
+  firm23-coal          owner pop23-coal          -      -  remainder
+  firm24-charcoal      pop24-charcoal            1      1  -
+  firm24-charcoal      owner pop24-charcoal      -      -  remainder
+  firm25-beer          pop25-beer                2      2  -
+  firm25-beer          owner pop25-beer          -      -  remainder
+  firm26-clay          pop26-clay                3      3  16 clay
+  firm26-clay          owner pop26-clay          -      -  remainder 2 bronze_token; cover 2 bronze_token
+  firm27-pots          pop27-pots                2      2  -
+  firm27-pots          owner pop27-pots          -      -  remainder
+  firm28-time          pop28-time                2      2  -
+  firm28-time          owner pop28-time          -      -  remainder
+  firm29-grain         pop29-grain               1      1  4 grain
+  firm29-grain         owner pop29-grain         -      -  remainder
+  firm30-water         pop30-water               3      3  33 water
+  firm30-water         owner pop30-water         -      -  remainder 1 coal
+  firm31-bread         pop31-bread               2      2  -
+  firm31-bread         owner pop31-bread         -      -  remainder
+  firm32-gold          pop32-gold                2      2  -
+  firm32-gold          owner pop32-gold          -      -  remainder
+  firm33-gold_token    pop33-gold_token          1      1  -
+  firm33-gold_token    owner pop33-gold_token      -      -  remainder
+  firm34-jewelry       pop34-jewelry             2      2  -
+  firm34-jewelry       owner pop34-jewelry       -      -  remainder
+  firm35-wood          pop35-wood                2      2  -
+  firm35-wood          owner pop35-wood          -      -  remainder
+  firm36-cabins        pop36-cabins              2      2  -
+  firm36-cabins        owner pop36-cabins        -      -  remainder
+  firm37-wood_tools    pop37-wood_tools          2      2  -
+  firm37-wood_tools    owner pop37-wood_tools      -      -  remainder
+  firm38-buckets       pop38-buckets             2      2  -
+  firm38-buckets       owner pop38-buckets       -      -  remainder
+  firm39-iron          pop39-iron                4      4  16 iron
+  firm39-iron          owner pop39-iron          -      -  remainder
+  firm40-iron_tools    pop40-iron_tools          2      2  -
+  firm40-iron_tools    owner pop40-iron_tools      -      -  remainder
+  firm41-copper        pop41-copper              1      1  2 copper
+  firm41-copper        owner pop41-copper        -      -  remainder
+  firm42-tin           pop42-tin                 1      1  2 tin
+  firm42-tin           owner pop42-tin           -      -  remainder
+  firm43-bronze        pop43-bronze              4      4  16 bronze
+  firm43-bronze        owner pop43-bronze        -      -  remainder
+  firm44-bronze_tools  pop44-bronze_tools        2      2  -
+  firm44-bronze_tools  owner pop44-bronze_tools      -      -  remainder
+  firm45-blades        pop45-blades              2      2  -
+  firm45-blades        owner pop45-blades        -      -  remainder
+  firm46-bronze_mirror pop46-bronze_mirror       2      2  -
+  firm46-bronze_mirror owner pop46-bronze_mirror      -      -  remainder
+  firm47-bronze_token  pop47-bronze_token        1      1  -
+  firm47-bronze_token  owner pop47-bronze_token      -      -  remainder
+  firm48-iron_token    pop48-iron_token          1      1  -
+  firm48-iron_token    owner pop48-iron_token      -      -  remainder
+  firm49-copper_token  pop49-copper_token        1      1  -
+  firm49-copper_token  owner pop49-copper_token      -      -  remainder
+  firm50-tin_token     pop50-tin_token           1      1  -
+  firm50-tin_token     owner pop50-tin_token      -      -  remainder
+  firm51-coal          pop51-coal                2      2  -
+  firm51-coal          owner pop51-coal          -      -  remainder
+  firm52-charcoal      pop52-charcoal            1      1  -
+  firm52-charcoal      owner pop52-charcoal      -      -  remainder
+  firm53-beer          pop53-beer                2      2  -
+  firm53-beer          owner pop53-beer          -      -  remainder
+  firm54-clay          pop54-clay                3      3  16 clay
+  firm54-clay          owner pop54-clay          -      -  remainder 1 bronze_token; cover 1 bronze_token
+  firm55-pots          pop55-pots                2      2  -
+  firm55-pots          owner pop55-pots          -      -  remainder
+  firm56-time          pop56-time                2      2  -
+  firm56-time          owner pop56-time          -      -  remainder
+
+Production  (did today; want is next-day after plan)
+  firm                    did   want  flows / missing
+  -------------------- ------ ------  ----------------------------
+  firm1-grain               1      1  -
+  firm2-water            7.69   7.65  -1.54 time  +38.43 water
+  firm3-bread               0      1  missing grain
+  firm4-gold                1      0  -1 time  +2 gold
+  firm5-gold_token          0      1  missing gold
+  firm6-jewelry             0      1  missing gold
+  firm7-wood                1      0  -0.50 time  +5 wood
+  firm8-cabins              0      1  missing wood
+  firm9-wood_tools          0      1  missing wood
+  firm10-buckets            0      1  missing wood
+  firm11-iron            5.67   5.65  -2.83 time  +17.00 iron
+  firm12-iron_tools         0      1  missing wood
+  firm13-copper             1      1  -
+  firm14-tin             5.83   5.83  -2.92 time  +11.67 tin
+  firm15-bronze          5.69   5.69  -2.85 time  +17.08 bronze
+  firm16-bronze_tools       0      1  missing bronze
+  firm17-blades             0      1  missing iron
+  firm18-bronze_mirror      0      1  missing bronze
+  firm19-bronze_token       0      1  missing bronze
+  firm20-iron_token         0      1  missing iron
+  firm21-copper_token       0      1  missing copper
+  firm22-tin_token          0      1  missing tin
+  firm23-coal               1      0  -0.50 time  +3 coal
+  firm24-charcoal           0      1  missing wood
+  firm25-beer               0      1  missing grain
+  firm26-clay            5.36   5.35  -1.61 time  +16.08 clay
+  firm27-pots               0      1  missing clay
+  firm28-time               1      0  -
+  firm29-grain              1      1  -
+  firm30-water           7.69   7.66  -1.54 time  +38.46 water
+  firm31-bread              0      1  missing grain
+  firm32-gold               1      0  -1 time  +2 gold
+  firm33-gold_token         0      1  missing gold
+  firm34-jewelry            0      1  missing gold
+  firm35-wood               1      0  -0.50 time  +5 wood
+  firm36-cabins             0      1  missing wood
+  firm37-wood_tools         0      1  missing wood
+  firm38-buckets            0      1  missing wood
+  firm39-iron            5.51   5.51  -2.75 time  +16.53 iron
+  firm40-iron_tools         0      1  missing wood
+  firm41-copper             1      1  -
+  firm42-tin                1      1  -
+  firm43-bronze          5.50   5.49  -2.75 time  +16.49 bronze
+  firm44-bronze_tools       0      1  missing wood
+  firm45-blades             0      1  missing iron
+  firm46-bronze_mirror      0      1  missing bronze
+  firm47-bronze_token       0      1  missing bronze
+  firm48-iron_token         0      1  missing iron
+  firm49-copper_token       0      1  missing copper
+  firm50-tin_token          0      1  missing tin
+  firm51-coal               1      0  -0.50 time  +3 coal
+  firm52-charcoal           0      1  missing wood
+  firm53-beer               0      1  missing grain
+  firm54-clay            5.33   5.33  -1.60 time  +16.00 clay
+  firm55-pots               0      1  missing clay
+  firm56-time               1      0  -
+
+Plans  (after firm record keeping)
+  firm                  profit  success   want   sell good             quote
+  -------------------- ------- -------- ------ ------ -------------- -------
+  firm1-grain           0.1725        1      1      4 grain          35.4777
+  firm2-water           0.9673   0.9431   7.65  40.89 water          57.2324
+  firm3-bread                0        0      1      2 bread          28.1893
+  firm4-gold                 0        0      0      0 gold           57.7018
+  firm5-gold_token           0        0      1      4 gold_token     71.2320
+  firm6-jewelry              0        0      1      1 jewelry        49.8578
+  firm7-wood                 0        0      0      0 wood           57.9388
+  firm8-cabins               0        0      1      1 cabins         29.0178
+  firm9-wood_tools           0        0      1      1 wood_tools     28.8075
+  firm10-buckets             0        0      1      1 buckets        28.1973
+  firm11-iron           1.1776   0.8721   5.65  17.16 iron           320.6755
+  firm12-iron_tools          0        0      1      1 iron_tools     32.2573
+  firm13-copper         0.1522        1      1      2 copper         61.2746
+  firm14-tin            0.3788   0.9317   5.83  11.78 tin            156.7591
+  firm15-bronze         1.0977   1.0507   5.69  17.12 bronze         308.3902
+  firm16-bronze_tools        0        0      1      1 bronze_tools   28.7277
+  firm17-blades              0        0      1      1 blades         34.8226
+  firm18-bronze_mirror       0        0      1      1 bronze_mirror  37.5421
+  firm19-bronze_token        0        0      1      4 bronze_token   97.5512
+  firm20-iron_token          0        0      1      4 iron_token     78.3640
+  firm21-copper_token        0        0      1      4 copper_token   71.3430
+  firm22-tin_token           0        0      1      4 tin_token      82.4559
+  firm23-coal                0        0      0      0 coal           511.7429
+  firm24-charcoal            0        0      1      1 charcoal       28.6906
+  firm25-beer                0        0      1      2 beer           28.3704
+  firm26-clay           0.7681   0.9889   5.35  16.16 clay           130.4532
+  firm27-pots                0        0      1      1 pots           28.7217
+  firm28-time                0        0      0      0 time           1677.1006
+  firm29-grain          0.1725        1      1      4 grain          35.4777
+  firm30-water          0.9788   0.9770   7.66  41.42 water          57.2324
+  firm31-bread               0        0      1      2 bread          28.1893
+  firm32-gold                0        0      0      0 gold           57.7018
+  firm33-gold_token          0        0      1      4 gold_token     71.2320
+  firm34-jewelry             0        0      1      1 jewelry        49.8578
+  firm35-wood                0        0      0      0 wood           57.9388
+  firm36-cabins              0        0      1      1 cabins         29.0178
+  firm37-wood_tools          0        0      1      1 wood_tools     28.8075
+  firm38-buckets             0        0      1      1 buckets        28.1973
+  firm39-iron           1.1768   1.0184   5.51  16.67 iron           320.6755
+  firm40-iron_tools          0        0      1      1 iron_tools     32.2573
+  firm41-copper         0.1538        1      1      2 copper         61.2746
+  firm42-tin            0.3880        1      1      2 tin            160.6879
+  firm43-bronze         1.0993   0.9643   5.49  16.57 bronze         308.3902
+  firm44-bronze_tools        0        0      1      1 bronze_tools   28.7277
+  firm45-blades              0        0      1      1 blades         34.8226
+  firm46-bronze_mirror       0        0      1      1 bronze_mirror  37.5421
+  firm47-bronze_token        0        0      1      4 bronze_token   97.5512
+  firm48-iron_token          0        0      1      4 iron_token     78.3640
+  firm49-copper_token        0        0      1      4 copper_token   71.3430
+  firm50-tin_token           0        0      1      4 tin_token      82.4559
+  firm51-coal                0        0      0      0 coal           511.7429
+  firm52-charcoal            0        0      1      1 charcoal       28.6906
+  firm53-beer                0        0      1      2 beer           28.3704
+  firm54-clay           0.7679   1.0560   5.33  16.08 clay           130.4532
+  firm55-pots                0        0      1      1 pots           28.7217
+  firm56-time                0        0      0      0 time           1677.1006
+
+Pops  (after consume)
+  actor                 basic common luxury    SOL   shop income stop     
+  -------------------- ------ ------ ------ ------ ------ ------ ---------
+  pop1-grain           0.8000      1      0 3.9000 0.0927 156.65 -        
+  pop2-water                1 1.7000      0 5.5500 0.1886 2199.70 -        
+  pop3-bread                0      1      0 1.5000      0      0 -        
+  pop4-gold                 0      1      0 1.5000 0.1020      0 -        
+  pop5-gold_token           0      1      0 1.5000 0.0972      0 -        
+  pop6-jewelry              0      1      0 1.5000 0.0105      0 -        
+  pop7-wood                 0      1      0 1.5000 0.1149      0 -        
+  pop8-cabins               0      1      0 1.5000      0      0 -        
+  pop9-wood_tools           0      1      0 1.5000      0      0 -        
+  pop10-buckets             0      1      0 1.5000      0      0 -        
+  pop11-iron                1      2      0      6 0.6951 5947.82 market   
+  pop12-iron_tools          0      1      0 1.5000 0.0172      0 -        
+  pop13-copper              0 1.2000      0 1.8000 0.1042 136.73 -        
+  pop14-tin                 1 1.6000      0 5.4000 0.1338 2040.40 -        
+  pop15-bronze              1      2      0      6 0.6839 5673.22 market   
+  pop16-bronze_tools        0      1      0 1.5000      0      0 -        
+  pop17-blades              0      1      0 1.5000 0.0028      0 -        
+  pop18-bronze_mirror       0      1      0 1.5000 0.0452      0 -        
+  pop19-bronze_token        0      1      0 1.5000 0.0814      0 -        
+  pop20-iron_token          0      1      0 1.5000 0.0733      0 -        
+  pop21-copper_token        0      1      0 1.5000 0.0826      0 -        
+  pop22-tin_token           0      1      0 1.5000 0.0755      0 -        
+  pop23-coal                1      2      0      6 0.6988      0 market   
+  pop24-charcoal            0      1      0 1.5000      0      0 -        
+  pop25-beer                0      1      0 1.5000      0      0 -        
+  pop26-clay                1 1.6000      0 5.4000 0.1362 2441.09 market   
+  pop27-pots                0      1      0 1.5000      0      0 -        
+  pop28-time                0      1      0 1.5000      0      0 -        
+  pop29-grain          0.8000      1      0 3.9000 0.0805 156.65 -        
+  pop30-water          1.3000 1.7000      0 6.4500 0.1855 2667.98 -        
+  pop31-bread               0      1      0 1.5000      0      0 -        
+  pop32-gold                0      1      0 1.5000 0.1058      0 -        
+  pop33-gold_token          0      1      0 1.5000 0.1087      0 -        
+  pop34-jewelry             0      1      0 1.5000 0.0076      0 -        
+  pop35-wood                0      1      0 1.5000 0.1033      0 -        
+  pop36-cabins              0      1      0 1.5000      0      0 -        
+  pop37-wood_tools          0      1      0 1.5000      0      0 -        
+  pop38-buckets             0      1      0 1.5000      0      0 -        
+  pop39-iron                1      2      0      6 0.6942 5723.25 market   
+  pop40-iron_tools          0      1      0 1.5000 0.0114      0 -        
+  pop41-copper              0 1.2000      0 1.8000 0.1150 136.73 -        
+  pop42-tin                 0 1.2000      0 1.8000 0.1111 345.52 -        
+  pop43-bronze              1      2      0      6 0.6850 5339.50 market   
+  pop44-bronze_tools        0      1      0 1.5000      0      0 -        
+  pop45-blades              0      1      0 1.5000      0      0 -        
+  pop46-bronze_mirror       0      1      0 1.5000 0.0258      0 -        
+  pop47-bronze_token        0      1      0 1.5000 0.1005      0 -        
+  pop48-iron_token          0      1      0 1.5000 0.0821      0 -        
+  pop49-copper_token        0      1      0 1.5000 0.0829      0 -        
+  pop50-tin_token           0      1      0 1.5000 0.0816      0 -        
+  pop51-coal           0.1800      1      0 2.0400 0.1619      0 -        
+  pop52-charcoal            0      1      0 1.5000 0.0059      0 -        
+  pop53-beer                0      1      0 1.5000      0      0 -        
+  pop54-clay                1 1.9000      0 5.8500 0.1456 2340.66 -        
+  pop55-pots                0      1      0 1.5000 0.0071      0 -        
+  pop56-time                0      1      0 1.5000      0      0 -        
+
+AMV
+  good                 now      diff     trend       sal
+  -------------- --------- --------- --------- ---------
+  time           1949.4294  +47.1791   +0.4980    0.1000
+  grain            39.4197   +0.2574   -0.0690    1.2000
+  water            63.5916   -1.1053   -0.0099    1.8271
+  bread            31.3214   +0.4100   +0.0529    0.5750
+  gold             64.1131   -0.2077   -0.2059    1.9980
+  gold_token       79.1466   -0.4909   -0.2398    1.9800
+  jewelry          55.3976   -0.0436   -0.1754    1.9000
+  wood             64.3764   -0.2127   -0.2044    0.8000
+  cabins           32.2420   +0.3926   +0.0341    0.5750
+  wood_tools       32.0083   +0.3970   +0.0387    0.5750
+  buckets          31.3303   +0.4098   +0.0528    0.1000
+  iron            356.3061   -1.3973   +0.4942    1.9821
+  iron_tools       35.8414   +0.3248   -0.0254    1.5491
+  copper           68.0829   -0.2825   -0.2166    1.9800
+  tin             161.1186  -11.6434   -0.0498    1.9856
+  bronze          342.6557   +8.9368   +0.5110    1.9821
+  bronze_tools     31.9196   +0.3987   +0.0405    1.4000
+  blades           38.6918   +0.2711   -0.0610    1.5000
+  bronze_mirror    41.7134   +0.2142   -0.0913    1.8098
+  bronze_token    108.3902   +7.9655   +0.0343    1.9600
+  iron_token       87.0711   -0.6402   -0.2766    1.9400
+  copper_token     79.2700   -0.4933   -0.2400    1.9400
+  tin_token        91.6177   -0.7259   -0.2582    1.9600
+  coal            524.1123   -8.8730   -0.1066    1.9362
+  charcoal         31.8784   +0.3995   +0.0413    0.5750
+  beer             31.5227   +0.4062   +0.0487    0.5000
+  clay            144.9480   +4.9332   +0.1003    1.9902
+  pots             31.9130   +0.3988   +0.0406    1.1958
+shop reloaded from current stock.
+logged  data/logs/inputs60_{market,trades,firms,pops}.csv  firms: firm1-grain firm3-bread firm5-gold_token firm7-wood firm8-cabins firm12-iron_tools firm25-beer firm27-pots  pops: pop1-grain pop3-bread
+> 

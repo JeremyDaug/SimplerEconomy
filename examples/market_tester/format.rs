@@ -318,6 +318,18 @@ pub(crate) fn format_processes_page(session: &Session) -> String {
     ));
     let mut any = false;
     for firm in &session.firms {
+        if firm.production_line.is_empty() {
+            any = true;
+            out.push_str(&format!(
+                "  {:<10} {:<14} {:>6} {:>6}  {}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                "dead/abandoned",
+                "-",
+                "-",
+                "-"
+            ));
+            continue;
+        }
         for line in &firm.production_line {
             any = true;
             let name = session
@@ -778,6 +790,13 @@ pub(crate) fn format_production_report(session: &Session) -> String {
     }
     for firm in &session.firms {
         if firm.production_line.is_empty() {
+            out.push_str(&format!(
+                "  {:<ACTOR_COL$} {:>6} {:>6}  {}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                "-",
+                "-",
+                "dead/abandoned"
+            ));
             continue;
         }
         for (idx, line) in firm.production_line.iter().enumerate() {
@@ -838,6 +857,19 @@ pub(crate) fn format_plan_report(session: &Session) -> String {
         return out;
     }
     for firm in &session.firms {
+        if firm.production_line.is_empty() {
+            out.push_str(&format!(
+                "  {:<ACTOR_COL$} {:>7} {:>8} {:>6} {:>6} {:<GOOD_COL$} {:>7}\n",
+                fmt_actor(Actor::Firm(firm.id)),
+                fmt_num(firm.records.profit_ratio),
+                fmt_num(firm.records.sell_success),
+                "-",
+                "-",
+                "dead/abandoned",
+                "-"
+            ));
+            continue;
+        }
         let want = firm
             .production_line
             .first()

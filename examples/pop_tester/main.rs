@@ -596,25 +596,21 @@ mod day_should {
     use simpler_economy::game::init::InitData;
     use simpler_economy::game::pop::PopPRow;
 
+    fn grant_qty(rows: &[(usize, f64)], good: usize) -> f64 {
+        rows.iter()
+            .find(|(id, _)| *id == good)
+            .map(|(_, qty)| *qty)
+            .unwrap_or(0.0)
+    }
+
     #[test]
-    fn living_roster_is_two_pops_per_world_good_and_no_firms() {
+    fn living_roster_is_eight_village_pops_and_no_firms() {
         let session = boot_session();
-        let n_goods = session.factuals.goods.len();
-        let n = n_goods * 2;
-        assert_eq!(session.pops.len(), n);
+        assert_eq!(session.pops.len(), 8);
         assert!(session.firms.is_empty());
         assert!(session.market.firms.is_empty());
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
-        assert_eq!(ids, (1..=n).collect::<Vec<_>>());
-        let mut copies = HashMap::new();
-        for pop in &session.pops {
-            let good = produced_good_id(pop.id, n_goods);
-            *copies.entry(good).or_insert(0) += 1;
-        }
-        assert_eq!(copies.len(), n_goods);
-        for (&good, &count) in &copies {
-            assert_eq!(count, 2, "good {good} pops {count}");
-        }
+        assert_eq!(ids, (1..=8).collect::<Vec<_>>());
     }
 
     #[test]
@@ -655,12 +651,12 @@ mod day_should {
     fn living_pops_have_specialty_opening_stock() {
         let session = boot_session();
         for pop in &session.pops {
-            let grants = session
+            let rows = session
                 .morning_outputs
                 .get(&pop.id)
-                .cloned()
-                .unwrap_or_default();
-            for (good, cap) in grants {
+                .map(|rows| rows.as_slice())
+                .unwrap_or(&[]);
+            for &(good, cap) in rows {
                 if good == TIME {
                     assert!(
                         pop.property
@@ -673,11 +669,10 @@ mod day_should {
                     continue;
                 }
                 let qty = pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0);
-                assert!(
-                    (qty - cap).abs() < 1e-9,
-                    "pop {} good {good} qty {qty} cap {cap}",
-                    pop.id
-                );
+                // Init grant is the specialty line only; morning cap also includes
+                // subsistence outputs of the same good.
+                assert!(qty <= cap + 1e-9, "pop {} good {good} qty {qty} cap {cap}", pop.id);
+                assert!(qty + 1e-9 >= 0.0);
             }
         }
     }
@@ -690,22 +685,26 @@ mod day_should {
         assert!((house.count - 1.0).abs() < 1e-9);
         assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
         assert_eq!(pop.desires[0].len(), 3);
-        assert_eq!(pop.desires[1].len(), 5);
-        assert_eq!(pop.desires[2].len(), 2);
+        assert_eq!(pop.desires[1].len(), 2);
+        assert_eq!(pop.desires[2].len(), 1);
         assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
         assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
         assert_eq!(pop.desires[1][0].category.as_deref(), Some("housing"));
-        assert_eq!(pop.desires[1][1].category.as_deref(), Some("utility items"));
-        assert_eq!(pop.desires[2][1].category.as_deref(), Some("libations"));
+        assert_eq!(pop.desires[1][1].category.as_deref(), Some("improved food"));
+        assert_eq!(pop.desires[2][0].category.as_deref(), Some("shiny"));
         for tier in &pop.desires {
             for desire in tier {
                 match desire.scalar {
                     ScalingFactor::All(weight) => {
-                        assert!((weight - 1.0).abs() < 1e-9)
+                        assert!((weight - 1.0).abs() < 1e-9);
+                        assert!((desire.amount - 5.0).abs() < 1e-9);
                     }
-                    other => panic!("want All(1.0), got {other:?}"),
+                    ScalingFactor::Household(weight) => {
+                        assert!((weight - 1.0).abs() < 1e-9);
+                        assert!((desire.amount - 1.0).abs() < 1e-9);
+                    }
+                    other => panic!("want All or Household, got {other:?}"),
                 }
-                assert!((desire.amount - 5.0).abs() < 1e-9);
                 assert!(desire.target.iter().all(|t| {
                     matches!(t.desire_type, DesireTargetType::Consume)
                 }));
@@ -739,9 +738,7 @@ mod day_should {
             assert_eq!(session.morning_outputs.get(pop_id), Some(rows));
         }
         assert!(session.firms.is_empty());
-
-        let n_goods = session.factuals.goods.len();
-        assert_eq!(session.morning_outputs.len(), n_goods * 2);
+        assert_eq!(session.morning_outputs.len(), 8);
 
         let grain_firm = init.firms.iter().find(|firm| firm.id == 1).expect("firm 1");
         let grain_line = &grain_firm.production_line[0];
@@ -749,10 +746,12 @@ mod day_should {
         let grain_qty = grain_proc.outputs[0].amount * grain_line.target.unwrap();
         assert_eq!(grain_proc.outputs[0].good, GRAIN);
         assert!(grain_qty > 0.0);
-        assert_eq!(session.morning_outputs[&1], vec![(GRAIN, grain_qty)]);
-        assert_eq!(
-            session.morning_outputs[&(1 + n_goods)],
-            vec![(GRAIN, grain_qty)]
+        let farm_qty = session.factuals.processes[&29].outputs[0].amount * 2.0;
+        let grain_cap = grant_qty(&session.morning_outputs[&1], GRAIN);
+        assert!((grain_cap - grain_qty - farm_qty).abs() < 1e-9);
+        assert!(
+            (grant_qty(&session.morning_outputs[&5], GRAIN) - grain_qty - farm_qty).abs()
+                < 1e-9
         );
 
         let gold_firm = init.firms.iter().find(|firm| firm.id == 4).expect("firm 4");
@@ -761,48 +760,22 @@ mod day_should {
         let gold_qty = gold_proc.outputs[0].amount * gold_line.target.unwrap();
         assert_eq!(gold_proc.outputs[0].good, GOLD);
         assert!(gold_qty > 0.0);
-        assert_eq!(session.morning_outputs[&4], vec![(GOLD, gold_qty)]);
-        assert_eq!(
-            session.morning_outputs[&(4 + n_goods)],
-            vec![(GOLD, gold_qty)]
-        );
-
-        let time_firm = init.firms.iter().find(|firm| firm.id == n_goods).expect("time firm");
-        let time_line = &time_firm.production_line[0];
-        let time_proc = &session.factuals.processes[&time_line.process];
-        let time_qty = time_proc.outputs[0].amount * time_line.target.unwrap();
-        assert_eq!(time_proc.outputs[0].good, TIME);
-        assert_eq!(session.morning_outputs[&n_goods], vec![(TIME, time_qty)]);
-        assert_eq!(
-            session.morning_outputs[&(n_goods * 2)],
-            vec![(TIME, time_qty)]
-        );
+        assert!((grant_qty(&session.morning_outputs[&4], GOLD) - gold_qty).abs() < 1e-9);
     }
 
     #[test]
     fn morning_grant_tops_up_to_process_output_and_does_not_overfill() {
         let session = boot_session();
-        let n_goods = session.factuals.goods.len();
-        assert_eq!(produced_good_id(1, n_goods), GRAIN);
-        assert_eq!(produced_good_id(n_goods, n_goods), TIME);
-
-        let grain_cap = session.morning_outputs[&1][0].1;
-        let gold_cap = session.morning_outputs[&4][0].1;
+        let grain_cap = grant_qty(&session.morning_outputs[&1], GRAIN);
+        let gold_cap = grant_qty(&session.morning_outputs[&4], GOLD);
         assert!(grain_cap > 0.0);
         assert!(gold_cap > 0.0);
 
         let mut grain_pop = empty_pop(1, &session.factuals.config.pop);
         grant_daily_endowment(&mut grain_pop, &session.morning_outputs);
         assert!((grain_pop.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
-        assert!(
-            grain_pop
-                .property
-                .get(&WATER)
-                .map(|row| row.quantity)
-                .unwrap_or(0.0)
-                .abs()
-                < 1e-9
-        );
+        let water_cap = grant_qty(&session.morning_outputs[&1], WATER);
+        assert!((grain_pop.property[&WATER].quantity - water_cap).abs() < 1e-9);
 
         let mut short = empty_pop(1, &session.factuals.config.pop);
         short.property.insert(GRAIN, PopPRow::new(grain_cap * 0.5));
@@ -819,12 +792,5 @@ mod day_should {
         gold_pop.property.insert(GOLD, PopPRow::new(5.0));
         grant_daily_endowment(&mut gold_pop, &session.morning_outputs);
         assert!((gold_pop.property[&GOLD].quantity - gold_cap).abs() < 1e-9);
-
-        let time_qty = session.morning_outputs[&n_goods][0].1;
-        assert!(time_qty > 0.0);
-        let mut time_pop = empty_pop(n_goods, &session.factuals.config.pop);
-        time_pop.property.insert(TIME, PopPRow::new(time_qty * 0.5));
-        grant_daily_endowment(&mut time_pop, &session.morning_outputs);
-        assert!((time_pop.property[&TIME].quantity - time_qty).abs() < 1e-9);
     }
 }

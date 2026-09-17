@@ -9,7 +9,10 @@ realized profit, AMV bound). Do not copy them here.
 | Piece | Status |
 |-------|--------|
 | `FirmPRow` + helpers | Landed |
-| `run_production` | Landed + tests. Tester `day` calls it. Living roster firms work 10 Time for 150 output (cabins 1 Time / 15). PlayState production still `todo!()` |
+| `run_production` | Landed + tests. Tester `day` calls it. Living remainder firms have a specialty line plus three subsistence lines (farm / water / forage, target 2). Hours are the sum of all lines' Time. PlayState production still `todo!()` |
+| Line abandonment | Landed. Any line at `target` 0 with no leftover-buy, owner shortfall, or in-shop input demand increments `idle_days` and drops after `abandon_idle_days` (5). Empty firms stay in the world; tester tables print `dead/abandoned`. |
+| Owner need = sale | Landed. Owner consume shortfall (`household_needs`) and leftover buys are the same kind of demand. Weaker duplicate recipes (lower recipe AMV-out/AMV-in of the same good) walk down. Production runs input-feeding lines first, then higher AMV profit. Remainder recap/fence uses goods the shop actually makes, not the subsistence tag. Finished output can tender for missing inputs even if fenced for the owner. |
+| Complexity Time tax | Landed. Firm-wide overhead, not a line. Multi-line shops charge `complexity_time_factor * sum(weight * iterations)` Time **before** any line runs (and include it in labor hours). One-line shops pay 0. Not a throughput haircut. |
 | Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
 | `record_keeping` | Rolling average + `FirmRecords`, then `plan` |
@@ -53,11 +56,14 @@ blends consumed-input AMV only — used capital is not in that blend
 (amortization later, not v0). Vault `Processes.md` does not describe `held`;
 do not invent a third model.
 
-A line starting from 0 snaps to at least 1 iteration. Missing inputs throttle
-the run (`last_missing_goods`). `plan` walks quota toward last iterations
-on a run miss (floor 1), except a missing-input day or leftover buy demand
-for the output keeps aim and quota. An idle `target` 0 restarts at 1 when
-leftover buys exist for that output.
+A line starting from 0 snaps to at least 1 iteration. The complexity tax
+destroys Time on the firm first, then production runs input-feeding lines
+(then higher recipe AMV profit) so later lines may spend that `held`.
+Missing materials keep scale. Missing Time is a scale miss. An idle
+`target` 0 restarts at 1 when leftover buys, owner shortfall, or in-shop
+input need the output and this line is the best AMV recipe for that good.
+After `abandon_idle_days` consecutive idle days without that demand, the
+line is removed. The firm remains even with no lines.
 
 ## Plan
 
@@ -76,8 +82,9 @@ leftover buys exist for that output.
    unless extra units are predicted to sell. Near-tied scores pick the step
    closer to a full clear. Stay / quote-only days lerp quota toward `aim`.
    A run miss still walks quota toward last iterations unless the miss is
-   missing inputs or the output still has leftover buys (keep operating
-   scale). Shrink step matches
+   missing materials or the output still has leftover buys, owner shortfall,
+   or in-shop input need (keep operating scale). Missing Time is a scale
+   miss. Shrink step matches
    growth (`shrink_rate` 0.10). Orbit live market AMV by ±`quote_orbit`.
    Cold-start keeps the line unless leftover buys exist for an output, in
    which case an idle line snaps to 1 iteration. `target: None` stays None.
@@ -95,6 +102,12 @@ factor so quotes stay in the current unit.
 `record_keeping` snapshots then calls `plan` — do not also call `plan` the same
 day. Do not re-add a confidence pace scale. Tunables: `factuals.config.firm`.
 Tests: `firm::plan_should`.
+
+Init still auto-attaches farm/water/forage as starting lines. Plan does not
+treat the tag as a special policy; the worse recipe loses to a better one
+of the same good. Later: **disorganized** (cottage-industry) firms as a
+mass of similar household producers that can spin out cheaper specialized
+shops once money is standard. Do not add that type unless asked.
 
 ## create_orders
 
@@ -116,9 +129,10 @@ Dual buy+sell: producers (`use_target` > 0) buy only the stock-target shortfall
 and sell only free excess. Merchants emit full `purchase_target` even above
 stock. A sell-plan good can still tender its **exchange** slice.
 
-Until every process input has a day's `use_target` on hand, output (and
-other non-use stock) is pulled from sell/liquidate into exchange so it can
-pay for that shortfall. After that, selling is unchanged.
+Until every process input has a day's `use_target` on hand, finished output
+(even owner-fenced dinner) is pulled from sell/liquidate — and from the
+use-fence if needed — into exchange so it can pay for that shortfall.
+Recipe inputs stay fenced. After that, selling is unchanged.
 
 Budget is optimistic (last buy may overdraw). No spendable AMV -> no buys.
 Non-positive AMV is not spendable and not a legal counter. Production inputs

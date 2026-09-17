@@ -386,6 +386,15 @@ pub mod firm_constants {
     /// Emergency: keep collapsed firms at 1 iteration and feed coin/inputs.
     /// Default off.
     pub const KEEP_ALIVE: bool = false;
+    /// Plan days a line may sit at target 0 with no leftover-buy, owner, or
+    /// in-shop input demand before it is removed. 0 disables. Default 5.
+    pub const ABANDON_IDLE_DAYS: u32 = 5;
+    /// Remainder shop is self-supplying at this placed/(placed+sold) AMV share.
+    pub const SELF_SUPPLY_THRESHOLD: f64 = 0.5;
+    /// Extra destroyed Time when more than one line is running:
+    /// `factor * sum(complexity_weight * iterations)`. 0 on a one-line shop.
+    /// Default 0.05.
+    pub const COMPLEXITY_TIME_FACTOR: f64 = 0.05;
 
     /// Peer band: line profit ratios within this fraction are "comparable".
     pub const PROFIT_PEER_BAND: f64 = 0.05;
@@ -1310,6 +1319,17 @@ pub struct FirmConfig {
     /// Emergency keep-alive: floor collapsed lines at 1 iteration and feed
     /// missing inputs plus coin. Default false.
     pub keep_alive: bool,
+    /// Days a line may stay at target 0 with no leftover-buy, owner, or
+    /// in-shop input demand before `plan` removes it. 0 disables. Default 5.
+    pub abandon_idle_days: u32,
+    /// Self-supply ratio (placed / (placed + sold) AMV). A reading, not a
+    /// garden policy. Default 0.5. Bound 0..=1.
+    pub self_supply_threshold: f64,
+    /// Managerial Time on multi-line shops:
+    /// `factor * sum(complexity_weight * iterations)`. 0 disables.
+    /// Skipped when only one line has a positive target. Default 0.05.
+    /// Must be >= 0.
+    pub complexity_time_factor: f64,
 }
 
 impl Default for FirmConfig {
@@ -1330,6 +1350,9 @@ impl Default for FirmConfig {
             sell_success_grow: firm_constants::SELL_SUCCESS_GROW,
             sell_success_shrink: firm_constants::SELL_SUCCESS_SHRINK,
             keep_alive: firm_constants::KEEP_ALIVE,
+            abandon_idle_days: firm_constants::ABANDON_IDLE_DAYS,
+            self_supply_threshold: firm_constants::SELF_SUPPLY_THRESHOLD,
+            complexity_time_factor: firm_constants::COMPLEXITY_TIME_FACTOR,
         }
     }
 }
@@ -1350,6 +1373,8 @@ impl FirmConfig {
         in_range(problems, "firm.rolling_avg_weight", self.rolling_avg_weight, 0.0, 1.0);
         in_range(problems, "firm.sell_success_grow", self.sell_success_grow, 0.0, 1.0);
         in_range(problems, "firm.sell_success_shrink", self.sell_success_shrink, 0.0, 1.0);
+        in_range(problems, "firm.self_supply_threshold", self.self_supply_threshold, 0.0, 1.0);
+        at_least(problems, "firm.complexity_time_factor", self.complexity_time_factor, 0.0);
         ordered(
             problems,
             "firm.sell_success_shrink",

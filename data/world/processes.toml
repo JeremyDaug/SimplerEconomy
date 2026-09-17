@@ -1,13 +1,14 @@
 # World data: processes (factuals).
 # Human-editable. Live firm targets, stock, and prices are game state, not here.
 #
-# One recipe per world good. Process id equals the output good id, except
-# Time (good 0) which is process 28 so id 0 stays none.
+# Specialized recipes: process id equals the output good id, except Time
+# (good 0) which is process 28 so id 0 stays none. Subsistence recipes are
+# 29..=31 (household farm / water / forage); tags = ["subsistence"] is
+# complexity weight 0.25 (untagged is 1.0; weight must be > 0).
 #
-# Raw extracts (grain, water, gold, wood, iron, copper, tin, bronze, coal,
-# clay) and the Time dummy take Time only. Everything else takes Time plus
-# at least one destroyed material. Outputs are a few units; Time is usually
-# below 1.0 (gold mining and the Time dummy stay at 1.0).
+# Raw extracts take Time only as required input; grain and wood may take
+# optional boosters. Crafted recipes take Time plus at least one destroyed
+# material. Subsistence is Time-only and weaker than the matching extract.
 #
 # input type: destroyed | consumed | capital | factor  (default destroyed)
 # optional = true to skip if the good is missing.
@@ -16,7 +17,11 @@
 [[processes]]
 id = 1
 name = "make grain"
-inputs = [{ good = 0, amount = 0.5 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 2, amount = 0.5, optional = true, optional_effects = [{ output = 0.25 }] },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ throughput = 0.25 }] },
+]
 outputs = [{ good = 1, amount = 6.0 }]
 
 [[processes]]
@@ -62,7 +67,10 @@ outputs = [{ good = 6, amount = 1.0 }]
 [[processes]]
 id = 7
 name = "make wood"
-inputs = [{ good = 0, amount = 0.5 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ throughput = 0.25 }] },
+]
 outputs = [{ good = 7, amount = 8.0 }]
 
 [[processes]]
@@ -236,3 +244,24 @@ id = 28
 name = "make time"
 inputs = [{ good = 0, amount = 1.0 }]
 outputs = [{ good = 0, amount = 1.0 }]
+
+[[processes]]
+id = 29
+name = "subsistence farm"
+tags = ["subsistence"]
+inputs = [{ good = 0, amount = 0.5 }]
+outputs = [{ good = 1, amount = 2.0 }]
+
+[[processes]]
+id = 30
+name = "subsistence water"
+tags = ["subsistence"]
+inputs = [{ good = 0, amount = 0.2 }]
+outputs = [{ good = 2, amount = 2.0 }]
+
+[[processes]]
+id = 31
+name = "subsistence forage"
+tags = ["subsistence"]
+inputs = [{ good = 0, amount = 0.5 }]
+outputs = [{ good = 7, amount = 2.0 }]

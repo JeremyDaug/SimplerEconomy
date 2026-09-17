@@ -50,8 +50,8 @@ pub(crate) fn init_data_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/init")
 }
 
-/// Builds the living roster: two pops and two remainder-owner firms per world
-/// good, each pop one default household (5 members).
+/// Builds the living roster from `data/init/`: eight remainder owner-operators
+/// (grain, water, bread, gold, wood, cabins), each pop one default household.
 pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
     let factuals = Factuals::load_from_path(world_data_path())
         .unwrap_or_else(|err| panic!("load {}: {err}", world_data_path().display()));
@@ -179,67 +179,19 @@ pub(crate) fn make_basic_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         2,
         "heating",
         amount,
-        &[(WOOD, 1.0), (CHARCOAL, 1.25), (COAL, 1.5)],
+        &[(WOOD, 1.0)],
     ));
-    pop.desires[1].push(make_consume_desire(3, "housing", amount, &[(CABINS, 1.0)]));
+    let mut housing = make_consume_desire(3, "housing", 1.0, &[(CABINS, 1.0)]);
+    housing.scalar = ScalingFactor::Household(1.0);
+    housing.amount = pop.get_scaling_factor(ScalingFactor::Household(1.0));
+    pop.desires[1].push(housing);
     pop.desires[1].push(make_consume_desire(
         4,
-        "utility items",
-        amount,
-        &[
-            (WOOD_TOOLS, 0.2),
-            (BUCKETS, 0.5),
-            (IRON_TOOLS, 0.9),
-            (BRONZE_TOOLS, 0.5),
-            (POTS, 0.8),
-            (BLADES, 1.0),
-        ],
-    ));
-    pop.desires[1].push(make_consume_desire(
-        5,
         "improved food",
         amount,
-        &[(BREAD, 1.0), (BEER, 1.5)],
+        &[(BREAD, 1.0)],
     ));
-    pop.desires[1].push(make_consume_desire(
-        6,
-        "materials",
-        amount,
-        &[
-            (WOOD, 0.5),
-            (IRON, 0.5),
-            (COPPER, 0.5),
-            (TIN, 0.5),
-            (BRONZE, 0.5),
-            (GOLD, 0.5),
-            (CLAY, 0.5),
-        ],
-    ));
-    pop.desires[1].push(make_consume_desire(
-        7,
-        "health",
-        amount,
-        &[(BRONZE_MIRROR, 2.5), (TIME, 1.0)],
-    ));
-    pop.desires[2].push(make_consume_desire(
-        8,
-        "shiny tokens",
-        amount,
-        &[
-            (GOLD_TOKEN, 1.0),
-            (BRONZE_TOKEN, 1.0),
-            (IRON_TOKEN, 1.0),
-            (COPPER_TOKEN, 1.0),
-            (TIN_TOKEN, 1.0),
-            (JEWELRY, 1.0),
-        ],
-    ));
-    pop.desires[2].push(make_consume_desire(
-        9,
-        "libations",
-        amount,
-        &[(BEER, 1.5), (TIME, 1.0)],
-    ));
+    pop.desires[2].push(make_consume_desire(5, "shiny", amount, &[(GOLD, 1.0)]));
     pop
 }
 
@@ -248,7 +200,10 @@ pub(crate) fn process_id_for_output(factuals: &Factuals, output: usize) -> usize
     let mut matches: Vec<usize> = factuals
         .processes
         .iter()
-        .filter(|(_, process)| process.outputs.iter().any(|row| row.good == output))
+        .filter(|(_, process)| {
+            !process.is_subsistence()
+                && process.outputs.iter().any(|row| row.good == output)
+        })
         .map(|(&id, _)| id)
         .collect();
     matches.sort_unstable();
@@ -345,6 +300,7 @@ fn dummy_line(process: usize, target: f64, inputs: Vec<usize>) -> ProductionLine
         last_missing_goods: vec![],
         last_amv_consumed: 0.0,
         last_amv_produced: 0.0,
+        idle_days: 0,
     }
 }
 

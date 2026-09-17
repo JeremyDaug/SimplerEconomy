@@ -115,7 +115,12 @@ pub(crate) fn morning_outputs_from_firms(firms: &[Firm], factuals: &Factuals) ->
                 if qty <= 0.0 {
                     continue;
                 }
-                grants.entry(pop_id).or_default().push((output.good, qty));
+                let rows = grants.entry(pop_id).or_default();
+                if let Some(existing) = rows.iter_mut().find(|(good, _)| *good == output.good) {
+                    existing.1 += qty;
+                } else {
+                    rows.push((output.good, qty));
+                }
             }
         }
     }

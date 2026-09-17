@@ -29,6 +29,8 @@ struct ProcessFile {
     outputs: Vec<ProcessOutputFile>,
     #[serde(default)]
     effects: Vec<ProcessEffectFile>,
+    #[serde(default)]
+    tags: Vec<ProcessTagFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,7 +136,41 @@ impl ProcessFile {
         for effect in self.effects {
             process = process.with_effect(effect.into());
         }
+        for tag in self.tags {
+            process = process.with_tag(tag.into_tag(id)?);
+        }
         Ok(process)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ProcessTagFile {
+    Name(String),
+    Subsistence { subsistence: f64 },
+}
+
+impl ProcessTagFile {
+    fn into_tag(self, process: usize) -> Result<crate::game::process::ProcessTag, FactualsLoadError> {
+        use crate::game::process::{ProcessTag, SUBSISTENCE_WEIGHT};
+        let weight = match self {
+            Self::Name(name) => {
+                if name != "subsistence" {
+                    return Err(FactualsLoadError::InvalidProcess(format!(
+                        "process {process} unknown tag {name}"
+                    )));
+                }
+                SUBSISTENCE_WEIGHT
+            }
+            Self::Subsistence { subsistence } => subsistence,
+        };
+        if weight > 0.0 && weight.is_finite() {
+            Ok(ProcessTag::subsistence(weight))
+        } else {
+            Err(FactualsLoadError::InvalidProcess(format!(
+                "process {process} complexity weight must be finite and > 0"
+            )))
+        }
     }
 }
 
@@ -565,7 +601,7 @@ tags = ["untradeable", { transport = 2.0 }]
     fn load_from_path_reads_world_dir_goods_and_processes() {
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         assert!(!factuals.goods.is_empty());
-        assert_eq!(factuals.processes.len(), factuals.goods.len());
+        assert!(factuals.processes.len() >= factuals.goods.len());
         const RAW_EXTRACTS: &[&str] = &[
             "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal",
             "clay",
@@ -581,29 +617,45 @@ tags = ["untradeable", { transport = 2.0 }]
             assert!(!time_in.is_optional());
             assert_eq!(process.outputs.len(), 1);
             assert!(process.outputs[0].amount > 0.0 && process.outputs[0].amount <= 8.0);
+            assert!(process.complexity_weight() > 0.0);
             let output_name = factuals
                 .goods
                 .get(&process.outputs[0].good)
                 .map(|good| good.name.as_str())
                 .unwrap_or("");
-            let time_only = process.outputs[0].good == TIME
-                || RAW_EXTRACTS.contains(&output_name);
-            let material = process
-                .inputs
-                .iter()
-                .any(|input| input.good != TIME);
-            if time_only {
-                assert!(!material, "{} should be Time-only", process.name);
+            let required_material = process.inputs.iter().any(|input| {
+                input.good != TIME && !input.is_optional()
+            });
+            if process.is_subsistence() || process.outputs[0].good == TIME {
+                assert!(!required_material, "{} should be Time-only", process.name);
+                if process.is_subsistence() {
+                    assert!((process.complexity_weight() - 0.25).abs() < 1e-12);
+                }
+            } else if RAW_EXTRACTS.contains(&output_name) {
+                assert!(
+                    !required_material,
+                    "{} extract should not require a material",
+                    process.name
+                );
             } else {
-                assert!(material, "{} needs a material input", process.name);
+                assert!(required_material, "{} needs a material input", process.name);
             }
         }
         let grain = factuals.processes.get(&1).expect("make grain");
         assert_eq!(grain.name, "make grain");
         assert_eq!(grain.outputs[0].good, 1);
-        assert_eq!(grain.inputs.len(), 1);
+        assert!(!grain.is_subsistence());
+        assert!((grain.complexity_weight() - 1.0).abs() < 1e-12);
+        assert_eq!(grain.inputs.len(), 3);
         assert!((grain.inputs[0].amount - 0.5).abs() < 1e-12);
+        assert!(grain.inputs[1].is_optional());
+        assert!(grain.inputs[2].is_optional());
         assert!((grain.outputs[0].amount - 6.0).abs() < 1e-12);
+        let farm = factuals.processes.get(&29).expect("subsistence farm");
+        assert!(farm.is_subsistence());
+        assert!((farm.complexity_weight() - 0.25).abs() < 1e-12);
+        assert_eq!(farm.outputs[0].good, 1);
+        assert_eq!(farm.inputs.len(), 1);
         let pots = factuals.processes.get(&27).expect("make pots");
         assert_eq!(pots.name, "make pots");
         assert_eq!(pots.outputs[0].good, 27);
@@ -641,6 +693,41 @@ effects = [{ research = 4.0 }]
         assert!(matches!(mill.inputs[0].input_type, InputType::Consumed));
         assert!(mill.outputs[0].fixed);
         assert!(matches!(mill.effects[0], ProcessEffect::Research(v) if v == 4.0));
+    }
+
+    #[test]
+    fn load_from_toml_reads_subsistence_tag_and_rejects_zero_weight() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 40
+name = "camp"
+tags = ["subsistence"]
+inputs = [{ good = 0, amount = 0.5 }]
+outputs = [{ good = 1, amount = 1.0 }]
+"#,
+        )
+        .expect("toml");
+        let camp = factuals.processes.get(&40).expect("camp");
+        assert!(camp.is_subsistence());
+        assert!((camp.complexity_weight() - 0.25).abs() < 1e-12);
+
+        let err = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 41
+name = "bad"
+tags = [{ subsistence = 0.0 }]
+outputs = [{ good = 1, amount = 1.0 }]
+"#,
+        )
+        .expect_err("zero weight");
+        match err {
+            FactualsLoadError::InvalidProcess(msg) => {
+                assert!(msg.contains("complexity weight"));
+            }
+            other => panic!("expected InvalidProcess, got {other}"),
+        }
     }
 
     #[test]

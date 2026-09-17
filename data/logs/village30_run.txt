@@ -1,0 +1,391 @@
+   Compiling simpler_economy v0.1.0 (/home/jeremy/Projects/SimplerEconomy)
+warning: unused import: `HashSet`
+ --> src/game/firm.rs:1:33
+  |
+1 | use std::collections::{HashMap, HashSet};
+  |                                 ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `bevy::utils::default`
+ --> src/game/firmorganization.rs:1:5
+  |
+1 | use bevy::utils::default;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unreachable expression
+   --> src/playstate.rs:419:17
+    |
+418 |         map_data: todo!(),
+    |                   ------- any code following this expression is unreachable
+419 |         actors: todo!(),
+    |                 ^^^^^^^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `todo` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `factuals`
+  --> src/game/players.rs:15:42
+   |
+15 |     pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
+   |                                          ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_factuals`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `play_state`
+   --> src/playstate.rs:416:13
+    |
+416 |     let mut play_state = PlayState {
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_play_state`
+
+warning: unused variable: `commands`
+   --> src/playstate.rs:415:25
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |                         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_commands`
+
+warning: variable does not need to be mutable
+   --> src/playstate.rs:415:21
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |                     ----^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `setup_play_state` is never used
+   --> src/playstate.rs:415:4
+    |
+415 | fn setup_play_state(mut commands: Commands) {
+    |    ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `simpler_economy` (lib) generated 8 warnings (run `cargo fix --lib -p simpler_economy` to apply 3 suggestions)
+warning: unused import: `simpler_economy::game::desire::DesireTargetType`
+  --> examples/market_tester/main.rs:45:5
+   |
+45 | use simpler_economy::game::desire::DesireTargetType;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `simpler_economy` (example "market_tester") generated 1 warning (run `cargo fix --example "market_tester"` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 11.37s
+     Running `target/release/examples/market_tester`
+=== market tester ===
+calendar day 0   rng: os
+goods  (amv  sal)
+  --  --------  ------  ----
+   0  time         100  0.1000
+   1  grain        100  0.1000
+   2  water        100  0.1000
+   3  bread        100  0.1000
+   4  gold         100  0.1000
+   5  gold_token     100  0.1000
+   6  jewelry      100  0.1000
+   7  wood         100  0.1000
+   8  cabins       100  0.1000
+   9  wood_tools     100  0.1000
+  10  buckets      100  0.1000
+  11  iron         100  0.1000
+  12  iron_tools     100  0.1000
+  13  copper       100  0.1000
+  14  tin          100  0.1000
+  15  bronze       100  0.1000
+  16  bronze_tools     100  0.1000
+  17  blades       100  0.1000
+  18  bronze_mirror     100  0.1000
+  19  bronze_token     100  0.1000
+  20  iron_token     100  0.1000
+  21  copper_token     100  0.1000
+  22  tin_token     100  0.1000
+  23  coal         100  0.1000
+  24  charcoal     100  0.1000
+  25  beer         100  0.1000
+  26  clay         100  0.1000
+  27  pots         100  0.1000
+
+pops   pop1-grain  pop2-water  pop3-bread  pop4-gold  pop5-gold_token  pop6-jewelry  pop7-wood  pop8-cabins
+firms  firm1-grain  firm2-water  firm3-bread  firm4-gold  firm5-gold_token  firm6-jewelry  firm7-wood  firm8-cabins
+books  28 buys / 29 sells
+csv    data/logs/prices_{market,trades}.csv
+
+stock  orders  processes  day  amv  csv  help
+
+---
+shop loaded 33 pop + 24 firm orders (28 buys, 29 sells).
+> CSV directory  data/logs/
+  village30_market.csv   always; one row/day; good blocks: amv, salability, average_price
+  village30_trades.csv   always; one row/day; good candles: open, high, low, close, volume
+  village30_firms.csv    off until `csv on <firm>`
+  village30_pops.csv     off until `csv on <pop>`
+csv <name>  changes the stem.  csv reset  wipes these files.
+csv on|off <actor>...  flag pops/firms.  csv off  clears flags.
+Header mismatch (old layout or a new flag set) needs reset or a new stem.
+> csv logging firm1-grain firm2-water firm3-bread firm4-gold firm7-wood firm8-cabins pop1-grain pop3-bread pop4-gold pop8-cabins.
+CSV directory  data/logs/
+  village30_market.csv   always; one row/day; good blocks: amv, salability, average_price
+  village30_trades.csv   always; one row/day; good candles: open, high, low, close, volume
+  village30_firms.csv    flagged firm1-grain firm2-water firm3-bread firm4-gold firm7-wood firm8-cabins; firm profit/success, then good blocks: qty, targets, bid, ask, costs, sold, produced
+  village30_pops.csv     flagged pop1-grain pop3-bread pop4-gold pop8-cabins; pop sat/SOL/shop/income/wealth, then good blocks: qty, shop, save, consumed
+csv <name>  changes the stem.  csv reset  wipes these files.
+csv on|off <actor>...  flag pops/firms.  csv off  clears flags.
+Header mismatch (old layout or a new flag set) needs reset or a new stem.
+> === calendar ===
+day 1  4 trades  114 washes  wages 0 coin  SOL 3.7500
+day 2  17 trades  75 washes  wages 0 coin  SOL 6.6150
+day 3  12 trades  114 washes  wages 0 coin  SOL 5.4715
+day 4  2 trades  144 washes  wages 0 coin  SOL 2.6983
+day 5  1 trade  144 washes  wages 0 coin  SOL 0.6750
+day 6  3 trades  147 washes  wages 0 coin  SOL 0.8250
+day 7  4 trades  123 washes  wages 0 coin  SOL 1.5750
+day 8  4 trades  117 washes  wages 0 coin  SOL 1.9500
+day 9  4 trades  111 washes  wages 0 coin  SOL 2.1000
+day 10  6 trades  108 washes  wages 0 coin  SOL 2.8785
+day 11  18 trades  51 washes  wages 0 coin  SOL 6.1750
+day 12  20 trades  45 washes  wages 0 coin  SOL 5.9698
+day 13  17 trades  39 washes  wages 0 coin  SOL 6.6625
+day 14  14 trades  30 washes  wages 0 coin  SOL 6.8500
+day 15  14 trades  21 washes  wages 0 coin  SOL 8.2110
+day 16  11 trades  12 washes  wages 0 coin  SOL 8.4719
+day 17  12 trades  21 washes  wages 0 coin  SOL 7.3927
+day 18  11 trades  21 washes  wages 0 coin  SOL 7.7965
+day 19  14 trades  21 washes  wages 0 coin  SOL 6.8160
+day 20  13 trades  21 washes  wages 0 coin  SOL 8.7872
+day 21  13 trades  24 washes  wages 0 coin  SOL 7.4695
+day 22  12 trades  24 washes  wages 0 coin  SOL 6.9780
+day 23  11 trades  18 washes  wages 0 coin  SOL 7.2624
+day 24  14 trades  21 washes  wages 0 coin  SOL 7.6343
+day 25  10 trades  21 washes  wages 0 coin  SOL 7.0567
+day 26  12 trades  24 washes  wages 0 coin  SOL 6.6255
+day 27  11 trades  24 washes  wages 0 coin  SOL 8.2615
+day 28  14 trades  21 washes  wages 0 coin  SOL 7.4929
+day 29  10 trades  18 washes  wages 0 coin  SOL 7.2625
+day 30  11 trades  24 washes  wages 0 coin  SOL 7.4828
+
+=== market day 30 ===
+11 trades   24 washes   23 unmatched   leftover 0 buy / 24 sell
+haul  242.24
+----------------------------------------------------------------
+
+Unmatched  (no seller)
+  buyer                    qty good
+  --------------------  ------ --------
+  pop2-water                 7 bread
+  pop7-wood                  6 bread
+  pop6-jewelry               7 bread
+  pop5-gold_token            6 bread
+  pop4-gold                  7 bread
+  pop1-grain                 6 bread
+  pop8-cabins                7 bread
+  pop3-bread                 8 bread
+  pop2-water                 1 cabins
+  pop7-wood                  2 cabins
+  pop6-jewelry               2 cabins
+  pop5-gold_token            2 cabins
+  pop4-gold                  2 cabins
+  pop1-grain                 2 cabins
+  pop8-cabins                2 cabins
+  pop3-bread                 2 cabins
+  pop2-water                10 gold
+  pop7-wood                 19 gold
+  pop6-jewelry              19 gold
+  pop5-gold_token           19 gold
+  pop1-grain                15 gold
+  pop8-cabins                7 gold
+  pop3-bread                15 gold
+
+Trades
+  buyer                    qty good     | seller                pays
+  --------------------  ------ ---------+---------------------  ----------------
+  firm3-bread                1 grain    | pop1-grain            2 bread  haul 4.40
+  pop2-water                 5 wood     | firm7-wood            4 water  haul 24
+  pop6-jewelry               5 wood     | pop7-wood             5 water  haul 24
+  pop5-gold_token            5 wood     | firm7-wood            4 grain  haul 23.40
+  pop5-gold_token            5 water    | pop2-water            4 grain  haul 14.40
+  pop4-gold                  3 grain    | firm1-grain           4 gold  haul 9.88
+  pop4-gold                  5 wood     | firm7-wood            5 gold  haul 22.10
+  pop1-grain                 6 wood     | pop7-wood             5 grain  haul 28.20
+  pop1-grain                 5 water    | pop6-jewelry          4 grain  haul 14.40
+  pop2-water                 1 cabins   | firm8-cabins          2 water  haul 43.80
+  pop2-water                 3 gold     | firm4-gold            3 water  haul 9.66
+
+Washes
+  buyer                 good     | seller                why             end
+  --------------------  ---------+---------------------  --------------  ----------
+  firm3-bread           water    | firm2-water           no proposal     x1 open
+  firm3-bread           water    | pop7-wood             no proposal     x1 open
+  firm8-cabins          wood     | pop7-wood             no proposal     x2 open
+  firm3-bread           water    | pop4-gold             no proposal     x1 closed
+  firm8-cabins          wood     | firm7-wood            no proposal     x1 closed
+  pop8-cabins           water    | firm2-water           no proposal     x2 closed
+  pop8-cabins           grain    | firm5-gold_token      no proposal     x1 open
+  pop8-cabins           grain    | firm1-grain           no proposal     x2 closed
+  pop8-cabins           wood     | firm7-wood            no proposal     x1 open
+  pop8-cabins           wood     | pop7-wood             no proposal     x2 closed
+  pop8-cabins           water    | pop2-water            no proposal     x1 open
+  pop3-bread            water    | firm6-jewelry         no proposal     x1 open
+  pop3-bread            water    | pop7-wood             no proposal     x1 open
+  pop3-bread            water    | pop4-gold             no proposal     x1 closed
+  pop3-bread            grain    | firm5-gold_token      no proposal     x1 open
+  pop3-bread            wood     | firm7-wood            no proposal     x2 open
+  pop3-bread            grain    | pop5-gold_token       no proposal     x1 open
+  pop3-bread            grain    | pop1-grain            no proposal     x1 closed
+  pop3-bread            wood     | pop7-wood             no proposal     x1 closed
+
+Leftover sells
+  seller                   qty good
+  --------------------  ------ --------
+  pop2-water                 2 grain
+  pop6-jewelry               1 grain
+  firm1-grain               38 grain
+  firm5-gold_token          46 grain
+  pop5-gold_token            9 grain
+  pop1-grain                 8 grain
+  pop1-grain                 3 grain
+  pop5-gold_token            3 grain
+  firm7-wood                 1 water
+  pop6-jewelry              16 water
+  pop2-water                23 water
+  firm2-water              139 water
+  firm6-jewelry            142 water
+  pop7-wood                 18 water
+  pop4-gold                 12 water
+  pop2-water                 8 water
+  pop4-gold                  2 water
+  pop6-jewelry               5 water
+  pop2-water                 2 water
+  pop6-jewelry               1 water
+  firm7-wood                35 wood
+  pop7-wood                  4 wood
+  pop7-wood                  4 wood
+  pop7-wood                  1 wood
+
+Outcomes
+  good            demand  supply  bought    paid     vol     amv     sal
+  -------------- ------- ------- ------- ------- ------- ------- -------
+  time                60       0      55       0      55  430.27    0.10
+  grain                8     108       4      17      21  157.24    1.77
+  water               32     361      10      14      24  125.00    1.94
+  bread               54       0       0       2       2   90.73    1.55
+  gold               107       3       3       9      12  133.41    2.00
+  wood                63      65      26       0      26  120.76    1.65
+  cabins              16       1       1       0       1  239.04    0.57
+unavailable  bread, cabins, gold
+
+Labor  (settle; work-time cap 50%)
+  firm                 who                   hours   time  paid
+  -------------------- -------------------- ------ ------  ------------------------
+  firm1-grain          pop1-grain                8      8  19 grain
+  firm1-grain          owner pop1-grain          -      -  remainder 4 gold
+  firm2-water          pop2-water                5      5  6 grain + 18 water
+  firm2-water          owner pop2-water          -      -  remainder
+  firm3-bread          pop3-bread                8      8  -
+  firm3-bread          owner pop3-bread          -      -  remainder
+  firm4-gold           pop4-gold                 7      7  12 gold
+  firm4-gold           owner pop4-gold           -      -  remainder 2 water
+  firm5-gold_token     pop5-gold_token           7      7  20 grain
+  firm5-gold_token     owner pop5-gold_token      -      -  remainder
+  firm6-jewelry        pop6-jewelry              5      5  5 grain + 18 water
+  firm6-jewelry        owner pop6-jewelry        -      -  remainder
+  firm7-wood           pop7-wood                 9      9  3 grain + 19 wood
+  firm7-wood           owner pop7-wood           -      -  remainder 5 water
+  firm8-cabins         pop8-cabins               6      6  2 grain + 2 water
+  firm8-cabins         owner pop8-cabins         -      -  remainder
+
+Production  (did today; want is next-day after plan)
+  firm                    did   want  flows / missing
+  -------------------- ------ ------  ----------------------------
+  firm1-grain           10.73  10.73  -7.06 time  +70.36 grain  +2 water  -2 water  +6 wood
+  firm1-grain               1      0  -
+  firm1-grain               1      1  -
+  firm1-grain               3      3  -
+  firm2-water           14.97  14.97  -4.49 time  +89.84 water  +6 wood
+  firm2-water               1      0  -
+  firm2-water               1      0  -
+  firm2-water               3      3  -
+  firm3-bread               0      1  -8 time  +2.40 grain  missing time
+  firm3-bread            1.20      2  missing time
+  firm3-bread               0      1  missing time
+  firm3-bread               0      3  missing time
+  firm4-gold             4.16   4.16  -6.16 time  +2 grain  +12.48 gold  +6 wood
+  firm4-gold                1      1  -
+  firm4-gold             1.99      0  -
+  firm4-gold                3      3  -
+  firm5-gold_token       9.98   9.98  -6.39 time  +74.87 grain  +4 water  -4.99 water  +4 wood
+  firm5-gold_token          1      0  -
+  firm5-gold_token          2      2  -
+  firm5-gold_token          2      2  -
+  firm6-jewelry         15.32  15.32  -4.06 time  +91.95 water  +4 wood
+  firm6-jewelry             1      0  -
+  firm6-jewelry             1      0  -
+  firm6-jewelry             2      2  -
+  firm7-wood            15.32  15.32  -7.66 time  +122.60 wood
+  firm7-wood                1      0  -
+  firm7-wood             0.90      0  -
+  firm7-wood                1      0  -
+  firm8-cabins           0.82   0.82  -4.41 time  +4 wood  -2.47 wood  +0.82 cabins
+  firm8-cabins              1      1  -
+  firm8-cabins              1      2  -
+  firm8-cabins              2      2  -
+
+Plans  (after firm record keeping)
+  firm                  profit  success   want   sell good             quote
+  -------------------- ------- -------- ------ ------ -------------- -------
+  firm1-grain           6.0568   0.0453  10.73 452.94 grain          153.2963
+  firm2-water           3.3035   0.0127  14.97 1419.56 water          112.4982
+  firm3-bread                0        0      1      3 bread          93.6383
+  firm4-gold            1.1897   0.2094   4.16  30.72 gold           142.8169
+  firm5-gold_token      5.8124   0.0408   9.98 470.86 grain          153.2963
+  firm6-jewelry         3.6569   0.0125  15.32 1452.03 water          112.4982
+  firm7-wood            2.9473   0.0838  15.32 488.20 wood           108.6811
+  firm8-cabins          0.8138   0.5449   0.82   1.40 cabins         215.1394
+
+Pops  (after consume)
+  actor                 basic common luxury    SOL   shop income stop     
+  -------------------- ------ ------ ------ ------ ------ ------ ---------
+  pop1-grain                3      0 0.8000 9.8000 0.1767 3514.35 market   
+  pop2-water                3      1 1.7982 12.2982 0.2107 3170.41 market   
+  pop3-bread                0      0      0      0 0.0544      0 -        
+  pop4-gold            2.6000      0      0 7.8000 0.6308 1905.87 market   
+  pop5-gold_token           3      0      0      9 0.1632 3117.72 market   
+  pop6-jewelry              3      0      0      9 0.2146 3014.53 market   
+  pop7-wood                 3      0      0      9 0.3622 3313.83 market   
+  pop8-cabins          0.9882      0      0 2.9645 0.2603 560.12 -        
+
+AMV
+  good                 now      diff     trend       sal
+  -------------- --------- --------- --------- ---------
+  time            430.2737  +17.7702   +2.9787    0.1000
+  grain           157.2401   +1.3539   +0.0846    1.7658
+  water           124.9981   +0.8260   +0.2917    1.9408
+  bread            90.7319   -1.1148   -0.1971    1.5500
+  gold            133.4057   -4.7213   -0.0411    1.9981
+  gold_token       87.3249   -0.1691   -0.0794    0.1000
+  jewelry          87.3249   -0.1691   -0.0794    0.1000
+  wood            120.7568   +3.6351   +0.5489    1.6508
+  cabins          239.0437   +3.5719   +0.7540    0.5750
+  wood_tools       87.3249   -0.1691   -0.0794    0.1000
+  buckets          87.3249   -0.1691   -0.0794    0.1000
+  iron             87.3249   -0.1691   -0.0794    0.1000
+  iron_tools       87.3249   -0.1691   -0.0794    0.1000
+  copper           87.3249   -0.1691   -0.0794    0.1000
+  tin              87.3249   -0.1691   -0.0794    0.1000
+  bronze           87.3249   -0.1691   -0.0794    0.1000
+  bronze_tools     87.3249   -0.1691   -0.0794    0.1000
+  blades           87.3249   -0.1691   -0.0794    0.1000
+  bronze_mirror    87.3249   -0.1691   -0.0794    0.1000
+  bronze_token     87.3249   -0.1691   -0.0794    0.1000
+  iron_token       87.3249   -0.1691   -0.0794    0.1000
+  copper_token     87.3249   -0.1691   -0.0794    0.1000
+  tin_token        87.3249   -0.1691   -0.0794    0.1000
+  coal             87.3249   -0.1691   -0.0794    0.1000
+  charcoal         87.3249   -0.1691   -0.0794    0.1000
+  beer             87.3249   -0.1691   -0.0794    0.1000
+  clay             87.3249   -0.1691   -0.0794    0.1000
+  pots             87.3249   -0.1691   -0.0794    0.1000
+shop reloaded from current stock.
+logged  data/logs/village30_{market,trades,firms,pops}.csv  firms: firm1-grain firm2-water firm3-bread firm4-gold firm7-wood firm8-cabins  pops: pop1-grain pop3-bread pop4-gold pop8-cabins
+> 
