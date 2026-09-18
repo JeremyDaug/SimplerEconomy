@@ -42,7 +42,6 @@ use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
 use simpler_economy::game::marketorder::{compose_sell_priority_with, MarketOrder};
-use simpler_economy::game::desire::DesireTargetType;
 use simpler_economy::game::pop::Pop;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 
@@ -772,7 +771,7 @@ mod day_should {
             assert!(firm.workforce[0].payment.is_empty());
             assert!((firm.workforce[0].profit_share - 0.0).abs() < 1e-9);
             assert_eq!(firm.owners.owner, Actor::Pop(firm.id));
-            assert!(firm.owners.remainder);
+            assert!(firm.owners.liable);
             assert!(session.market.firms.contains(&firm.id));
         }
         let grain = session.factuals.processes.get(&1).expect("make grain");

@@ -40,7 +40,6 @@ use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
 use simpler_economy::game::marketorder::{compose_sell_priority_with, MarketOrder};
-use simpler_economy::game::desire::DesireTargetType;
 use simpler_economy::game::pop::Pop;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 

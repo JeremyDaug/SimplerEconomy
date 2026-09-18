@@ -406,7 +406,7 @@ fn build_firm(file: FirmFile, factuals: &Factuals) -> Result<Firm, InitLoadError
     let mut firm = Firm::new(file.id, name, 1, Hex::new(0, 0));
     firm = firm.with_owner(Actor::Pop(owner));
     if file.remainder {
-        firm = firm.with_owner_remainder();
+        firm = firm.with_owner_liability();
     }
     add_production_line(&mut firm, process, target, factuals);
     attach_subsistence_lines(&mut firm, factuals);
@@ -650,7 +650,7 @@ target = 10.0
         let firm = &data.firms[0];
         assert_eq!(firm.id, 1);
         assert_eq!(firm.owners.owner, Actor::Pop(1));
-        assert!(firm.owners.remainder);
+        assert!(firm.owners.liable);
         assert!((firm.workforce[0].hours - 10.0).abs() < 1e-12);
         assert_eq!(firm.production_line[0].process, 1);
         assert!((firm.production_line[0].target.unwrap() - 10.0).abs() < 1e-12);

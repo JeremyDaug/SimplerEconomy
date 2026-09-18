@@ -43,6 +43,7 @@ impl Firm {
         let mut sell_plan = 0.0;
         let mut placed_amv = 0.0;
         let mut market_sold_amv = 0.0;
+        // update property data and collect data for unified record.
         for row in self.property.values_mut() {
             let credited = row.placed_credited();
             let credited_amv = row.placed_credited_amv();
@@ -135,17 +136,22 @@ impl Firm {
         self.fence_owner_needs(factuals);
     }
 
-    /// Remainder owner-operator whose disposed AMV is mostly in-kind.
-    /// A reading (`placed / (placed + sold)`), not a garden policy.
+    /// Checks if a firm has a Liable owner-operator which sends enough of it's
+    /// output to it's workers.
+    /// 
+    /// TODO: As part of a more comprehensive subsistence rework/refinement, a pop/firm
+    /// being marked subsistence should depend on if both the firm gives most of it's 
+    /// output to its owners/workers and the owners/workers get most of their needs met
+    /// by their employing firm.
     pub fn is_self_supplying(&self, cfg: &FirmConfig) -> bool {
-        self.owners.remainder
+        self.owners.liable
             && self.records.self_supply + 1e-12 >= cfg.self_supply_threshold
     }
 
     /// Fence goods this shop makes that the owner still needs, so leftover
     /// remainder / sells do not dump dinner.
     fn fence_owner_needs(&mut self, factuals: &Factuals) {
-        if !self.owners.remainder {
+        if !self.owners.liable {
             return;
         }
         let mut goods: Vec<(usize, f64)> = Vec::new();

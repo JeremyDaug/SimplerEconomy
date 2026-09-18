@@ -461,7 +461,7 @@ impl LaborSettlement {
         let mut recap_amv = 0.0;
         let mut recap_paid_amv = 0.0;
         let mut recap: HashMap<usize, f64> = HashMap::new();
-        if firm.owners.remainder && profit_amv <= 0.0 {
+        if firm.owners.liable && profit_amv <= 0.0 {
             if let Some(owner_id) = firm.owners.pop_id() {
                 if let Some(pop) = pops.get_mut(&owner_id) {
                     let (want, paid, goods) =
@@ -499,7 +499,7 @@ impl LaborSettlement {
                 row_report.promised_amv = promised_amv;
                 row_report.paid_amv = paid_amv;
                 row_report.paid = paid;
-                let owner_hours_due = firm.owners.remainder
+                let owner_hours_due = firm.owners.liable
                     && firm.owners.pop_id() == Some(pop_id);
                 let fill = if owner_hours_due || promised_amv <= 0.0 {
                     1.0
@@ -514,7 +514,7 @@ impl LaborSettlement {
             report.workers.push(row_report);
         }
 
-        if firm.owners.remainder {
+        if firm.owners.liable {
             if let Some(owner_id) = firm.owners.pop_id() {
                 if let Some(pop) = pops.get_mut(&owner_id) {
                     let given = firm.cover_remainder_time(pop, factuals);
@@ -553,7 +553,7 @@ impl LaborSettlement {
 
         if let Some(owner_id) = firm.owners.pop_id() {
             if let Some(pop) = pops.get_mut(&owner_id) {
-                let remainder = firm.owners.remainder;
+                let remainder = firm.owners.liable;
                 let want = if remainder {
                     firm.leftover_profit_amv(history, factuals)
                 } else if firm.owners.profit_share > 0.0 && profit_amv > 0.0 {
@@ -811,7 +811,7 @@ impl Firm {
                 }
             }
         }
-        if self.owners.remainder {
+        if self.owners.liable {
             for line in &self.production_line {
                 if line.target.unwrap_or(0.0) <= 0.0 {
                     continue;
@@ -879,7 +879,7 @@ impl Firm {
                 }
             }
         }
-        if self.owners.remainder {
+        if self.owners.liable {
             for line in &self.production_line {
                 if line.target.unwrap_or(0.0) <= 0.0 {
                     continue;
@@ -1054,7 +1054,7 @@ impl Firm {
                 }
             }
         }
-        if self.owners.remainder {
+        if self.owners.liable {
             for line in &self.production_line {
                 if line.target.unwrap_or(0.0) <= 0.0 {
                     continue;
@@ -1407,7 +1407,7 @@ mod settle_labor_contracts_should {
             .with_payment(PaymentTerm::new(COIN, 1.0));
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder()
+            .with_owner_liability()
             .with_workforce(worker);
         let mut pops = HashMap::from([(3, with_time(make_pop(3), 48.0))]);
         let history = history_prices(&[(COIN, 1.0)]);
@@ -1430,7 +1430,7 @@ mod settle_labor_contracts_should {
             .with_payment(PaymentTerm::new(COIN, 1.0));
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder()
+            .with_owner_liability()
             .with_workforce(worker);
         firm.production_line.push(ProductionLine {
             process: 1,
@@ -1570,7 +1570,7 @@ mod settle_labor_contracts_should {
     fn remainder_takes_leftover_even_when_profit_is_zero() {
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.property.insert(
             COIN,
             FirmPRow::new()
@@ -1593,7 +1593,7 @@ mod settle_labor_contracts_should {
     fn remainder_does_not_take_the_operations_buffer() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
             PLANK,
@@ -1616,7 +1616,7 @@ mod settle_labor_contracts_should {
     fn remainder_records_in_kind_as_placed() {
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.property.insert(
             COIN,
             FirmPRow::new()
@@ -1638,7 +1638,7 @@ mod settle_labor_contracts_should {
     fn remainder_does_not_take_the_sell_plan() {
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.property.insert(
             WOOD,
             FirmPRow::new()
@@ -1662,7 +1662,7 @@ mod settle_labor_contracts_should {
     fn remainder_caps_posted_sell_by_max_salability() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(10.0));
         firm.property.insert(
             PLANK,
@@ -1724,7 +1724,7 @@ mod settle_labor_contracts_should {
             .with_profit_share(0.2);
         let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder()
+            .with_owner_liability()
             .with_workforce(worker);
         firm.property.insert(COIN, FirmPRow::new().with_quantity(20.0));
         firm.records.sold_amv = 10.0;
@@ -1805,7 +1805,7 @@ mod settle_labor_contracts_should {
     fn remainder_owner_covers_missing_input_on_a_loss() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         let owner = with_good(make_pop(3), WOOD, 10.0);
         let mut pops = HashMap::from([(3, owner)]);
@@ -1826,7 +1826,7 @@ mod settle_labor_contracts_should {
     fn remainder_cover_prefers_missing_input_over_exchange() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
             WOOD,
@@ -1854,7 +1854,7 @@ mod settle_labor_contracts_should {
         const GRAIN: usize = 1;
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
             WOOD,
@@ -1892,7 +1892,7 @@ mod settle_labor_contracts_should {
         const GRAIN: usize = 1;
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
             WOOD,
@@ -1932,7 +1932,7 @@ mod settle_labor_contracts_should {
             .with_payment(PaymentTerm::new(COIN, 1.0));
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder()
+            .with_owner_liability()
             .with_workforce(worker);
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
@@ -1967,7 +1967,7 @@ mod settle_labor_contracts_should {
     fn remainder_cover_uses_output_before_exchange() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         let owner = with_good(with_good(make_pop(3), PLANK, 10.0), COIN, 10.0);
         let mut pops = HashMap::from([(3, owner)]);
@@ -1988,7 +1988,7 @@ mod settle_labor_contracts_should {
     fn remainder_cover_skips_output_operations_fence() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.property.insert(
             PLANK,
@@ -2035,7 +2035,7 @@ mod settle_labor_contracts_should {
     fn profitable_remainder_does_not_cover_a_shortfall() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         firm.records.sold_amv = 20.0;
         firm.records.sold_cost_amv = 5.0;
@@ -2057,7 +2057,7 @@ mod settle_labor_contracts_should {
     fn remainder_cover_gives_what_the_owner_has() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         let owner = with_good(make_pop(3), WOOD, 3.0);
         let mut pops = HashMap::from([(3, owner)]);
@@ -2078,7 +2078,7 @@ mod settle_labor_contracts_should {
     fn remainder_cover_skips_reserved_stock_and_time() {
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
-            .with_owner_remainder();
+            .with_owner_liability();
         firm.production_line.push(mill_line(5.0));
         let mut owner = with_good(with_time(make_pop(3), 20.0), WOOD, 4.0);
         owner.property.get_mut(&WOOD).unwrap().reserved = 4.0;

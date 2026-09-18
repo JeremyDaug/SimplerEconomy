@@ -3758,7 +3758,7 @@ mod run_market_day_should {
         let worker = Workforce::new(2).with_hours(10.0);
         let firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(crate::game::actor::Actor::Pop(2))
-            .with_owner_remainder()
+            .with_owner_liability()
             .with_workforce(worker);
         let mut pop = shopper(2, 0.0, 0.0);
         pop.property.insert(TIME, PopPRow::new(48.0));

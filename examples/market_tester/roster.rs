@@ -249,7 +249,7 @@ pub(crate) fn make_specialty_firm(pop_id: usize, factuals: &Factuals) -> Firm {
         Hex::new(0, 0),
     )
     .with_owner(Actor::Pop(pop_id))
-    .with_owner_remainder()
+    .with_owner_liability()
     .with_workforce(
         Workforce::new(pop_id)
             .with_workers(1.0, 1.0)

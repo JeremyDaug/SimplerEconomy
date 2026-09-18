@@ -16,7 +16,8 @@ use crate::game::{
 /// # Firm 
 /// 
 /// A firm is the smallest unit of business. It deals with Production and local economic
-/// calculation
+/// calculation. Think of a firm as a building, factory, or facility where everyone is 
+/// there and can interact trivially during the day.
 /// 
 /// When connected together they form a Company, with the firms inside being called 
 /// Sub-Firms.
@@ -93,9 +94,15 @@ pub struct Firm {
     /// Consume-shortfall qty of the owner or workforce, by good.
     /// Refreshed at market open. Incoming units fill this (and `use_target`)
     /// at full AMV, then stock/growth bands, then unused haircut.
+    /// 
+    /// TOOD: Rename this to something like Worker Desires, or drop/consolidate into 
+    /// already existing Workforce contracts.
     pub household_needs: HashMap<usize, f64>,
     /// Owner household headcount, cached at labor settle. 0 if unknown.
-    /// Self-supplying remainder shops use this to floor subsistence lines.
+    /// Self-supplying shops use this to floor subsistence lines.
+    /// 
+    /// TODO: Remove this as subsistence processes should not be given special treatment
+    /// in this fashion.
     pub owner_household_size: f64,
 }
 
@@ -110,6 +117,8 @@ pub struct Firm {
 pub struct FirmRecords {
     /// Total AMV received from sales today.
     pub sold_amv: f64,
+    /// Total AMV given to workers/owners as wages/profit.
+    pub placed_amv: f64,
     /// Total AMV spent on purchases today.
     pub bought_amv: f64,
     /// Cost basis of units sold or fence-capped placed today.
@@ -138,6 +147,7 @@ impl Default for FirmRecords {
             sell_success: 1.0,
             sell_success_avg: 1.0,
             self_supply: 0.0,
+            placed_amv: 0.0,
         }
     }
 }
@@ -190,13 +200,14 @@ impl Firm {
         coin_amv: f64,
         config: &GameConfig,
     ) -> WagePayout {
+        // get the amount of our primary payout currency.
         let coinage = self
             .property
             .get(&coin)
             .map(|row| row.quantity.max(0.0))
             .unwrap_or(0.0);
         let mut payout = WagePayout::empty(self.owners.owner, coinage);
-        if coinage <= 0.0 {
+        if coinage <= 0.0 { // if no coin, return nothing.
             return payout;
         }
 
@@ -286,14 +297,14 @@ impl Firm {
             "profit_share must be in 0.0..=1.0"
         );
         self.owners.profit_share = profit_share;
-        self.owners.remainder = false;
+        self.owners.liable = false;
         self
     }
 
     /// Marks the owner as the residual claimant (owner-operator).
     /// Leftover after wages, worker shares, stock fence, and growth.
-    pub fn with_owner_remainder(mut self) -> Self {
-        self.owners.remainder = true;
+    pub fn with_owner_liability(mut self) -> Self {
+        self.owners.liable = true;
         self
     }
 
@@ -465,7 +476,7 @@ impl Firm {
         }
     }
 
-    /// Records consume-shortfall goods of the remainder owner and workforce.
+    /// Records consume-shortfall goods of the liable owner and workforce.
     /// Call at market open so evaluate can treat those tenders as needs.
     pub fn refresh_household_needs(&mut self, pops: &HashMap<usize, Pop>) {
         self.household_needs.clear();
@@ -856,7 +867,7 @@ pub struct Owners {
     /// of the firm.
     pub priority_override: Option<f64>,
     /// Share of yesterday's profit AMV paid after wages and growth retain. 0..=1.
-    /// Ignored when [`Self::remainder`] is set (owner-operator leftover).
+    /// Ignored when [`Self::liable`] is set (owner-operator leftover).
     pub profit_share: f64,
     /// When true, this owner takes leftover till after wages, worker profit
     /// shares, stock fence, and growth. Owner-operator residual claim.
@@ -864,7 +875,7 @@ pub struct Owners {
     /// shortfall vs the firm's needs from their own stock.
     /// When false, [`Self::profit_share`] is a limited percent of yesterday's
     /// profit AMV (dividend / partial owner) and they do not cover losses.
-    pub remainder: bool,
+    pub liable: bool,
 }
 
 impl Owners {
@@ -873,7 +884,7 @@ impl Owners {
             owner: Actor::Pop(0),
             priority_override: None,
             profit_share: 0.0,
-            remainder: false,
+            liable: false,
         }
     }
 
@@ -985,7 +996,7 @@ impl Firm {
         row.sell_no_proposal += no_proposal;
     }
 
-    /// Records in-kind placement (wage or remainder) at `unit_amv`.
+    /// Records in-kind placement (wage or profit) at `unit_amv`.
     /// Does not move stock; call after [`Self::debit_good`].
     pub fn record_placed(&mut self, good: usize, qty: f64, unit_amv: f64) {
         debug_assert!(qty.is_finite() && qty >= 0.0, "placed qty must be finite and >= 0");
@@ -1272,6 +1283,19 @@ impl FirmAmvBound {
 /// 
 /// A row of property data for a Firm. Includes data for management, oversight, and 
 /// targeting for both purchasing and use in production.
+/// 
+/// ## Target notes
+/// 
+/// After Market, a firm wants to keep it's Stock Target, which should contain everything 
+/// they need, for use (consumption/capital), growth, reserves, and wages as well 
+/// as some excess to cover decay.
+/// 
+/// Reserves are a warehousing goal, meant to help smooth out inconsistent supply for 
+/// our uses. Production in particular, but also other things if needed.
+/// 
+/// Growth is a target used for a firm's expansion. If a firm wants to expand, it should 
+/// add to this target to build up to it's new size goal, and remove from it as the firm
+/// actually grows, effectively moving from growth to use, stock, or reserve.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FirmPRow {
     // unit info and budgeting data
@@ -1288,9 +1312,11 @@ pub struct FirmPRow {
     /// How many the firm wants to purchase from the market. Mercantile firms will try
     /// to purchase this amonut before they turn around and sell.
     pub purchase_target: f64,
-    /// If selling, how many units they wish to sell each day. 
+    /// If selling, how many units they wish to sell each day. A soft Minimum.
+    /// May undershoot through no fault of their own, would gladly overshoot so long
+    /// as it doesn't interfere with production plans.
     pub sell_target: f64,
-    /// How much we want to use in a given day, used/consumed/destroyed.
+    /// How much we want/expect to use in a given day, used/consumed/destroyed.
     pub use_target: f64,
     /// The target amount the firm wants to have after all purchases have been made.
     /// For production oriented firms, this is what they will have before production.
@@ -1307,6 +1333,8 @@ pub struct FirmPRow {
     pub growth_target: f64,
     /// Recipe-derived buy cap / sell floor. See [`FirmAmvBound`]. Planning data;
     /// default [`FirmAmvBound::None`].
+    /// Not a hard cap/floor, but useful for estimating the productivity/profitability of 
+    /// the good in production.
     pub amv_bound: FirmAmvBound,
 
     // market exchange data
@@ -1318,34 +1346,34 @@ pub struct FirmPRow {
     /// If being sold, this is the average AMV price they've been able to get for it.
     /// Used for value efficiency calculations.
     pub average_price: f64,
-    /// How many were purchased today.
+    /// How many units were purchased today.
     pub bought: f64,
-    /// The Total AMV cost for bought today. Unit cost = bought_amv / bought.
+    /// The Total AMV cost for bought today. `Unit cost = bought_amv / bought`.
     pub bought_amv: f64,
-    /// How many were sold today.
+    /// How many units were sold today.
     pub sold: f64,
-    /// The total AMV gained for sales today. Unit cost = sold_amv / sold.
+    /// The total AMV gained for sales today. `Unit price = sold_amv / sold`.
     pub sold_amv: f64,
-    /// Units handed to workers or the remainder owner today (in-kind), not a
+    /// How many units were handed to workers or the owner today (in-kind), not a
     /// market deal. Counted at market AMV. Planning credits at most
     /// `stock_fence` of this toward sell success.
     pub placed: f64,
     /// Market AMV of today's in-kind placements (`placed * unit AMV`).
     pub placed_amv: f64,
-    /// Matched sell meetings that filled today.
+    /// Number of matched sell meetings that filled today.
     pub sell_fills: f64,
-    /// Seller-rejected sell meetings today.
+    /// Number of seller-rejected sell meetings today.
     pub sell_rejects: f64,
-    /// Matched sells where the buyer named no basket.
+    /// Number of matched sells where the buyer named no basket.
     pub sell_no_proposal: f64,
-    /// EMA of market `sold` (not remainder placed). Plan walk uses this so
+    /// EMA of units `sold` to the market (not profit placed). Plan walk uses this so
     /// one bad day does not wind a line down.
     pub sold_avg: f64,
-    /// EMA of `sell_fills`.
+    /// EMA of `sell_fills`, times we matched and sold.
     pub sell_fills_avg: f64,
-    /// EMA of `sell_rejects`.
+    /// EMA of `sell_rejects`, times we matched and rejected.
     pub sell_rejects_avg: f64,
-    /// EMA of `sell_no_proposal`.
+    /// EMA of `sell_no_proposal`, times we matched but had no proposal.
     pub sell_no_proposal_avg: f64,
     /// The targeted unit AMV for Buying and/or Selling. If the row has both purchase 
     /// and sell targets, then this is a midpoint price, and the difference between
@@ -1356,7 +1384,7 @@ pub struct FirmPRow {
     /// Buy Price = amv_target * (1.0 - margin)
     /// Sell Price = amv_target * (1.0 + margin)
     /// 
-    /// Should never be negative, but not enforced as that should be self-correcting.
+    /// Allowed to be negative.
     pub margin: f64,
 
     // Production data
@@ -1364,9 +1392,8 @@ pub struct FirmPRow {
     /// Removed from `quantity` (then `held`) during `run_production`; returned
     /// to `quantity` at decay, then that stock decays.
     pub used: f64,
-    /// Today's process output waiting to join `quantity`. Not on the market.
-    /// Later lines may spend it after on-hand `quantity`. Decay moves it into
-    /// `quantity` last, after on-hand stock has already rotted.
+    /// Today's process output. Not moved to `quantity` until after decay occurs, giving
+    /// firms a day of grace for their output.
     pub held: f64,
     /// Amount of the good that was consumed or destroyed today in production.
     /// We do not need to distinguish between consumed and destroyed as the output of 
@@ -1746,7 +1773,7 @@ impl FirmPRow {
 }
 
 impl FirmPRow {
-    /// Units remainder will not take: the operations want plus reserve.
+    /// Units profit will not take: the operations want plus reserve.
     /// Wages may raid this; see [`Self::wage_fence`].
     pub fn stock_fence(&self) -> f64 {
         self.stock_target.max(self.reserve_target).max(0.0)
@@ -1775,7 +1802,7 @@ impl FirmPRow {
     }
 
     /// On-hand units above stock, growth, and `sell_fence`.
-    /// Remainder leftover uses posted sell, not unconstrained `sell_target`.
+    /// Profit leftover uses posted sell, not unconstrained `sell_target`.
     pub fn profit_spendable_above_sell(&self, sell_fence: f64) -> f64 {
         (self.quantity
             - self.stock_fence()
@@ -1785,7 +1812,7 @@ impl FirmPRow {
     }
 
     /// In-kind units that count toward sell success: `placed` capped at the
-    /// operations fence. Remainder above the fence is a dump, not a hit.
+    /// operations fence. Profit above the fence is a dump, not a hit.
     pub fn placed_credited(&self) -> f64 {
         self.placed.max(0.0).min(self.stock_fence())
     }
@@ -3025,7 +3052,7 @@ mod firm {
             factuals.config.firm.complexity_time_factor = 0.0;
 
             let mut firm = Firm::new(1, "mill".into(), 42, hexx::Hex::new(0, 0))
-                .with_owner_remainder();
+                .with_owner_liability();
             firm.property.insert(TIME, FirmPRow::new().with_quantity(0.5));
             firm.property.insert(10, FirmPRow::new().with_quantity(0.0));
             let mut mill_line = empty_production_line(1);
@@ -3710,7 +3737,7 @@ mod firm {
         }
 
         fn remainder_with_farm(farm_target: f64) -> Firm {
-            let mut firm = miller_firm(4.0).with_owner_remainder();
+            let mut firm = miller_firm(4.0).with_owner_liability();
             firm.owner_household_size = 5.0;
             let mut farm = empty_production_line(2);
             farm.target = Some(farm_target);

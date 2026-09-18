@@ -41,6 +41,7 @@ Working focus list. Prefer broad strokes; long-form design lives in the EconCiv 
         - [x] Order priority field, named slots, sell-weight compose.
         - [x] `Market::match_orders` (one success, multiple front-group failures).
         - [x] `Market::run_market_day` loop: collect, collate, match, deal, finalize, leftover orders.
+        - [ ] Add in 'seller phase' to market matching. When a market runs out of buyers, but sellers have time to exchange, the go next. Taking one last chance to sell their product, even when buyers no longer exist. If a seller has no transport time left, the close the order (or sidline it) and move to the next. A Seller with time to offer for transport will try to find a buyer for their good (effectively inverting the normal logic). If there is no other order requesting it, they instead select someone at random to try and sell to (weighted by wealth and (maybe) the purpose/use of the good). They stop after 3 tries, they run out of transport to overcome friction, or they run out of the good to offer.
         - [ ] Multimatch (later, not now): after the first pair, pull that buyer's other buys at similar priority against the same seller's other goods. One trip, one `ProposedDeal`. Variety sellers load the cart; do not mix other buyers or other sellers. `form_buy_proposal` still assumes one target.
         - [ ] Deal / settlement (move goods, AMV, `MarketGood` stats, update leftover orders).
           - [x] `DealMaker` trait, `ProposedDeal`, `buy` / `evaluate` (read-only).
