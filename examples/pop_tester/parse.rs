@@ -78,13 +78,7 @@ pub(crate) fn parse_simple_order(
             if is_buy {
                 default_buy_priority(actor, cfg)
             } else {
-                compose_sell_priority_with(
-                    default_buy_priority(actor, cfg),
-                    amount,
-                    0.0,
-                    cfg.sell_actor_priority_floor,
-                    cfg.successful_sell_bonus,
-                )
+                amount
             }
         }
     };
@@ -120,13 +114,7 @@ pub(crate) fn parse_exchange_order(
             if is_buy {
                 default_buy_priority(actor, cfg)
             } else {
-                compose_sell_priority_with(
-                    default_buy_priority(actor, cfg),
-                    amount,
-                    0.0,
-                    cfg.sell_actor_priority_floor,
-                    cfg.successful_sell_bonus,
-                )
+                amount
             }
         }
     };

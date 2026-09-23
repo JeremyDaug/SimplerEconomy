@@ -7,8 +7,8 @@
 //! days of each output (`OPENING_COVER_DAYS`) so day 1 can sell. Required
 //! non-Time inputs get four days (`OPENING_INPUT_DAYS`) with `use_target` set
 //! to one day's recipe use so they are not sold. Live remainder fence is still
-//! `firm.operations_cover`. Hours default to the sum of each line's
-//! target * Time input (specialty plus auto-attached subsistence).
+//! `firm.operations_cover`. Hours default to recipe Time plus the
+//! complexity tax (specialty plus auto-attached subsistence).
 
 /// Days of output stocked at kickoff (decay-adjusted). Live `stock_target`
 /// still follows `operations_cover` after the first plan.
@@ -21,7 +21,7 @@ pub const OPENING_INPUT_DAYS: f64 = 4.0;
 /// Iterations for each auto-attached subsistence line.
 pub const SUBSISTENCE_LINE_TARGET: f64 = 2.0;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -227,6 +227,84 @@ impl InitData {
         grant_opening_specialty(&mut pops, &firms, factuals);
         Ok(Self { pops, firms })
     }
+
+    /// Drops goods this roster does not reference from `factuals`. Time is
+    /// always kept. Processes that mention a dropped good are removed;
+    /// remaining processes lose optional inputs of dropped goods.
+    pub fn unload_unused_goods(&self, factuals: &mut Factuals) {
+        let keep = used_goods(&self.pops, &self.firms, factuals);
+        factuals.goods.retain(|id, _| keep.contains(id));
+        factuals.processes.retain(|_, process| process_goods_kept(process, &keep));
+        for process in factuals.processes.values_mut() {
+            process.inputs.retain(|input| keep.contains(&input.good));
+        }
+    }
+}
+
+/// Goods referenced by these pops and firms, plus Time and decay byproducts.
+fn used_goods(pops: &[Pop], firms: &[Firm], factuals: &Factuals) -> HashSet<usize> {
+    let mut keep = HashSet::new();
+    keep.insert(TIME);
+    for pop in pops {
+        keep.extend(pop.property.keys().copied());
+        for tier in &pop.desires {
+            for desire in tier {
+                for target in &desire.target {
+                    keep.insert(target.good);
+                }
+            }
+        }
+        for desire in &pop.working_desires {
+            for target in &desire.target {
+                keep.insert(target.good);
+            }
+        }
+    }
+    for firm in firms {
+        keep.extend(firm.property.keys().copied());
+        for worker in &firm.workforce {
+            keep.extend(worker.labor.keys().copied());
+            for term in &worker.payment {
+                keep.insert(term.good);
+            }
+        }
+        for line in &firm.production_line {
+            keep.extend(line.inputs.iter().copied());
+            keep.extend(line.last_missing_goods.iter().copied());
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for input in &process.inputs {
+                if !input.is_optional() {
+                    keep.insert(input.good);
+                }
+            }
+            for output in &process.outputs {
+                keep.insert(output.good);
+            }
+        }
+    }
+    let mut extra = HashSet::new();
+    for id in &keep {
+        let Some(good) = factuals.goods.get(id) else {
+            continue;
+        };
+        extra.extend(good.decay_result.keys().copied());
+        if let Some(class) = good.class {
+            extra.insert(class);
+        }
+    }
+    keep.extend(extra);
+    keep
+}
+
+/// True when every required input and every output is in `keep`.
+fn process_goods_kept(process: &Process, keep: &HashSet<usize>) -> bool {
+    process.outputs.iter().all(|row| keep.contains(&row.good))
+        && process
+            .inputs
+            .iter()
+            .all(|input| input.is_optional() || keep.contains(&input.good))
 }
 
 /// One day of the matching remainder firm's daily output, so pops can tender
@@ -496,7 +574,7 @@ fn attach_subsistence_lines(firm: &mut Firm, factuals: &Factuals) {
 }
 
 fn line_hours(firm: &Firm, factuals: &Factuals) -> f64 {
-    firm.production_line.iter().fold(0.0, |hours, line| {
+    let recipe = firm.production_line.iter().fold(0.0, |hours, line| {
         let time_in = factuals
             .processes
             .get(&line.process)
@@ -509,7 +587,8 @@ fn line_hours(firm: &Firm, factuals: &Factuals) -> f64 {
             })
             .unwrap_or(1.0);
         hours + line.target.unwrap_or(0.0) * time_in
-    })
+    });
+    recipe + firm.complexity_time_need(factuals)
 }
 
 fn resolve_good(r: &GoodRef, factuals: &Factuals) -> Result<usize, InitLoadError> {
@@ -691,7 +770,10 @@ target = 10.0
         assert_eq!(firm.production_line.len(), 4);
         assert!(firm.production_line.iter().any(|line| line.process == 29));
         assert!(
-            (firm.workforce[0].hours - (grain_target * 0.5 + 2.4)).abs() < 1e-12
+            (firm.workforce[0].hours
+                - (grain_target * 0.5 + 2.4 + firm.complexity_time_need(&factuals)))
+                .abs()
+                < 1e-12
         );
         assert!(
             (firm.property[&1].quantity - (grain_daily + farm_daily) * hold).abs() < 1e-12
@@ -796,5 +878,29 @@ id = 1
             InitLoadError::UnknownGood(name) => assert_eq!(name, "nope"),
             other => panic!("expected UnknownGood, got {other}"),
         }
+    }
+
+    #[test]
+    fn unloads_goods_the_roster_does_not_use() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/world");
+        let mut factuals = Factuals::load_from_path(&dir).expect("world");
+        let init_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/init");
+        let data = InitData::load_from_path(&init_dir, &factuals).expect("init dir");
+        data.unload_unused_goods(&mut factuals);
+
+        let mut ids: Vec<usize> = factuals.goods.keys().copied().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![0, 1, 2, 3, 4, 7, 8]);
+        assert!(!factuals.goods.contains_key(&5));
+        assert!(!factuals.goods.contains_key(&9));
+        assert!(!factuals.goods.contains_key(&11));
+        assert!(!factuals.processes.contains_key(&5));
+        assert!(!factuals.processes.contains_key(&25));
+        assert!(factuals.processes.contains_key(&1));
+        assert!(factuals.processes.contains_key(&29));
+        let grain = factuals.processes.get(&1).expect("make grain");
+        assert!(grain.inputs.iter().all(|input| factuals.goods.contains_key(&input.good)));
+        assert!(!grain.inputs.iter().any(|input| input.good == 9));
+        assert!(grain.inputs.iter().any(|input| input.good == 2 && input.is_optional()));
     }
 }

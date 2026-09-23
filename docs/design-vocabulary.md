@@ -570,10 +570,10 @@ household labor each morning via `Pop::start_day` (`ScalingFactor::Labor`).
 Adult labor 1.0, elder 0.7, child 0.3. Recipes spend time as a destroyed
 input (1 unit minimum plus a little extra). **Untradeable** (and still
 transport 1.0): pops cannot buy extra person-days. Labor contracts move
-Time from pop to firm at morning settle. Time **AMV** is the hours-weighted
-average wage AMV from those contracts (`Market::settle_labor` /
-`Market::budget_labor`), not a matched goods-book price. Time stays
-untradeable.
+Time from pop to firm at morning settle. The contract stores that settle
+as one signed goods map (`Workforce.last_exchange`). If Time was given
+and goods were received, the market records it as an accept. Not a
+`MarketOrder`. Daily rescale skips Time. Time stays untradeable.
 
 ### Labor contract
 **Preferred:** labor contract, employment, workforce row  
@@ -774,7 +774,7 @@ a purchase or use target on a received good. Buyers accept windfalls
 **Preferred:** order priority, market priority  
 **Avoid:** priority alone (conflicts with **desire priority**), purchase order (ambiguous with `MarketOrder`)
 
-**Meaning:** `MarketOrder.priority` is used two ways. **Buy/request:** FCFS sort key, **lower number goes first** (actor band / wealth rank; RNG only among ties). **Firm buys always match before pop buys**, even if a pop order has a lower numeric priority; firm and pop buys never share a front group. **Sell/offer:** selection **weight**, **higher number is more likely**. Compose with `1 / actor_band + sqrt(supply) + SUCCESSFUL_SELL_BONUS * fills`. A same-day **reject** cuts that sell/offer weight by `SELL_REJECT_WEIGHT` (0.10). Institutions use buy-side slots `1` / `3` / `5`; merchant firms occupy `[2, 2.5)` and producers `[2.5, 3)`; pops occupy `[4, 5)` ranked by **wealth per household** (`wealth_amv / household count`; total AMV, not liquid) as `1 - wealth / max_wealth`. Rank `0` (richest) sits at the buy-band start. States pick from named inserts (`0`, `1.5`, `2.49`, `2.99`, `3.1`, `5.1`).  
+**Meaning:** Matching picks a buy at random among those with an other-origin sell, then a sell weighted by listed units (coincidence may multiply). `MarketOrder.priority` is still written on create for inspect and leftover-sell reject cuts (`SELL_REJECT_WEIGHT` 0.10). It is **not** a FCFS buy queue and **not** firm-before-pop. Same origin never pairs. Create-time compose (`1 / actor_band + sqrt(supply) + fills`) remains on the order but is not the match weight.  
 **Code:** `MarketOrder.priority`, `config::market_priority`, `StateMarketSlot`, `MarketSlot::priority`  
 **Deferred detail:** `docs/proposals/market-order-priority.md`
 

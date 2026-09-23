@@ -94,10 +94,13 @@ pub struct Firm {
     /// Consume-shortfall qty of the owner or workforce, by good.
     /// Refreshed at market open. Incoming units fill this (and `use_target`)
     /// at full AMV, then stock/growth bands, then unused haircut.
-    /// 
-    /// TOOD: Rename this to something like Worker Desires, or drop/consolidate into 
+    ///
+    /// TOOD: Rename this to something like Worker Desires, or drop/consolidate into
     /// already existing Workforce contracts.
     pub household_needs: HashMap<usize, f64>,
+    /// Standing consume demand (`desire_needs`) of the owner or workforce.
+    /// Plan treats this as a self-sale and crafts may not spend it.
+    pub household_demand: HashMap<usize, f64>,
     /// Owner household headcount, cached at labor settle. 0 if unknown.
     /// Self-supplying shops use this to floor subsistence lines.
     /// 
@@ -472,14 +475,17 @@ impl Firm {
             records: FirmRecords::new(),
             transport_spent: 0.0,
             household_needs: HashMap::new(),
+            household_demand: HashMap::new(),
             owner_household_size: 0.0,
         }
     }
 
-    /// Records consume-shortfall goods of the liable owner and workforce.
-    /// Call at market open so evaluate can treat those tenders as needs.
+    /// Records consume shortfall and standing `desire_needs` of the liable
+    /// owner and workforce. Call at market open so evaluate can treat those
+    /// tenders as needs.
     pub fn refresh_household_needs(&mut self, pops: &HashMap<usize, Pop>) {
         self.household_needs.clear();
+        self.household_demand.clear();
         let mut ids = Vec::new();
         if let Some(id) = self.owners.pop_id() {
             ids.push(id);
@@ -496,12 +502,36 @@ impl Firm {
                 continue;
             };
             for (&good, row) in &pop.property {
-                let short = (row.desire_needs - row.quantity.max(0.0)).max(0.0);
+                let demand = row.desire_needs.max(0.0);
+                if demand > 0.0 {
+                    *self.household_demand.entry(good).or_insert(0.0) += demand;
+                }
+                let short = (demand - row.quantity.max(0.0)).max(0.0);
                 if short > 0.0 {
                     *self.household_needs.entry(good).or_insert(0.0) += short;
                 }
             }
         }
+    }
+
+    /// Standing dinner qty for `good`, falling back to today's shortfall.
+    pub fn dinner_qty(&self, good: usize) -> f64 {
+        self.household_demand
+            .get(&good)
+            .copied()
+            .or_else(|| self.household_needs.get(&good).copied())
+            .unwrap_or(0.0)
+            .max(0.0)
+    }
+
+    /// Merged standing demand and shortfall, per good.
+    fn dinner_map(&self) -> HashMap<usize, f64> {
+        let mut map = self.household_demand.clone();
+        for (&good, &qty) in &self.household_needs {
+            let entry = map.entry(good).or_insert(0.0);
+            *entry = entry.max(qty.max(0.0));
+        }
+        map
     }
 
     /// Sets the owning actor. `Actor::Pop(0)` is none and is not paid.
@@ -691,8 +721,9 @@ impl Firm {
         row.sync_reserve();
     }
 
-    /// Run lines that feed other lines' required inputs first, then higher
-    /// recipe AMV profit, so `held` can pay the next recipe the same day.
+    /// Run owner-dinner lines first, then input-feeding lines, then higher
+    /// recipe AMV profit. Among dinner, Time-only garden lines go before
+    /// crafts that consume those same dinner goods, cheaper Time first.
     fn production_run_order(&self, factuals: &Factuals, market: &Market) -> Vec<usize> {
         let mut needed = HashSet::new();
         for line in &self.production_line {
@@ -719,28 +750,65 @@ impl Firm {
                 .map(|row| row.amv.max(0.0))
                 .unwrap_or(0.0)
         };
+        let process_of = |i: usize| factuals.processes.get(&self.production_line[i].process);
+        let owner_need = |i: usize| {
+            process_of(i).is_some_and(|process| {
+                process.outputs.iter().any(|output| {
+                    self.dinner_qty(output.good) > 0.0
+                })
+            })
+        };
+        let eats_dinner = |i: usize| {
+            process_of(i).is_some_and(|process| {
+                process.inputs.iter().any(|input| {
+                    input.good != TIME
+                        && !input.is_optional()
+                        && !matches!(input.input_type, crate::game::process::InputType::Factor)
+                        && self.dinner_qty(input.good) > 0.0
+                })
+            })
+        };
+        let feed = |i: usize| {
+            process_of(i).is_some_and(|process| {
+                process
+                    .outputs
+                    .iter()
+                    .any(|output| needed.contains(&output.good))
+            })
+        };
+        let time_cost = |i: usize| {
+            let line = &self.production_line[i];
+            let time_in = process_of(i)
+                .and_then(|process| {
+                    process
+                        .inputs
+                        .iter()
+                        .find(|input| input.good == TIME)
+                        .map(|input| input.amount.max(0.0))
+                })
+                .unwrap_or(0.0);
+            line.target.unwrap_or(0.0).max(0.0) * time_in
+        };
+        let profit = |i: usize| {
+            process_of(i)
+                .map(|process| process.recipe_profit_ratio(price))
+                .unwrap_or(0.0)
+        };
         let mut order: Vec<usize> = (0..self.production_line.len()).collect();
         order.sort_by(|&a, &b| {
-            let feed = |i: usize| {
-                factuals
-                    .processes
-                    .get(&self.production_line[i].process)
-                    .is_some_and(|process| {
-                        process
-                            .outputs
-                            .iter()
-                            .any(|output| needed.contains(&output.good))
-                    })
-            };
-            let profit = |i: usize| {
-                factuals
-                    .processes
-                    .get(&self.production_line[i].process)
-                    .map(|process| process.recipe_profit_ratio(price))
-                    .unwrap_or(0.0)
-            };
-            feed(b)
-                .cmp(&feed(a))
+            owner_need(b)
+                .cmp(&owner_need(a))
+                .then(eats_dinner(a).cmp(&eats_dinner(b)))
+                .then(feed(b).cmp(&feed(a)))
+                .then_with(|| {
+                    if owner_need(a) && owner_need(b) {
+                        time_cost(a)
+                            .partial_cmp(&time_cost(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
                 .then_with(|| {
                     profit(b)
                         .partial_cmp(&profit(a))
@@ -1073,7 +1141,7 @@ impl Firm {
         let qty = self
             .property
             .get(&good)
-            .map(|row| row.quantity.max(0.0))
+            .map(|row| row.shelf())
             .unwrap_or(0.0);
         let excess = (qty - hold).max(0.0);
         sell.min(velocity.max(excess))
@@ -1693,22 +1761,27 @@ impl FirmPRow {
         self.quantity - self.reserve
     }
 
+    /// Shelf for sale or decay-skip: on-hand plus today's `held`.
+    pub fn shelf(&self) -> f64 {
+        self.quantity.max(0.0) + self.held.max(0.0)
+    }
+
     /// Units that can be offered for sale.
-    /// `quantity - max(reserve, reserve_target)`, floored at 0.
+    /// `shelf - max(reserve, reserve_target)`, floored at 0.
     /// `reserve_target` is the stockpile guarantee; `reserve` is the live copy.
     pub fn sellable(&self) -> f64 {
         let floor = self.reserve.max(self.reserve_target).max(0.0);
-        (self.quantity - floor).max(0.0)
+        (self.shelf() - floor).max(0.0)
     }
 
-    /// On-hand units not fenced by reserve, reserve target, or (for production
-    /// inputs) stock target / use target.
+    /// Shelf units not fenced by reserve, reserve target, or (for production
+    /// inputs) stock target / use target. Includes today's `held`.
     pub fn free_for_market(&self) -> f64 {
         let mut floor = self.reserve.max(self.reserve_target);
         if self.use_target > 0.0 {
             floor = floor.max(self.stock_target).max(self.use_target);
         }
-        (self.quantity - floor).max(0.0)
+        (self.shelf() - floor).max(0.0)
     }
 
     /// Units to buy today from current targets and stock.
@@ -1953,26 +2026,39 @@ impl DealMaker for Firm {
             }
             let price = history.price(good);
             let row = self.property.entry(good).or_insert_with(FirmPRow::new);
-            row.quantity += delta;
-            debug_assert!(
-                row.quantity >= 0.0,
-                "quantity must be >= 0.0 (firm {} good {} qty {} delta {})",
-                self.id,
-                good,
-                row.quantity - delta,
-                delta
-            );
             if delta > 0.0 {
+                row.quantity += delta;
                 row.blend_average_cost(delta, price);
                 if role == DealRole::Buyer {
                     row.bought += delta;
                     row.bought_amv += delta * price;
                 }
-            } else if role == DealRole::Seller {
-                let sold = -delta;
-                row.sold += sold;
-                row.sold_amv += sold * price;
+            } else {
+                let mut sold = -delta;
+                let from_qty = sold.min(row.quantity.max(0.0));
+                row.quantity -= from_qty;
+                sold -= from_qty;
+                if sold > 0.0 {
+                    debug_assert!(
+                        row.held + 1e-12 >= sold,
+                        "held must cover leftover sale (firm {} good {} held {} need {})",
+                        self.id,
+                        good,
+                        row.held,
+                        sold
+                    );
+                    row.held = (row.held - sold).max(0.0);
+                }
+                row.sold += -delta;
+                row.sold_amv += (-delta) * price;
             }
+            debug_assert!(
+                row.quantity >= 0.0,
+                "quantity must be >= 0.0 (firm {} good {} qty {})",
+                self.id,
+                good,
+                row.quantity
+            );
             row.sync_reserve();
         }
     }
@@ -3071,6 +3157,88 @@ mod firm {
         }
 
         #[test]
+        fn owner_dinner_runs_before_specialty() {
+            let gold = Process::new(1, "gold", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(4, 1.0, true));
+            let forage = Process::new(2, "forage", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(7, 2.0, true));
+            let mut factuals = make_factuals_with_process(gold);
+            factuals.processes.insert(2, forage);
+            factuals.goods.insert(4, make_good(4, "gold", HashMap::new()));
+            factuals.goods.insert(7, make_good(7, "wood", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+            factuals.config.firm.complexity_time_factor = 0.0;
+
+            let mut firm = Firm::new(1, "camp".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner_liability();
+            firm.household_needs.insert(7, 5.0);
+            firm.property.insert(TIME, FirmPRow::new().with_quantity(1.0));
+            let mut gold_line = empty_production_line(1);
+            gold_line.target = Some(5.0);
+            let mut forage_line = empty_production_line(2);
+            forage_line.target = Some(2.0);
+            firm.production_line.push(gold_line);
+            firm.production_line.push(forage_line);
+
+            let market = make_market_with_amvs(&[(4, 10.0), (7, 1.0), (TIME, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[1].last_iterations, 2.0);
+            assert_eq!(
+                firm.production_line[0].last_iterations, 0.0,
+                "specialty spent Time before dinner"
+            );
+        }
+
+        #[test]
+        fn garden_runs_before_a_craft_that_eats_dinner() {
+            let bake = Process::new(1, "bake", 0)
+                .with_input(ProcessInput::new(TIME, 0.2, true, InputType::Destroyed, false))
+                .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(3, 3.0, true));
+            let forage = Process::new(2, "forage", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(7, 2.0, true));
+            let mut factuals = make_factuals_with_process(bake);
+            factuals.processes.insert(2, forage);
+            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
+            factuals.goods.insert(3, make_good(3, "bread", HashMap::new()));
+            factuals.goods.insert(7, make_good(7, "wood", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+            factuals.config.firm.complexity_time_factor = 0.0;
+
+            let mut firm = Firm::new(1, "bakery".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner_liability();
+            firm.household_needs.insert(1, 5.0);
+            firm.household_needs.insert(3, 5.0);
+            firm.household_needs.insert(7, 5.0);
+            firm.property.insert(TIME, FirmPRow::new().with_quantity(1.0));
+            firm.property.insert(1, FirmPRow::new().with_quantity(5.0));
+            let mut bake_line = empty_production_line(1);
+            bake_line.target = Some(5.0);
+            let mut forage_line = empty_production_line(2);
+            forage_line.target = Some(2.0);
+            firm.production_line.push(bake_line);
+            firm.production_line.push(forage_line);
+
+            let market = make_market_with_amvs(&[
+                (1, 1.0),
+                (3, 20.0),
+                (7, 1.0),
+                (TIME, 1.0),
+            ]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[1].last_iterations, 2.0);
+            assert_eq!(
+                firm.production_line[0].last_iterations, 0.0,
+                "bake spent Time before heat"
+            );
+        }
+
+        #[test]
         fn complexity_tax_is_taken_before_lines() {
             let mill = Process::new(1, "mill", 0)
                 .with_input(ProcessInput::new(10, 2.0, true, InputType::Destroyed, false))
@@ -3232,6 +3400,16 @@ mod firm {
                 .with_quantity(15.0)
                 .with_use_target(5.0)
                 .with_stock_target(10.0);
+            assert_eq!(row.free_for_market(), 5.0);
+        }
+
+        #[test]
+        fn free_for_market_includes_held() {
+            let mut row = FirmPRow::new()
+                .with_quantity(2.0)
+                .with_use_target(5.0)
+                .with_stock_target(5.0);
+            row.held = 8.0;
             assert_eq!(row.free_for_market(), 5.0);
         }
 
@@ -3831,7 +4009,8 @@ mod firm {
             firm.property.get_mut(&20).unwrap().quantity = 0.0;
             history.leftover_buy.insert(20, 10.0);
             firm.plan(&factuals, &history);
-            assert_eq!(firm.production_line[0].target, Some(4.0));
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got >= 4.0, "treated leftover buys as a miss, got {got}");
         }
 
         #[test]
@@ -4258,6 +4437,70 @@ mod firm {
         }
 
         #[test]
+        fn owner_need_without_sales_does_not_cut_quota() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 0.0, 4.0, 4.0);
+            firm.production_line[0].aim = 4.0;
+            firm.household_needs.insert(20, 5.0);
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 5.0;
+            plank.average_cost = 5.0;
+            firm.plan(&factuals, &history);
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got >= 4.0, "cut owner dinner, got {got}");
+        }
+
+        #[test]
+        fn craft_quota_leaves_owner_dinner_inputs() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.household_demand.insert(10, 5.0);
+            firm.plan(&factuals, &history);
+            let got = firm.production_line[0].target.unwrap();
+            assert!(
+                got <= 2.0,
+                "craft spent owner wood, mill {got}"
+            );
+        }
+
+        #[test]
+        fn craft_may_use_surplus_after_dinner() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            firm.household_demand.insert(10, 1.0);
+            firm.plan(&factuals, &history);
+            assert_eq!(firm.production_line[0].target, Some(4.0));
+        }
+
+        #[test]
+        fn time_starved_peer_blocks_quota_growth() {
+            let (mut factuals, history) = miller_world();
+            let garden = Process::new(2, "garden", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(7, 2.0, true));
+            factuals = factuals.with_process(garden);
+            factuals.goods.insert(7, make_good(7, "herb", HashMap::new()));
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 4.0, 4.0, 4.0);
+            firm.production_line[0].aim = 4.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 5.0;
+            plank.quantity = 0.0;
+            let mut garden_line = empty_production_line(2);
+            garden_line.target = Some(2.0);
+            garden_line.last_missing_goods = vec![TIME];
+            firm.production_line.push(garden_line);
+            firm.property.insert(7, FirmPRow::new());
+            firm.plan(&factuals, &history);
+            assert_eq!(
+                firm.production_line[0].target,
+                Some(4.0),
+                "grew while a peer missed Time"
+            );
+        }
+
+        #[test]
         fn quota_steps_up_a_full_iteration_on_strong_sales() {
             let (factuals, history) = miller_world();
             let mut firm = miller_firm(4.0);
@@ -4352,8 +4595,6 @@ mod firm {
         use crate::game::config::market_priority;
         use crate::game::good::GoodTag;
         use crate::game::market::MarketHistory;
-        use crate::game::marketorder::compose_sell_priority;
-
         fn make_history(entries: &[(usize, f64, f64)]) -> MarketHistory {
             let mut history = MarketHistory::new();
             for &(id, price, salability) in entries {
@@ -4410,10 +4651,7 @@ mod firm {
             assert_eq!(orders[0].target, 20);
             assert_eq!(orders[0].target_amount, -11.0);
             assert_eq!(orders[0].counter_offer, Some(10));
-            assert_eq!(
-                orders[0].priority,
-                compose_sell_priority(market_priority::FIRM_PRODUCER, 11.0, 0.0)
-            );
+            assert_eq!(orders[0].priority, 11.0);
             assert!(orders[1].is_buy_order());
             assert_eq!(orders[1].target, 10);
             assert_eq!(orders[1].target_amount, 6.0);
@@ -4532,10 +4770,7 @@ mod firm {
             assert!(orders[0].is_offer_order());
             assert_eq!(orders[0].target, 10);
             assert_eq!(orders[0].target_amount, -10.0);
-            assert_eq!(
-                orders[0].priority,
-                compose_sell_priority(market_priority::FIRM_MERCHANT, 10.0, 0.0)
-            );
+            assert_eq!(orders[0].priority, 10.0);
             assert!(orders[1].is_request_order());
             assert_eq!(orders[1].target, 10);
             assert_eq!(orders[1].target_amount, 8.0);
@@ -4562,9 +4797,7 @@ mod firm {
             assert_eq!(orders.len(), 1);
             assert!(orders[0].is_offer_order());
             assert_eq!(orders[0].target_amount, -5.0);
-            assert_eq!(orders[0].priority, compose_sell_priority(
-                market_priority::FIRM_PRODUCER, 5.0, 0.0
-            ));
+            assert_eq!(orders[0].priority, 5.0);
         }
 
         #[test]

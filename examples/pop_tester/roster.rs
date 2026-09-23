@@ -29,23 +29,33 @@ pub(crate) fn init_data_path() -> PathBuf {
 
 /// Builds the living pop roster from init data. Firms are read only to
 /// size each pop's morning process-output cap, then dropped.
+/// Unused world goods are dropped so CLI and CSV only show the village catalog.
 pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory, MorningOutputs) {
-    let factuals = Factuals::load_from_path(world_data_path())
+    let mut factuals = Factuals::load_from_path(world_data_path())
         .unwrap_or_else(|err| panic!("load {}: {err}", world_data_path().display()));
-
-    let mut history = MarketHistory::default();
-    history.default_salability = OPENING_SALABILITY;
-    for &id in factuals.goods.keys() {
-        set_quote(&mut history, id, OPENING_AMV, OPENING_SALABILITY);
-    }
 
     let mut init = InitData::load_from_path(init_data_path(), &factuals)
         .unwrap_or_else(|err| panic!("load {}: {err}", init_data_path().display()));
+    init.unload_unused_goods(&mut factuals);
+
+    let mut history = MarketHistory::default();
+    history.default_salability = OPENING_SALABILITY;
+    for id in catalog_good_ids(&factuals) {
+        set_quote(&mut history, id, OPENING_AMV, OPENING_SALABILITY);
+    }
+
     let morning_outputs = morning_outputs_from_firms(&init.firms, &factuals);
     for pop in &mut init.pops {
         pop.record_keeping(&factuals, &history);
     }
     (init.pops, Vec::new(), factuals, history, morning_outputs)
+}
+
+/// Sorted good ids still in `factuals` after unused goods are unloaded.
+pub(crate) fn catalog_good_ids(factuals: &Factuals) -> Vec<usize> {
+    let mut ids: Vec<usize> = factuals.goods.keys().copied().collect();
+    ids.sort_unstable();
+    ids
 }
 
 pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, salability: f64) {

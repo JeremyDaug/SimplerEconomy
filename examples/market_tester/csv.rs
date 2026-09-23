@@ -370,17 +370,7 @@ pub(crate) fn csv_num(value: f64) -> String {
 }
 
 pub(crate) fn market_csv_goods(session: &Session) -> Vec<usize> {
-    let mut ids: Vec<usize> = PREFAB_GOODS.iter().map(|good| good.id).collect();
-    let mut extra: Vec<usize> = session
-        .market
-        .goods
-        .keys()
-        .copied()
-        .filter(|id| !ids.contains(id))
-        .collect();
-    extra.sort_unstable();
-    ids.extend(extra);
-    ids
+    catalog_good_ids(&session.factuals)
 }
 
 pub(crate) fn csv_good_col(id: usize) -> String {
@@ -752,6 +742,18 @@ mod csv_should {
         assert!(sanitize_csv_stem("on").is_err());
         assert!(sanitize_csv_stem("off").is_err());
         assert_eq!(sanitize_csv_stem("run1").unwrap(), "run1");
+    }
+
+    #[test]
+    fn csv_columns_skip_unused_goods() {
+        let session = session();
+        let header = market_csv_header(&session);
+        assert!(header.contains("grain_amv"), "{header}");
+        assert!(header.contains("cabins_amv"), "{header}");
+        assert!(!header.contains("gold_token_amv"), "{header}");
+        assert!(!header.contains("iron_amv"), "{header}");
+        assert!(!header.contains("beer_amv"), "{header}");
+        assert!(!header.contains("wood_tools"), "{header}");
     }
 }
 

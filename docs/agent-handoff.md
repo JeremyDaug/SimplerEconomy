@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-16
+**Updated:** 2026-09-17
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -21,13 +21,12 @@ invariants and traps, not a substitute for the code.
   posts a higher tier only when the wallet covers the lower one. Save AMV
   scales with durability (decay 1.0 => no save). Consume always eats
   common on-hand; luxury is skipped unless basic is complete.
-  `run_market_day` parks hopeless front-group buys then keeps matching
-  later bands. Firm buys always match before pop buys. Until a day's
+  `run_market_day` posts once, then matches until quiet: random buy among
+  those with an other-origin sell, sell weighted by listed amount
+  (coincidence multiplies). Same origin never pairs. No leftover-book AMV.
+  Until a day's
   process inputs are on hand, firm output is held as exchange (payment)
-  instead of posted sell. Pop buy priority is
-  wealth rank sliced by consume tier (basic, then common, then luxury). Then waves `next_shopping_trip` (skip
-  parked/unavailable goods and try the next target or tier; stop buying if
-  the shop is only unavailable) until trips emit nothing, then tombstones. Listed offer units and
+  instead of posted sell. Listed offer units and
   `reserved` are not tenderable. World goods use per-good `decay_rate` in
   `goods.toml` (Time 1.0; other rates pulled back so a few days of stock
   survive; food still rots faster than metal).
@@ -45,8 +44,10 @@ invariants and traps, not a substitute for the code.
   (0 / 25 / 50 / 100 salability penalty, best category lifts the bag).
   Outgoing units peel extra → save → consume at those same factors. The
   0.50 floor always applies (no floor-drop).
-- Live intramarket loop: `Market::run_market_day`. PlayState intramarket and
-  production phases are stubs.
+- Live intramarket loop: `Market::run_market_day`. Tester day is labor,
+  produce onto `held`, market (may sell `held`), consume, decay (`held`
+  skips tonight), plan. Vault `Turns.md` is market then production.
+  PlayState intramarket and production phases are stubs.
 - `Firm::plan` rewrites production and property targets. Line `aim` lerps
   toward throughput. Then one walk step (raise/cut quote or quota, or stay)
   scored as predicted `sold * quote - qty * cost` from the EMA of market
@@ -74,7 +75,9 @@ invariants and traps, not a substitute for the code.
   duplicate recipes (lower AMV profit) walk down. Lines idle
   `abandon_idle_days` (5) without demand are dropped. Empty firms remain;
   tester tables print `dead/abandoned`. Production pays the firm-wide
-  complexity Time tax first, then runs input-feeding lines. Remainder
+  complexity Time tax first, then Time-only owner-dinner, then crafts that
+  eat dinner goods, then input-feeding.
+  Remainder
   recap/fence uses goods the shop makes. Finished output can tender for
   inputs the shop cannot make.
   `growth_target` is the expansion gap on a grow, else 0.
@@ -90,22 +93,25 @@ invariants and traps, not a substitute for the code.
   (return unused tenders until keep ~ 1). Pop leftover offers keep a 25%
   wallet floor.
 - Labor **operates**. Tester `day` calls [`Market::settle_labor`] then
-  [`Market::budget_labor`]. Time AMV lerps toward paid AMV / hours
-  (`time_amv_blend` 0.15); unpaid hours vote the going rate. Firms do **not**
-  rewrite wages from Time AMV
-  yet (pops cannot move or resize). PlayState labor fire is still a stub.
+  [`Market::budget_labor`]. Each settle is a signed goods map on the
+  workforce contract; the market records it as an accept when Time was
+  given and goods were received. Daily rescale skips Time. Firms do **not**
+  rewrite wages from Time AMV yet (pops cannot move or resize). PlayState
+  labor fire is still a stub.
 - World goods, processes, and config load from `data/world/`. Specialized
   recipes: one per good (Time is process 28). Subsistence farm / water /
   forage are processes 29–31, tagged weight 0.25 (untagged 1.0, weight > 0).
   Raw extracts take Time only as required; grain and wood may take optional
   boosters. Crafted recipes take Time plus a destroyed material. Init
   remainder firms auto-attach the three subsistence lines at target 2;
-  hours are the sum of all lines.
-- Tester CLIs are **paused** unless asked. `market_tester` living roster loads from `data/init/`
+  hours are the sum of all lines plus the multi-line complexity tax.
+- Tester CLIs are **paused** unless asked. `market_tester` `solo` is one
+  remainder pair (default id 1) for internal plan. Living roster loads from `data/init/`
   (eight remainder owner-operators: grain, water, bread, gold, wood, cabins;
-  two grain shops and two wells). `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
+  two grain shops and two wells). Load drops unused world goods so CLI/CSV
+  only show the village catalog. `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
   Village consume desires (basic food/hydration/wood heat, common one cabin
-  per household plus extra bread, luxury gold) are duplicated onto every pop.
+  per household plus extra bread, luxury gold / gold_token / jewelry) are duplicated onto every pop.
   Food/water/heat/bread/gold are 1 unit per member (5 units). **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Pops open with one day of the
   matching firm's output (Time skipped). Each morning: `start_day` Time, then specialty
@@ -127,14 +133,18 @@ invariants and traps, not a substitute for the code.
   Volume-scaled leftover collapsed AMV to the bounce floor; do not turn it
   back on unless asked.
   CSV is market + trades always; pops/firms only when flagged (`csv on`).
+  Tester captures live in `data/logs/` (gitignored). Keep at most three local
+  files (reference / current / spare); do not commit run dumps.
   **Checkpoint:** with mean 100 and ±1 imbalance kick, a 180-day pop_tester
   run held AMVs off the bounce (gold ~12, tools ~300). Do not retune leftover
   AMV or re-add the 1-of-each grant unless asked.
-  60-day `market_tester` after input recipes: extractors live, one-line
-  processors starve on input deals (keep / no tender). Decay pullback and
-  leftover-buy plan keep `want` up; they do not clear grain into bakeries.
+  Last village 60-day (cleared from `data/logs/`): mean SOL ~5.22, 8 trades,
+  wages 0. Extracts at household scale; grain/water/wood dropped a duplicate
+  plot. Gold ran. Baker and cabins `missing time` after the complexity tax.
+  Pickup: [`firms.md`](handoff/firms.md) **Pickup**.
 
-**Next (named, not started):** slow salability. Money as a standard
+**Next (named):** the Time hole on four-line crafts (baker/cabin
+`missing time` after tax-first). Then slow salability. Money as a standard
 (specialized firms forming immediately) waits on that. Disorganized /
 cottage-industry firms that can spin out cheaper specialized shops are a
 later firm type, not v0.
@@ -206,8 +216,10 @@ init/save data; class demographics; capital amortization; AMV as a matching
 weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": specialization Time tax, then slow salability. PlayState `phase_intra_market_day` is still unwired.
-Hiring/creation is skipped on purpose.
+If they ask "what's next": four-line crafts starving on Time after the
+complexity tax (baker/cabin), then slow salability. PlayState
+`phase_intra_market_day` is still unwired. Hiring/creation is skipped on
+purpose. Village pickup: [`firms.md`](handoff/firms.md) **Pickup**.
 
 ---
 

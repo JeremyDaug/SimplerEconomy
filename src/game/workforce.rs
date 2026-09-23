@@ -70,6 +70,10 @@ pub struct Workforce {
     pub payment: Vec<PaymentTerm>,
     /// Share of yesterday's profit AMV paid after wages and growth retain. 0..=1.
     pub profit_share: f64,
+    /// Last settle exchange, pop inventory change. Negative left the pop
+    /// (Time given, recap). Positive entered the pop (wages, remainder,
+    /// profit share). Overwritten each settle.
+    pub last_exchange: HashMap<usize, f64>,
 }
 
 impl Workforce {
@@ -82,6 +86,7 @@ impl Workforce {
             labor: HashMap::new(),
             payment: vec![],
             profit_share: 0.0,
+            last_exchange: HashMap::new(),
         }
     }
 
@@ -582,6 +587,60 @@ impl LaborSettlement {
         }
 
         report
+    }
+
+    /// Pop inventory change at this settle. Negative left the pop.
+    pub fn exchange_for(&self, pop_id: usize) -> HashMap<usize, f64> {
+        let mut goods = HashMap::new();
+        let add = |map: &mut HashMap<usize, f64>, good: usize, qty: f64| {
+            if qty == 0.0 {
+                return;
+            }
+            let entry = map.entry(good).or_insert(0.0);
+            *entry += qty;
+            if *entry == 0.0 {
+                map.remove(&good);
+            }
+        };
+        for row in &self.workers {
+            if row.pop != pop_id {
+                continue;
+            }
+            add(&mut goods, TIME, -row.time_given.max(0.0));
+            for (&good, &qty) in &row.paid {
+                add(&mut goods, good, qty.max(0.0));
+            }
+        }
+        if let Some(owner) = &self.owner {
+            if owner.pop == pop_id {
+                for (&good, &qty) in &owner.paid {
+                    add(&mut goods, good, qty.max(0.0));
+                }
+                for (&good, &qty) in &owner.recap {
+                    add(&mut goods, good, -qty.max(0.0));
+                }
+            }
+        }
+        goods
+    }
+
+    /// Writes each pop's settle map onto their workforce row.
+    pub fn write_last_exchanges(&self, firm: &mut Firm) {
+        for worker in &mut firm.workforce {
+            worker.last_exchange.clear();
+        }
+        let mut ids: Vec<usize> = self.workers.iter().map(|row| row.pop).collect();
+        if let Some(owner) = &self.owner {
+            ids.push(owner.pop);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            let map = self.exchange_for(id);
+            if let Some(worker) = firm.workforce.iter_mut().find(|row| row.id == id) {
+                worker.last_exchange = map;
+            }
+        }
     }
 }
 
@@ -1103,7 +1162,7 @@ impl Firm {
 
     /// Managerial Time on multi-line shops. Zero when only one line runs.
     /// Firm-wide overhead, not a production line. Paid before lines run.
-    pub(crate) fn complexity_time_need(&self, factuals: &Factuals) -> f64 {
+    pub fn complexity_time_need(&self, factuals: &Factuals) -> f64 {
         let factor = factuals.config.firm.complexity_time_factor;
         if factor <= 0.0 {
             return 0.0;

@@ -6,7 +6,7 @@ use crate::game::factuals::Factuals;
 use crate::game::config::market_constants;
 use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
-use crate::game::marketorder::{compose_sell_priority_with, MarketOrder};
+use crate::game::marketorder::MarketOrder;
 use crate::game::pop_property::{BuyStopReason, PopPRow};
 use crate::game::util::{whole_units, whole_units_up};
 
@@ -24,8 +24,8 @@ impl Pop {
     /// # Create Orders
     ///
     /// Morning market book: planned shop **requests**, then **offers** of leftover
-    /// surplus. Does not replan shop/save. Extra desire buys belong on
-    /// [`Self::next_shopping_trip`].
+    /// surplus. Does not replan shop/save. Extra desire buys wait for a later
+    /// morning book.
     ///
     /// 1. Basic desire-shop, then parked save, then common, then luxury.
     ///    A higher consume tier is posted only when remaining budget covers
@@ -38,8 +38,8 @@ impl Pop {
     ///    desire importance) to cover posted request AMV. Those units stay
     ///    tenderable.
     /// 3. Offer every remaining whole unit of free stock (`quantity` above
-    ///    `shop_target.max(reserved)`). Sell size is floored. Sell weight is
-    ///    [`compose_sell_priority_with`].
+    ///    `shop_target.max(reserved)`). Sell size is floored. Sell `priority`
+    ///    is listed units.
     ///
     /// Writes [`Self::current_orders`] to the returned book so listed offer
     /// units are excluded from tenders. Offers name the first remaining
@@ -111,136 +111,13 @@ impl Pop {
             );
         }
 
-        self.push_cover_offers(
-            &mut orders,
-            request_amv,
-            market_history,
-            factuals,
-            pop_start,
-            false,
-        );
+        self.push_cover_offers(&mut orders, request_amv, market_history, factuals);
         self.stamp_named_counters(&mut orders, market_history);
         self.current_orders = orders.clone();
         orders
     }
 
-    /// # Next Shopping Trip
-    ///
-    /// Intra-day follow-up after this pop's buy orders are gone. Solidifies
-    /// on-hand shop/desire stock into `reserved`, then posts **at most one
-    /// request and one offer**, each for the full remaining want / surplus of
-    /// that one good (ceil request, floor offer) so later fills can scale the
-    /// same order down instead of re-emitting.
-    ///
-    /// Request pick: remaining desire-shop shortfall, then parked shop.
-    /// Skip `unavailable` (no seller / parked miss / wash-closed) and try
-    /// the next target, then the next consume tier. If this tier has nothing
-    /// buyable and a higher tier is gated, stop buying (offers may still
-    /// re-up). Extra desire loads only run when the shop plan is filled.
-    ///
-    /// Caller should sync [`Self::current_orders`] to this pop's live book
-    /// first. An open request on a still-available good blocks a new
-    /// request (offer only). A request whose good is unavailable does not.
-    /// Cover AMV includes still-open requests so the trip does not list
-    /// the last tender.
-    pub fn next_shopping_trip(
-        &mut self,
-        market_history: &MarketHistory,
-        factuals: &Factuals,
-        unavailable: &HashSet<usize>,
-    ) -> Vec<MarketOrder> {
-        self.solidify_purchases();
-
-        let pop_start = factuals.config.market_priority.pop_start;
-        let mut orders: Vec<MarketOrder> = Vec::new();
-        let mut seen = HashSet::new();
-        let mut remaining_budget = f64::MAX;
-        let mut request_amv = request_amv_of(self.current_orders.iter(), market_history);
-        let has_request = self.current_orders.iter().any(|order| {
-            order.target_amount > 0.0 && !unavailable.contains(&order.target)
-        });
-
-        if !has_request {
-            self.push_shop_requests(
-                &mut orders,
-                &mut seen,
-                &mut remaining_budget,
-                &mut request_amv,
-                market_history,
-                factuals,
-                unavailable,
-                pop_start,
-                Some(0),
-                1,
-            );
-            if orders.is_empty() {
-                self.push_shop_requests(
-                    &mut orders,
-                    &mut seen,
-                    &mut remaining_budget,
-                    &mut request_amv,
-                    market_history,
-                    factuals,
-                    unavailable,
-                    pop_start,
-                    None,
-                    1,
-                );
-            }
-            if orders.is_empty() && remaining_budget > 0.0 {
-                self.push_shop_requests(
-                    &mut orders,
-                    &mut seen,
-                    &mut remaining_budget,
-                    &mut request_amv,
-                    market_history,
-                    factuals,
-                    unavailable,
-                    pop_start,
-                    Some(1),
-                    1,
-                );
-            }
-            if orders.is_empty() && remaining_budget > 0.0 {
-                self.push_shop_requests(
-                    &mut orders,
-                    &mut seen,
-                    &mut remaining_budget,
-                    &mut request_amv,
-                    market_history,
-                    factuals,
-                    unavailable,
-                    pop_start,
-                    Some(2),
-                    1,
-                );
-            }
-            if orders.is_empty() && !self.has_buyable_shop_shortfall(factuals, None) {
-                self.push_one_extra_desire_request(
-                    &mut orders,
-                    &mut request_amv,
-                    market_history,
-                    factuals,
-                    unavailable,
-                    pop_start,
-                );
-            }
-        }
-
-        self.push_cover_offers(
-            &mut orders,
-            request_amv,
-            market_history,
-            factuals,
-            pop_start,
-            true,
-        );
-        self.stamp_named_counters(&mut orders, market_history);
-        self.current_orders.extend(orders.iter().cloned());
-        orders
-    }
-
-    /// Transport cover for another shopping trip. Time uses unreserved
+    /// Transport cover for the market door. Time uses unreserved
     /// stock; other transport goods use on-hand quantity.
     pub(crate) fn shopping_cover(&self, factuals: &Factuals) -> f64 {
         transport_cover_on_hand(
@@ -299,31 +176,6 @@ impl Pop {
 
     /// Raises `reserved` toward on-hand shop / desire keep so just-bought
     /// stock is not listed or tendered on the next trip.
-    fn solidify_purchases(&mut self) {
-        let mut keep: HashMap<usize, f64> = HashMap::new();
-        for (&id, row) in &self.property {
-            keep.insert(id, row.shop_target.max(row.desire_needs));
-        }
-        for tier in &self.desires {
-            for desire in tier {
-                for target in &desire.target {
-                    debug_assert!(
-                        target.efficiency > 0.0,
-                        "Desire target efficiency must be positive"
-                    );
-                    let want = desire.amount * target.cap / target.efficiency;
-                    let entry = keep.entry(target.good).or_insert(0.0);
-                    *entry = (*entry).max(want);
-                }
-            }
-        }
-        for (id, want) in keep {
-            if let Some(row) = self.property.get_mut(&id) {
-                row.reserved = row.quantity.min(row.reserved.max(want)).max(0.0);
-            }
-        }
-    }
-
     /// Posts a higher consume tier: all of it when remaining budget covers
     /// every shortfall, otherwise walk order until overdraw.
     fn push_higher_tier_requests(
@@ -482,22 +334,6 @@ impl Pop {
         })
     }
 
-    fn has_shop_shortfall(&self, tier: usize) -> bool {
-        let Some(desires) = self.desires.get(tier) else {
-            return false;
-        };
-        for desire in desires {
-            for target in desire.ordered_targets() {
-                if let Some(row) = self.property.get(&target.good) {
-                    if shop_purchase_units(row) >= 1.0 {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
     fn try_push_shop_request(
         &self,
         good: usize,
@@ -543,86 +379,13 @@ impl Pop {
         *request_amv += cost;
     }
 
-    fn push_one_extra_desire_request(
-        &self,
-        orders: &mut Vec<MarketOrder>,
-        request_amv: &mut f64,
-        market_history: &MarketHistory,
-        factuals: &Factuals,
-        unavailable: &HashSet<usize>,
-        pop_start: f64,
-    ) {
-        let listed: HashSet<usize> = self
-            .current_orders
-            .iter()
-            .chain(orders.iter())
-            .map(|order| order.target)
-            .collect();
-        let basic_short = self.has_shop_shortfall(0);
-        let common_short = self.has_shop_shortfall(1);
-        for (tier_idx, tier) in self.desires.iter().enumerate() {
-            if tier_idx >= 1 && basic_short {
-                break;
-            }
-            if tier_idx >= 2 && common_short {
-                break;
-            }
-            for desire in tier.iter() {
-                for &target in desire.ordered_targets().iter() {
-                    if listed.contains(&target.good) || unavailable.contains(&target.good) {
-                        continue;
-                    }
-                    if !factuals.find_good(target.good).is_buyable() {
-                        continue;
-                    }
-                    if self
-                        .property
-                        .get(&target.good)
-                        .is_some_and(|row| row.shop_target > 0.0)
-                    {
-                        continue;
-                    }
-                    debug_assert!(
-                        target.efficiency > 0.0,
-                        "Desire target efficiency must be positive"
-                    );
-                    let held = self
-                        .property
-                        .get(&target.good)
-                        .map(|row| row.quantity)
-                        .unwrap_or(0.0);
-                    let want = desire.amount * target.cap / target.efficiency;
-                    let purchase = whole_units_up((want - held).max(0.0));
-                    if purchase < 1.0 {
-                        continue;
-                    }
-                    let cost = purchase * market_history.price(target.good);
-                    orders.push(
-                        MarketOrder::request_order(
-                            Actor::Pop(self.id),
-                            target.good,
-                            purchase,
-                            pop_start,
-                        )
-                        .with_shop_tier(tier_idx as u8),
-                    );
-                    *request_amv += cost;
-                    return;
-                }
-            }
-        }
-    }
-
     /// Freeze tender cover, then post leftover free stock as offers.
-    /// `one_offer` posts only the lowest-importance leftover good.
     fn push_cover_offers(
         &self,
         orders: &mut Vec<MarketOrder>,
         request_amv: f64,
         market_history: &MarketHistory,
         factuals: &Factuals,
-        pop_start: f64,
-        one_offer: bool,
     ) {
         let listed: HashMap<usize, f64> = listed_offer_qty_by_good(
             self.current_orders.iter().chain(orders.iter()),
@@ -649,18 +412,8 @@ impl Pop {
         assign_tender_cover(&mut pool, request_amv);
 
         let mut leftovers: Vec<&FreeGood> = pool.iter().filter(|item| item.units >= 1.0).collect();
-        if one_offer {
-            leftovers.sort_by(|a, b| {
-                a.importance
-                    .cmp(&b.importance)
-                    .then_with(|| a.good.cmp(&b.good))
-            });
-            leftovers.truncate(1);
-        } else {
-            leftovers.sort_by_key(|item| item.good);
-        }
+        leftovers.sort_by_key(|item| item.good);
 
-        let prio = &factuals.config.market_priority;
         for item in leftovers {
             let offer = crate::game::util::whole_units(
                 item.units * (1.0 - market_constants::TENDER_WALLET_FLOOR),
@@ -668,18 +421,11 @@ impl Pop {
             if offer < 1.0 {
                 continue;
             }
-            let weight = compose_sell_priority_with(
-                pop_start,
-                offer,
-                0.0,
-                prio.sell_actor_priority_floor,
-                prio.successful_sell_bonus,
-            );
             orders.push(MarketOrder::offer_order(
                 Actor::Pop(self.id),
                 item.good,
                 -offer,
-                weight,
+                offer,
             ));
         }
     }
@@ -751,16 +497,6 @@ fn shop_purchase_units(row: &PopPRow) -> f64 {
 
 fn free_units(row: &PopPRow) -> f64 {
     whole_units((row.quantity - row.shop_target.max(row.reserved)).max(0.0))
-}
-
-fn request_amv_of<'a, I>(orders: I, market_history: &MarketHistory) -> f64
-where
-    I: Iterator<Item = &'a MarketOrder>,
-{
-    orders
-        .filter(|order| order.target_amount > 0.0)
-        .map(|order| order.target_amount * market_history.price(order.target))
-        .sum()
 }
 
 fn listed_offer_qty_by_good<'a, I>(orders: I) -> HashMap<usize, f64>

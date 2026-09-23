@@ -193,14 +193,6 @@ pub mod market_constants {
     pub const AMV_REJECT_BLEND: f64 = 0.10;
     /// Sought-good up-push is this times the tender down-push (demand edge).
     pub const AMV_REJECT_DEMAND_EDGE: f64 = 1.1;
-    /// Day-end leftover-book AMV fraction, before leftover/fill scaling.
-    /// 0 = no move (live: AMV only from meetings). 1 = double or zero AMV
-    /// on a dry book. Volume-scaled leftover pressure collapsed AMV to the
-    /// bounce floor; do not turn this back on unless asked.
-    pub const AMV_LEFTOVER_BLEND: f64 = 0.0;
-    /// Skip leftover AMV when both books have leftover and
-    /// `|buy - sell| / (buy + sell)` is below this (0.10 = 10%).
-    pub const AMV_LEFTOVER_BAND: f64 = 0.10;
     /// Day-end ±AMV kick toward the heavier of opening demand vs supply.
     /// 1.0 is 1% of the 100 mean. Tie (including both 0) does not move.
     pub const AMV_IMBALANCE_KICK: f64 = 1.0;
@@ -914,13 +906,6 @@ pub struct MarketConfig {
     pub amv_reject_blend: f64,
     /// Sought-good up-push vs tender down-push. Default 1.1. Must be > 0.
     pub amv_reject_demand_edge: f64,
-    /// Day-end leftover-book AMV fraction, before leftover/fill scaling. Default 0
-    /// (off). Bound 0..=1. Applied as a direct raise/cut, not a lerp to the
-    /// demand edge. Live AMV comes from meetings only.
-    pub amv_leftover_blend: f64,
-    /// Skip leftover AMV when both sides leftover and the imbalance is below this.
-    /// Default 0.10. Bound 0..=1.
-    pub amv_leftover_band: f64,
     /// ±AMV added to each good toward heavier opening demand vs supply.
     /// Default 1.0. Must be >= 0. Tie does not move.
     pub amv_imbalance_kick: f64,
@@ -950,8 +935,6 @@ impl Default for MarketConfig {
             amv_accept_blend: market_constants::AMV_ACCEPT_BLEND,
             amv_reject_blend: market_constants::AMV_REJECT_BLEND,
             amv_reject_demand_edge: market_constants::AMV_REJECT_DEMAND_EDGE,
-            amv_leftover_blend: market_constants::AMV_LEFTOVER_BLEND,
-            amv_leftover_band: market_constants::AMV_LEFTOVER_BAND,
             amv_imbalance_kick: market_constants::AMV_IMBALANCE_KICK,
             salability_blend: market_constants::SALABILITY_BLEND,
             salability_firm_reject_scale: market_constants::SALABILITY_FIRM_REJECT_SCALE,
@@ -993,8 +976,6 @@ impl MarketConfig {
         in_range(problems, "market.amv_accept_blend", self.amv_accept_blend, 0.0, 1.0);
         in_range(problems, "market.amv_reject_blend", self.amv_reject_blend, 0.0, 1.0);
         above(problems, "market.amv_reject_demand_edge", self.amv_reject_demand_edge, 0.0);
-        in_range(problems, "market.amv_leftover_blend", self.amv_leftover_blend, 0.0, 1.0);
-        in_range(problems, "market.amv_leftover_band", self.amv_leftover_band, 0.0, 1.0);
         at_least(problems, "market.amv_imbalance_kick", self.amv_imbalance_kick, 0.0);
         in_range(problems, "market.salability_blend", self.salability_blend, 0.0, 1.0);
         in_range(

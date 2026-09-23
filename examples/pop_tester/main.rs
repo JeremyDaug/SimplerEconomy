@@ -39,7 +39,7 @@ use simpler_economy::game::workforce::LaborSettlement;
 use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
-use simpler_economy::game::marketorder::{compose_sell_priority_with, MarketOrder};
+use simpler_economy::game::marketorder::MarketOrder;
 use simpler_economy::game::pop::Pop;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 
@@ -424,7 +424,7 @@ pub(crate) fn boot_session() -> Session {
     debug_assert!(firms.is_empty(), "pop tester does not load firms");
     let mut history = history;
     history.friction = factuals.config.market.friction;
-    let market = market_from_world(&pops, &firms, &history)
+    let market = market_from_world(&pops, &firms, &history, &factuals)
         .with_friction(history.friction);
     Session {
         buys: Vec::new(),
@@ -446,7 +446,12 @@ pub(crate) fn boot_session() -> Session {
     }
 }
 
-fn market_from_world(pops: &[Pop], firms: &[Firm], history: &MarketHistory) -> Market {
+fn market_from_world(
+    pops: &[Pop],
+    firms: &[Firm],
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Market {
     let mut market = Market::new(1);
     for pop in pops {
         market.pops.insert(pop.id);
@@ -454,12 +459,12 @@ fn market_from_world(pops: &[Pop], firms: &[Firm], history: &MarketHistory) -> M
     for firm in firms {
         market.firms.insert(firm.id);
     }
-    for good in PREFAB_GOODS {
+    for id in catalog_good_ids(factuals) {
         let mut row = MarketGood::new()
-            .with_amv(history.price(good.id))
-            .with_salability(history.salability(good.id));
+            .with_amv(history.price(id))
+            .with_salability(history.salability(id));
         row.record_amv();
-        market.goods.insert(good.id, row);
+        market.goods.insert(id, row);
     }
     market
 }
@@ -592,6 +597,7 @@ fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f6
 mod day_should {
     use super::*;
     use std::collections::HashMap;
+    use simpler_economy::game::desire::DesireTargetType;
     use simpler_economy::game::init::InitData;
     use simpler_economy::game::pop::PopPRow;
 
@@ -600,6 +606,37 @@ mod day_should {
             .find(|(id, _)| *id == good)
             .map(|(_, qty)| *qty)
             .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn unused_world_goods_are_unloaded() {
+        let session = boot_session();
+        assert_eq!(
+            catalog_good_ids(&session.factuals),
+            vec![TIME, GRAIN, WATER, BREAD, GOLD, WOOD, CABINS]
+        );
+        assert!(!session.factuals.goods.contains_key(&IRON));
+        assert!(!session.market.goods.contains_key(&IRON));
+        let home = format_home(&session);
+        assert!(home.contains("grain"), "{home}");
+        assert!(!home.contains("iron"), "{home}");
+        assert!(!home.contains("beer"), "{home}");
+    }
+
+    #[test]
+    fn a_day_does_not_invent_unloaded_good_ids() {
+        let mut session = boot_session();
+        let _ = run_days(&mut session, 1);
+        for pop in &session.pops {
+            for &id in pop.property.keys() {
+                assert!(
+                    session.factuals.goods.contains_key(&id),
+                    "pop {} still holds unloaded good {id}",
+                    pop.id
+                );
+            }
+        }
+        assert!(!session.market.goods.contains_key(&IRON));
     }
 
     #[test]

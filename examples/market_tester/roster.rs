@@ -52,23 +52,49 @@ pub(crate) fn init_data_path() -> PathBuf {
 
 /// Builds the living roster from `data/init/`: eight remainder owner-operators
 /// (grain, water, bread, gold, wood, cabins), each pop one default household.
+/// Unused world goods are dropped so CLI and CSV only show the village catalog.
 pub(crate) fn build_world() -> (Vec<Pop>, Vec<Firm>, Factuals, MarketHistory) {
-    let factuals = Factuals::load_from_path(world_data_path())
-        .unwrap_or_else(|err| panic!("load {}: {err}", world_data_path().display()));
+    build_world_for(None).unwrap_or_else(|err| panic!("{err}"))
+}
+
+/// Village roster, or one remainder pair when `solo` is a pop/firm id.
+pub(crate) fn build_world_for(
+    solo: Option<usize>,
+) -> Result<(Vec<Pop>, Vec<Firm>, Factuals, MarketHistory), String> {
+    let mut factuals = Factuals::load_from_path(world_data_path())
+        .map_err(|err| format!("load {}: {err}", world_data_path().display()))?;
+
+    let mut init = InitData::load_from_path(init_data_path(), &factuals)
+        .map_err(|err| format!("load {}: {err}", init_data_path().display()))?;
+    if let Some(id) = solo {
+        init.pops.retain(|pop| pop.id == id);
+        init.firms.retain(|firm| firm.id == id);
+        if init.pops.is_empty() || init.firms.is_empty() {
+            return Err(format!(
+                "solo {id}: need a pop and a firm with that id in data/init/"
+            ));
+        }
+    }
+    init.unload_unused_goods(&mut factuals);
 
     let mut history = MarketHistory::default();
     // Flat start: no money good and no price spread.
     history.default_salability = OPENING_SALABILITY;
-    for &id in factuals.goods.keys() {
+    for id in catalog_good_ids(&factuals) {
         set_quote(&mut history, id, OPENING_AMV, OPENING_SALABILITY);
     }
 
-    let mut init = InitData::load_from_path(init_data_path(), &factuals)
-        .unwrap_or_else(|err| panic!("load {}: {err}", init_data_path().display()));
     for pop in &mut init.pops {
         pop.record_keeping(&factuals, &history);
     }
-    (init.pops, init.firms, factuals, history)
+    Ok((init.pops, init.firms, factuals, history))
+}
+
+/// Sorted good ids still in `factuals` after unused goods are unloaded.
+pub(crate) fn catalog_good_ids(factuals: &Factuals) -> Vec<usize> {
+    let mut ids: Vec<usize> = factuals.goods.keys().copied().collect();
+    ids.sort_unstable();
+    ids
 }
 
 pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, salability: f64) {
@@ -77,36 +103,35 @@ pub(crate) fn set_quote(history: &mut MarketHistory, good: usize, amv: f64, sala
 }
 
 /// Specialty good this pop produces each morning. Pop 28 and 56 wrap onto Time (0).
+/// Old 0..n catalog index; do not use as a good id against a gapped village list.
+#[allow(dead_code)]
 pub(crate) fn produced_good_id(pop_id: usize, n_goods: usize) -> usize {
     debug_assert!(n_goods > 0, "world catalog must not be empty");
     pop_id % n_goods
 }
 
 fn add_qty(pop: &mut Pop, good: usize, qty: f64) {
+    debug_assert!(qty >= 0.0 && qty.is_finite(), "grant qty must be >= 0.0");
+    if qty == 0.0 {
+        return;
+    }
     pop.property
         .entry(good)
         .or_insert_with(|| PopPRow::new(0.0))
         .quantity += qty;
 }
 
-/// Adds 1 of every non-Time good and enough extra of the specialty good to
-/// reach 30 units of output. Time output is the full 30; labor Time still
-/// comes from `Pop::start_day`.
+/// Adds `DAILY_ENDOWMENT` of each listed non-Time good. Zero grants skip so
+/// a 0 endowment does not create rows. Listed ids may have gaps; this walks
+/// the slice and does not treat `len()` as a contiguous id space. Specialty
+/// output comes from the firm (`DAILY_OUTPUT` is 0).
 pub(crate) fn grant_daily_endowment(pop: &mut Pop, good_ids: &[usize]) {
-    let n_goods = good_ids.len();
-    let specialty = produced_good_id(pop.id, n_goods);
     for &id in good_ids {
         if id == TIME {
             continue;
         }
         add_qty(pop, id, DAILY_ENDOWMENT);
     }
-    let extra = if specialty == TIME {
-        DAILY_OUTPUT
-    } else {
-        DAILY_OUTPUT - DAILY_ENDOWMENT
-    };
-    add_qty(pop, specialty, extra);
 }
 
 #[allow(dead_code)]

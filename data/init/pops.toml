@@ -4,8 +4,8 @@
 # Keep starter/pops above [[desires]] so they stay root keys.
 # Opening stock is one day of the matching firm's output (Time skipped).
 # Boot record_keeping writes shop targets from desires.
-# Eight pops, ids matching the eight firms. Desires use only this village
-# catalog (grain, water, bread, gold, wood, cabins).
+# Eight pops, ids matching the eight firms. Desires use this village catalog
+# (grain, water, bread, gold, gold_token, jewelry, wood, cabins).
 
 pops = [
     { id = 1 },
@@ -56,4 +56,6 @@ targets = [{ good = "bread", efficiency = 1.0 }]
 tier = 2
 id = 5
 name = "shiny"
-targets = [{ good = "gold", efficiency = 1.0 }]
+targets = [
+    { good = "gold", efficiency = 1.0 },
+]

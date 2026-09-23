@@ -2495,9 +2495,7 @@ mod pop {
         }
 
         #[test]
-        fn writes_sell_weight_on_offers() {
-            use crate::game::marketorder::compose_sell_priority_with;
-
+        fn writes_listed_units_on_offer_priority() {
             let pop = make_pop();
             let mut pop = add_pop_desires(pop);
             pop.desires[1].clear();
@@ -2512,14 +2510,7 @@ mod pop {
             let offer = orders.iter().find(|o| o.target_amount < 0.0).expect("offer");
             assert_eq!(offer.target, 500);
             assert_eq!(offer.target_amount, -11.0);
-            let expected = compose_sell_priority_with(
-                factuals.config.market_priority.pop_start,
-                11.0,
-                0.0,
-                factuals.config.market_priority.sell_actor_priority_floor,
-                factuals.config.market_priority.successful_sell_bonus,
-            );
-            assert!((offer.priority - expected).abs() < 1e-12);
+            assert!((offer.priority - 11.0).abs() < 1e-12);
         }
 
         #[test]
@@ -2547,168 +2538,6 @@ mod pop {
             assert!(offer.counter_offer_amount.is_none());
             assert!(request.is_request_order());
             assert!(offer.is_offer_order());
-        }
-    }
-
-    mod next_shopping_trip_should {
-        use crate::game::actor::Actor;
-        use crate::game::config::market_priority;
-        use crate::game::marketorder::MarketOrder;
-
-        use super::*;
-
-        #[test]
-        fn posts_one_shop_request_and_one_leftover_offer() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.insert(500, PopPRow::new(20.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &HashSet::new());
-            let requests: Vec<_> = orders.iter().filter(|o| o.target_amount > 0.0).collect();
-            let offers: Vec<_> = orders.iter().filter(|o| o.target_amount < 0.0).collect();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0].target, 100);
-            assert_eq!(requests[0].target_amount, 10.0);
-            assert_eq!(offers.len(), 1);
-            assert_eq!(offers[0].target, 500);
-            assert_eq!(offers[0].target_amount, -7.0);
-            assert_eq!(offers[0].counter_offer, Some(100));
-            assert_eq!(requests[0].counter_offer, Some(500));
-        }
-
-        #[test]
-        fn skips_unavailable_and_posts_the_next_shop_good() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.insert(500, PopPRow::new(20.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let mut skip = HashSet::new();
-            skip.insert(100);
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
-            let request = orders.iter().find(|o| o.target_amount > 0.0).expect("request");
-            assert_eq!(request.target, 101);
-            assert_eq!(request.target_amount, 10.0);
-        }
-
-        #[test]
-        fn open_request_on_an_unavailable_good_does_not_block_the_next() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.insert(500, PopPRow::new(20.0));
-            pop.current_orders.push(MarketOrder::request_order(
-                Actor::Pop(0),
-                100,
-                10.0,
-                market_priority::POP_START,
-            ));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let mut skip = HashSet::new();
-            skip.insert(100);
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
-            let request = orders.iter().find(|o| o.target_amount > 0.0).expect("request");
-            assert_eq!(request.target, 101);
-        }
-
-        #[test]
-        fn does_not_extra_desire_when_remaining_shop_is_unavailable() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.insert(500, PopPRow::new(20.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let skip: HashSet<usize> = [100, 101, 200, 201, 300].into_iter().collect();
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &skip);
-            assert!(orders.iter().all(|o| o.target_amount < 0.0));
-        }
-
-        #[test]
-        fn skips_a_new_request_when_one_is_already_open() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.insert(500, PopPRow::new(20.0));
-            pop.current_orders.push(MarketOrder::request_order(
-                Actor::Pop(0),
-                100,
-                4.0,
-                market_priority::POP_START,
-            ));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &HashSet::new());
-            assert!(orders.iter().all(|o| o.target_amount < 0.0));
-            assert_eq!(orders.len(), 1);
-            assert_eq!(orders[0].target, 500);
-            assert_eq!(orders[0].target_amount, -12.0);
-        }
-
-        #[test]
-        fn solidifies_on_hand_shop_stock() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.get_mut(&100).unwrap().quantity = 10.0;
-            pop.property.insert(500, PopPRow::new(4.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let _ = pop.next_shopping_trip(&market_history, &factuals, &HashSet::new());
-            assert_eq!(pop.property[&100].reserved, 10.0);
-        }
-
-        #[test]
-        fn posts_extra_desire_when_shop_plan_is_covered() {
-            let pop = make_pop();
-            let pop = add_pop_desires(pop);
-            let mut pop = add_pop_targets(pop);
-            pop.property.get_mut(&100).unwrap().shop_target = 0.0;
-            pop.property.get_mut(&101).unwrap().shop_target = 0.0;
-            pop.property.get_mut(&200).unwrap().shop_target = 0.0;
-            pop.property.get_mut(&201).unwrap().shop_target = 0.0;
-            pop.property.get_mut(&300).unwrap().shop_target = 0.0;
-            pop.property.insert(500, PopPRow::new(20.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &HashSet::new());
-            let requests: Vec<_> = orders.iter().filter(|o| o.target_amount > 0.0).collect();
-            let offers: Vec<_> = orders.iter().filter(|o| o.target_amount < 0.0).collect();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0].target, 100);
-            assert_eq!(requests[0].target_amount, 10.0);
-            assert_eq!(offers.len(), 1);
-            assert_eq!(offers[0].target, 500);
-            assert_eq!(offers[0].target_amount, -7.0);
-        }
-
-        #[test]
-        fn ceils_the_trip_request() {
-            let pop = make_pop();
-            let mut pop = add_pop_desires(pop);
-            pop.desires[1].clear();
-            pop.desires[2].clear();
-            pop.desires[0].truncate(1);
-            pop.property.insert(100, PopPRow::new(0.3).with_target(2.7));
-            pop.property.insert(500, PopPRow::new(10.0));
-
-            let factuals = make_default_factuals();
-            let market_history = make_default_market_history();
-            let orders = pop.next_shopping_trip(&market_history, &factuals, &HashSet::new());
-            let request = orders.iter().find(|o| o.target_amount > 0.0).expect("request");
-            assert_eq!(request.target, 100);
-            assert_eq!(request.target_amount, 3.0);
         }
     }
 

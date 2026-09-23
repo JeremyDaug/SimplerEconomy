@@ -10,10 +10,13 @@ are skipped on purpose.
 ## Time (good id 0)
 
 Id 0 on purpose (exception to "0 means none" for goods). Transport 1.0.
-**Untradeable.** Not on `MarketOrder`s. Time AMV is an hours-weighted lerp
-of the going Time AMV toward paid AMV / hours (`labor.time_amv_blend`,
-default 0.15). Unpaid hours vote the going rate so a token dump cannot snap
-the labor unit. Not leftover book pressure. Decays
+**Untradeable.** Not on `MarketOrder`s. Each morning settle is one signed
+goods map on the workforce contract (`last_exchange`: negative left the
+pop). If Time was given and goods were received, the market records that
+map as an accept (same AMV drift as a goods-book deal). Recap-only
+(goods leaving the pop, nothing received) is stored on the contract and
+does not price Time. Daily AMV rescale skips Time. Not leftover book
+pressure. Decays
 100%/day into nothing. Pops receive `TIME_PER_LABOR`
 (48) * household labor at `Pop::start_day` (adult 1.0, elder 0.7, child 0.3).
 Every world process spends a little time as a destroyed input. Pops cannot buy

@@ -21,7 +21,8 @@ session. Default CSV stem is `pop_prices`.
 
 Each morning: `start_day` Time, then top up to that cap (add only the
 shortfall; already-at-cap stock is left alone), then market / consume /
-decay / pop `record_keeping`. `day N` stops if any good AMV is negative
+decay / pop `record_keeping`. The top-up is the produce stand-in (no firms).
+`day N` stops if any good AMV is negative
 and prints the day and those goods. No firm production, plan, or
 `keep_alive`.
 Caps follow init firm `target` × process output (Time output caps pops 28 and 56).
@@ -30,6 +31,10 @@ Caps follow init firm `target` × process output (Time output caps pops 28 and 5
 
 `keep_alive on|off` is the emergency firm subsidy toggle (`firm.keep_alive`,
 default off).
+`solo [id|on|off]` reboots to one remainder pop/firm (default id 1) so
+internal plan can be watched without the village market. `solo off` is the
+eight-household village. `cargo run --example market_tester -- solo`
+starts there.
 
 **Code / source of truth:** `examples/market_tester/` (`main`, `roster`,
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml` (1 Time → 15
@@ -38,8 +43,16 @@ firms: `data/init/` (`InitData`). Opening AMV/sal: `roster.rs`.
 Opening AMV 100.0 / salability 0.1 (`roster.rs`).
 Living roster: eight remainder owner-operators (grain, water, bread, gold,
 wood, cabins; two grain, two water). 1 household each.
+On load, unused world goods (and processes that mention them) are dropped;
+CLI and CSV walk the remaining ids (gaps are kept; do not treat count as
+an id space). Village catalog: time, grain, water, bread, gold, gold_token,
+jewelry, wood, cabins.
 Pop labels are `pop{id}-{specialty}` (`pop1-grain`, `pop3-bread`); `pop1` still parses.
 Firm labels match (`firm1-grain`, `firm3-bread`, `firm1`); `firm 1` still parses.
+Firm 5/6 display as `gold_token` / `jewelry` (catalog id); they are the second
+grain shop and second well.
+`data/logs/` is gitignored. Keep at most three captures locally: a reference
+to improve from, the current run, and one spare. Delete the rest.
 Each firm is the matching pop's remainder owner-operator, one specialty line
 plus three subsistence lines, `target` 8 on grain/water/wood, 5 on bread/gold,
 2 on cabins, no wage basket. Opening stock is three decay-adjusted

@@ -10,41 +10,38 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 | Piece | Status |
 |-------|--------|
 | `run_market_day` | Live lib loop. Tester `day` calls it. PlayState intramarket is `todo!()` |
-| `match_orders` | One success per pass, front buy-priority group only |
-| AMV drift + leftover book pressure | **Accept only** plus a **flat ±1** opening demand/supply kick (`amv_imbalance_kick`). Reject and no-proposal do not move AMV. Leftover-book blend is **0** (off). Intra-day evaluate uses frozen `history()`. Accept blend is salability-weighted (more salable goods move less). |
+| `match_orders` | One success per pass: random matchable buy, amount-weighted sell |
+| AMV drift | **Accept only** plus a **flat ±1** opening demand/supply kick (`amv_imbalance_kick`). Reject and no-proposal do not move AMV. Intra-day evaluate uses frozen `history()`. Accept blend is salability-weighted (more salable goods move less). |
 | AMV rescale | Each market day, unweighted mean of one unit of each tradeable good is scaled to 100.0 after salability, then the close is recorded. Time skipped. Trail is not rewritten. Firm AMV quotes/cost basis scale with it. Vault does not have this; it is a unit-normalization for readability |
 | Salability | Range `0..=2`. `0..=1` discounted/discovering; `>=1` at-par (no keep haircut); `>=1.8` currency. Reject lowers tender S; **firm** reject uses `salability_firm_reject_scale` (default 0.25) of the pop blend. Day-end lerp toward `(payment/tender)*2` when tender > 0. After decay, cap at `2 * (1 - decayed/volume)`. |
 | AMV history ring | Seed opening AMV; push close after daily rescale. Do not rescale old samples. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
-| New orders after a fill | Pop `next_shopping_trip` waves. Firms do not re-emit |
+| New orders after a fill | None. Morning `create_orders` only |
 | Leftover book carry | Reported then dropped; next day recasts from `create_orders` |
 | Multimatch | Later. Do not start |
+
+Tester calendar (labor, **production**, market, consume, decay, plan)
+is **not** vault `Turns.md` (market, then production, then consume).
+Today's output sits in `held`, may sell the same afternoon, and skips
+tonight's rot. Call the vault conflict; do not invent a third clock.
 
 ## Market day
 
 `run_market_day(factuals, pops, firms, rng)`. Only ids in `self.pops` /
 `self.firms`. Lookups via `as_deal_maker(_mut)`; member ids are `expect`ed.
 
-1. **Collect** `Pop` / `Firm` `create_orders`. Pop buy priority is **written**
-   from per-household total AMV vs market max, then sliced by consume
-   `shop_tier` (basic, then common, then luxury) inside the pop band.
-   `Pop::create_orders` itself still writes `POP_START` as a placeholder.
-   Matching sorts firm buys ahead of pop buys before those numbers.
+1. **Collect** `Pop` / `Firm` `create_orders` once.
 2. **Collate** opening supply/demand/buyers/suppliers. Zero day exchange
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).
-3. **Waves:** match until no pair. Hopeless front-group buys are **parked**
-   (no fee, not unavailable); later buy bands still match against the sell
-   book. Matched: buyer `buy`, seller `evaluate`;
-   accept -> `finalize` + wagon bill; leftover orders scale down.
-   Then each pop with transport cover for the door runs
-   `next_shopping_trip` (skip parked, wash-closed, and unavailable goods
-   and try the next target/tier; an open request on a still-available
-   good is offer-only). If anything posted, parked buys return and rematch.
-   If not, parked -> `unavailable_goods`. Firms do not re-emit. See `deals.md`.
+3. **Match until quiet.** Random buy among those with an other-origin sell;
+   sell picked by listed amount (coincidence multiplies). Same origin never
+   pairs. Matched: buyer `buy`, seller `evaluate`; accept -> `finalize` +
+   wagon bill; leftover orders scale down. Buys with no seller ->
+   `unavailable_goods`. No parking, no shopping-trip re-emit.
 4. **Cleanup:** clear member pops' `current_orders`; leftover books are
-   reported (leftover_blend 0); **flat ±1 AMV** toward heavier opening
+   reported; **flat ±1 AMV** toward heavier opening
    demand vs supply (deferred: ±1% of |AMV|, or +1 demand / −1% supply);
    salability lerps;
    salability updates (reject already moved tender S; day-end lerps
@@ -61,36 +58,20 @@ buy stop (`market` / `money` / `transport`) if shop shortfalls remain.
 
 ## Matching
 
-One pass, **does not mutate** the books. Buys by **firm-before-pop**, then
-priority (lowest first); sells by target good id. Firm and pop buys never
-share a front group, even at the same numeric priority. Only the **front**
-buy-priority group (shuffled). At most **one** weighted sell. Coincidence doubles that sell's weight for this pick
-only when both named counters match (`SELL_COINCIDENCE_WEIGHT = 2.0`). Pop
-request/offer may name a counter **good** without an amount.
-Self-trade skipped. No other-origin seller -> `unmatched_buys` (may be several).
-Matchable leftovers in the same group stay. Do **not** add AMV into matching.
-Do not batch several deals. RNG: `rand` 0.9.
+One pass, **does not mutate** the books. Pick a buy at random among those
+with an other-origin sell of that good. Pick that sell weighted by listed
+units; coincidence multiplies when both named counters match
+(`SELL_COINCIDENCE_WEIGHT = 2.0`). Same origin never pairs (a merchant may
+buy grain and sell bread; they may not fill their own grain book). At most
+**one** pair per pass; the day loops until quiet. Do **not** add AMV into
+matching. Do not batch several deals. RNG: `rand` 0.9.
 
 ## Order priority
 
-Two uses: buy/request is FCFS (**lower first**, RNG among ties); sell/offer is
-weight (**higher more likely**). **Firm buys always match before pop buys**,
-even if a pop order has a lower numeric priority. Buy bands (pops `[4, 5)`,
-firms `[2, 3)`) are `debug_assert`ed on **buys** only. Sells only need
-`priority > 0`.
-
-Pop buy rank: **per household**, **total AMV**, not liquid. Richest -> band
-start. Institutions `1` / `3` / `5`. Merchants `[2, 2.5)`, producers `[2.5, 3)`.
-No state-among-pops slot. State firm inserts at `2.49` / `2.99`.
-
-Sell compose (write on create, then flat-add fills): `1/band + sqrt(supply) +
-0.25 * fills`. Floor band `0.01`. After a **reject**, that sell/offer's
-weight is cut by `sell_reject_weight` (default 0.10) for the rest of the
-day; books are recast next morning. Do not invert at match time. Marketing later.
-
-Stale (notify only): proposal `compose_sell_priority` comments may lag live
-`SELL_*` constants; `match_orders` rustdoc still describes const defaults (live
-uses `match_orders_with_coincidence`).
+Matching does **not** use buy FCFS or firm-before-pop. Sell match weight is
+listed units (coincidence may multiply). Offer `priority` is those listed
+units so leftover-sell reject cuts still have a number. Buy `priority` is
+the create default, not wealth rank.
 
 ## MarketGood / AMV
 
@@ -106,11 +87,10 @@ that rots pulls the cap down. Does not raise salability.
 **Drift:** write live AMV; intra-day `buy` / `evaluate` / orders use frozen
 `history()`. Accept: both sides lerp toward basket midpoint, more salable
 goods move less. Reject: lower tender salability, **not** AMV. No-proposal:
-neither. Leftover books do not move AMV (`amv_leftover_blend` 0). Then a
+neither. Leftover books do not move AMV. Then a
 **flat ±1 AMV** kick toward heavier opening demand vs supply
 (`amv_imbalance_kick`; Time skipped; tie does nothing). Deferred kick
-shapes: ±1% of |AMV|, or +1 demand / −1% supply. Do not turn leftover-book
-AMV back on unless asked. `set_amv` does not push the ring.
+shapes: ±1% of |AMV|, or +1 demand / −1% supply. `set_amv` does not push the ring.
 Every completed market day, live AMV and average_price are rescaled so
 the unweighted mean of one unit of each **tradeable** good is 100.0. Time
 is skipped. Period 0 disables. This is a unit change, not a value-theory

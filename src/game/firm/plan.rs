@@ -5,7 +5,7 @@ use crate::game::factuals::Factuals;
 use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::process::{InputType, ProcessInput};
-use crate::game::util::lerp;
+use crate::game::util::{lerp, whole_units};
 
 use super::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
 
@@ -117,8 +117,8 @@ impl Firm {
     /// 1. [`Self::gather_plan_info`]: profitability, sell success, turnover,
     ///    stockpile, decay loss, market AMV, and sell-meeting counts.
     ///    Competitor quotes are `None` until other firms are passed in.
-    /// 2. [`Self::apply_plan_adjustments`]: walk one step on quote or quota
-    ///    (or stay) by predicted profit. Quiet days lerp quota toward `aim`.
+    /// 2. [`Self::apply_plan_adjustments`]: quota from demand (raise/cut/stay);
+    ///    quote from sold-through vs failed meetings. Quiet days lerp quota toward `aim`.
     ///    A line at 0 that is starting snaps to at least 1 iteration.
     ///    Missing inputs keep aim and quota (a supply miss is not a scale miss).
     ///    Leftover buys, owner consume shortfall, and in-shop recipe input
@@ -131,6 +131,7 @@ impl Firm {
         let cfg = factuals.config.firm;
         let info = self.gather_plan_info(factuals, history);
         self.apply_plan_adjustments(&info, history, &cfg);
+        self.cap_crafts_after_dinner(factuals);
         self.abandon_idle_lines(factuals, history, &cfg);
         self.rewrite_property_targets(factuals, history, &cfg);
         self.fence_owner_needs(factuals);
@@ -185,6 +186,75 @@ impl Firm {
         }
     }
 
+    /// Caps craft lines so they only spend intermediates left after owner
+    /// dinner. Time-only lines are left alone.
+    fn cap_crafts_after_dinner(&mut self, factuals: &Factuals) {
+        let (_, make_qty) = recipe_flows(&self.production_line, factuals);
+        let dinner = self.dinner_map();
+        let mut leftover: HashMap<usize, f64> = HashMap::new();
+        let mut goods: HashSet<usize> = make_qty.keys().copied().collect();
+        goods.extend(self.property.keys().copied());
+        goods.extend(dinner.keys().copied());
+        for good in goods {
+            if good == TIME {
+                continue;
+            }
+            let have = self
+                .property
+                .get(&good)
+                .map(|row| row.quantity.max(0.0))
+                .unwrap_or(0.0);
+            let made = make_qty.get(&good).copied().unwrap_or(0.0);
+            let reserve = dinner.get(&good).copied().unwrap_or(0.0);
+            leftover.insert(good, (made + have - reserve).max(0.0));
+        }
+        for line in &mut self.production_line {
+            let Some(target) = line.target else {
+                continue;
+            };
+            if target <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            let mut take: Vec<(usize, f64)> = Vec::new();
+            let mut max_iters = target;
+            let mut eats = false;
+            for input in &process.inputs {
+                if input.good == TIME
+                    || input.is_optional()
+                    || matches!(input.input_type, InputType::Factor)
+                {
+                    continue;
+                }
+                if dinner.get(&input.good).copied().unwrap_or(0.0) <= 0.0 {
+                    continue;
+                }
+                eats = true;
+                let amount = input.amount.max(0.0);
+                if amount <= 0.0 {
+                    continue;
+                }
+                let avail = leftover.get(&input.good).copied().unwrap_or(0.0);
+                max_iters = max_iters.min(whole_units(avail / amount));
+                take.push((input.good, amount));
+            }
+            if !eats {
+                continue;
+            }
+            let take_iters = max_iters.max(0.0);
+            if take_iters + 1e-12 < target {
+                line.target = Some(take_iters);
+            }
+            for (good, amount) in take {
+                if let Some(left) = leftover.get_mut(&good) {
+                    *left = (*left - take_iters * amount).max(0.0);
+                }
+            }
+        }
+    }
+
     /// Count idle days at target 0 with no leftover-buy, owner, or in-shop
     /// input demand. Drop after `abandon_idle_days`. The firm actor is kept
     /// even if no lines remain.
@@ -197,13 +267,14 @@ impl Firm {
         let limit = cfg.abandon_idle_days;
         let preferred = preferred_line_indices(&self.production_line, factuals, history);
         let needed = in_shop_input_goods(&self.production_line, factuals);
+        let dinner = self.dinner_map();
         for (i, line) in self.production_line.iter_mut().enumerate() {
             let idle = matches!(line.target, Some(target) if target <= 0.0)
                 && !line_has_keep_demand(
                     line,
                     factuals,
                     history,
-                    &self.household_needs,
+                    &dinner,
                     &needed,
                     preferred.contains(&i),
                 );
@@ -284,12 +355,7 @@ impl Firm {
             }
         }
         for facts in goods.values_mut() {
-            facts.owner_need = self
-                .household_needs
-                .get(&facts.good)
-                .copied()
-                .unwrap_or(0.0)
-                .max(0.0);
+            facts.owner_need = self.dinner_qty(facts.good);
         }
         mark_preferred_makers(&mut lines);
         PlanGather { lines, goods }
@@ -369,7 +435,8 @@ impl Firm {
             if all_cold {
                 desired_amv.insert(good.good, good.own_amv);
             } else {
-                let choice = plan_walk(good, &info.lines, cfg);
+                let time_starved = info.lines.iter().any(|line| line.missing_time);
+                let choice = plan_walk(good, &info.lines, cfg, time_starved);
                 desired_amv.insert(good.good, choice.quote);
                 match choice.step {
                     WalkStep::RaiseQuota | WalkStep::CutQuota => {
@@ -389,7 +456,7 @@ impl Firm {
                             decided[i] = true;
                         }
                     }
-                    WalkStep::Stay | WalkStep::RaiseQuote | WalkStep::CutQuote => {}
+                    WalkStep::Stay => {}
                 }
                 equalize_line_peers(&mut desired_line, &info.lines, &preferred);
             }
@@ -777,9 +844,6 @@ fn good_facts_from_row(
     }
 }
 
-/// Relative score gap treated as a tie. Closer sell-through wins the tie.
-const WALK_SCORE_TIE: f64 = 0.05;
-
 /// Snaps the first observation, then lerps. `clear_day_flows` does not touch this.
 fn blend_day_flow(avg: f64, today: f64, weight: f64) -> f64 {
     debug_assert!(today.is_finite() && today >= 0.0);
@@ -796,6 +860,11 @@ fn walk_sold(good: &GoodFacts) -> f64 {
     } else {
         good.sold.max(0.0)
     }
+}
+
+/// Market sold plus still-open owner and leftover-buy demand.
+fn walk_demand(good: &GoodFacts) -> f64 {
+    walk_sold(good) + good.owner_need.max(0.0) + good.leftover_buy.max(0.0)
 }
 
 fn walk_meets(good: &GoodFacts) -> (f64, f64) {
@@ -824,8 +893,6 @@ fn walk_meets(good: &GoodFacts) -> (f64, f64) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WalkStep {
     Stay,
-    RaiseQuote,
-    CutQuote,
     RaiseQuota,
     CutQuota,
 }
@@ -835,15 +902,20 @@ struct WalkChoice {
     quote: f64,
 }
 
-/// Picks one quote or quota step (or stay) by predicted contribution.
-/// Scores market `sold` only; remainder placement is not demand.
-fn plan_walk(good: &GoodFacts, lines: &[LineFacts], cfg: &FirmConfig) -> WalkChoice {
-    let quote = good.own_amv.max(0.0);
+/// Quota from demand; quote from meetings. Demand is market sold plus owner
+/// dinner and leftover buys. Remainder placement is not demand. A Time-starved
+/// shop does not raise quota. Failed meetings raise quote, not scale.
+fn plan_walk(
+    good: &GoodFacts,
+    lines: &[LineFacts],
+    cfg: &FirmConfig,
+    time_starved: bool,
+) -> WalkChoice {
+    let quote0 = good.own_amv.max(0.0);
     let market = good.market_amv;
     let band = cfg.quote_orbit;
-    let cost = output_unit_cost(good, lines);
     let current_qty = implied_output(good, lines, None, cfg);
-    let sold = walk_sold(good);
+    let sold = walk_demand(good);
     let (meets, failed) = walk_meets(good);
     let failed_share = if meets > 0.0 { (failed / meets).clamp(0.0, 1.0) } else { 0.0 };
     let plan = if good.sell_target > 0.0 {
@@ -852,187 +924,36 @@ fn plan_walk(good: &GoodFacts, lines: &[LineFacts], cfg: &FirmConfig) -> WalkCho
         current_qty.max(good.produced).max(sold)
     };
     let strong = plan > 0.0 && sold / plan >= cfg.sell_success_grow;
-    let miss = good.leftover_buy <= 0.0
-        && plan > 0.0
-        && sold / plan < cfg.sell_success_shrink;
-    let underwater = plan > 0.0 && sold * quote + 1e-12 < current_qty.max(plan) * cost;
-
-    let raise_q = clamp_quote_orbit(quote * (1.0 + plan_step(cfg.growth_rate)), market, band);
-    let cut_q = clamp_quote_orbit(quote * (1.0 - plan_step(cfg.growth_rate)), market, band);
-    let raise_qty = implied_output(good, lines, Some(WalkStep::RaiseQuota), cfg);
-    let cut_qty = implied_output(good, lines, Some(WalkStep::CutQuota), cfg);
-
-    let mut candidates = vec![walk_candidate(
-        WalkStep::Stay,
-        quote,
-        current_qty,
-        sold,
-        failed,
-        failed_share,
-        meets,
-        strong,
-        cost,
-    )];
-    if strong {
-        candidates.push(walk_candidate(
-            WalkStep::RaiseQuote,
-            raise_q,
-            current_qty,
-            sold,
-            failed,
-            failed_share,
-            meets,
-            strong,
-            cost,
-        ));
-        let extra_sells = walk_expected_sold(
-            WalkStep::RaiseQuota,
-            sold,
-            raise_qty,
-            failed,
-            failed_share,
-            meets,
-            strong,
-        ) > sold + 1e-12;
-        if !underwater || extra_sells {
-            candidates.push(walk_candidate(
-                WalkStep::RaiseQuota,
-                quote,
-                raise_qty,
-                sold,
-                failed,
-                failed_share,
-                meets,
-                strong,
-                cost,
-            ));
-        }
-    }
-    if miss {
-        candidates.push(walk_candidate(
-            WalkStep::CutQuota,
-            quote,
-            cut_qty,
-            sold,
-            failed,
-            failed_share,
-            meets,
-            strong,
-            cost,
-        ));
-        if failed > 0.0 {
-            candidates.push(walk_candidate(
-                WalkStep::CutQuote,
-                cut_q,
-                current_qty,
-                sold,
-                failed,
-                failed_share,
-                meets,
-                strong,
-                cost,
-            ));
-        }
-    }
-
-    let best = candidates
-        .iter()
-        .map(|c| c.score)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let scale = best.abs().max(1.0);
-    let mut tied: Vec<&WalkCandidate> = candidates
-        .iter()
-        .filter(|c| (best - c.score).abs() <= WALK_SCORE_TIE * scale)
-        .collect();
-    debug_assert!(!tied.is_empty(), "walk must keep at least stay");
-    tied.sort_by(|a, b| {
-        a.clearance
-            .partial_cmp(&b.clearance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    });
-    let pick = tied[0];
-    WalkChoice {
-        step: pick.step,
-        quote: pick.quote,
-    }
-}
-
-struct WalkCandidate {
-    step: WalkStep,
-    quote: f64,
-    score: f64,
-    /// |expected_sold / plan - 1|, 0 is a full clear.
-    clearance: f64,
-}
-
-fn walk_candidate(
-    step: WalkStep,
-    quote: f64,
-    qty: f64,
-    sold: f64,
-    failed: f64,
-    failed_share: f64,
-    meets: f64,
-    strong: bool,
-    cost: f64,
-) -> WalkCandidate {
-    let expected = walk_expected_sold(step, sold, qty, failed, failed_share, meets, strong);
-    let qty = qty.max(0.0);
-    let quote = quote.max(0.0);
-    debug_assert!(expected.is_finite() && expected >= 0.0);
-    let score = expected * quote - qty * cost.max(0.0);
-    let clearance = if qty > 0.0 {
-        (expected / qty - 1.0).abs()
-    } else if expected > 0.0 {
-        1.0
-    } else {
-        0.0
-    };
-    WalkCandidate {
-        step,
-        quote,
-        score,
-        clearance,
-    }
-}
-
-/// Predicted market units sold after `step`. Remainder placement is ignored.
-fn walk_expected_sold(
-    step: WalkStep,
-    sold: f64,
-    new_qty: f64,
-    failed: f64,
-    failed_share: f64,
-    meets: f64,
-    strong: bool,
-) -> f64 {
-    let sold = sold.max(0.0);
-    let new_qty = new_qty.max(0.0);
     let extra_ok = strong && failed_share <= 0.0 && (meets > 0.0 || sold > 0.0);
-    let expected = match step {
-        WalkStep::Stay | WalkStep::RaiseQuote => sold,
-        WalkStep::CutQuote => {
-            if meets > 0.0 && failed > 0.0 {
-                sold + failed
-            } else {
-                sold
-            }
-        }
-        WalkStep::RaiseQuota => {
-            if extra_ok {
-                new_qty
-            } else {
-                sold
-            }
-        }
-        WalkStep::CutQuota => sold,
+    let cost = output_unit_cost(good, lines);
+    let underwater = plan > 0.0
+        && sold * quote0 <= current_qty.max(plan) * cost + 1e-12;
+    let input_blocked = good.maker_lines.iter().any(|&i| {
+        lines
+            .get(i)
+            .is_some_and(|line| line.preferred && line.missing_inputs && !line.missing_time)
+    });
+    let miss = !input_blocked
+        && good.leftover_buy <= 0.0
+        && good.owner_need <= 0.0
+        && plan > 0.0
+        && walk_sold(good) / plan < cfg.sell_success_shrink;
+
+    let step = if miss {
+        WalkStep::CutQuota
+    } else if extra_ok && !time_starved && !underwater {
+        WalkStep::RaiseQuota
+    } else {
+        WalkStep::Stay
     };
-    expected.min(new_qty).max(0.0)
+    let quote = if strong {
+        clamp_quote_orbit(quote0 * (1.0 + plan_step(cfg.growth_rate)), market, band)
+    } else if miss && failed > 0.0 {
+        clamp_quote_orbit(quote0 * (1.0 - plan_step(cfg.growth_rate)), market, band)
+    } else {
+        clamp_quote_orbit(quote0, market, band)
+    };
+    WalkChoice { step, quote }
 }
 
 /// Output units implied by maker-line quotas, optionally after a qty step.

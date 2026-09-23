@@ -46,13 +46,13 @@ pub(crate) fn format_home(session: &Session) -> String {
     out.push('\n');
     out.push_str("goods  (amv  sal)\n");
     out.push_str("  --  --------  ------  ----\n");
-    for good in PREFAB_GOODS {
+    for id in catalog_good_ids(&session.factuals) {
         out.push_str(&format!(
             "  {:>2}  {:<8}  {:>6}  {:>4}\n",
-            good.id,
-            good.name,
-            fmt_num(session.history.price(good.id)),
-            fmt_num(session.history.salability(good.id))
+            id,
+            fmt_good(id),
+            fmt_num(session.history.price(id)),
+            fmt_num(session.history.salability(id))
         ));
     }
     let pops: Vec<String> = session
@@ -83,6 +83,17 @@ pub(crate) fn format_home(session: &Session) -> String {
         }
     ));
     out.push_str(&format!(
+        "roster {}\n",
+        match session.solo {
+            None => "village".to_string(),
+            Some(id) => format!(
+                "solo {} / {}",
+                fmt_actor(Actor::Pop(id)),
+                fmt_actor(Actor::Firm(id))
+            ),
+        }
+    ));
+    out.push_str(&format!(
         "books  {} buys / {} sells\n",
         session.buys.len(),
         session.sells.len()
@@ -105,32 +116,33 @@ pub(crate) fn format_home(session: &Session) -> String {
 pub(crate) fn format_stock_page(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("Stock  (live on-hand)\n");
+    let goods = catalog_good_ids(&session.factuals);
     out.push_str(&format!("  {:<ACTOR_COL$}", "actor"));
-    for good in PREFAB_GOODS {
-        out.push_str(&format!("  {:>8}", good.name));
+    for id in &goods {
+        out.push_str(&format!("  {:>8}", fmt_good(*id)));
     }
     out.push('\n');
     out.push_str(&format!("  {:-<ACTOR_COL$}", ""));
-    for _ in PREFAB_GOODS {
+    for _ in &goods {
         out.push_str(&format!("  {:-<8}", ""));
     }
     out.push('\n');
     for pop in &session.pops {
         out.push_str(&format!("  {:<ACTOR_COL$}", fmt_actor(Actor::Pop(pop.id))));
-        for good in PREFAB_GOODS {
+        for id in &goods {
             out.push_str(&format!(
                 "  {:>8}",
-                stock_cell(pop.property.get(&good.id).map(|r| r.quantity))
+                stock_cell(pop.property.get(id).map(|r| r.quantity))
             ));
         }
         out.push('\n');
     }
     for firm in &session.firms {
         out.push_str(&format!("  {:<ACTOR_COL$}", fmt_actor(Actor::Firm(firm.id))));
-        for good in PREFAB_GOODS {
+        for id in &goods {
             out.push_str(&format!(
                 "  {:>8}",
-                stock_cell(firm.property.get(&good.id).map(|r| r.quantity))
+                stock_cell(firm.property.get(id).map(|r| r.quantity))
             ));
         }
         out.push('\n');
@@ -419,6 +431,7 @@ commands
   drop buy <i>          remove buy at list index
   drop sell <i>
   keep_alive [on|off]   emergency: feed collapsed firms (default off)
+  solo [id|on|off]      one remainder pair (default pop/firm 1); off = village
   seed <n>              deterministic rng from n
   unseed                os rng again
   clear                 empty the books

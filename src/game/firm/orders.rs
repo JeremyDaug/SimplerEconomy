@@ -5,7 +5,7 @@ use crate::game::config::MarketConfig;
 use crate::game::factuals::Factuals;
 use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
-use crate::game::marketorder::{compose_sell_priority_with, MarketOrder};
+use crate::game::marketorder::MarketOrder;
 use crate::game::util::{lerp, round_units, whole_units, whole_units_up};
 
 use super::{Firm, FirmPRow};
@@ -48,7 +48,7 @@ impl Firm {
     /// planning writes the bound.
     /// Buy order priority is the merchant band if any row is merchant-like
     /// (purchase and sell, no use), otherwise the producer band. Sells use
-    /// [`compose_sell_priority`].
+    /// listed units.
     ///
     /// Posted buy/sell/offer amounts are whole units. Named counters ceil to
     /// the next whole payment unit so a 2.5 AMV cost is posted as 3 coins.
@@ -174,13 +174,7 @@ impl Firm {
             } else {
                 (plan.sell_qty, false)
             };
-            let weight = compose_sell_priority_with(
-                buy_band,
-                qty,
-                0.0,
-                prio.sell_actor_priority_floor,
-                prio.successful_sell_bonus,
-            );
+            let weight = qty;
             if liquidate {
                 orders.push(MarketOrder::offer_order(
                     Actor::Firm(self.id),
@@ -509,7 +503,7 @@ fn divert_output_to_input_tender(
         let Some(row) = firm.property.get(&good) else {
             continue;
         };
-        let locked = (row.quantity.max(0.0) - row.free_for_market()).max(0.0);
+        let locked = (row.shelf() - row.free_for_market()).max(0.0);
         if locked <= 0.0 {
             continue;
         }

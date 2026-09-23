@@ -13,9 +13,9 @@ ratio, reserved, sentiment). Household primer:
 | `create_orders` | Shop-plan **requests** (ceil) then leftover **offers** (floor). Higher consume tier only if the wallet covers the lower one. Tender freeze covers posted request AMV. After cover, at least `TENDER_WALLET_FLOOR` (0.25) of leftover free units stay unlisted |
 | `start_day` | Exists. Tester uses it. PlayState day-start still stub |
 | `extract_special_resources` | First pass exists. Yield is **not** routed onto `State.resources` |
-| `next_shopping_trip` | Solidify, then at most one request and one offer. Skip parked/unavailable goods; an open request on a still-available good is offer-only. `run_market_day` waves call it |
-| Pop offers | Morning leftover after tender cover. Named `counter_offer` good only (no AMV, no amount). Trip adds at most one more good |
-| Shop ambition / looping luxury | Record keeping adds one extra luxury level. Leftover liquid above save may top up the cheapest luxury shop, capped at one extra level of that good. Staple `Desire.amount` stays fixed. `create_orders` does not extra-walk luxury. Trip can post one extra desire request |
+| Extra desire buys | Wait for a later morning `create_orders`. No intra-day shopping trip |
+| Pop offers | Morning leftover after tender cover. Named `counter_offer` good only (no AMV, no amount) |
+| Shop ambition / looping luxury | Record keeping adds one extra luxury level. Leftover liquid above save may top up the cheapest luxury shop, capped at one extra level of that good. Staple `Desire.amount` stays fixed. `create_orders` does not extra-walk luxury |
 | Class demographics | Unimplemented (vault: park this) |
 | Migration leaves | Orchestrator exists; leaves are `todo!()` |
 
@@ -44,17 +44,10 @@ demographic ids only. Do not reopen the household-rates model.
   does not rise. Morning `create_orders` is what skips a higher tier when
   the wallet cannot cover the lower one.
 - `create_orders`: basic shop, parked save, then common, then luxury.
-  Pop buy `shop_tier` is stamped into order priority (basic, then common,
-  then luxury slices of the pop band) so matching does not shuffle a
-  household's beer ahead of its grain.
   A higher consume tier is posted in full only when remaining budget covers
   **all** of that tier; otherwise walk until overdraw and skip the next.
-  Skip `unavailable` on requests only (parked no-seller and wash-closed
-  goods count as unavailable on the next trip). An open request on an
-  unavailable good does not block the next target or consume tier. If the
-  remaining shop is only unavailable goods, stop buying (offers may still
-  re-up). Extra desire buys are `next_shopping_trip` only when the shop
-  plan is already filled.
+  Skip `unavailable` on requests. Extra desire buys wait for a later morning
+  book.
 - Buy stop (`PopRecords::buy_stop`) after the market day: `market` if
   remaining shop is unavailable, `money` if shop remains and free AMV is
   gone, `transport` if the door cannot be paid. `None` if shop is filled.

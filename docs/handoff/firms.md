@@ -4,14 +4,66 @@ Read this only for firm property, production, planning, or `create_orders`.
 Field names: `docs/design-vocabulary.md` (firm property row, sell success,
 realized profit, AMV bound). Do not copy them here.
 
+## Pickup (2026-09-17)
+
+Village remainder owner-operators. Direction: until money is standard, most
+shops are subsistence plus a bit of specialty. High-demand luck can
+specialize early. Dedicated specialist shops forming on day 1 wait on money.
+Do not treat subsistence-tagged lines as a separate plan policy.
+
+**Roster** (`data/init/`): eight matching pops/firms. Two grain, two water,
+one bread, one gold, one wood, one cabins. Targets 8 / 8 / 5 / 5 / 8 / 2.
+Init still auto-attaches farm/water/forage at target 2. Desires: food
+(grain 1.0 / bread 1.5), water, wood heat, one cabin per household, extra
+bread, gold. Tester labels for firm 5/6 still say `gold_token` / `jewelry`
+(catalog id); they are the second grain shop and second well.
+
+**Plan (unified).** Owner consume shortfall, leftover buys, and in-shop
+recipe inputs are the same kind of demand as a sale. `placed` already
+counts toward sell success up to the operations fence. Preferred recipe
+of a good is highest `Process::recipe_profit_ratio` (AMV-out / AMV-in at
+current prices), not output per Time. Weaker duplicates walk down and can
+be abandoned after `abandon_idle_days`. Production: firm-wide complexity
+Time tax first, then owner-dinner lines that do not consume other dinner
+goods (cheaper Time first), then crafts that eat those goods, then
+input-feeding lines, then higher AMV profit. Missing
+Time is a scale miss; missing materials are not. Remainder recap/fence
+uses goods the shop actually makes. Finished output can tender for missing
+inputs even if fenced as household stock; recipe inputs stay fenced. Do
+not move firm shopping onto the owner pop unless asked.
+
+**Complexity tax.** Firm-wide, not a line. `complexity_time_factor` (0.05)
+times `sum(weight * iterations)`, skipped on one-line shops. Destroyed from
+firm Time **before** any line runs, and included in labor hours. Intended
+as a cap on how much one shop can do at once.
+
+**Last 60-day `market_tester`:** local capture (do not pile `data/logs/`).
+Day 60 mean SOL ~5.22, 8 trades, wages 0 (no coin). Day 5 dip ~0.68 then
+4–6. Grain/water/wood at household scale and dropped a duplicate plot (3
+lines). Gold still ran (~4) and kept the garden. Baker and cabins printed
+`missing time` after the tax: garden ran, specialty did not. Water/wood/gold
+pops SOL ~6–8; baker ~0.9; cabin pop ~3.3 with common 1. Unmatched demand
+mostly bread and wood.
+
+**Hole to pick up:** baker/cabin crafts were booking all garden output.
+Plan now reserves standing owner consume (`household_demand`) and caps
+crafts to the surplus. Fence still uses today's shortfall. Quota walk is
+demand (raise/cut/stay); quote walk is sold-through vs failed meetings —
+they are not scored against each other. Do not re-add subsistence-only floors.
+
+**Parked (do not start unless asked):** slow salability; money as a standard;
+disorganized/cottage firms that spin out cheaper specialized shops; DIY Time
+vs buy; input slots / good class; shifting firm needs onto the owner pop;
+PlayState intramarket/production stubs; hiring/creation.
+
 ## Landed vs stub
 
 | Piece | Status |
 |-------|--------|
 | `FirmPRow` + helpers | Landed |
-| `run_production` | Landed + tests. Tester `day` calls it. Living remainder firms have a specialty line plus three subsistence lines (farm / water / forage, target 2). Hours are the sum of all lines' Time. PlayState production still `todo!()` |
+| `run_production` | Landed + tests. Tester `day` calls it. Living remainder firms start with a specialty line plus three subsistence lines (farm / water / forage, target 2). Hours are recipe Time plus the firm-wide complexity tax. PlayState production still `todo!()` |
 | Line abandonment | Landed. Any line at `target` 0 with no leftover-buy, owner shortfall, or in-shop input demand increments `idle_days` and drops after `abandon_idle_days` (5). Empty firms stay in the world; tester tables print `dead/abandoned`. |
-| Owner need = sale | Landed. Owner consume shortfall (`household_needs`) and leftover buys are the same kind of demand. Weaker duplicate recipes (lower recipe AMV-out/AMV-in of the same good) walk down. Production runs input-feeding lines first, then higher AMV profit. Remainder recap/fence uses goods the shop actually makes, not the subsistence tag. Finished output can tender for missing inputs even if fenced for the owner. |
+| Owner need = sale | Landed. Owner consume shortfall (`household_needs`) and leftover buys are the same kind of demand. Weaker duplicate recipes (lower recipe AMV-out/AMV-in of the same good) walk down. Production runs Time-only owner-dinner lines first, then crafts that eat those goods, then input-feeding, then higher AMV profit. Remainder recap/fence uses goods the shop actually makes, not the subsistence tag. Finished output can tender for missing inputs even if fenced for the owner. |
 | Complexity Time tax | Landed. Firm-wide overhead, not a line. Multi-line shops charge `complexity_time_factor * sum(weight * iterations)` Time **before** any line runs (and include it in labor hours). One-line shops pay 0. Not a throughput haircut. |
 | Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
@@ -23,8 +75,10 @@ realized profit, AMV bound). Do not copy them here.
 World processes load **once** with factuals. Do not reload TOML in
 `run_production`. Do not call pop `record_keeping` a second time for planning.
 
-**Day order:** produce, then pop consume, then plan. Vault `Turns.md` disagrees;
-call it out, do not "fix" the live order unless asked.
+**Day order:** labor settle, produce onto `held`, market (may sell `held`),
+consume, decay (`held` skips tonight then joins quantity), plan.
+Vault `Turns.md` is market then production then consume. Live tester
+follows produce-first so today's shelf can trade without rotting at dusk.
 
 ## Invariants
 
@@ -57,8 +111,9 @@ blends consumed-input AMV only — used capital is not in that blend
 do not invent a third model.
 
 A line starting from 0 snaps to at least 1 iteration. The complexity tax
-destroys Time on the firm first, then production runs input-feeding lines
-(then higher recipe AMV profit) so later lines may spend that `held`.
+destroys Time on the firm first, then production runs owner-dinner lines,
+then input-feeding lines, then higher recipe AMV profit so later lines
+may spend that `held`.
 Missing materials keep scale. Missing Time is a scale miss. An idle
 `target` 0 restarts at 1 when leftover buys, owner shortfall, or in-shop
 input need the output and this line is the best AMV recipe for that good.
