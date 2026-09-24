@@ -8,7 +8,7 @@ use bevy::platform::collections::HashSet;
 use crate::game::{
     config::{GameConfig, PopConfig},
     desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
-    effects::DemographicEffect, factuals::Factuals, good::{GoodTag, TIME},
+    effects::DemographicEffect, factuals::Factuals, firm::Firm, good::{GoodTag, TIME},
     household::DemographicRates, market::{Market, MarketHistory},
     marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor,
     sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
@@ -461,16 +461,30 @@ impl Pop {
     /// The function assumes that all desires are currently in `self.desires` and
     /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
+        self.consume_from_firm(None, None);
+    }
+
+    /// Remainder owners may eat goods their shop made (shelf, not a wage).
+    pub fn consume_from_firm(&mut self, firm: Option<&mut Firm>, factuals: Option<&Factuals>) {
+        let outputs = match (firm.as_ref(), factuals) {
+            (Some(firm), Some(factuals))
+                if firm.owners.liable && firm.owners.pop_id() == Some(self.id) =>
+            {
+                firm.produced_goods(factuals)
+            }
+            _ => std::collections::HashSet::new(),
+        };
+        let mut shelf = firm;
         // first do basic desires, only one pass needed.
         let mut working_desires = self.desires.remove(0); // pop off front
-        self.satisfy_tier(&mut working_desires); // satisfy them
+        self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
         let basic_done = Self::tier_is_complete(&working_desires);
         self.desires.insert(0, working_desires); // put back
 
         // Common still runs when basic is short: eat on-hand rather than
         // hold it hoping the staple shows up.
         working_desires = self.desires.remove(1); // pop off
-        self.satisfy_tier(&mut working_desires); // satisfy
+        self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
         self.desires.insert(1, working_desires); // put back
 
         if !basic_done {
@@ -483,7 +497,7 @@ impl Pop {
         let mut ordered_desires = vec![];
         loop {// loop over desires
             // satisfy the current working desires
-            self.satisfy_tier(&mut working_desires);
+            self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
             // remove any desires not fully satisfied.
             let mut idx = 0;
             loop {
@@ -518,9 +532,18 @@ impl Pop {
     /// 
     /// This is part of consumption, and so will reduce quantity of goods.
     pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> f64 {
+        self.satisfy_tier_from(desires, None, &std::collections::HashSet::new())
+    }
+
+    fn satisfy_tier_from(
+        &mut self,
+        desires: &mut Vec<Desire>,
+        mut shelf: Option<&mut Firm>,
+        outputs: &std::collections::HashSet<usize>,
+    ) -> f64 {
         let mut success: f64 = 0.0;
         for desire in desires.iter_mut() {
-            let result = self.satisfy_one_desire(desire);
+            let result = self.satisfy_one_desire_from(desire, shelf.as_deref_mut(), outputs);
             success = success.max(result);
         }
         success
@@ -539,7 +562,15 @@ impl Pop {
     ///
     /// This is part of Consumption, and so will reduce quantity of goods.
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
-        // Owned copies so we can mutate property / desire without fighting borrows.
+        self.satisfy_one_desire_from(desire, None, &std::collections::HashSet::new())
+    }
+
+    fn satisfy_one_desire_from(
+        &mut self,
+        desire: &mut Desire,
+        mut shelf: Option<&mut Firm>,
+        outputs: &std::collections::HashSet<usize>,
+    ) -> f64 {
         let targets: Vec<DesireTarget> = desire
             .ordered_targets()
             .into_iter()
@@ -552,37 +583,47 @@ impl Pop {
             if remaining <= 0.0 {
                 break;
             }
-            // get the target good, or continue on to the next target.
+            let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
+            if needed <= 0.0 || target.efficiency <= 0.0 {
+                continue;
+            }
+            let mut take = 0.0;
             if let Some(row) = self.property.get_mut(&target.good)
                 && row.quantity > 0.0
             {
-                // remaining (capped at this target's cap) / efficiency = qty needed.
-                // Full quantity is fair game; savings does not fence stock.
-                let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
-                let take = needed.min(row.quantity);
-
-                // remove from quantity and reserve.
+                take = needed.min(row.quantity);
                 row.quantity -= take;
                 row.reserved = (row.reserved - take).max(0.0);
-                debug_assert!(row.reserved >= 0.0, "Reserved must not be negative");
-                match target.desire_type {
-                    DesireTargetType::Consume => {
-                        // shift to consumed.
-                        row.consumed += take;
-                        let sat_gained = take * target.efficiency;
-                        desire.satisfaction += sat_gained;
-                        remaining -= sat_gained;
-                    }
-                    DesireTargetType::Use => {
-                        row.used += take;
-                        let sat_gained = take * target.efficiency;
-                        desire.satisfaction += sat_gained;
-                        remaining -= sat_gained;
-                    }
+            }
+            let short = needed - take;
+            if short > 0.0 && outputs.contains(&target.good) {
+                if let Some(firm) = shelf.as_mut() {
+                    let extra = firm.take_from_shelf(target.good, short);
+                    take += extra;
+                }
+            }
+            if take <= 0.0 {
+                continue;
+            }
+            let row = self
+                .property
+                .entry(target.good)
+                .or_insert_with(|| PopPRow::new(0.0));
+            match target.desire_type {
+                DesireTargetType::Consume => {
+                    row.consumed += take;
+                    let sat_gained = take * target.efficiency;
+                    desire.satisfaction += sat_gained;
+                    remaining -= sat_gained;
+                }
+                DesireTargetType::Use => {
+                    row.used += take;
+                    let sat_gained = take * target.efficiency;
+                    desire.satisfaction += sat_gained;
+                    remaining -= sat_gained;
                 }
             }
         }
-        // The current satisfaction rate.
         desire.satisfaction / desire.amount
     }
 
@@ -5157,6 +5198,26 @@ mod pop {
             let history = make_default_market_history();
             let (own, other) = buy_and_offer();
             assert!(pop.buy(&own, &other, &history, &factuals).is_none());
+        }
+
+        #[test]
+        fn buy_with_firm_tenders_shop_surplus_above_dinner() {
+            use crate::game::firm::{Firm, FirmPRow};
+            let pop = make_pop();
+            let mut firm = Firm::new(7, "shop".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner(Actor::Pop(0))
+                .with_owner_liability();
+            firm.property.insert(500, FirmPRow::new().with_quantity(10.0));
+            firm.household_demand.insert(500, 2.0);
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+            let deal = pop
+                .buy_with_firm(&own, &other, &history, &factuals, Some(&firm))
+                .expect("proposal");
+            assert!((deal.goods[&100] + 4.0).abs() < 1e-12);
+            assert!((deal.goods[&500] - 4.0).abs() < 1e-12);
+            assert_eq!(firm.property[&500].quantity, 10.0);
         }
 
         #[test]

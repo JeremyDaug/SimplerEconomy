@@ -150,7 +150,8 @@ impl Firm {
     }
 
     /// Fence goods this shop makes that the owner still needs, so leftover
-    /// remainder / sells do not dump dinner.
+    /// remainder / sells do not dump dinner. Uses `reserve_target`, not
+    /// `use_target`, so finished output is not treated as a recipe input.
     fn fence_owner_needs(&mut self, factuals: &Factuals) {
         if !self.owners.liable {
             return;
@@ -180,9 +181,10 @@ impl Firm {
         }
         for (good, short) in goods {
             let row = self.property.entry(good).or_insert_with(FirmPRow::new);
-            if row.use_target < short {
-                row.use_target = short;
+            if row.reserve_target < short {
+                row.reserve_target = short;
             }
+            row.sync_reserve();
         }
     }
 
@@ -903,8 +905,10 @@ struct WalkChoice {
 }
 
 /// Quota from demand; quote from meetings. Demand is market sold plus owner
-/// dinner and leftover buys. Remainder placement is not demand. A Time-starved
-/// shop does not raise quota. Failed meetings raise quote, not scale.
+/// dinner and leftover buys. Uncovered owner / leftover-buy / in-shop input
+/// raises quota even when leftover sells fail. Remainder placement is not
+/// demand. A Time-starved shop does not raise quota. Failed meetings raise
+/// quote, not scale.
 fn plan_walk(
     good: &GoodFacts,
     lines: &[LineFacts],
@@ -938,9 +942,15 @@ fn plan_walk(
         && good.owner_need <= 0.0
         && plan > 0.0
         && walk_sold(good) / plan < cfg.sell_success_shrink;
+    let uncovered = good.owner_need.max(0.0)
+        + good.leftover_buy.max(0.0)
+        + good.internal_need.max(0.0);
+    let need_raise = current_qty + 1e-12 < uncovered;
 
     let step = if miss {
         WalkStep::CutQuota
+    } else if need_raise && !time_starved {
+        WalkStep::RaiseQuota
     } else if extra_ok && !time_starved && !underwater {
         WalkStep::RaiseQuota
     } else {

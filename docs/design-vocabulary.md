@@ -22,7 +22,7 @@ and `docs/proposals/`.
 | Satisfaction and fill | desire sat, tier sat, SOL, sat units, sat boost, common surplus, luxury oversat |
 | Sentiment | sentiment, axes, sentiment shift |
 | Property and day flow | reserve, consume, liquid wealth, save target, saved, consume need, savings ratio, time preference, risk appetite, used, held, update sentiments, stored effects, buy stop |
-| World data | world data, init data, save data, factuals, gameplay config, game state, actor, pop, household, institution, firm, firm property row, firm records, state |
+| World data | world data, init data, save data, factuals, gameplay config, game state, actor, pop, household, institution, firm, found, split, savings founding, disorganized, firm property row, firm records, state |
 | Exchange | deal, take tenders, whole units, Time, labor contract, take good, make change, deal response, AMV drift, AMV history, salability update, AMV keep, order priority, friction / transport, order tries, write / set, player resources |
 
 ---
@@ -424,6 +424,46 @@ passive culture/research).
 
 **Meaning:** A semi-autonomous org which handles and focuses on productive economic activity.
 **Code:**  `Firm`
+
+### Found (a firm)
+**Preferred:** found, founding  
+**Avoid:** create (that is `create_orders`), spawn, instantiate
+
+**Meaning:** Add a new firm actor to a market at runtime. Two methods:
+**split** (first slice) and **savings founding** (later). Not player/
+institution founding in EconCiv `Firms.md`.
+**Code:** none yet
+
+### Split
+**Preferred:** split  
+**Avoid:** peel a line off a 1-pop shop, hive-off, spin-out as the only name
+
+**Meaning:** A **sufficiently divided** firm (prime example:
+**disorganized**) peels off some of its pops. Existing production lines
+**scale** with that headcount fraction; a matching in-kind share of those
+goods moves with them. As part of the same act the new firm may **add one
+line and/or remove one line** (example: 10 pops split off 1, take ~1/10 of
+the gardens, add extract grain and/or drop subsistence grain). Not line
+**abandon**. A 1-pop remainder shop cannot split.
+**Code:** none yet
+
+### Disorganized
+**Preferred:** disorganized, cottage  
+**Avoid:** informal sector, subsistence type (subsistence is a process tag)
+
+**Meaning:** Mixed household production with several pops; the prime example
+of a firm **divided** enough to **split**. Not the current eight 1-pop
+remainder shops. Full type is later; first founding slice may fixture the
+behavior.
+**Code:** none yet
+
+### Savings founding
+**Preferred:** savings founding  
+**Avoid:** startup (ambiguous), IPO
+
+**Meaning:** Open a new one-line shop by spending saved goods, like a small
+business. Wants a money good. Second slice after **split**.
+**Code:** none yet
 
 ### Subsistence
 **Preferred:** subsistence  

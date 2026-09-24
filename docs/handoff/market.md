@@ -65,6 +65,9 @@ units; coincidence multiplies when both named counters match
 buy grain and sell bread; they may not fill their own grain book). At most
 **one** pair per pass; the day loops until quiet. Do **not** add AMV into
 matching. Do not batch several deals. RNG: `rand` 0.9.
+Remainder owners tender shop stock above dinner when `buy` would otherwise
+have an empty bag (`Pop::buy_with_firm`). No-proposal is still "no tender
+named," not a skip of the pair.
 
 ## Order priority
 

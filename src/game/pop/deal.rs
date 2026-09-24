@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::game::actor::Actor;
 use crate::game::config::deal_constants;
 use crate::game::deal::{
@@ -6,6 +8,7 @@ use crate::game::deal::{
     DealResponse, DealRole, ProposedDeal,
 };
 use crate::game::factuals::Factuals;
+use crate::game::firm::Firm;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::MarketOrder;
 use crate::game::pop_property::PopPRow;
@@ -28,32 +31,7 @@ impl DealMaker for Pop {
         history: &MarketHistory,
         factuals: &Factuals,
     ) -> Option<ProposedDeal> {
-        debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
-        let targeted_good = own_order.target;
-        let live = pop_live_tenders(self, targeted_good, history, factuals);
-        let deal = form_buy_proposal(
-            Actor::Pop(self.id),
-            own_order,
-            other_order,
-            history,
-            factuals.config.deal.high_salability,
-            |good| pop_tenderable(self, good, targeted_good, factuals),
-            &live,
-        )?;
-        with_transport_budget(
-            deal,
-            Actor::Pop(self.id),
-            own_order,
-            other_order,
-            history,
-            factuals,
-            |good| pop_tenderable(self, good, targeted_good, factuals),
-            &live,
-            transport_cover_on_hand(
-                self.property.iter().map(|(id, row)| (*id, row.quantity)),
-                factuals,
-            ),
-        )
+        self.buy_with_firm(own_order, other_order, history, factuals, None)
     }
 
     /// # Evaluate
@@ -91,23 +69,7 @@ impl DealMaker for Pop {
     /// buyer subtracts it. Creates a row at 0 if the good is new. Does not
     /// edit orders, reserved, or shop/save targets.
     fn finalize(&mut self, deal: &ProposedDeal, history: &MarketHistory) {
-        let _ = history;
-        let Some(role) = deal.role_of(Actor::Pop(self.id)) else {
-            debug_assert!(false, "pop must be a party to the deal");
-            return;
-        };
-        for (&good, _) in &deal.goods {
-            let delta = deal.signed_qty(role, good);
-            if delta == 0.0 {
-                continue;
-            }
-            let row = self
-                .property
-                .entry(good)
-                .or_insert_with(|| PopPRow::new(0.0));
-            row.quantity += delta;
-            debug_assert!(row.quantity >= 0.0, "quantity must be >= 0.0");
-        }
+        self.finalize_with_firm(deal, history, None);
     }
 
     fn pay_transport(&mut self, amount: f64, factuals: &Factuals) {
@@ -124,6 +86,90 @@ impl DealMaker for Pop {
                 if row.reserved > row.quantity {
                     row.reserved = row.quantity;
                 }
+            }
+        }
+    }
+}
+
+impl Pop {
+    /// Remainder owners may tender shop stock above dinner. `firm` is that
+    /// shop; `None` uses the pop bag only.
+    pub(crate) fn buy_with_firm(
+        &self,
+        own_order: &MarketOrder,
+        other_order: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+        firm: Option<&Firm>,
+    ) -> Option<ProposedDeal> {
+        debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
+        let targeted_good = own_order.target;
+        let live = pop_live_tenders_with_firm(self, targeted_good, history, factuals, firm);
+        let deal = form_buy_proposal(
+            Actor::Pop(self.id),
+            own_order,
+            other_order,
+            history,
+            factuals.config.deal.high_salability,
+            |good| pop_tenderable_with_firm(self, good, targeted_good, factuals, firm),
+            &live,
+        )?;
+        with_transport_budget(
+            deal,
+            Actor::Pop(self.id),
+            own_order,
+            other_order,
+            history,
+            factuals,
+            |good| pop_tenderable_with_firm(self, good, targeted_good, factuals, firm),
+            &live,
+            remainder_transport_cover(self, firm, factuals),
+        )
+    }
+
+    /// Applies `deal` to the pop bag, then the remainder shop shelf.
+    pub(crate) fn finalize_with_firm(
+        &mut self,
+        deal: &ProposedDeal,
+        history: &MarketHistory,
+        mut firm: Option<&mut Firm>,
+    ) {
+        let _ = history;
+        let Some(role) = deal.role_of(Actor::Pop(self.id)) else {
+            debug_assert!(false, "pop must be a party to the deal");
+            return;
+        };
+        for (&good, _) in &deal.goods {
+            let delta = deal.signed_qty(role, good);
+            if delta == 0.0 {
+                continue;
+            }
+            if delta > 0.0 {
+                let row = self
+                    .property
+                    .entry(good)
+                    .or_insert_with(|| PopPRow::new(0.0));
+                row.quantity += delta;
+                debug_assert!(row.quantity >= 0.0, "quantity must be >= 0.0");
+                continue;
+            }
+            let mut need = -delta;
+            let row = self
+                .property
+                .entry(good)
+                .or_insert_with(|| PopPRow::new(0.0));
+            let from_pop = need.min(row.quantity.max(0.0));
+            row.quantity -= from_pop;
+            need -= from_pop;
+            if need > 0.0 {
+                let taken = firm
+                    .as_mut()
+                    .map(|shop| shop.take_from_shelf(good, need))
+                    .unwrap_or(0.0);
+                debug_assert!(
+                    taken + 1e-12 >= need,
+                    "remainder shelf must cover leftover tender"
+                );
             }
         }
     }
@@ -288,14 +334,67 @@ fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factu
     (row.quantity - keep - listed).max(0.0)
 }
 
-/// Returns this pop's tenderable goods as `(id, qty)`, highest salability first.
-fn pop_live_tenders(
+/// Shop shelf above owner dinner. Remainder owners pay with this pile.
+fn remainder_spendable(firm: &Firm, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
+    if good == targeted_good {
+        return 0.0;
+    }
+    if !factuals.find_good(good).is_buyable() {
+        return 0.0;
+    }
+    let shelf = firm
+        .property
+        .get(&good)
+        .map(|row| row.shelf())
+        .unwrap_or(0.0);
+    (shelf - firm.dinner_qty(good)).max(0.0)
+}
+
+fn pop_tenderable_with_firm(
+    pop: &Pop,
+    good: usize,
+    targeted_good: usize,
+    factuals: &Factuals,
+    firm: Option<&Firm>,
+) -> f64 {
+    let bag = pop_tenderable(pop, good, targeted_good, factuals);
+    let shop = firm
+        .map(|firm| remainder_spendable(firm, good, targeted_good, factuals))
+        .unwrap_or(0.0);
+    bag + shop
+}
+
+fn pop_live_tenders_with_firm(
     pop: &Pop,
     targeted_good: usize,
     history: &MarketHistory,
     factuals: &Factuals,
+    firm: Option<&Firm>,
 ) -> Vec<(usize, f64)> {
-    collect_tenders(pop.property.keys().copied(), history, |good| {
-        pop_tenderable(pop, good, targeted_good, factuals)
+    let mut ids: HashSet<usize> = pop.property.keys().copied().collect();
+    if let Some(firm) = firm {
+        ids.extend(firm.property.keys().copied());
+    }
+    collect_tenders(ids, history, |good| {
+        pop_tenderable_with_firm(pop, good, targeted_good, factuals, firm)
     })
+}
+
+fn remainder_transport_cover(pop: &Pop, firm: Option<&Firm>, factuals: &Factuals) -> f64 {
+    let mut pairs: Vec<(usize, f64)> = pop
+        .property
+        .iter()
+        .map(|(id, row)| (*id, row.quantity.max(0.0)))
+        .collect();
+    if let Some(firm) = firm {
+        for (&id, row) in &firm.property {
+            let extra = (row.shelf() - firm.dinner_qty(id)).max(0.0);
+            if let Some((_, qty)) = pairs.iter_mut().find(|(good, _)| *good == id) {
+                *qty += extra;
+            } else {
+                pairs.push((id, extra));
+            }
+        }
+    }
+    transport_cover_on_hand(pairs, factuals)
 }

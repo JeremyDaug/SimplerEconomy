@@ -480,12 +480,16 @@ impl Firm {
         }
     }
 
-    /// Records consume shortfall and standing `desire_needs` of the liable
-    /// owner and workforce. Call at market open so evaluate can treat those
-    /// tenders as needs.
-    pub fn refresh_household_needs(&mut self, pops: &HashMap<usize, Pop>) {
+    /// Standing dinner and consume shortfall for goods this shop makes.
+    /// Desire buckets skip substitutes the shop does not produce so remaining
+    /// sat lands on in-shop targets. Call before production and at market open.
+    pub fn refresh_household_needs(&mut self, pops: &HashMap<usize, Pop>, factuals: &Factuals) {
         self.household_needs.clear();
         self.household_demand.clear();
+        let outputs = self.produced_goods(factuals);
+        if outputs.is_empty() {
+            return;
+        }
         let mut ids = Vec::new();
         if let Some(id) = self.owners.pop_id() {
             ids.push(id);
@@ -501,17 +505,109 @@ impl Firm {
             let Some(pop) = pops.get(&pop_id) else {
                 continue;
             };
-            for (&good, row) in &pop.property {
-                let demand = row.desire_needs.max(0.0);
-                if demand > 0.0 {
-                    *self.household_demand.entry(good).or_insert(0.0) += demand;
-                }
-                let short = (demand - row.quantity.max(0.0)).max(0.0);
-                if short > 0.0 {
-                    *self.household_needs.entry(good).or_insert(0.0) += short;
+            for tier in &pop.desires {
+                for desire in tier {
+                    let mut remaining = desire.amount.max(0.0);
+                    for target in desire.ordered_targets() {
+                        if remaining <= 0.0 {
+                            break;
+                        }
+                        if !outputs.contains(&target.good) || target.efficiency <= 0.0 {
+                            continue;
+                        }
+                        let qty = remaining.min(desire.amount * target.cap) / target.efficiency;
+                        if qty <= 0.0 {
+                            continue;
+                        }
+                        self.add_owner_want(pop, target.good, qty);
+                        remaining -= qty * target.efficiency;
+                    }
+                    if remaining <= 0.0 {
+                        continue;
+                    }
+                    for target in desire.ordered_targets() {
+                        if outputs.contains(&target.good) || target.efficiency <= 0.0 {
+                            continue;
+                        }
+                        let qty = remaining.min(desire.amount * target.cap) / target.efficiency;
+                        if qty <= 0.0 {
+                            continue;
+                        }
+                        self.add_owner_want(pop, target.good, qty);
+                        break;
+                    }
                 }
             }
         }
+    }
+
+    fn add_owner_want(&mut self, pop: &Pop, good: usize, qty: f64) {
+        if qty <= 0.0 {
+            return;
+        }
+        *self.household_demand.entry(good).or_insert(0.0) += qty;
+        let have = pop
+            .property
+            .get(&good)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        let short = (qty - have).max(0.0);
+        if short > 0.0 {
+            *self.household_needs.entry(good).or_insert(0.0) += short;
+        }
+    }
+
+    /// Goods this firm's running lines output (not Time).
+    pub fn produced_goods(&self, factuals: &Factuals) -> HashSet<usize> {
+        let mut goods = HashSet::new();
+        for line in &self.production_line {
+            if matches!(line.target, Some(t) if t <= 0.0) {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.good != TIME {
+                    goods.insert(output.good);
+                }
+            }
+        }
+        goods
+    }
+
+    /// Pulls `want` from `quantity` then `held`. Used when the owner eats
+    /// from the shop shelf.
+    pub fn take_from_shelf(&mut self, good: usize, want: f64) -> f64 {
+        if want <= 0.0 {
+            return 0.0;
+        }
+        let Some(row) = self.property.get_mut(&good) else {
+            return 0.0;
+        };
+        let from_qty = want.min(row.quantity.max(0.0));
+        row.quantity -= from_qty;
+        let rest = want - from_qty;
+        let from_held = rest.min(row.held.max(0.0));
+        row.held -= from_held;
+        row.sync_reserve();
+        from_qty + from_held
+    }
+
+    /// On-hand plus held, minus owner dinner. Time is not reduced.
+    fn production_available(&self) -> HashMap<usize, f64> {
+        self.property
+            .iter()
+            .map(|(&gid, row)| {
+                let stock = row.production_stock();
+                let dinner = if gid == TIME {
+                    0.0
+                } else {
+                    self.dinner_qty(gid)
+                };
+                (gid, (stock - dinner).max(0.0))
+            })
+            .collect()
     }
 
     /// Standing dinner qty for `good`, falling back to today's shortfall.
@@ -553,7 +649,8 @@ impl Firm {
     /// - Applies consumed inputs to `quantity` first, then `held`. Process
     ///   outputs (and Consumed-input decay products) go to `held`, not
     ///   `quantity`. New output goods are auto-created. Later lines in the
-    ///   same day may spend `held` after on-hand stock.
+    ///   same day may spend `held` after on-hand stock, excluding owner
+    ///   dinner.
     /// - Records day-flows on each [`FirmPRow`]: `produced` for positive changes
     ///   (outputs + decay results), `consumed` for destroyed/consumed inputs.
     ///   Those two input types are not distinguished on the row; decay products of
@@ -576,8 +673,9 @@ impl Firm {
     /// apply elsewhere. Good flows live on the property rows; market
     /// production/consumption totals should sum those rows.
     /// 
-    /// Available stock is `quantity + held`. The `market` parameter is
-    /// used solely to snapshot current AMV values for record-keeping.
+    /// Available stock is `quantity + held` minus owner dinner (Time is
+    /// not reduced). The `market` parameter is used solely to snapshot
+    /// current AMV values for record-keeping.
     /// 
     /// ## Panic
     /// 
@@ -594,25 +692,18 @@ impl Firm {
             if factuals.config.firm.keep_alive {
                 self.apply_keep_alive_line(factuals, i);
             }
-            let line = &mut self.production_line[i];
-            // if process is not found, panic
-            let Some(process) = factuals.processes.get(&line.process) else {
-                panic!("Process not found!");
-            };
-
             // Skip idle lines (target 0). `do_process` requires a positive target when Some.
-            if matches!(line.target, Some(t) if t <= 0.0) {
+            if matches!(self.production_line[i].target, Some(t) if t <= 0.0) {
                 continue;
             }
-
-            // Snapshot of spendable stock: on-hand plus today's holding slot.
-            let available: HashMap<usize, f64> = self
-                .property
-                .iter()
-                .map(|(&gid, row)| (gid, row.production_stock()))
-                .collect();
-
-            let result = process.do_process(&available, line.target, factuals);
+            let process_id = self.production_line[i].process;
+            let target = self.production_line[i].target;
+            let Some(process) = factuals.processes.get(&process_id) else {
+                panic!("Process not found!");
+            };
+            let available = self.production_available();
+            let result = process.do_process(&available, target, factuals);
+            let line = &mut self.production_line[i];
 
             // This-run AMV snapshots; leftover values would poison cost blending.
             line.last_amv_consumed = 0.0;
@@ -2350,6 +2441,116 @@ mod firm {
         }
     }
 
+    mod refresh_household_needs_should {
+        use super::*;
+        use crate::game::actor::Actor;
+        use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+        use crate::game::good::TIME;
+        use crate::game::household::Household;
+        use crate::game::pop::{DemoRow, Pop, PopRecords};
+        use crate::game::scalingfactor::ScalingFactor;
+        use crate::game::sentiment::Sentiment;
+
+        fn owner_pop(id: usize, desire: Desire) -> Pop {
+            let mut pop = Pop {
+                id,
+                job: 0,
+                property: HashMap::new(),
+                desires: vec![vec![]; 3],
+                working_desires: vec![],
+                demographics: DemoRow {
+                    household: Household::new(),
+                    species: 0,
+                    culture: 0,
+                    class: 0,
+                    religion: 0,
+                },
+                current_orders: vec![],
+                stored_effects: vec![],
+                sentiment: Sentiment::new(),
+                records: PopRecords::default(),
+            };
+            pop.desires[0].push(desire);
+            pop
+        }
+
+        #[test]
+        fn in_shop_target_takes_the_full_bucket() {
+            let farm = Process::new(1, "farm", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(1, 2.0, true));
+            let mut factuals = make_factuals_with_process(farm);
+            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
+            factuals.goods.insert(3, make_good(3, "bread", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+
+            let food = Desire {
+                source: DesireSource::Species(0, 0),
+                priority: 0,
+                target: vec![
+                    DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                    DesireTarget::new(3, DesireTargetType::Consume, 1.5),
+                ],
+                amount: 5.0,
+                satisfaction: 0.0,
+                category: Some("food".into()),
+                effect: vec![],
+                scalar: ScalingFactor::All(1.0),
+                decay: 0.0,
+            };
+            let pop = owner_pop(1, food);
+            let mut firm = Firm::new(1, "well".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner(Actor::Pop(1))
+                .with_owner_liability();
+            let mut line = empty_production_line(1);
+            line.target = Some(2.0);
+            firm.production_line.push(line);
+            let pops = HashMap::from([(1, pop)]);
+
+            firm.refresh_household_needs(&pops, &factuals);
+
+            assert_eq!(firm.household_demand.get(&1).copied(), Some(5.0));
+            assert_eq!(firm.household_needs.get(&1).copied(), Some(5.0));
+            assert_eq!(firm.household_demand.get(&3).copied(), None);
+        }
+
+        #[test]
+        fn off_shop_want_stays_on_household_needs() {
+            let farm = Process::new(1, "farm", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(1, 2.0, true));
+            let mut factuals = make_factuals_with_process(farm);
+            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
+            factuals.goods.insert(4, make_good(4, "gold", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+
+            let shiny = Desire {
+                source: DesireSource::Species(0, 5),
+                priority: 5,
+                target: vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
+                amount: 5.0,
+                satisfaction: 0.0,
+                category: Some("shiny".into()),
+                effect: vec![],
+                scalar: ScalingFactor::All(1.0),
+                decay: 0.0,
+            };
+            let pop = owner_pop(1, shiny);
+            let mut firm = Firm::new(1, "well".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner(Actor::Pop(1))
+                .with_owner_liability();
+            let mut line = empty_production_line(1);
+            line.target = Some(2.0);
+            firm.production_line.push(line);
+            let pops = HashMap::from([(1, pop)]);
+
+            firm.refresh_household_needs(&pops, &factuals);
+
+            assert_eq!(firm.household_demand.get(&4).copied(), Some(5.0));
+            assert_eq!(firm.household_needs.get(&4).copied(), Some(5.0));
+        }
+    }
+
     mod run_production_should {
         use crate::game::good::TIME;
         use crate::game::process::InputEffect;
@@ -3154,6 +3355,35 @@ mod firm {
             assert_eq!(firm.production_line[1].last_iterations, 1.0);
             assert_eq!(firm.production_line[0].last_iterations, 1.0);
             assert_eq!(firm.property[&20].held, 1.0);
+        }
+
+        #[test]
+        fn optional_booster_leaves_owner_dinner() {
+            let grain = Process::new(1, "grain", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_input(ProcessInput::new(2, 0.5, true, InputType::Destroyed, true))
+                .with_output(ProcessOutput::new(1, 6.0, true));
+            let mut factuals = make_factuals_with_process(grain);
+            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
+            factuals.goods.insert(2, make_good(2, "water", HashMap::new()));
+            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
+            factuals.config.firm.complexity_time_factor = 0.0;
+
+            let mut firm = Firm::new(1, "farm".into(), 42, hexx::Hex::new(0, 0))
+                .with_owner_liability();
+            firm.household_needs.insert(2, 5.0);
+            firm.property.insert(TIME, FirmPRow::new().with_quantity(4.0));
+            firm.property.insert(2, FirmPRow::new().with_quantity(6.0));
+            let mut grain_line = empty_production_line(1);
+            grain_line.target = Some(8.0);
+            firm.production_line.push(grain_line);
+
+            let market = make_market_with_amvs(&[(1, 1.0), (2, 1.0), (TIME, 1.0)]);
+            firm.run_production(&factuals, &market);
+
+            assert_eq!(firm.production_line[0].last_iterations, 8.0);
+            let water = firm.property[&2].quantity + firm.property[&2].held;
+            assert_eq!(water, 5.0, "optional water ate dinner, left {water}");
         }
 
         #[test]
@@ -4449,6 +4679,22 @@ mod firm {
             firm.plan(&factuals, &history);
             let got = firm.production_line[0].target.unwrap();
             assert!(got >= 4.0, "cut owner dinner, got {got}");
+        }
+
+        #[test]
+        fn owner_need_above_output_raises_quota() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0);
+            mark_hit(&mut firm, 0.0, 4.0, 20.0);
+            firm.production_line[0].aim = 4.0;
+            firm.household_needs.insert(20, 5.0);
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 5.0;
+            plank.average_cost = 5.0;
+            plank.sell_no_proposal = 10.0;
+            firm.plan(&factuals, &history);
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got > 4.0, "did not raise for owner dinner, got {got}");
         }
 
         #[test]

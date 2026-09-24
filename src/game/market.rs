@@ -197,6 +197,26 @@ impl Market {
 
 /// Pushes each order into the buy book (`target_amount` > 0) or the sell book
 /// (`target_amount` < 0). Zero-amount orders are dropped.
+/// Goods a remainder owner already makes in-shop. They are not leftover
+/// market demand and are not posted as buys.
+fn remainder_owner_firm(pop_id: usize, firms: &HashMap<usize, Firm>) -> Option<&Firm> {
+    firms
+        .values()
+        .find(|firm| firm.owners.liable && firm.owners.pop_id() == Some(pop_id))
+}
+
+fn remainder_pantry_goods(
+    pop_id: usize,
+    firms: &HashMap<usize, Firm>,
+    factuals: &Factuals,
+) -> HashSet<usize> {
+    let mut goods = HashSet::new();
+    if let Some(firm) = remainder_owner_firm(pop_id, firms) {
+        goods.extend(firm.produced_goods(factuals));
+    }
+    goods
+}
+
 fn split_into_books(
     orders: Vec<MarketOrder>,
     buys: &mut Vec<MarketOrder>,
@@ -519,7 +539,7 @@ impl Market {
             firms
                 .get_mut(&id)
                 .unwrap_or_else(|| panic!("market firm {id} missing from firms"))
-                .refresh_household_needs(pops);
+                .refresh_household_needs(pops, factuals);
         }
         for &id in &self.pops {
             pops.get_mut(&id)
@@ -585,7 +605,7 @@ impl Market {
 
         report.leftover_buys = buys;
         report.leftover_sells = sells;
-        self.stamp_leftover_buy(&report.leftover_buys, &report.unmatched_buys);
+        self.stamp_leftover_buy(&report.leftover_buys, &report.unmatched_buys, firms, factuals);
         self.nudge_amv_from_imbalance(&factuals.config.market);
         self.market_days = self.market_days.saturating_add(1);
         self.update_salability(&factuals.config.market);
@@ -1029,11 +1049,12 @@ impl Market {
 
         for &id in &self.pops {
             let pop = pops.get_mut(&id).expect("market pop missing from pops");
-            split_into_books(
-                pop.create_orders(history, factuals, &self.unavailable_goods),
-                &mut buys,
-                &mut sells,
-            );
+            let pantry = remainder_pantry_goods(id, firms, factuals);
+            let mut orders = pop.create_orders(history, factuals, &self.unavailable_goods);
+            orders.retain(|order| {
+                order.target_amount <= 0.0 || !pantry.contains(&order.target)
+            });
+            split_into_books(orders, &mut buys, &mut sells);
         }
 
         for &id in &self.firms {
@@ -1151,9 +1172,20 @@ impl Market {
             self.add_requests(target, sought, &factuals.config.market);
         }
 
-        let Some(proposal) = as_deal_maker(pops, firms, buy_order.origin)
-            .buy(&buy_order, &sell_order, history, factuals)
-        else {
+        let proposal = if let Actor::Pop(pid) = buy_order.origin {
+            let shelf = remainder_owner_firm(pid, firms);
+            pops.get(&pid)
+                .unwrap_or_else(|| panic!("market pop {pid} missing from pops"))
+                .buy_with_firm(&buy_order, &sell_order, history, factuals, shelf)
+        } else {
+            as_deal_maker(pops, firms, buy_order.origin).buy(
+                &buy_order,
+                &sell_order,
+                history,
+                factuals,
+            )
+        };
+        let Some(proposal) = proposal else {
             let transport = wash_transport(factuals);
             let origin = sell_order.origin;
             let renewed = wash_pair(buy_order, sell_order, factuals, pops, firms, buys, sells);
@@ -1250,7 +1282,16 @@ impl Market {
         }
         self.drift_amv_on_accept(target, filled, &proposal.goods, &factuals.config.market);
 
-        as_deal_maker_mut(pops, firms, buy_order.origin).finalize(&proposal, history);
+        if let Actor::Pop(pid) = buy_order.origin {
+            let fid = remainder_owner_firm(pid, firms).map(|firm| firm.id);
+            let pop = pops
+                .get_mut(&pid)
+                .unwrap_or_else(|| panic!("market pop {pid} missing from pops"));
+            let shelf = fid.and_then(|id| firms.get_mut(&id));
+            pop.finalize_with_firm(&proposal, history, shelf);
+        } else {
+            as_deal_maker_mut(pops, firms, buy_order.origin).finalize(&proposal, history);
+        }
         as_deal_maker_mut(pops, firms, sell_order.origin).finalize(&proposal, history);
         record_firm_sell_meet(firms, sell_order.origin, target, 1.0, 0.0, 0.0);
         as_deal_maker_mut(pops, firms, buy_order.origin)
@@ -1423,12 +1464,24 @@ impl Market {
         history
     }
 
-    fn stamp_leftover_buy(&mut self, leftover: &[MarketOrder], unmatched: &[MarketOrder]) {
+    fn stamp_leftover_buy(
+        &mut self,
+        leftover: &[MarketOrder],
+        unmatched: &[MarketOrder],
+        firms: &HashMap<usize, Firm>,
+        factuals: &Factuals,
+    ) {
         self.leftover_buy.clear();
         for order in leftover.iter().chain(unmatched) {
-            if order.target_amount > 0.0 {
-                *self.leftover_buy.entry(order.target).or_insert(0.0) += order.target_amount;
+            if order.target_amount <= 0.0 {
+                continue;
             }
+            if let Actor::Pop(pid) = order.origin {
+                if remainder_pantry_goods(pid, firms, factuals).contains(&order.target) {
+                    continue;
+                }
+            }
+            *self.leftover_buy.entry(order.target).or_insert(0.0) += order.target_amount;
         }
     }
 }

@@ -22,9 +22,8 @@ session. Default CSV stem is `pop_prices`.
 Each morning: `start_day` Time, then top up to that cap (add only the
 shortfall; already-at-cap stock is left alone), then market / consume /
 decay / pop `record_keeping`. The top-up is the produce stand-in (no firms).
-`day N` stops if any good AMV is negative
-and prints the day and those goods. No firm production, plan, or
-`keep_alive`.
+`day N` stops if any good AMV is negative and prints the day and those
+goods. No firm production, plan, or `keep_alive`.
 Caps follow init firm `target` × process output (Time output caps pops 28 and 56).
 
 ## Market tester
@@ -34,7 +33,11 @@ default off).
 `solo [id|on|off]` reboots to one remainder pop/firm (default id 1) so
 internal plan can be watched without the village market. `solo off` is the
 eight-household village. `cargo run --example market_tester -- solo`
-starts there.
+starts there. Remainder owners eat from the shop shelf (not a wage).
+Household needs refresh before production from in-shop desire fill
+(a well's food dinner is grain, not the bread shop-plan split). Goods
+the shop makes are not posted as leftover-buy demand. Uncovered owner
+need raises quota. Solo water should hold basic 3.
 
 **Code / source of truth:** `examples/market_tester/` (`main`, `roster`,
 `format`, `parse`, `csv`). Recipes: `data/world/processes.toml` (1 Time → 15
@@ -86,17 +89,21 @@ init-firm process outputs after `start_day` instead of `DAILY_OUTPUT` 0.
    `clear_day_flows`.
 2. `Market::settle_labor` (pays contracts, stamps Time AMV). Hours, wage
    basket, and one-employer roster: `labor.md`. Time moves pop -> firm here.
-3. `Market::run_market_day`. Time is untradeable transport; Time AMV is not
-   leftover-book drift. Leftover books do not move AMV. Each market day AMV
-   is rescaled to mean 10.0 after salability (firm quotes scale with it;
-   the AMV trail is not rewritten), then the close is recorded.
-4. `Firm::run_production` on **already-loaded** factuals. Do not reload
-   `processes.toml`. A line starting from 0 snaps to 1. Outputs go to
-   `held`; later lines may spend `held` after on-hand stock.
-5. Pop `consume`, `update_sentiments` (market-day history), then
-   `decay_goods`. Firm `decay_goods` next (`quantity` rots, then `held`
-   joins `quantity`). Aggregate `(decayed, volume)`
-   and `Market::cap_salability_from_decay`. Consumed is volume, not rot.
+3. `Firm::refresh_household_needs`, then `Firm::run_production` on
+   **already-loaded** factuals. Do not reload `processes.toml`. A line
+   starting from 0 snaps to 1. Outputs go to `held`; later lines may spend
+   `held` after on-hand stock, excluding owner dinner.
+4. `Market::run_market_day` (may sell `held`). Time is untradeable
+   transport; Time AMV is not leftover-book drift. Leftover books do not
+   move AMV. Remainder pantry goods are not posted or stamped as leftover
+   buys. Each market day AMV is rescaled to mean 100.0 after salability
+   (firm quotes scale with it; the AMV trail is not rewritten), then the
+   close is recorded.
+5. Remainder `Pop::consume_from_firm` (shop shelf), else `Pop::consume`;
+   `update_sentiments` (market-day history), then `decay_goods`. Firm
+   `decay_goods` next (`quantity` rots, then `held` joins `quantity`).
+   Aggregate `(decayed, volume)` and `Market::cap_salability_from_decay`.
+   Consumed is volume, not rot.
 6. Pop `record_keeping` from the closing `MarketHistory` **after** decay and
    the rot cap so shop/save are not written against stock that will rot away
    and save ranking sees leftover-rot salability. Coin save/shop come from

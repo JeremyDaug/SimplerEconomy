@@ -4,7 +4,11 @@ Read this only for firm property, production, planning, or `create_orders`.
 Field names: `docs/design-vocabulary.md` (firm property row, sell success,
 realized profit, AMV bound). Do not copy them here.
 
-## Pickup (2026-09-17)
+## Pickup (2026-09-23)
+
+Remainder village is **landed enough to leave**. Next system is **founding**
+a firm: [`creation.md`](creation.md). Do not add lines to these shops to
+fake a specialist.
 
 Village remainder owner-operators. Direction: until money is standard, most
 shops are subsistence plus a bit of specialty. High-demand luck can
@@ -45,16 +49,18 @@ lines). Gold still ran (~4) and kept the garden. Baker and cabins printed
 pops SOL ~6–8; baker ~0.9; cabin pop ~3.3 with common 1. Unmatched demand
 mostly bread and wood.
 
-**Hole to pick up:** baker/cabin crafts were booking all garden output.
-Plan now reserves standing owner consume (`household_demand`) and caps
-crafts to the surplus. Fence still uses today's shortfall. Quota walk is
-demand (raise/cut/stay); quote walk is sold-through vs failed meetings —
-they are not scored against each other. Do not re-add subsistence-only floors.
+**Hole to pick up:** firm **founding** — [`creation.md`](creation.md). First
+slice is **split** of a **divided** (disorganized) multi-pop subsistence
+shop: scale lines with the departing pop, then add and/or remove one line.
+The eight 1-pop remainder shops cannot split. Do not re-add
+subsistence-only floors. Do not retune remainder plan to make extracts
+aggressive.
 
-**Parked (do not start unless asked):** slow salability; money as a standard;
-disorganized/cottage firms that spin out cheaper specialized shops; DIY Time
-vs buy; input slots / good class; shifting firm needs onto the owner pop;
-PlayState intramarket/production stubs; hiring/creation.
+**Parked (do not start unless asked):** savings founding (second founding
+slice; wants money); hiring / owner-vs-worker; money as a standard; slow
+salability; DIY Time vs buy; input slots / good class; shifting firm needs
+onto the owner pop; PlayState intramarket/production stubs; four-line crafts
+missing Time after the complexity tax (balance, not a new system).
 
 ## Landed vs stub
 
@@ -63,7 +69,7 @@ PlayState intramarket/production stubs; hiring/creation.
 | `FirmPRow` + helpers | Landed |
 | `run_production` | Landed + tests. Tester `day` calls it. Living remainder firms start with a specialty line plus three subsistence lines (farm / water / forage, target 2). Hours are recipe Time plus the firm-wide complexity tax. PlayState production still `todo!()` |
 | Line abandonment | Landed. Any line at `target` 0 with no leftover-buy, owner shortfall, or in-shop input demand increments `idle_days` and drops after `abandon_idle_days` (5). Empty firms stay in the world; tester tables print `dead/abandoned`. |
-| Owner need = sale | Landed. Owner consume shortfall (`household_needs`) and leftover buys are the same kind of demand. Weaker duplicate recipes (lower recipe AMV-out/AMV-in of the same good) walk down. Production runs Time-only owner-dinner lines first, then crafts that eat those goods, then input-feeding, then higher AMV profit. Remainder recap/fence uses goods the shop actually makes, not the subsistence tag. Finished output can tender for missing inputs even if fenced for the owner. |
+| Owner need = sale | Landed. Owner consume shortfall (`household_needs`) and leftover buys are the same kind of demand. Remainder owners eat goods the shop made (`Pop::consume_from_firm`); those goods are not leftover-buy demand. `refresh_household_needs` assigns desire sat to in-shop targets (a water shop's food lands on grain, not the shop-plan bread split); leftover sat on goods the shop does not make stays as owner want so evaluate treats that tender as need. Dinner fence is `reserve_target`, not `use_target`. Uncovered owner / leftover-buy / in-shop input raises quota even when leftover sells fail. Production spendable stock is on-hand plus held minus owner dinner, so optional boosters and crafts use surplus only. Weaker duplicate recipes (lower recipe AMV-out/AMV-in of the same good) walk down. Production runs Time-only owner-dinner lines first, then crafts that eat those goods, then input-feeding, then higher AMV profit. Remainder recap/fence uses goods the shop actually makes, not the subsistence tag. Finished output can tender for missing inputs even if fenced for the owner. |
 | Complexity Time tax | Landed. Firm-wide overhead, not a line. Multi-line shops charge `complexity_time_factor * sum(weight * iterations)` Time **before** any line runs (and include it in labor hours). One-line shops pay 0. Not a throughput haircut. |
 | Keep-alive | `firm.keep_alive` (default off). Tester `keep_alive on`. Floors collapsed lines at 1 iteration and credits missing inputs plus coin. Credits immediately before each line so a later line still runs after an earlier one consumed stock |
 | `plan` | Landed + tests. Called from `record_keeping` |
@@ -113,7 +119,7 @@ do not invent a third model.
 A line starting from 0 snaps to at least 1 iteration. The complexity tax
 destroys Time on the firm first, then production runs owner-dinner lines,
 then input-feeding lines, then higher recipe AMV profit so later lines
-may spend that `held`.
+may spend that `held`. Spendable stock excludes owner dinner.
 Missing materials keep scale. Missing Time is a scale miss. An idle
 `target` 0 restarts at 1 when leftover buys, owner shortfall, or in-shop
 input need the output and this line is the best AMV recipe for that good.

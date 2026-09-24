@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-17
+**Updated:** 2026-09-23
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -45,8 +45,9 @@ invariants and traps, not a substitute for the code.
   Outgoing units peel extra → save → consume at those same factors. The
   0.50 floor always applies (no floor-drop).
 - Live intramarket loop: `Market::run_market_day`. Tester day is labor,
-  produce onto `held`, market (may sell `held`), consume, decay (`held`
-  skips tonight), plan. Vault `Turns.md` is market then production.
+  produce onto `held`, market (may sell `held`), remainder consume from
+  the shop shelf, decay (`held` skips tonight), plan. Vault `Turns.md`
+  is market then production.
   PlayState intramarket and production phases are stubs.
 - `Firm::plan` rewrites production and property targets. Line `aim` lerps
   toward throughput. Then one walk step (raise/cut quote or quota, or stay)
@@ -78,7 +79,11 @@ invariants and traps, not a substitute for the code.
   complexity Time tax first, then Time-only owner-dinner, then crafts that
   eat dinner goods, then input-feeding.
   Remainder
-  recap/fence uses goods the shop makes. Finished output can tender for
+  recap/fence uses goods the shop makes. Remainder owners eat from the
+  shop shelf and tender shop surplus above dinner; dinner is in-shop
+  desire fill plus leftover off-shop wants; dinner fence is reserve,
+  not recipe use. Uncovered owner need raises quota. Production
+  spendable stock leaves owner dinner. Finished output can tender for
   inputs the shop cannot make.
   `growth_target` is the expansion gap on a grow, else 0.
 - Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
@@ -138,16 +143,15 @@ invariants and traps, not a substitute for the code.
   **Checkpoint:** with mean 100 and ±1 imbalance kick, a 180-day pop_tester
   run held AMVs off the bounce (gold ~12, tools ~300). Do not retune leftover
   AMV or re-add the 1-of-each grant unless asked.
-  Last village 60-day (cleared from `data/logs/`): mean SOL ~5.22, 8 trades,
-  wages 0. Extracts at household scale; grain/water/wood dropped a duplicate
-  plot. Gold ran. Baker and cabins `missing time` after the complexity tax.
-  Pickup: [`firms.md`](handoff/firms.md) **Pickup**.
+  Remainder village feeds itself and trades some bread/gold/cabins. Extracts
+  staying mixed is expected. Pickup: [`creation.md`](handoff/creation.md).
 
-**Next (named):** the Time hole on four-line crafts (baker/cabin
-`missing time` after tax-first). Then slow salability. Money as a standard
-(specialized firms forming immediately) waits on that. Disorganized /
-cottage-industry firms that can spin out cheaper specialized shops are a
-later firm type, not v0.
+**Next (named):** firm **founding**. First slice: **split** a divided
+(disorganized) multi-pop subsistence shop — scale lines with the departing
+pop, then add and/or remove one line. The eight 1-pop remainder shops
+cannot split. Savings founding, hiring classes, and money wait. Do not
+add lines to the current remainder shops. Do not retune remainder plan
+for extract aggression.
 Home production vs buy: if Time+friction to trade exceeds recipe Time,
 prefer making it; output bulk as a soft floor on that Time. Input slots /
 good class for tools is a later note. Do not add subsistence plots or
@@ -193,6 +197,7 @@ Match the user's task. Stay in those files.
 | Labor, wages, Time, workforce | [`labor.md`](handoff/labor.md) | `workforce.rs`, `Firm::settle_labor_contracts`, `Firm::pay_wage_shares` |
 | Firm plan, production, `FirmPRow`, records | [`firms.md`](handoff/firms.md) | `firm.rs`, `firm/plan.rs` |
 | Firm `create_orders` | [`firms.md`](handoff/firms.md) | `firm/orders.rs` |
+| Found / split / savings founding | [`creation.md`](handoff/creation.md) | none yet; do not found inside `create_orders` |
 | Market day, matching, AMV, salability, order priority | [`market.md`](handoff/market.md) | `market.rs`, `marketorder.rs` |
 | Deals, tenders, keep, transport, whole units | [`deals.md`](handoff/deals.md) | `deal.rs`, `pop/deal.rs` |
 | Pop consume, shop/save, desires, sentiment | [`pops.md`](handoff/pops.md) | `pop.rs`, `pop/orders.rs`, `desire.rs`, `pop_property.rs` |
@@ -216,10 +221,11 @@ init/save data; class demographics; capital amortization; AMV as a matching
 weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": four-line crafts starving on Time after the
-complexity tax (baker/cabin), then slow salability. PlayState
-`phase_intra_market_day` is still unwired. Hiring/creation is skipped on
-purpose. Village pickup: [`firms.md`](handoff/firms.md) **Pickup**.
+If they ask "what's next": firm founding ([`creation.md`](handoff/creation.md)),
+first slice **split** of a divided multi-pop shop. PlayState
+`phase_intra_market_day` is still unwired. Hiring classes and savings
+founding wait. Village remainder pickup is landed; those 1-pop shops
+cannot split.
 
 ---
 

@@ -633,6 +633,9 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     let wages = session.market.settle_labor(&mut pops, &mut firms, &session.factuals);
 
     for firm in firms.values_mut() {
+        firm.refresh_household_needs(&pops, &session.factuals);
+    }
+    for firm in firms.values_mut() {
         let _effects = firm.run_production(&session.factuals, &session.market);
     }
 
@@ -645,8 +648,19 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
 
     let market_close = session.market.history();
     let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
-    for pop in pops.values_mut() {
-        pop.consume();
+    let mut pop_ids: Vec<usize> = pops.keys().copied().collect();
+    pop_ids.sort_unstable();
+    for pop_id in pop_ids {
+        let firm_id = firms.values().find_map(|firm| {
+            (firm.owners.liable && firm.owners.pop_id() == Some(pop_id)).then_some(firm.id)
+        });
+        let pop = pops.get_mut(&pop_id).expect("pop id from keys");
+        if let Some(fid) = firm_id {
+            let firm = firms.get_mut(&fid).expect("remainder firm");
+            pop.consume_from_firm(Some(firm), Some(&session.factuals));
+        } else {
+            pop.consume();
+        }
         pop.update_sentiments(&market_close, &session.factuals.config.pop);
         add_decay_rot(&mut rot, pop.decay_goods(&session.factuals));
     }
@@ -748,6 +762,59 @@ mod day_should {
         apply_roster(&mut session, None).expect("village");
         assert_eq!(session.pops.len(), 8);
         assert_eq!(session.solo, None);
+    }
+
+    #[test]
+    fn solo_grain_eats_garden_wood() {
+        let mut session = boot_session();
+        apply_roster(&mut session, Some(1)).expect("solo 1");
+        let _ = run_days(&mut session, 10);
+        let pop = &session.pops[0];
+        for desire in &pop.desires[0] {
+            let name = desire.category.as_deref().unwrap_or("basic");
+            assert!(
+                desire.satisfaction + 1e-6 >= desire.amount,
+                "{name} sat {} want {}",
+                desire.satisfaction,
+                desire.amount
+            );
+        }
+        assert!(
+            pop.records.tier_sat[0] + 1e-6 >= 3.0,
+            "basic {} (dinner lost to production)",
+            pop.records.tier_sat[0]
+        );
+        let forage = session.firms[0]
+            .production_line
+            .iter()
+            .find(|line| {
+                session.factuals.processes.get(&line.process).is_some_and(|p| {
+                    p.outputs.iter().any(|o| o.good == WOOD)
+                })
+            })
+            .expect("forage");
+        assert!(
+            forage.last_iterations > 0.0,
+            "forage did not run"
+        );
+    }
+
+    #[test]
+    fn solo_water_covers_basic_food() {
+        let mut session = boot_session();
+        apply_roster(&mut session, Some(2)).expect("solo 2");
+        let _ = run_days(&mut session, 15);
+        let pop = &session.pops[0];
+        assert!(
+            pop.records.tier_sat[0] + 1e-6 >= 3.0,
+            "basic {} (farm did not cover food)",
+            pop.records.tier_sat[0]
+        );
+        assert!(
+            pop.records.tier_sat[1] <= 1e-6,
+            "common {} (water shop should not fill housing/bread)",
+            pop.records.tier_sat[1]
+        );
     }
 
     #[test]
