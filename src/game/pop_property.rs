@@ -70,34 +70,41 @@ impl DemoRow {
     }
 }
 
+/// # Population Property Row (PopPRow)
+/// 
 /// Per-good property ledger for a pop.
+/// 
+/// Contains the data needed for each good in a pop's property. 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PopPRow {
-    /// Total amount owned. Not necessarily available.
+    /// Total amount currently owned.
     pub quantity: f64,
+    /// Units of the good earmarked for today's uses. Does not distinguish between uses.
+    /// quantity - reserved = available stock.
+    pub reserved: f64,
+    /// Units of the good being output by production processes. Added to quantity 
+    /// immediately, but not decayed today. Decay should set this value to 0, effectively
+    /// completing the shift of goods.
+    pub process_output: f64,
+
+    // Results of pop's use. 
+    /// Consumed for desires today; full decay at day end.
+    /// 
+    /// This is removed from quantity when added to.
+    pub consumed: f64,
+    /// Used (not destroyed) for use-desires; returned to quantity at day end after decay.
+    /// 
+    /// Units added to this are removed from quantity and returned at day end just before decay.
+    pub used: f64,
 
     /// Touchstone for how much of this good needs target for desires.
     /// Updated with population changes; may be removed later.
     pub desire_needs: f64,
-
-    /// Shopping target after shopping (bulk planning).
-    /// Goods that cannot trade should stay 0.0.
+    /// The amount of this good which is considered desireable for savings.
     /// 
-    /// Ideally should be equal to saved + reserved after shopping, but not a hard 
-    /// requirement.
-    pub shop_target: f64,
-
-    /// Wish-to-preserve between days (hoarding target). Not a hard fence on consume.
+    /// This is not a hard target that 'must' be reached, but a goal it will attempt to
+    /// reach.
     pub save_target: f64,
-
-    /// Earmarked for today's use; does not remove from quantity. Reset day-start.
-    pub reserved: f64,
-
-    /// Consumed for desires today; full decay at day end.
-    pub consumed: f64,
-
-    /// Used (not destroyed) for use-desires; returned to quantity at day end after decay.
-    pub used: f64,
 }
 
 impl PopPRow {
@@ -106,11 +113,6 @@ impl PopPRow {
             quantity,
             ..default()
         }
-    }
-
-    pub fn with_target(mut self, target: f64) -> Self {
-        self.shop_target = target;
-        self
     }
 
     pub fn with_desire_needs(mut self, desire_needs: f64) -> Self {
@@ -144,23 +146,40 @@ impl PopPRow {
         self
     }
 
-    /// `quantity - shop_target` (negative ⇒ want to buy).
-    pub fn exchange(&self) -> f64 {
-        self.quantity - self.shop_target
+    /// Maximum desired amount of a good. Equal to:
+    /// 
+    /// [`Self::desire_needs`] + [`Self::save_target`].
+    /// 
+    /// This is our maximum shopping target.
+    pub fn daily_desire(&self) -> f64 {
+        self.desire_needs + self.save_target
     }
 
-    /// `quantity - reserved` (unclaimed stock).
+    /// The amount available for exchange.
+    /// 
+    /// [`Self::quantity`] - [`Self::daily_desire()`]
+    /// 
+    /// Positive values is a tenderable surplus, negative is a shortage.
+    pub fn exchange(&self) -> f64 {
+        self.quantity - self.daily_desire()
+    }
+
+    /// The amount available for internal use.
+    /// 
+    /// [`Self::quantity`] - [`Self::reserved`]
+    /// 
+    /// This value allows dipping into savings.
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
     }
 
     /// # Saved
     ///
-    /// Actual saved units: `quantity - reserved` (floored at 0).
-    /// Consume draws quantity and reserved together, so this stays valid after consume.
-    /// Does not use `save_target`.
+    /// The number of units that can be considered 'saved'.
+    /// 
+    /// Equal to ([`Self::quantity`] - [`Self::reserved`]).min([`Self::save_target`])
     pub fn saved(&self) -> f64 {
-        (self.quantity - self.reserved.max(0.0)).max(0.0)
+        (self.quantity - self.reserved).min(self.save_target)
     }
 }
 
@@ -391,9 +410,4 @@ mod pop_p_row_saved_should {
         assert_eq!(row.saved(), 6.0);
     }
 
-    #[test]
-    fn floors_at_zero_when_reserved_exceeds_quantity() {
-        let row = PopPRow::new(3.0).with_reserve(5.0);
-        assert_eq!(row.saved(), 0.0);
-    }
 }

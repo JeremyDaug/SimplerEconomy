@@ -31,56 +31,7 @@ pub struct PlayState {
 
 impl PlayState {
     pub fn advance_turn(&mut self) {
-        self.turn += 1;
-
-        // 1. Add turn start resources. Like time and environmental resources.
-        self.phase_start_of_day();
-        // 2. Environment random effects and results which can interfere with plans
-        self.phase_environment_events();
-        // 3. Player actions, all run and applied simultaneously and before anything 
-        //    else could interfere with player actions. This does not include player
-        //    market purchasing, wich is saved for the market proper. This includes
-        //    movement of units, but not map alterations.
-        self.phase_player_actions();
-        // 4. Apply new player bonuses, including creating new actors, applying new
-        //    bonuses, updating pop demographic desires and priorities, and other similar
-        //    changes induced by the player.
-        self.phase_player_bonuses_and_demographic_updates();
-        // 5. Intra-Market trading day. This is broken up and organized by group turns.
-        //    The default order is Player(state), Institutions, Firms, and Pops.
-        //    Firms and pops are always in this order, giving firms advantage in gathering
-        //    and consolidating resources for merchants. Institutions may put themselves
-        //    before, between, or after Pops, defined by the institution. States may break
-        //    their market actions and put theme anywhere in this order as well. For example
-        //    a player may put construction and military good purchasing in the front of
-        //    the order, while putting welfare purchasing in the rear.
-        self.phase_intra_market_day();
-        // 6. Inter-market trade. Trade between markets will get it's turn and be 
-        //    analyzed. Any in-progress trades take their turn/movement, the 
-        //    results/effects are analyzed for possible new trades, and new trades are 
-        //    kicked off.
-        self.phase_inter_market_trade();
-        // 7. Production and Non-Player Planning. After all trade is done for the day,
-        //    firms, institutions, and the like, look at their prior success, compare
-        //    try to predict what will occur tomorrow, create/modify their production 
-        //    plans, then do their production plans.
-        self.phase_production_and_planning();
-        // 8. Pop Consumption.
-        self.phase_pop_consumption();
-        // 9. Pop Growth/Decline.
-        self.phase_pop_growth();
-        // 9b. Record tier sat / SOL / sentiment after consume+growth, before migration.
-        self.phase_update_sentiments();
-        // 9c. Harvest culture / research / legitimacy / etc. from pops.
-        self.phase_extract_special_resources();
-        // 10.Pop migration.
-        self.phase_pop_migration();
-        // 11.Record Keeping.
-        self.phase_record_keeping();
-        // 12.Map Changes, like player claims, market consolidation/integration, etc.
-        self.phase_map_changes();
-        // 13.Good Decay to wrap up the day.
-        self.phase_good_decay();
+        todo!()
     }
 
     // --- Turn phase stubs (fill in from advance_turn) ---------------------------
@@ -118,31 +69,7 @@ impl PlayState {
     /// Institutions do not rewrite household/desires directly; they push effects
     /// (and later demographic mods). Non-demo household overlays (D1) stay deferred.
     fn phase_player_bonuses_and_demographic_updates(&mut self) {
-        let markets = &self.map_data.markets;
-        let factuals = &self.factuals;
-        let Actors {
-            pops,
-            firms,
-            institutions,
-        } = &mut self.actors;
-
-        // 1. Institutions → firms / pops.
-        for institution in institutions.values() {
-            institution.apply_passive_effects(pops, firms, markets);
-        }
-
-        // 2. Firms → pops.
-        for firm in firms.values() {
-            firm.apply_passive_bonuses(pops);
-        }
-
-        // 3. Pops: update desires from demographics if needed, resync desires.
-        for pop in pops.values_mut() {
-            pop.update_desires(factuals);
-        }
-
-        // 4. Orchestrator clears shared flags after all pops have read them.
-        self.factuals.clear_household_changed_flags();
+        todo!()
     }
 
     fn phase_intra_market_day(&mut self) {
@@ -165,10 +92,7 @@ impl PlayState {
     /// 
     /// At this point, pops consume all goods they have reserved and planned.
     fn phase_pop_consumption(&mut self) {
-        let pops = &mut self.actors.pops;
-        pops.par_iter_mut().for_each(|(_, pop)| {
-            pop.consume();
-        });
+        todo!()
     }
 
     /// # Phase Pop Growth
@@ -195,14 +119,6 @@ impl PlayState {
     /// After consume and growth, before migration. Walks each market so pops
     /// get that market's price snapshot (`Market::history`).
     fn phase_update_sentiments(&mut self) {
-        self.rebuild_market_lookups();
-        let empty = MarketHistory::new();
-        let lookups = &self.market_lookups;
-        let pop_config = &self.factuals.config.pop;
-        self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
-            let history = lookups.history_for_pop(*id, &empty);
-            pop.update_sentiments(history, pop_config);
-        });
     }
 
     /// After sentiments, before migration. Pops are independent.
@@ -211,10 +127,6 @@ impl PlayState {
     /// Pop-count vs pop-size scaling belongs here, not on the pop
     /// (1M size-1 pops vs 1 size-1M pop).
     fn phase_extract_special_resources(&mut self) {
-        let factuals = &self.factuals;
-        self.actors.pops.par_iter_mut().for_each(|(_, pop)| {
-            let _yielded = pop.extract_special_resources(factuals);
-        });
     }
 
     /// One history per market and pop-id -> market-id. Prices are day-static.
@@ -358,15 +270,7 @@ impl PlayState {
                     pop.record_keeping(factuals, history);
                 });
             });
-            s.spawn(|_| {
-                firms.par_iter_mut().for_each(|(_, firm)| {
-                    let history = lookups
-                        .histories
-                        .get(&firm.market)
-                        .unwrap_or(&empty);
-                    firm.record_keeping(factuals, history);
-                });
-            });
+            // todo, firm record keeping here.
             s.spawn(|_| {
                 institutions
                     .par_iter_mut()
@@ -409,19 +313,4 @@ impl PlayState {
         self.actors.decay_goods(&self.factuals);
         self.players.decay_goods(&self.factuals);
     }
-}
-
-// In main Bevy app setup:
-fn setup_play_state(mut commands: Commands) {
-    let mut play_state = PlayState {
-        factuals: Factuals::new(),
-        map_data: todo!(),
-        actors: todo!(),
-        players: todo!(),
-        turn: todo!(),
-        is_paused: todo!(),
-        market_lookups: MarketLookups::new(),
-    };
-    // Load factuals, generate map, init population/players...
-    commands.insert_resource(play_state);
 }

@@ -66,42 +66,6 @@ pub struct MarketOrder {
     pub shop_tier: u8,
 }
 
-/// Predefined state / player insert points along the market-day order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StateMarketSlot {
-    /// Before everyone (`0.0`).
-    First,
-    /// After institution-before-firms, before merchants (`1.5`).
-    BeforeFirms,
-    /// After ranked merchants (`FIRM_MERCHANT_END - STATE_FIRM_SLOT_MARGIN`).
-    AfterMerchants,
-    /// After ranked producers (`FIRM_PRODUCER_END - STATE_FIRM_SLOT_MARGIN`).
-    AfterProducers,
-    /// After institution-between, before pops (`3.1`).
-    AfterFirms,
-    /// After institution-after-pops (`5.1`).
-    Last,
-}
-
-impl StateMarketSlot {
-    /// Numeric order priority for this slot. Lower goes first.
-    pub fn priority(self) -> f64 {
-        self.priority_with(&crate::game::config::MarketPriorityConfig::default())
-    }
-
-    /// Numeric order priority using loaded slots.
-    pub fn priority_with(self, cfg: &crate::game::config::MarketPriorityConfig) -> f64 {
-        match self {
-            Self::First => cfg.state_first,
-            Self::BeforeFirms => cfg.state_before_firms,
-            Self::AfterMerchants => cfg.state_after_merchants(),
-            Self::AfterProducers => cfg.state_after_producers(),
-            Self::AfterFirms => cfg.state_after_firms,
-            Self::Last => cfg.state_last,
-        }
-    }
-}
-
 /// Maps a unit rank in `[0.0, 1.0)` into `[start, end)`.
 /// Rank `0.0` is first in the band (band start).
 /// `unit_rank` must be in `[0.0, 1.0)`.
@@ -436,6 +400,7 @@ impl MarketOrder {
             false
         } else {
             unreachable!("Market Orders cannot mix their optionals.");
+            false
         }
     }
 
@@ -446,6 +411,7 @@ impl MarketOrder {
             false
         } else {
             unreachable!("Market Orders cannot mix their optionals.");
+            false
         }
     }
 
@@ -456,6 +422,7 @@ impl MarketOrder {
             self.target_amount < 0.0
         } else {
             unreachable!("Market Orders cannot mix their optionals.");
+            false
         }
     }
 
@@ -466,6 +433,7 @@ impl MarketOrder {
             self.target_amount > 0.0
         } else {
             unreachable!("Market Orders cannot mix their optionals.");
+            false
         }
     }
 
@@ -661,36 +629,6 @@ mod market_order_should {
             market_priority::SELL_ACTOR_PRIORITY_FLOOR,
         );
         assert!((order.priority - 1.8).abs() < 1e-12);
-    }
-
-    #[test]
-    fn state_slots_match_named_constants() {
-        assert_eq!(StateMarketSlot::First.priority(), market_priority::STATE_FIRST);
-        assert_eq!(
-            StateMarketSlot::BeforeFirms.priority(),
-            market_priority::STATE_BEFORE_FIRMS
-        );
-        assert_eq!(
-            StateMarketSlot::AfterMerchants.priority(),
-            market_priority::STATE_AFTER_MERCHANTS
-        );
-        assert_eq!(
-            StateMarketSlot::AfterProducers.priority(),
-            market_priority::STATE_AFTER_PRODUCERS
-        );
-        assert_eq!(
-            StateMarketSlot::AfterFirms.priority(),
-            market_priority::STATE_AFTER_FIRMS
-        );
-        assert_eq!(StateMarketSlot::Last.priority(), market_priority::STATE_LAST);
-        assert_eq!(
-            market_priority::STATE_AFTER_MERCHANTS,
-            market_priority::FIRM_MERCHANT_END - market_priority::STATE_FIRM_SLOT_MARGIN
-        );
-        assert_eq!(
-            market_priority::STATE_AFTER_PRODUCERS,
-            market_priority::FIRM_PRODUCER_END - market_priority::STATE_FIRM_SLOT_MARGIN
-        );
     }
 
     #[test]

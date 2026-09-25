@@ -63,7 +63,69 @@ pub struct Good {
     #[serde(default)]
     pub categories: Vec<String>,
 }
+
 impl Good {
+    pub fn with_id(mut self, id: usize) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn with_class(mut self, class: Option<usize>) -> Self {
+        self.class = class;
+        self
+    }
+
+    pub fn with_decay_rate(mut self, decay_rate: f64) -> Self {
+        debug_assert!(decay_rate >= 0.0 && decay_rate <= 1.0);
+        self.decay_rate = decay_rate;
+        self
+    }
+
+    pub fn with_decay_result(mut self, decay_result: HashMap<usize, f64>) -> Self {
+        self.decay_result = decay_result;
+        self
+    }
+
+    pub fn with_mass(mut self, mass: f64) -> Self {
+        self.mass = mass;
+        self
+    }
+
+    pub fn with_volume(mut self, volume: f64) -> Self {
+        self.volume = volume;
+        self
+    }
+
+    pub fn with_tags(mut self, tags: HashSet<GoodTag>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    pub fn with_categories(mut self, categories: Vec<String>) -> Self {
+        self.categories = categories;
+        self
+    }
+
+    /// Sets the Transport tag to this efficiency, replacing any previous one.
+    /// Must be `> 0.0`.
+    pub fn with_transport_efficiency(mut self, efficiency: f64) -> Self {
+        self.set_transport_efficiency(efficiency);
+        self
+    }
+
+    /// Sets the Transport tag to this efficiency, replacing any previous one.
+    /// Must be `> 0.0`.
+    pub fn set_transport_efficiency(&mut self, efficiency: f64) -> &mut Self {
+        self.tags.retain(|tag| tag.transport_efficiency().is_none());
+        self.tags.insert(GoodTag::transport(efficiency));
+        self
+    }
+
     pub fn is_buyable(&self) -> bool {
         !self.tags.iter().contains(&GoodTag::Untradeable)
     }
@@ -86,12 +148,13 @@ impl Good {
         qty * self.transport_efficiency()
     }
 
-    /// Sets the Transport tag to this efficiency, replacing any previous one.
-    /// Must be `> 0.0`.
-    pub fn with_transport_efficiency(mut self, efficiency: f64) -> Self {
-        self.tags.retain(|tag| tag.transport_efficiency().is_none());
-        self.tags.insert(GoodTag::transport(efficiency));
-        self
+    /// # Durability
+    /// 
+    /// Calculates the durability of an item (1 - decay_rate).
+    /// 
+    /// Also used for remaining goods after decay.
+    pub fn durability(&self) -> f64 {
+        1.0 - self.decay_rate
     }
 
     /// # Bulk
@@ -101,6 +164,9 @@ impl Good {
     /// 
     /// This is meant to be scaled up or down to match friction scaling and so
     /// it may be added here later.
+    /// 
+    /// Bulk may be negative, but it cannot reduce the transportation cost of a 
+    /// transaction below the flat friction cost.
     pub fn bulk(&self) -> f64 {
         self.mass + self.volume * 400.0
     }
@@ -135,9 +201,9 @@ impl GoodTag {
     }
 
     /// Efficiency if this is a Transport tag.
-    pub fn transport_efficiency(self) -> Option<f64> {
+    pub fn transport_efficiency(&self) -> Option<f64> {
         match self {
-            Self::Transport(efficiency) => Some(efficiency),
+            Self::Transport(efficiency) => Some(*efficiency),
             _ => None,
         }
     }
@@ -163,5 +229,53 @@ impl Hash for GoodTag {
         if let Self::Transport(efficiency) = self {
             efficiency.to_bits().hash(state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bare() -> Good {
+        Good {
+            id: 0,
+            name: String::new(),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: HashMap::new(),
+            mass: 0.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fluent_setters_replace_fields() {
+        let mut decay_result = HashMap::new();
+        decay_result.insert(2, 1.0);
+
+        let mut good = bare()
+            .with_id(4)
+            .with_name("flour")
+            .with_class(Some(9))
+            .with_decay_rate(0.5)
+            .with_decay_result(decay_result)
+            .with_mass(1.25)
+            .with_volume(0.02)
+            .with_tags(HashSet::from([GoodTag::Exposure]))
+            .with_categories(vec!["staple".to_string()])
+            .with_transport_efficiency(1.5);
+
+        assert_eq!(good.id, 4);
+        assert_eq!(good.name, "flour");
+        assert_eq!(good.class, Some(9));
+        assert_eq!(good.decay_rate, 0.5);
+        assert_eq!(good.decay_result.get(&2), Some(&1.0));
+        assert_eq!(good.mass, 1.25);
+        assert_eq!(good.volume, 0.02);
+        assert!(good.tags.contains(&GoodTag::Exposure));
+        assert_eq!(good.transport_efficiency(), 1.5);
+        assert_eq!(good.categories, vec!["staple".to_string()]);
     }
 }

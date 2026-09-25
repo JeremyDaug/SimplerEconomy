@@ -1,8 +1,12 @@
 use crate::game::factuals::Factuals;
 
+/// # State
+/// 
+/// A State is the interface for players in the game.
 #[derive(Debug, Clone)]
 pub struct State {
     pub id: usize,
+    pub name: String,
 }
 
 impl State {

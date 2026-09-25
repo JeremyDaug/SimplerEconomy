@@ -18,6 +18,7 @@ pub struct MapData {
     // Secondary environmental: weather, pollution, resources regen, etc.
     pub environment: EnvironmentData,
 }
+
 impl MapData {
     pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);

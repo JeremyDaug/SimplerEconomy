@@ -508,6 +508,7 @@ pub struct DesireTarget {
     /// Whe ID of the good which can satisfy this desire.
     /// 
     /// This should be unique within a bucket.
+    /// TODO: Edit this to allow for good categories instead of just specific goods.
     pub good: usize,
     /// Whether the desire is Consumed or Used by the pop.
     pub desire_type: DesireTargetType,
