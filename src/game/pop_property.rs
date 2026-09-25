@@ -1,45 +1,19 @@
-//! Property rows, demographics row, and day-end records for pops.
+//! Property rows, the demographic row, and the pop's record placeholder.
 
-use bevy::utils::default;
-use circular_buffer::CircularBuffer;
-
-use crate::game::config::{pop_constants, PopConfig};
 use crate::game::household::Household;
-use crate::game::util::lerp;
-
-/// Why a pop stopped posting buy/requests today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuyStopReason {
-    /// Remaining wants are on goods with no seller (unavailable).
-    Market,
-    /// Remaining wants are still available, but free stock AMV is gone.
-    Money,
-    /// Not enough transport cover left to pay the door / wagon bill.
-    Transport,
-}
-
-impl BuyStopReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Market => "market",
-            Self::Money => "money",
-            Self::Transport => "transport",
-        }
-    }
-}
 
 /// Demographic breakdown of a pop (one row for now).
 #[derive(Debug, Clone, Copy)]
 pub struct DemoRow {
     /// Living household block (count, average composition, sex, labor, partnership).
     pub household: Household,
-    /// Species ID; currently should always be 0 (default human).
+    /// Species ID. `0` is the default human.
     pub species: usize,
-    /// Culture ID; 0 means none.
+    /// Culture ID. `0` means none.
     pub culture: usize,
-    /// Class ID; 0 means none.
+    /// Class ID. `0` means none. Class is not a type yet.
     pub class: usize,
-    /// Religion ID; 0 means none.
+    /// Religion ID. `0` means none.
     pub religion: usize,
 }
 
@@ -64,70 +38,33 @@ impl DemoRow {
     pub fn labor(&self) -> f64 {
         self.household.total_labor()
     }
-    
-    pub(crate) fn count(&self) -> f64 {
-        self.household.count
-    }
 }
 
-/// # Population Property Row (PopPRow)
-/// 
 /// Per-good property ledger for a pop.
-/// 
-/// Contains the data needed for each good in a pop's property. 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PopPRow {
     /// Total amount currently owned.
     pub quantity: f64,
-    /// Units of the good earmarked for today's uses. Does not distinguish between uses.
-    /// quantity - reserved = available stock.
+    /// Units earmarked for today's uses. `quantity - reserved` is free stock.
     pub reserved: f64,
-    /// Units of the good being output by production processes. Added to quantity 
-    /// immediately, but not decayed today. Decay should set this value to 0, effectively
-    /// completing the shift of goods.
+    /// Units output by a process today. Not decayed today.
     pub process_output: f64,
-
-    // Results of pop's use. 
-    /// Consumed for desires today; full decay at day end.
-    /// 
-    /// This is removed from quantity when added to.
+    /// Consumed today. Removed from `quantity` when recorded, destroyed at decay.
     pub consumed: f64,
-    /// Used (not destroyed) for use-desires; returned to quantity at day end after decay.
-    /// 
-    /// Units added to this are removed from quantity and returned at day end just before decay.
+    /// Used and not destroyed. Returned to `quantity` at day end, then decayed.
     pub used: f64,
-
-    /// Touchstone for how much of this good needs target for desires.
-    /// Updated with population changes; may be removed later.
-    pub desire_needs: f64,
-    /// The amount of this good which is considered desireable for savings.
-    /// 
-    /// This is not a hard target that 'must' be reached, but a goal it will attempt to
-    /// reach.
-    pub save_target: f64,
 }
 
 impl PopPRow {
     pub fn new(quantity: f64) -> Self {
         Self {
             quantity,
-            ..default()
+            ..Self::default()
         }
-    }
-
-    pub fn with_desire_needs(mut self, desire_needs: f64) -> Self {
-        self.desire_needs = desire_needs;
-        self
     }
 
     pub fn with_reserve(mut self, reserve: f64) -> Self {
         self.reserved = reserve;
-        self
-    }
-
-    /// Sets the between-days save target. Not on-hand savings.
-    pub fn with_save_target(mut self, save_target: f64) -> Self {
-        self.save_target = save_target;
         self
     }
 
@@ -141,273 +78,14 @@ impl PopPRow {
         self
     }
 
-    pub fn with_desire_need(mut self, desire_needs: f64) -> Self {
-        self.desire_needs = desire_needs;
-        self
-    }
-
-    /// Maximum desired amount of a good. Equal to:
-    /// 
-    /// [`Self::desire_needs`] + [`Self::save_target`].
-    /// 
-    /// This is our maximum shopping target.
-    pub fn daily_desire(&self) -> f64 {
-        self.desire_needs + self.save_target
-    }
-
-    /// The amount available for exchange.
-    /// 
-    /// [`Self::quantity`] - [`Self::daily_desire()`]
-    /// 
-    /// Positive values is a tenderable surplus, negative is a shortage.
-    pub fn exchange(&self) -> f64 {
-        self.quantity - self.daily_desire()
-    }
-
-    /// The amount available for internal use.
-    /// 
-    /// [`Self::quantity`] - [`Self::reserved`]
-    /// 
-    /// This value allows dipping into savings.
+    /// On-hand units not earmarked.
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
     }
-
-    /// # Saved
-    ///
-    /// The number of units that can be considered 'saved'.
-    /// 
-    /// Equal to ([`Self::quantity`] - [`Self::reserved`]).min([`Self::save_target`])
-    pub fn saved(&self) -> f64 {
-        (self.quantity - self.reserved).min(self.save_target)
-    }
 }
 
-/// # Pop Record
-/// 
-/// Pop day-end / process-satisfaction records, including living-standard history.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PopRecords {
-    /// Tier satisfactions [basic, common, luxury] after satisfaction boosts.
-    /// Measured as a percentage of success of each desire summed together. 
-    /// 
-    /// So a tier sat of 3.0 means at worst, 3 desires of that tier were fully satisfied.
-    /// Could be more desires at lower satisfaction or fewer with a satisfaction boost.
-    /// 
-    /// Filled in by the pop itself.
-    pub tier_sat: [f64; 3],
-    /// `sum(desire.satisfaction)` across all tiers.
-    pub satisfaction_units_total: f64,
-    /// Living Standard value today. 
-    /// A weighted sum of `self.tier_sat` where
-    /// `living_stardard = basic + 0.6*Common + 0.4*Luxury`
-    /// 
-    /// Formula subject to change.
-    pub living_standard: f64,
-    /// Standard of Living average (calculated daily, stored here for quick access).
-    /// 
-    /// May remove later.
-    pub sol_avg: f64,
-    /// The estimated rate of change over the past few days.
-    /// 
-    /// Estimated by EMA method.
-    /// sol_avg 
-    pub trend: f64,
-    /// The history of the pop's standard of living. Covers `HISTORY_MAX` (currently
-    /// 16 turns).
-    pub sol_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
-
-    // --- Census ---
-    /// Household count today. Written in record_keeping.
-    pub pop_size: f64,
-    /// Household-count history, same length as sol_history.
-    pub pop_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
-    /// Households in minus households out today. Written in the migration phase.
-    pub net_migration: f64,
-    /// Household-count change from growth_phase (new - old). Not migration.
-    /// Should never be >= current household count.
-    pub previous_growth: f64,
-    /// Labor available today (`Household::total_labor`).
-    pub labor: f64,
-
-    // --- Balance sheet ---
-    /// AMV of on-hand property: `sum(quantity*price)` (missing prices => 1.0).
-    /// 
-    /// Filled in by the pop.
-    pub wealth_amv: f64,
-    /// Spendable / mobile wealth: `Sum(quantity * price * salability)`.
-    /// Skips Untradeable goods. Per-household series goes in wealth_history.
-    pub liquid_wealth: f64,
-    /// Liquid wealth per household, same ring length as sol_history.
-    pub wealth_history: CircularBuffer<{ pop_constants::HISTORY_MAX }, f64>,
-    /// AMV of goods consumed and used today (last look before decay).
-    pub consumption_amv: f64,
-    /// AMV gained from wages today. 0.0 until market day pays.
-    pub income_amv: f64,
-    /// AMV of stock sitting against PopPRow.saved.
-    pub saved_amv: f64,
-    /// Shop success: AMV on-hand vs shop_target, typically 0.0..=1.0.
-    pub shop_fill: f64,
-    /// Why this pop stopped buying today. `None` if the shop was filled.
-    pub buy_stop: Option<BuyStopReason>,
-
-    // --- Planning variables (rewritten in record_keeping, read next market day) ---
-    /// Target share of liquid wealth to hold. Drives PopPRow.saved.
-    pub savings_ratio: f64,
-    /// Personal interest rate. Higher => consume now, demand more return to save/invest.
-    pub time_preference: f64,
-    /// Fear/greed planning variable in -1.0..=1.0. Not SentimentKind::Fear.
-    /// Nudged from sentiment + SOL trend; lerped so one day cannot flip hoarding.
-    pub risk_appetite: f64,
-}
-
-impl Default for PopRecords {
-    fn default() -> Self {
-        Self {
-            tier_sat: [1.0, 1.0, 1.0],
-            satisfaction_units_total: 0.0,
-            living_standard: 1.0,
-            sol_avg: 1.0,
-            trend: 0.0,
-            sol_history: CircularBuffer::new(),
-            pop_size: 0.0,
-            pop_history: CircularBuffer::new(),
-            net_migration: 0.0,
-            previous_growth: 0.0,
-            labor: 0.0,
-            wealth_amv: 0.0,
-            liquid_wealth: 0.0,
-            wealth_history: CircularBuffer::new(),
-            consumption_amv: 0.0,
-            income_amv: 0.0,
-            saved_amv: 0.0,
-            shop_fill: 1.0,
-            buy_stop: None,
-            savings_ratio: pop_constants::DEFAULT_SAVINGS_RATIO,
-            time_preference: pop_constants::DEFAULT_TIME_PREFERENCE,
-            risk_appetite: pop_constants::DEFAULT_RISK_APPETITE,
-        }
-    }
-}
-
-impl PopRecords {
-    /// Planning defaults from loaded pop config. Histories empty, sat full.
-    pub fn from_config(cfg: &PopConfig) -> Self {
-        let mut records = Self::default();
-        records.savings_ratio = cfg.default_savings_ratio;
-        records.time_preference = cfg.default_time_preference;
-        records.risk_appetite = cfg.default_risk_appetite;
-        records
-    }
-
-    /// # Update Living Standard
-    /// 
-    /// Given the current `tier_sat`, update `self.living_standard` to 
-    /// reflect the weighted sum of `tier_sat` values.
-    /// 
-    /// Current formula is `living_stardard = 3.0*basic + 1.5*Common + 1.0*Luxury`.
-    /// `config` supplies the three score weights.
-    pub fn update_living_standard(&mut self, config: &PopConfig) {
-        self.living_standard = 
-            self.tier_sat[0] * config.score_weight_basic +
-            self.tier_sat[1] * config.score_weight_common +
-            self.tier_sat[2] * config.score_weight_luxury;
-    }
-
-    /// # Update Trend
-    /// 
-    /// Updates the record based on updated `tier_sat`, `satisfaction_units_total` and 
-    /// `living_standard`.
-    /// 
-    /// Updates `sol_avg`, `trend`, and `sol_history` based on the current state of the pop.
-    /// 
-    /// Should be called during `process_satisfaciton` after `update_living_standard`.
-    /// `config.rolling_avg_weight` is the EMA blend toward today's living standard.
-    pub fn update_trend(&mut self, config: &PopConfig) {
-        // if first day just set the average and trend and move on.
-        if self.sol_history.len() == 0 {
-            self.sol_avg = self.living_standard;
-            self.trend = 0.0;
-            self.sol_history.push_back(self.living_standard);
-            return;
-        }
-        // update the average using EMA method.
-        let prev_avg = self.sol_avg;
-        // weighted rolling average
-        self.sol_avg = lerp(self.sol_avg, self.living_standard, config.rolling_avg_weight);
-        // update the trend based on the change in living standard and the average.
-        self.trend = self.living_standard - prev_avg;
-        // push the current living standard to the history.
-        self.sol_history.push_back(self.living_standard);
-    }
-
-    /// Push today's pop_size onto pop_history.
-    pub fn push_pop_history(&mut self) {
-        self.pop_history.push_back(self.pop_size);
-    }
-
-    /// Push liquid wealth per household onto wealth_history.
-    /// `0.0` when pop_size is 0.
-    pub fn push_wealth_history(&mut self) {
-        let per_household = if self.pop_size > 0.0 {
-            self.liquid_wealth / self.pop_size
-        } else {
-            0.0
-        };
-        self.wealth_history.push_back(per_household);
-    }
-}
-
-#[cfg(test)]
-mod pop_records_should {
-    use super::*;
-
-    #[test]
-    fn default_sets_planning_values_and_empty_rings() {
-        let records = PopRecords::default();
-        assert_eq!(records.savings_ratio, pop_constants::DEFAULT_SAVINGS_RATIO);
-        assert_eq!(records.time_preference, pop_constants::DEFAULT_TIME_PREFERENCE);
-        assert_eq!(records.risk_appetite, pop_constants::DEFAULT_RISK_APPETITE);
-        assert_eq!(records.shop_fill, 1.0);
-        assert_eq!(records.previous_growth, 0.0);
-        assert_eq!(records.pop_history.len(), 0);
-        assert_eq!(records.wealth_history.len(), 0);
-        assert_eq!(records.sol_history.len(), 0);
-    }
-
-    #[test]
-    fn push_pop_history_appends_pop_size() {
-        let mut records = PopRecords::default();
-        records.pop_size = 12.0;
-        records.push_pop_history();
-        assert_eq!(records.pop_history.len(), 1);
-        assert_eq!(records.pop_history[0], 12.0);
-    }
-
-    #[test]
-    fn push_wealth_history_stores_per_household_liquid() {
-        let mut records = PopRecords::default();
-        records.liquid_wealth = 20.0;
-        records.pop_size = 10.0;
-        records.push_wealth_history();
-        assert_eq!(records.wealth_history.len(), 1);
-        assert!((records.wealth_history[0] - 2.0).abs() < 1e-12);
-
-        records.pop_size = 0.0;
-        records.push_wealth_history();
-        assert_eq!(records.wealth_history.len(), 2);
-        assert_eq!(records.wealth_history[1], 0.0);
-    }
-}
-
-#[cfg(test)]
-mod pop_p_row_saved_should {
-    use super::*;
-
-    #[test]
-    fn is_quantity_minus_reserved() {
-        let row = PopPRow::new(10.0).with_reserve(4.0).with_save_target(99.0);
-        assert_eq!(row.saved(), 6.0);
-    }
-
-}
+/// Day-end records for a pop.
+///
+/// The field stays on [`crate::game::pop::Pop`]. What it records is not chosen yet.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PopRecords {}

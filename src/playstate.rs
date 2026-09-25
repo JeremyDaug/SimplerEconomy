@@ -1,4 +1,3 @@
-use bevy::prelude::*;
 use rayon::prelude::*;
 
 use crate::game::actors::Actors;
@@ -11,9 +10,8 @@ use crate::game::players::Players;
 /// 
 /// This is the highest level of our game, overseeing a the state of the current game.
 /// 
-/// It stores all active data, and acts as the fulcrum by which Bevy interacts with the
-/// more complex state of the game. 
-#[derive(Resource, Debug)]
+/// It stores all active data for one game.
+#[derive(Debug)]
 pub struct PlayState {
     pub factuals: Factuals,           // Highly static, Arc or & for sharing/multithreading
     pub map_data: MapData,            // Environmental + spatial
@@ -131,10 +129,7 @@ impl PlayState {
 
     /// One history per market and pop-id -> market-id. Prices are day-static.
     fn rebuild_market_lookups(&mut self) {
-        self.market_lookups = MarketLookups::from_markets_with(
-            &self.map_data.markets,
-            self.factuals.config.market.salability_default,
-        );
+        self.market_lookups = MarketLookups::from_markets(&self.map_data.markets);
     }
 
     /// # Phase Pop Migration

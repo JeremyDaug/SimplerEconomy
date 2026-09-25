@@ -31,6 +31,9 @@ pub struct Religion {
     /// 
     /// This is added to previous effects, and so defaults to 0.
     pub religion_demo_eff: DemographicRates,
+    /// Added to the species work-time fraction. `0` leaves that value alone.
+    /// The stacked result is clamped to `0..=1`.
+    pub work_time_fraction: f64,
     /// When true, pops should refresh effective demographic rates this turn.
     ///
     /// TODO: Smoother multi-turn application of large rate swings if needed.
@@ -50,6 +53,7 @@ impl Religion {
             desires: HashMap::new(),
             religion_effects: vec![],
             religion_demo_eff: DemographicRates::zero(),
+            work_time_fraction: 0.0,
             household_changed: false,
         }
     }

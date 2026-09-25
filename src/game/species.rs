@@ -32,6 +32,11 @@ pub struct Species {
     /// 
     /// Currently, the baseline is set by `DemographicRates::baseline()`
     pub species_demo_eff: DemographicRates,
+    /// Share of on-hand Time this species may commit to wage work. `0..=1`.
+    ///
+    /// Culture and religion add their own fractions on top. The sum is clamped
+    /// in [`crate::game::factuals::Factuals::work_time_fraction`].
+    pub work_time_fraction: f64,
     /// When true, pops should refresh effective demographic rates this turn.
     ///
     /// TODO: Smoother multi-turn application of large rate swings if needed.
@@ -51,6 +56,7 @@ impl Species {
             desires: HashMap::new(),
             species_effects: vec![],
             species_demo_eff: DemographicRates::zero(),
+            work_time_fraction: 0.5,
             household_changed: false,
         }
     }

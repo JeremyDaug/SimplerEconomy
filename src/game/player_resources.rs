@@ -6,8 +6,6 @@
 //!
 //! These are not goods. They never live in property rows.
 
-use crate::game::effects::{DesireEffect, PopEffect};
-
 /// # Player Resources
 ///
 /// Named fields for the vanilla non-good player stocks. Adding a sixth vanilla
@@ -87,59 +85,6 @@ impl PlayerResources {
         self.faith = faith;
         self
     }
-
-    /// # Add Desire Effect
-    ///
-    /// Credits a desire-sourced player-resource yield into this bag.
-    /// Non-resource desire effects are ignored.
-    ///
-    /// `sat` is that desire's success rate (`satisfaction / amount`).
-    /// Callers clamp **common** (and basic) to `[0, 1]` and leave **luxury**
-    /// unclamped so extra levels scale. Household / part-of-house scale is
-    /// already baked into the desire amount and additive effect magnitudes;
-    /// do not multiply by count here.
-    pub fn add_desire_effect(&mut self, effect: DesireEffect, sat: f64) {
-        if !effect.is_player_resource() {
-            return;
-        }
-        let v = effect.signed_strength_raw(sat);
-        if v == 0.0 {
-            return;
-        }
-        match effect {
-            DesireEffect::Culture(_, _) => self.culture += v,
-            DesireEffect::Research(_, _) => self.research += v,
-            DesireEffect::Faith(_, _) => self.faith += v,
-            DesireEffect::Authority(_, _) => self.authority += v,
-            DesireEffect::Legitimacy(_, _) => self.legitimacy += v,
-            DesireEffect::Mortality(_, _, _)
-            | DesireEffect::Birthrate(_, _)
-            | DesireEffect::BonusGood(_, _, _)
-            | DesireEffect::Satisfaction(_, _)
-            | DesireEffect::SentimentFlat(_, _, _)
-            | DesireEffect::SentimentRelative(_, _, _) => {}
-        }
-    }
-
-    /// # Add Pop Effect
-    ///
-    /// Credits an already-scaled stored player-resource arm. Other `PopEffect`
-    /// arms are ignored (growth, sentiment, bonus goods belong to other phases).
-    pub fn add_pop_effect(&mut self, effect: PopEffect) {
-        match effect {
-            PopEffect::Culture(v) => self.culture += v,
-            PopEffect::Research(v) => self.research += v,
-            PopEffect::Faith(v) => self.faith += v,
-            PopEffect::Authority(v) => self.authority += v,
-            PopEffect::Legitimacy(v) => self.legitimacy += v,
-            PopEffect::Birthrate(_)
-            | PopEffect::Mortality(_, _)
-            | PopEffect::Satisfaction { .. }
-            | PopEffect::BonusGood { .. }
-            | PopEffect::SentimentFlat { .. }
-            | PopEffect::SentimentRelative { .. } => {}
-        }
-    }
 }
 
 impl std::ops::Add for PlayerResources {
@@ -178,7 +123,6 @@ impl std::ops::AddAssign for PlayerResources {
 #[cfg(test)]
 mod player_resources_should {
     use super::*;
-    use crate::game::effects::{DesireEffect, PopEffect};
 
     #[test]
     fn new_is_zero() {
@@ -203,42 +147,5 @@ mod player_resources_should {
         assert!((sum.authority - 0.25).abs() < 1e-12);
         assert!((sum.faith - 4.0).abs() < 1e-12);
         assert!(!sum.is_zero());
-    }
-
-    #[test]
-    fn add_desire_effect_ignores_non_resource_arms() {
-        let mut bag = PlayerResources::new();
-        bag.add_desire_effect(DesireEffect::Birthrate(0.5, true), 1.0);
-        bag.add_desire_effect(DesireEffect::Satisfaction(2.0, true), 1.0);
-        assert!(bag.is_zero());
-    }
-
-    #[test]
-    fn add_desire_effect_bonus_scales_with_unclamped_sat() {
-        let mut bag = PlayerResources::new();
-        // Luxury oversat: 2.0 success rates * 1.0 culture rate.
-        bag.add_desire_effect(DesireEffect::Culture(1.0, true), 2.0);
-        assert!((bag.culture - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn add_desire_effect_malus_does_not_invert_when_oversat() {
-        let mut bag = PlayerResources::new();
-        bag.add_desire_effect(DesireEffect::Legitimacy(1.0, false), 2.0);
-        assert_eq!(bag.legitimacy, 0.0);
-        bag.add_desire_effect(DesireEffect::Legitimacy(1.0, false), 0.25);
-        assert!((bag.legitimacy + 0.75).abs() < 1e-12);
-    }
-
-    #[test]
-    fn add_pop_effect_credits_already_scaled_amounts() {
-        let mut bag = PlayerResources::new();
-        bag.add_pop_effect(PopEffect::Research(3.5));
-        bag.add_pop_effect(PopEffect::BonusGood {
-            good: 1,
-            amount: 99.0,
-        });
-        assert!((bag.research - 3.5).abs() < 1e-12);
-        assert_eq!(bag.culture, 0.0);
     }
 }

@@ -520,6 +520,30 @@ impl Factuals {
         }
         rates
     }
+
+    /// Share of on-hand Time this demographic may commit to wage work.
+    ///
+    /// Species supplies the base (default `0.5` when the species is missing).
+    /// Culture and religion add their fractions. Id `0` on culture or religion
+    /// is skipped. The result is clamped to `0..=1`.
+    pub fn work_time_fraction(&self, demographics: DemoRow) -> f64 {
+        let mut fraction = self
+            .species
+            .get(&demographics.species)
+            .map(|species| species.work_time_fraction)
+            .unwrap_or(0.5);
+        if demographics.culture != 0 {
+            if let Some(culture) = self.cultures.get(&demographics.culture) {
+                fraction += culture.work_time_fraction;
+            }
+        }
+        if demographics.religion != 0 {
+            if let Some(religion) = self.religion.get(&demographics.religion) {
+                fraction += religion.work_time_fraction;
+            }
+        }
+        fraction.clamp(0.0, 1.0)
+    }
 }
 
 #[cfg(test)]
@@ -669,7 +693,7 @@ tags = ["untradeable", { transport = 2.0 }]
         assert_eq!(time.inputs.len(), 1);
         assert!((time.outputs[0].amount - 1.0).abs() < 1e-12);
         assert_eq!(factuals.config, GameConfig::default());
-        assert_eq!(factuals.config.labor.worker_share, 0.30);
+        assert_eq!(factuals.config.market.friction, 1.0);
     }
 
     #[test]
@@ -816,5 +840,56 @@ volume = 1.0
         assert!(!factuals.species[&0].household_changed);
         assert!(!factuals.cultures[&1].household_changed);
         assert!(!factuals.religion[&2].household_changed);
+    }
+
+    #[test]
+    fn get_demographic_rates_stacks_species_culture_religion() {
+        use crate::game::household::{DemographicRates, Household};
+        use crate::game::pop::DemoRow;
+
+        let mut species = Species::new(0, "Human");
+        let mut species_mod = DemographicRates::zero();
+        species_mod.birth_per_woman = 0.01;
+        species.species_demo_eff = species_mod;
+
+        let mut culture = Culture::new(1, "Test");
+        let mut culture_mod = DemographicRates::zero();
+        culture_mod.infant_mortality = 0.05;
+        culture.culture_demo_eff = culture_mod;
+
+        let mut religion = Religion::new(2, "Faith");
+        let mut religion_mod = DemographicRates::zero();
+        religion_mod.adult_mortality.0 = -0.001;
+        religion.religion_demo_eff = religion_mod;
+
+        let factuals = Factuals::new()
+            .with_species(species)
+            .with_culture(culture)
+            .with_religion(religion);
+        let row = DemoRow {
+            household: Household::new(),
+            species: 0,
+            culture: 1,
+            class: 0,
+            religion: 2,
+        };
+        let rates = factuals.get_demographic_rates(row);
+        let expected = DemographicRates::baseline()
+            .add(&{
+                let mut m = DemographicRates::zero();
+                m.birth_per_woman = 0.01;
+                m
+            })
+            .add(&{
+                let mut m = DemographicRates::zero();
+                m.infant_mortality = 0.05;
+                m
+            })
+            .add(&{
+                let mut m = DemographicRates::zero();
+                m.adult_mortality.0 = -0.001;
+                m
+            });
+        assert_eq!(rates, expected);
     }
 }

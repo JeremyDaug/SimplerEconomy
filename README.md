@@ -1,13 +1,14 @@
-# SimplerEconomy
+# Simpler Economy
 
-Simpler Economy is the repository for a game currently under the working title of EconCiv.
+Working title. The design pin is [docs/Overview.md](docs/Overview.md).
 
-The goal of the game is to be a combination of Civilization 5/6 and Victoria 2/3.
+Simpler Economy is a market-oriented grand-strategy game: a long historical span, a detailed barter-first market, and civilizations built from institutions, pops, and regions. The market is the keystone. Players mostly massage production, consumption, and logistics. They do not operate them directly.
 
-It is a hex based grid map game, where you follow a nation through the ages as they develop and discover new things. But you produce goods which need to be bought and sold on the market and this feeds back around into your populace.
+This repository is a reboot of a larger project. What remains is the simulation kernel kept for that reboot: goods, processes, pops, households, firms, and markets, with world data under `data/world`. There is no game client.
 
-Unlike the simplified and abstracted mechanisms of Civilization (Small pop numbers, Food/Production/Gold/Faith/Science/Culture resources, Buildings cost X and produce +Y of a resource, strategic/luxury resources giving bonuses for owning/extracting, single tile improvements) it leans closer to Victoria 2/3 in simulation level.
+```text
+cargo test --lib
+cargo run --example rates_tester
+```
 
-Unlike Victoria 2/3 it's meant to cover a wide spand of history, give much greater flexibility in what you make, and have dynamic regions/markets along with it's more market driven prices.
-
-A more thorough breakdown of design ideas exists in the Obsidian Vault, which is not in this repo. Those may be pruned, redined, and brought into here at a later date.
+`rates_tester` probes household demographics. Other branches, and the old Obsidian vault, are outside this reboot. Open them only when a specific target is named.

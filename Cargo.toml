@@ -5,23 +5,8 @@ edition = "2024"
 
 [dependencies]
 itertools = "0.14.0"
-ordered-float = "5.2.0"
-circular-buffer = "1.2.0"
 rayon = "1.10"
-rand = "0.9"
-# remove dynamic Linking for release.
-bevy = { version = "0.18.1", features = [
-    "dynamic_linking",
-    "bevy_asset",
-    "bevy_core_pipeline",
-    "bevy_sprite",
-    "bevy_render",
-    "bevy_pbr", 
-    "bevy_window", 
-    "bevy_winit",
-    "default_font"
-    ] }
-hexx = { version = "0.24.0", features = ["bevy"] }
+hexx = "0.24.0"
 bitflags = "2.13.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

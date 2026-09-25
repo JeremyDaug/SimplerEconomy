@@ -1,4 +1,4 @@
-use bevy::platform::collections::HashSet;
+use std::collections::HashSet;
 use hexx::Hex;
 
 use super::tile::Tile;
