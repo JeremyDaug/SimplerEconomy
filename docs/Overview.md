@@ -22,7 +22,7 @@ Headless interregional and international trade. Market regions are the highest l
 
 ## Versions
 
-Version cuts are not chosen yet. A subsystem that already exists in the repository is not a promised release. When a cut is decided, write it in this section: what the player can see, what the simulation must already do, and what stays out.
+Version cuts are not chosen yet. When a cut is decided, write it in this section: what the player can see, what the simulation must already do, and what stays out.
 
 ## Later
 
@@ -30,9 +30,3 @@ These are intended features. The types are empty shells. They stay in the tree u
 
 - Units (`src/game/unit.rs`). Map actors, including military. Behavior is not specified yet.
 - Tech tree (`src/game/techtree.rs`, nodes in `src/game/tech.rs`). How the tree sits beside decentralized innovation is not specified yet. It is not a stockpile of beakers.
-
-## External data and records
-
-This is a fork of a much larger project. Looking at other branches is useful only when specific targets are given.
-
-There is also an Obsidian vault of additional design thoughts and ideas. Those ideas are outdated and should be avoided or ignored in most cases. They will be referenced occasionally. Look at the vault only when a specific location or idea inside it is named.

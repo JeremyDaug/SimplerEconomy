@@ -1,5 +1,4 @@
-//! Scenario kickoff (opening pops, firms, and stock) was removed.
+//! Scenario kickoff: opening pops, firms, and stock.
 //!
-//! The old loader encoded subsistence auto-attach and days of opening cover.
-//! A new scenario format comes back with the rebuilt pop and firm day.
-//! World factuals still load from `data/world` through [`crate::game::factuals::Factuals`].
+//! World factuals load from `data/world` through [`crate::game::factuals::Factuals`].
+//! Starting actors for a new game belong here.
