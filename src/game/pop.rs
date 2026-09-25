@@ -8,11 +8,27 @@ use bevy::platform::collections::HashSet;
 use crate::game::{
     config::{GameConfig, PopConfig},
     desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType},
-    effects::DemographicEffect, factuals::Factuals, firm::Firm, good::{GoodTag, TIME},
+    effects::DemographicEffect, factuals::Factuals, good::{GoodTag, TIME},
     household::DemographicRates, market::{Market, MarketHistory},
-    marketorder::MarketOrder, player_resources::PlayerResources, scalingfactor::ScalingFactor,
-    sentiment::{Sentiment, SentimentKind, SentimentMod}, util::lerp,
+    marketorder::MarketOrder, player_resources::PlayerResources, process::ProcessResult,
+    scalingfactor::ScalingFactor,
+    sentiment::{Sentiment, SentimentKind, SentimentMod},
+    util::{lerp, whole_units, whole_units_up},
 };
+
+/// One household recipe that ran this morning.
+#[derive(Debug, Clone)]
+pub struct HouseholdStep {
+    pub process: usize,
+    /// Iteration cap it was allowed.
+    pub cap: f64,
+    /// Iterations completed.
+    pub iterations: f64,
+    /// Good changes. Negative is an input, positive is an output.
+    pub changes: Vec<(usize, f64)>,
+    /// Goods that stopped the recipe early.
+    pub missing: Vec<usize>,
+}
 
 pub use crate::game::effects::PopEffect;
 pub use crate::game::pop_property::{
@@ -84,6 +100,10 @@ pub struct Pop {
     /// Updated in [`Self::update_sentiments`]; blendable into firms, markets, etc.
     pub sentiment: Sentiment,
 
+    /// Morning recipes: process id and iteration cap, basket then specialty.
+    /// Not a firm production line. Empty until init or a test fills it.
+    pub household_work: Vec<(usize, f64)>,
+
     /// End-of-day records including SOL Wealth, as well as setting loose financial 
     /// plans and targets. 
     pub records: PopRecords,
@@ -142,6 +162,549 @@ impl Pop {
                 .and_modify(|x| x.quantity += amount)
                 .or_insert(PopPRow::new(amount));
         }
+    }
+
+    /// Runs household recipes. Each spends unreserved quantity and Time.
+    /// Outputs land in `quantity`.
+    ///
+    /// Each good has one output floor. The higher profit ratio takes it,
+    /// and also its stored cap when the output is worth more than the
+    /// inputs. A worse recipe for that good stays at 0. Time the morning
+    /// shop needs for the wagon stays in the bag. Any Time still left,
+    /// which would otherwise decay, is spent on the best recipe that can
+    /// still run.
+    pub fn run_household_work(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> Vec<HouseholdStep> {
+        let recipes = self.household_run_caps(factuals, history);
+        let mut steps = Vec::new();
+        for (process_id, cap) in recipes {
+            if cap <= 0.0 {
+                steps.push(HouseholdStep {
+                    process: process_id,
+                    cap,
+                    iterations: 0.0,
+                    changes: Vec::new(),
+                    missing: Vec::new(),
+                });
+                continue;
+            }
+            let process = factuals
+                .processes
+                .get(&process_id)
+                .unwrap_or_else(|| panic!("household process {process_id} missing"));
+            let available = self.unreserved_goods();
+            let result = process.do_process(&available, Some(cap), factuals);
+            self.apply_household_result(&result);
+            // New output covers unmet desires before the next recipe or the
+            // market can spend it.
+            self.reserve_for_desires();
+            steps.push(self.household_step(process_id, cap, &result));
+        }
+        self.sink_spare_time(factuals, history, &mut steps);
+        steps
+    }
+
+    fn household_step(
+        &self,
+        process_id: usize,
+        cap: f64,
+        result: &ProcessResult,
+    ) -> HouseholdStep {
+        let mut changes: Vec<(usize, f64)> = result
+            .changes
+            .iter()
+            .filter(|(_, delta)| delta.abs() > 1e-9)
+            .map(|(&good, &delta)| (good, delta))
+            .collect();
+        changes.sort_by_key(|(good, _)| *good);
+        HouseholdStep {
+            process: process_id,
+            cap,
+            iterations: result.iterations,
+            changes,
+            missing: result.missing_goods.clone(),
+        }
+    }
+
+    /// Time decays in full if it is left over. Spend the part the wagon
+    /// does not need on the best recipe that can still run. A weak recipe
+    /// is fine: unused Time is worth nothing.
+    fn sink_spare_time(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        steps: &mut Vec<HouseholdStep>,
+    ) {
+        let Some((process_id, time_per)) = self.best_time_sink(factuals, history) else {
+            return;
+        };
+        let have = self
+            .unreserved_goods()
+            .get(&TIME)
+            .copied()
+            .unwrap_or(0.0);
+        let spare = have - self.transport_hold(factuals, history);
+        if time_per <= 0.0 || spare <= 0.0 {
+            return;
+        }
+        let process = factuals
+            .processes
+            .get(&process_id)
+            .unwrap_or_else(|| panic!("household process {process_id} missing"));
+        let cap = spare / time_per;
+        let result = process.do_process(&self.unreserved_goods(), Some(cap), factuals);
+        if result.iterations <= 0.0 {
+            return;
+        }
+        self.apply_household_result(&result);
+        self.reserve_for_desires();
+        let extra = self.household_step(process_id, cap, &result);
+        if let Some(step) = steps.iter_mut().find(|step| step.process == process_id) {
+            step.cap += extra.cap;
+            step.iterations += extra.iterations;
+            for (good, delta) in extra.changes {
+                if let Some(slot) = step.changes.iter_mut().find(|(id, _)| *id == good) {
+                    slot.1 += delta;
+                } else {
+                    step.changes.push((good, delta));
+                }
+            }
+            step.changes.retain(|(_, delta)| delta.abs() > 1e-9);
+            step.changes.sort_by_key(|(good, _)| *good);
+            for good in extra.missing {
+                if !step.missing.contains(&good) {
+                    step.missing.push(good);
+                }
+            }
+        } else {
+            steps.push(extra);
+        }
+    }
+
+    /// Highest profit recipe that can turn on-hand Time into output.
+    fn best_time_sink(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> Option<(usize, f64)> {
+        let available = self.unreserved_goods();
+        let mut best: Option<(f64, usize, f64)> = None;
+        for &(process_id, _) in &self.household_work {
+            let Some(process) = factuals.processes.get(&process_id) else {
+                continue;
+            };
+            let time_per = process
+                .inputs
+                .iter()
+                .find(|input| input.good == TIME && !input.is_optional())
+                .map(|input| input.amount)
+                .unwrap_or(0.0);
+            if time_per <= 0.0 {
+                continue;
+            }
+            let probe = process.do_process(&available, Some(1.0), factuals);
+            if probe.iterations <= 0.0 {
+                continue;
+            }
+            let ratio = process.recipe_profit_ratio(|good| history.price(good));
+            let replace = match best {
+                Some((best_ratio, best_id, _)) => {
+                    ratio > best_ratio + 1e-12 || ((ratio - best_ratio).abs() <= 1e-12 && process_id < best_id)
+                }
+                None => true,
+            };
+            if replace {
+                best = Some((ratio, process_id, time_per));
+            }
+        }
+        best.map(|(_, id, time_per)| (id, time_per))
+    }
+
+    /// Time cover kept so this household can shop. One transaction cost
+    /// per good still short of its shop target, plus the bulk of those
+    /// units and of the surplus that pays for them. A world with no
+    /// transport good keeps nothing. The seller does not pay the wagon.
+    fn transport_hold(&self, factuals: &Factuals, history: &MarketHistory) -> f64 {
+        if !factuals.goods.values().any(|good| good.is_transport()) {
+            return 0.0;
+        }
+        let fee = factuals.config.market.transaction_cost.max(0.0);
+        let friction = factuals.config.market.friction.max(0.0);
+        let mut trips = 0.0;
+        let mut buy_bulk = 0.0;
+        let mut buy_amv = 0.0;
+        for (&id, row) in &self.property {
+            if id == TIME {
+                continue;
+            }
+            let Some(good) = factuals.goods.get(&id) else {
+                continue;
+            };
+            if !good.is_buyable() {
+                continue;
+            }
+            let units = whole_units_up((row.shop_target - row.quantity).max(0.0));
+            if units <= 0.0 {
+                continue;
+            }
+            trips += 1.0;
+            buy_bulk += good.bulk().max(0.0) * units;
+            buy_amv += units * history.price(id).max(0.0);
+        }
+        if trips <= 0.0 {
+            return 0.0;
+        }
+        let mut pay_bulk = 0.0;
+        if buy_amv > 0.0 {
+            let mut pile: Vec<(usize, f64)> = Vec::new();
+            for (&id, row) in &self.property {
+                if id == TIME {
+                    continue;
+                }
+                let Some(good) = factuals.goods.get(&id) else {
+                    continue;
+                };
+                if !good.is_buyable() {
+                    continue;
+                }
+                let free =
+                    whole_units((row.quantity - row.shop_target.max(row.reserved)).max(0.0));
+                if free > 0.0 {
+                    pile.push((id, free));
+                }
+            }
+            pile.sort_by(|&a, &b| {
+                history
+                    .salability(b.0)
+                    .partial_cmp(&history.salability(a.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
+            });
+            let mut left = buy_amv;
+            for (id, free) in pile {
+                if left <= 1e-12 {
+                    break;
+                }
+                let price = history.price(id).max(0.0);
+                if price <= 0.0 {
+                    continue;
+                }
+                let take = whole_units_up(left / price).min(free);
+                if take <= 0.0 {
+                    continue;
+                }
+                let bulk = factuals
+                    .goods
+                    .get(&id)
+                    .map(|good| good.bulk().max(0.0))
+                    .unwrap_or(0.0);
+                pay_bulk += bulk * take;
+                left -= take * price;
+            }
+        }
+        fee * trips + (buy_bulk + pay_bulk) * friction
+    }
+
+    /// Caps for one morning. A good has one output floor, shared by every
+    /// recipe that makes it. The higher profit ratio takes that floor, and
+    /// the sale batch if the output is worth more than the inputs. A worse
+    /// recipe for the same good stays at 0. Inputs of a planned recipe
+    /// raise the floor of the good they consume.
+    fn household_run_caps(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> Vec<(usize, f64)> {
+        let mut producers: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut stored_cap: HashMap<usize, f64> = HashMap::new();
+        for &(process_id, cap) in &self.household_work {
+            stored_cap.insert(process_id, cap);
+            let Some(process) = factuals.processes.get(&process_id) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.good != TIME && output.amount > 0.0 {
+                    producers.entry(output.good).or_default().push(process_id);
+                }
+            }
+        }
+        for list in producers.values_mut() {
+            list.sort_by(|&a, &b| {
+                self.profit_ratio(b, factuals, history)
+                    .partial_cmp(&self.profit_ratio(a, factuals, history))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.cmp(&b))
+            });
+            list.dedup();
+        }
+        let producible: HashSet<usize> = producers.keys().copied().collect();
+        let floors = self.staple_floor(&producible);
+        let mut target: HashMap<usize, f64> = HashMap::new();
+        for (&good, list) in &producers {
+            let have = self
+                .property
+                .get(&good)
+                .map(|row| row.quantity.max(0.0))
+                .unwrap_or(0.0);
+            let floor = floors.get(&good).copied().unwrap_or(0.0);
+            let mut qty = (floor - have).max(0.0);
+            if let Some(&best) = list.first() {
+                if self.worth_selling_id(best, factuals, history) {
+                    let amt = self.output_amount(best, good, factuals);
+                    qty = qty.max(stored_cap.get(&best).copied().unwrap_or(0.0) * amt);
+                }
+            }
+            target.insert(good, qty);
+        }
+        let mut iters = self.assign_output(&producers, &target, factuals);
+        for &(process_id, _) in &self.household_work {
+            let n = iters.get(&process_id).copied().unwrap_or(0.0);
+            if n <= 0.0 {
+                continue;
+            }
+            let Some(process) = factuals.processes.get(&process_id) else {
+                continue;
+            };
+            for input in process.requirements() {
+                if input.good == TIME || input.amount <= 0.0 || !producers.contains_key(&input.good)
+                {
+                    continue;
+                }
+                *target.entry(input.good).or_insert(0.0) += input.amount * n;
+            }
+        }
+        for (id, n) in self.assign_output(&producers, &target, factuals) {
+            let slot = iters.entry(id).or_insert(0.0);
+            *slot = (*slot).max(n);
+        }
+        self.production_order(factuals, history, &iters)
+    }
+
+    fn assign_output(
+        &self,
+        producers: &HashMap<usize, Vec<usize>>,
+        target: &HashMap<usize, f64>,
+        factuals: &Factuals,
+    ) -> HashMap<usize, f64> {
+        let mut iters: HashMap<usize, f64> = self
+            .household_work
+            .iter()
+            .map(|&(id, _)| (id, 0.0))
+            .collect();
+        for (&good, list) in producers {
+            let mut left = target.get(&good).copied().unwrap_or(0.0).max(0.0);
+            for (rank, &process_id) in list.iter().enumerate() {
+                let amt = self.output_amount(process_id, good, factuals);
+                if amt <= 0.0 {
+                    continue;
+                }
+                let take = if rank == 0 { left } else { 0.0 };
+                let n = take / amt;
+                let slot = iters.entry(process_id).or_insert(0.0);
+                *slot = (*slot).max(n);
+                left -= take;
+            }
+        }
+        iters
+    }
+
+    fn production_order(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        iters: &HashMap<usize, f64>,
+    ) -> Vec<(usize, f64)> {
+        let mut pending: Vec<usize> = self.household_work.iter().map(|&(id, _)| id).collect();
+        let mut ordered = Vec::new();
+        while !pending.is_empty() {
+            let ready: Vec<usize> = pending
+                .iter()
+                .copied()
+                .filter(|&id| self.inputs_ready(id, &ordered, factuals))
+                .collect();
+            let best = pending
+                .iter()
+                .copied()
+                .filter(|&id| ready.is_empty() || ready.contains(&id))
+                .max_by(|&a, &b| {
+                    self.profit_ratio(a, factuals, history)
+                        .partial_cmp(&self.profit_ratio(b, factuals, history))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(b.cmp(&a))
+                })
+                .unwrap_or(pending[0]);
+            ordered.push(best);
+            pending.retain(|id| *id != best);
+        }
+        ordered
+            .into_iter()
+            .map(|id| (id, iters.get(&id).copied().unwrap_or(0.0)))
+            .collect()
+    }
+
+    fn inputs_ready(&self, process_id: usize, ordered: &[usize], factuals: &Factuals) -> bool {
+        let Some(process) = factuals.processes.get(&process_id) else {
+            return true;
+        };
+        for input in process.requirements() {
+            if input.good == TIME {
+                continue;
+            }
+            let makers: Vec<usize> = self
+                .household_work
+                .iter()
+                .map(|&(id, _)| id)
+                .filter(|&id| id != process_id && self.makes(id, input.good, factuals))
+                .collect();
+            if makers.iter().any(|id| !ordered.contains(id)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn makes(&self, process_id: usize, good: usize, factuals: &Factuals) -> bool {
+        factuals
+            .processes
+            .get(&process_id)
+            .is_some_and(|process| process.outputs.iter().any(|row| row.good == good))
+    }
+
+    fn output_amount(&self, process_id: usize, good: usize, factuals: &Factuals) -> f64 {
+        factuals
+            .processes
+            .get(&process_id)
+            .and_then(|process| {
+                process
+                    .outputs
+                    .iter()
+                    .find(|row| row.good == good)
+                    .map(|row| row.amount.max(0.0))
+            })
+            .unwrap_or(0.0)
+    }
+
+    fn profit_ratio(
+        &self,
+        process_id: usize,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> f64 {
+        factuals
+            .processes
+            .get(&process_id)
+            .map(|process| process.recipe_profit_ratio(|good| history.price(good)))
+            .unwrap_or(0.0)
+    }
+
+    fn worth_selling_id(
+        &self,
+        process_id: usize,
+        factuals: &Factuals,
+        history: &MarketHistory,
+    ) -> bool {
+        self.profit_ratio(process_id, factuals, history) > 1.0
+    }
+
+    /// One desire level of each good this household can make, once those
+    /// goods exist. A better substitute that the household also makes is
+    /// taken first, so two recipes for one good do not each owe the floor.
+    fn staple_floor(&self, staples: &HashSet<usize>) -> HashMap<usize, f64> {
+        let mut avail: HashMap<usize, f64> = HashMap::new();
+        for (&good, row) in &self.property {
+            avail.insert(good, row.quantity.max(0.0));
+        }
+        for &good in staples {
+            *avail.entry(good).or_insert(0.0) += 1.0e9;
+        }
+        let mut floor = HashMap::new();
+        for tier in &self.desires {
+            for desire in tier {
+                let amount = desire.amount.max(0.0);
+                let mut remaining = amount;
+                for target in desire.ordered_targets() {
+                    if remaining <= 0.0 || target.efficiency <= 0.0 {
+                        break;
+                    }
+                    let have = avail.get(&target.good).copied().unwrap_or(0.0);
+                    if have <= 0.0 {
+                        continue;
+                    }
+                    let want_sat = remaining.min(amount * target.cap);
+                    let need_qty = want_sat / target.efficiency;
+                    let take = need_qty.min(have);
+                    if let Some(slot) = avail.get_mut(&target.good) {
+                        *slot -= take;
+                    }
+                    if staples.contains(&target.good) {
+                        *floor.entry(target.good).or_insert(0.0) += take;
+                    }
+                    remaining -= take * target.efficiency;
+                }
+            }
+        }
+        floor
+    }
+
+    /// Quantity above `reserved`, including Time. Missing rows are absent.
+    fn unreserved_goods(&self) -> HashMap<usize, f64> {
+        let mut goods = HashMap::new();
+        for (&good, row) in &self.property {
+            let free = (row.quantity - row.reserved.max(0.0)).max(0.0);
+            if free > 0.0 {
+                goods.insert(good, free);
+            }
+        }
+        goods
+    }
+
+    /// Applies a process result to the bag. Destroyed inputs leave
+    /// `quantity`. Outputs are added there. Used capital moves to `used`
+    /// so decay can return it. `consumed` stays desire accounting.
+    fn apply_household_result(&mut self, result: &ProcessResult) {
+        for (&good, &delta) in &result.changes {
+            if delta > 0.0 {
+                self.property
+                    .entry(good)
+                    .or_insert_with(|| PopPRow::new(0.0))
+                    .quantity += delta;
+            } else if delta < 0.0 {
+                self.spend_unreserved(good, -delta);
+            }
+        }
+        for (&good, &used) in &result.used_inputs {
+            if used <= 0.0 {
+                continue;
+            }
+            let take = self.spend_unreserved(good, used);
+            if let Some(row) = self.property.get_mut(&good) {
+                row.used += take;
+            }
+        }
+    }
+
+    /// Removes `qty` from unreserved quantity. A process result must not
+    /// spend the consume reservation.
+    fn spend_unreserved(&mut self, good: usize, qty: f64) -> f64 {
+        debug_assert!(qty >= 0.0 && qty.is_finite(), "spend qty must be >= 0.0");
+        if qty <= 0.0 {
+            return 0.0;
+        }
+        let Some(row) = self.property.get_mut(&good) else {
+            debug_assert!(false, "process spent good {good} the pop does not hold");
+            return 0.0;
+        };
+        let free = (row.quantity - row.reserved.max(0.0)).max(0.0);
+        let take = qty.min(free);
+        debug_assert!(
+            (qty - take).abs() < 1e-6,
+            "process spent reserved good {good}: want {qty} free {free}"
+        );
+        row.quantity -= take;
+        take
     }
     
     /// # Update Desires
@@ -283,6 +846,7 @@ impl Pop {
     /// 3. Reserve on-hand goods for **one full desire level** (`amount` units of
     ///    satisfaction), matching what `satisfy_one_desire` will try to apply later.
     ///    Order: basic → common → luxury, then within-tier list order (priority).
+    ///    A tier above the first one stock cannot fill is not reserved.
     ///    Within a desire: high-priority targets first, then higher efficiency
     ///    (`Desire::ordered_targets`).
     ///
@@ -307,22 +871,41 @@ impl Pop {
         }
 
         // 3. Reserve goods for one full level per desire, in priority order.
+        self.reserve_for_desires();
+    }
+
+    /// Tops `reserved` up to one desire level from whatever is on hand now.
+    /// Clears the previous earmark first so a second pass does not stack
+    /// another full level. Stops after the first tier that stock cannot
+    /// fill, so a higher tier is not earmarked while a lower one is open.
+    /// Does not decay satisfaction.
+    pub fn reserve_for_desires(&mut self) {
+        for row in self.property.values_mut() {
+            row.reserved = 0.0;
+        }
         for tier_idx in 0..self.desires.len() {
             let desire_count = self.desires[tier_idx].len();
+            let mut open = false;
             for desire_idx in 0..desire_count {
-                self.reserve_one_desire_level(tier_idx, desire_idx);
+                if self.reserve_one_desire_level(tier_idx, desire_idx) > 1e-9 {
+                    open = true;
+                }
+            }
+            if open {
+                break;
             }
         }
     }
 
     /// Reserves goods for one full satisfaction level of a desire (`amount` sat).
     /// Uses target caps / efficiency like `satisfy_one_desire`, but only earmarks stock.
-    /// 
+    /// Returns the sat still unmet after the on-hand earmark.
+    ///
     /// This is part of `initial_reservations_and_update_satisfaction`
-    fn reserve_one_desire_level(&mut self, tier_idx: usize, desire_idx: usize) {
+    fn reserve_one_desire_level(&mut self, tier_idx: usize, desire_idx: usize) -> f64 {
         let amount = self.desires[tier_idx][desire_idx].amount;
         if amount <= 0.0 {
-            return;
+            return 0.0;
         }
         // Owned copies so we can mutate property without fighting the desire borrow.
         let targets: Vec<DesireTarget> = self.desires[tier_idx][desire_idx]
@@ -354,6 +937,7 @@ impl Pop {
             row.reserved += take;
             remaining -= take * target.efficiency;
         }
+        remaining.max(0.0)
     }
 
 
@@ -445,12 +1029,11 @@ impl Pop {
     /// 
     /// Goods should already be reserved and ready to be consumed, so do so.
     /// 
-    /// - Basic (0) and Common (1) tiers are processed **once each**, in list
-    ///   order. Common still runs when basic is incomplete (eat what is on
-    ///   hand). Luxury (2) is skipped unless every basic desire has a full
-    ///   level (`tiers_satisfied >= 1`).
+    /// - Tiers run in order, once each, and a tier is skipped until every
+    ///   lower tier is complete. An empty tier counts as complete.
     /// - Luxury desires are **repeatedly cycled** and overfilled as much as
     ///   possible until no further progress can be made with remaining goods.
+    ///   That loop waits until basic and common are both complete.
     ///
     /// For desires with a bucket of goods, higher-efficiency goods are preferred.
     ///
@@ -461,63 +1044,46 @@ impl Pop {
     /// The function assumes that all desires are currently in `self.desires` and
     /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
-        self.consume_from_firm(None, None);
-    }
-
-    /// Remainder owners may eat goods their shop made (shelf, not a wage).
-    pub fn consume_from_firm(&mut self, firm: Option<&mut Firm>, factuals: Option<&Factuals>) {
-        let outputs = match (firm.as_ref(), factuals) {
-            (Some(firm), Some(factuals))
-                if firm.owners.liable && firm.owners.pop_id() == Some(self.id) =>
-            {
-                firm.produced_goods(factuals)
-            }
-            _ => std::collections::HashSet::new(),
-        };
-        let mut shelf = firm;
-        // first do basic desires, only one pass needed.
-        let mut working_desires = self.desires.remove(0); // pop off front
-        self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
+        let mut working_desires = self.desires.remove(0);
+        self.satisfy_tier(&mut working_desires);
         let basic_done = Self::tier_is_complete(&working_desires);
-        self.desires.insert(0, working_desires); // put back
-
-        // Common still runs when basic is short: eat on-hand rather than
-        // hold it hoping the staple shows up.
-        working_desires = self.desires.remove(1); // pop off
-        self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
-        self.desires.insert(1, working_desires); // put back
-
+        self.desires.insert(0, working_desires);
         if !basic_done {
             return;
         }
 
-        // Last is Luxury Needs, do until we produce no more satisfaction.
+        working_desires = self.desires.remove(1);
+        self.satisfy_tier(&mut working_desires);
+        let common_done = Self::tier_is_complete(&working_desires);
+        self.desires.insert(1, working_desires);
+        if !common_done {
+            return;
+        }
+
         let mut iter_target = 1.0;
-        working_desires = self.desires.remove(2); // pop off
+        working_desires = self.desires.remove(2);
         let mut ordered_desires = vec![];
-        loop {// loop over desires
-            // satisfy the current working desires
-            self.satisfy_tier_from(&mut working_desires, shelf.as_deref_mut(), &outputs);
-            // remove any desires not fully satisfied.
+        loop {
+            self.satisfy_tier(&mut working_desires);
             let mut idx = 0;
             loop {
-                if idx >= working_desires.len() { break; } // break out if we walk off the end.
+                if idx >= working_desires.len() {
+                    break;
+                }
                 if working_desires[idx].tiers_satisfied() < iter_target {
-                    // if not satisfied to our target, move to ordered_desires
                     ordered_desires.push(working_desires.remove(idx));
                 } else {
-                    // otherwise, increment idx by one and go on
                     idx += 1;
                 }
             }
-            // if nothing to go onto next time, break out.
             if working_desires.is_empty() {
                 break;
-            } else { iter_target += 1.0; } // otherwise increment target and go again.
-        } 
-        // Restoring original tier order: priority is index for the pop and is set in update_desires.
+            } else {
+                iter_target += 1.0;
+            }
+        }
         ordered_desires.sort_by_key(|d| d.priority);
-        self.desires.insert(2, ordered_desires); // put back
+        self.desires.insert(2, ordered_desires);
     }
 
     /// # Satisfy Tier
@@ -532,19 +1098,9 @@ impl Pop {
     /// 
     /// This is part of consumption, and so will reduce quantity of goods.
     pub fn satisfy_tier(&mut self, desires: &mut Vec<Desire>) -> f64 {
-        self.satisfy_tier_from(desires, None, &std::collections::HashSet::new())
-    }
-
-    fn satisfy_tier_from(
-        &mut self,
-        desires: &mut Vec<Desire>,
-        mut shelf: Option<&mut Firm>,
-        outputs: &std::collections::HashSet<usize>,
-    ) -> f64 {
         let mut success: f64 = 0.0;
         for desire in desires.iter_mut() {
-            let result = self.satisfy_one_desire_from(desire, shelf.as_deref_mut(), outputs);
-            success = success.max(result);
+            success = success.max(self.satisfy_one_desire(desire));
         }
         success
     }
@@ -562,15 +1118,6 @@ impl Pop {
     ///
     /// This is part of Consumption, and so will reduce quantity of goods.
     pub(crate) fn satisfy_one_desire(&mut self, desire: &mut Desire) -> f64 {
-        self.satisfy_one_desire_from(desire, None, &std::collections::HashSet::new())
-    }
-
-    fn satisfy_one_desire_from(
-        &mut self,
-        desire: &mut Desire,
-        mut shelf: Option<&mut Firm>,
-        outputs: &std::collections::HashSet<usize>,
-    ) -> f64 {
         let targets: Vec<DesireTarget> = desire
             .ordered_targets()
             .into_iter()
@@ -594,13 +1141,6 @@ impl Pop {
                 take = needed.min(row.quantity);
                 row.quantity -= take;
                 row.reserved = (row.reserved - take).max(0.0);
-            }
-            let short = needed - take;
-            if short > 0.0 && outputs.contains(&target.good) {
-                if let Some(firm) = shelf.as_mut() {
-                    let extra = firm.take_from_shelf(target.good, short);
-                    take += extra;
-                }
             }
             if take <= 0.0 {
                 continue;
@@ -1301,8 +1841,9 @@ impl Pop {
         desires: &[Desire],
         on_hand: &mut HashMap<usize, f64>,
         factuals: &Factuals,
-    ) -> HashMap<usize, f64> {
+    ) -> (HashMap<usize, f64>, bool) {
         let mut need = HashMap::new();
+        let mut covered = true;
         for desire in desires {
             if desire.amount <= 0.0 {
                 continue;
@@ -1341,6 +1882,9 @@ impl Pop {
                 *assigned.entry(target.good).or_insert(0.0) += sat;
                 remaining -= sat;
             }
+            if remaining > 1e-12 {
+                covered = false;
+            }
             loop {
                 if remaining <= 1e-12 {
                     break;
@@ -1377,7 +1921,17 @@ impl Pop {
                 }
             }
         }
-        need
+        (need, covered)
+    }
+
+    /// Lowest desire tier that lists `good`, if any.
+    fn earliest_desire_tier(&self, good: usize) -> Option<usize> {
+        self.desires.iter().enumerate().find_map(|(tier, desires)| {
+            desires
+                .iter()
+                .any(|desire| desire.target.iter().any(|target| target.good == good))
+                .then_some(tier)
+        })
     }
 
     fn merge_need(into: &mut HashMap<usize, f64>, extra: HashMap<usize, f64>) {
@@ -1524,12 +2078,15 @@ impl Pop {
     ///
     /// **Consume need** spends on-hand along `ordered_targets`, then splits
     /// leftover sat equally across remaining buyable substitutes.
-    /// All three tiers are written; `create_orders` decides in the morning
-    /// whether the wallet covers common/luxury. Savings is `savings_ratio`
-    /// days of the cheapest basic+common basket, scaled by durability
-    /// (`1 - decay_rate`); fully decaying goods get no save. Liquid parks
-    /// salability-first, then durability. Leftover AMV may top up the cheapest
-    /// luxury shop, capped at one extra luxury level of that good.
+    /// Shop and save stop at the first tier that is not satisfied. A higher
+    /// tier is not shopped or used as a savings pile. The check is today's
+    /// satisfaction, not the cupboard after dinner: eaten staples still
+    /// restock, and the next open tier is still bought.
+    /// Savings is `savings_ratio` days of the cheapest basic+common basket,
+    /// scaled by durability (`1 - decay_rate`); fully decaying goods get no
+    /// save. Liquid parks salability-first, then durability, on goods of
+    /// the open tier or lower. Leftover AMV may top up the cheapest luxury
+    /// shop, capped at one extra luxury level, only when luxury is open.
     fn rewrite_shop_and_save_targets(
         &mut self,
         factuals: &Factuals,
@@ -1541,24 +2098,26 @@ impl Pop {
             .map(|(&id, row)| (id, row.quantity.max(0.0)))
             .collect();
 
-        let basic_need = Self::consume_need(&self.desires[0], &mut on_hand, factuals);
-        let common_need = Self::consume_need(&self.desires[1], &mut on_hand, factuals);
-        let mut luxury_need = HashMap::new();
-        let mut extra_luxury = HashMap::new();
-        if self.desires.len() > 2 {
-            luxury_need = Self::consume_need(&self.desires[2], &mut on_hand, factuals);
-            extra_luxury = Self::consume_need(
-                &self.desires[2],
-                &mut HashMap::new(),
-                factuals,
-            );
-            Self::merge_need(&mut luxury_need, extra_luxury.clone());
-        }
-
+        let (basic_need, _) = Self::consume_need(&self.desires[0], &mut on_hand, factuals);
         let mut consume_need: HashMap<usize, f64> = HashMap::new();
         Self::merge_need(&mut consume_need, basic_need);
-        Self::merge_need(&mut consume_need, common_need);
-        Self::merge_need(&mut consume_need, luxury_need);
+        // 0 while basic is open, 1 while common is open, 2 when luxury is open.
+        let mut open_tier = 0usize;
+        let mut extra_luxury: HashMap<usize, f64> = HashMap::new();
+        if Self::tier_is_complete(&self.desires[0]) {
+            let (common_need, _) = Self::consume_need(&self.desires[1], &mut on_hand, factuals);
+            Self::merge_need(&mut consume_need, common_need);
+            open_tier = 1;
+            if Self::tier_is_complete(&self.desires[1]) && self.desires.len() > 2 {
+                open_tier = 2;
+                let (luxury_need, _) = Self::consume_need(&self.desires[2], &mut on_hand, factuals);
+                let (extra, _) = Self::consume_need(&self.desires[2], &mut HashMap::new(), factuals);
+                extra_luxury = extra;
+                let mut luxury_shop = luxury_need;
+                Self::merge_need(&mut luxury_shop, extra_luxury.clone());
+                Self::merge_need(&mut consume_need, luxury_shop);
+            }
+        }
 
         let total_need = consume_need.clone();
         let mut goods: HashSet<usize> = self.property.keys().copied().collect();
@@ -1581,12 +2140,14 @@ impl Pop {
                 factuals,
                 market_history,
             );
-            for (good_id, weight) in Self::specific_buffer_weights(
-                &self.desires[1],
-                factuals,
-                market_history,
-            ) {
-                *weights.entry(good_id).or_insert(0.0) += weight;
+            if open_tier >= 1 {
+                for (good_id, weight) in Self::specific_buffer_weights(
+                    &self.desires[1],
+                    factuals,
+                    market_history,
+                ) {
+                    *weights.entry(good_id).or_insert(0.0) += weight;
+                }
             }
             weights
         };
@@ -1613,6 +2174,12 @@ impl Pop {
         let mut candidates: Vec<(usize, f64, f64, f64)> = Vec::new();
         for &good_id in &goods {
             if !factuals.find_good(good_id).is_buyable() {
+                continue;
+            }
+            if self
+                .earliest_desire_tier(good_id)
+                .is_some_and(|tier| tier > open_tier)
+            {
                 continue;
             }
             let price = market_history.price(good_id);
@@ -1651,7 +2218,7 @@ impl Pop {
             remaining_liquid = 0.0;
         }
 
-        if self.desires.len() > 2 && !self.desires[2].is_empty() {
+        if open_tier >= 2 && !self.desires[2].is_empty() {
             let mut leftover_amv = 0.0;
             for &good_id in &goods {
                 if !factuals.find_good(good_id).is_buyable() {
@@ -2114,6 +2681,7 @@ mod pop {
             current_orders: vec![],
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            household_work: Vec::new(),
             records: PopRecords::default(),
         }
     }
@@ -2272,6 +2840,64 @@ mod pop {
         use crate::game::{config::market_priority, factuals::Factuals, good::GoodTag, market::MarketHistory};
 
         use super::*;
+
+        #[test]
+        fn next_buy_is_one_offered_good_and_surplus_is_sold() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                4.0,
+            ));
+            // Basic is covered and reserved. Common bread is not held.
+            // Extra grain is the consumption pile. Savings sits on top of that.
+            pop.property.insert(100, PopPRow::new(12.0).with_reserve(5.0).with_save_target(2.0));
+            pop.property.insert(TIME, PopPRow::new(10.0));
+            let mut factuals = make_default_factuals();
+            factuals
+                .goods
+                .insert(TIME, make_good(TIME, "time".to_string()));
+            let mut offered = HashSet::new();
+            offered.insert(200);
+            offered.insert(300);
+
+            let buy = pop.next_shop_buy(&factuals, &offered, &HashSet::new());
+            let buy = buy.expect("one buy");
+            assert_eq!(buy.target, 200);
+            assert_eq!(buy.target_amount, 4.0);
+            assert_eq!(buy.shop_tier, 1);
+
+            let sells = pop.consumption_offers(&factuals, &make_default_market_history(), 0.0);
+            assert_eq!(sells.len(), 1);
+            assert_eq!(sells[0].target, 100);
+            // 12 on hand, keep max(save 2, reserve 5) = 5, so 7 offered.
+            assert_eq!(sells[0].target_amount, -7.0);
+        }
+
+        #[test]
+        fn out_of_time_posts_no_buy() {
+            let mut pop = make_pop();
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                4.0,
+            ));
+            pop.property.insert(100, PopPRow::new(8.0));
+            pop.property.insert(TIME, PopPRow::new(0.0));
+            let mut factuals = make_default_factuals();
+            factuals.goods.insert(
+                TIME,
+                make_good(TIME, "time".to_string()).with_transport_efficiency(1.0),
+            );
+            let mut offered = HashSet::new();
+            offered.insert(200);
+            assert!(pop.next_shop_buy(&factuals, &offered, &HashSet::new()).is_none());
+        }
 
         #[test]
         fn respect_one_time_overdraw_and_stop() {
@@ -3209,6 +3835,28 @@ mod pop {
             assert_eq!(pop.property[&100].save_target, 10.0);
             assert_eq!(pop.property[&100].quantity, 10.0);
         }
+
+        #[test]
+        fn does_not_reserve_luxury_while_basic_is_short() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(4.0));
+            pop.property.insert(300, PopPRow::new(10.0));
+
+            pop.reserve_for_desires();
+
+            assert_eq!(pop.property[&100].reserved, 4.0);
+            assert_eq!(pop.property[&300].reserved, 0.0);
+        }
     }
 
     mod update_sentiments_should {
@@ -3650,6 +4298,66 @@ mod pop {
         }
 
         #[test]
+        fn short_basic_does_not_shop_or_save_luxury() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(300, PopPRow::new(40.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!((pop.property[&100].shop_target - 10.0).abs() > -1e-12);
+            assert!(pop.property[&100].shop_target >= 10.0);
+            assert_eq!(pop.property[&300].desire_needs, 0.0);
+            assert_eq!(pop.property[&300].save_target, 0.0);
+            assert_eq!(pop.property[&300].shop_target, 0.0);
+        }
+
+        #[test]
+        fn satisfied_basic_shops_common_even_when_the_cupboard_is_empty() {
+            let mut pop = make_pop();
+            let mut basic = make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            );
+            basic.satisfaction = 10.0;
+            pop.desires[0].push(basic);
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.property.insert(100, PopPRow::new(0.0));
+            pop.property.insert(200, PopPRow::new(0.0));
+            pop.property.insert(300, PopPRow::new(8.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+
+            pop.record_keeping(&factuals, &history);
+
+            assert!(pop.property[&100].shop_target >= 10.0);
+            assert!(pop.property[&200].shop_target >= 5.0);
+            assert_eq!(pop.property[&300].shop_target, 0.0);
+            assert_eq!(pop.property[&300].save_target, 0.0);
+        }
+
+        #[test]
         fn leftover_liquid_raises_luxury_shop() {
             let mut pop = make_pop();
             pop.desires[2].push(make_desire(
@@ -4084,7 +4792,7 @@ mod pop {
         }
 
         #[test]
-        fn writes_higher_tier_consume_need_even_when_basic_is_unpaid() {
+        fn unpaid_basic_does_not_write_a_higher_tier_shop() {
             let mut pop = make_pop();
             pop.desires[0].push(make_desire(
                 0,
@@ -4104,7 +4812,8 @@ mod pop {
             pop.record_keeping(&factuals, &history);
 
             assert!(pop.property[&100].shop_target > 0.0);
-            assert!(pop.property[&300].shop_target > 0.0);
+            assert_eq!(pop.property[&300].shop_target, 0.0);
+            assert_eq!(pop.property[&300].save_target, 0.0);
         }
 
         #[test]
@@ -4412,6 +5121,220 @@ mod pop {
         }
     }
 
+    mod household_work_should {
+        use super::*;
+        use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessTag};
+
+        fn good(id: usize, name: &str) -> Good {
+            make_good(id, name.to_string())
+        }
+
+        fn time_recipe(id: usize, name: &str, time: f64, output: usize, amount: f64) -> Process {
+            Process::new(id, name, 0)
+                .with_tag(ProcessTag::subsistence(0.25))
+                .with_input(ProcessInput::new(TIME, time, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(output, amount, true))
+        }
+
+        fn basket_world() -> Factuals {
+            let mut factuals = Factuals::new();
+            for (id, name) in [(TIME, "time"), (1, "grain"), (2, "water"), (7, "wood"), (3, "bread")]
+            {
+                factuals.goods.insert(id, good(id, name));
+            }
+            factuals.processes.insert(29, time_recipe(29, "farm", 0.5, 1, 2.0));
+            factuals.processes.insert(30, time_recipe(30, "water", 0.2, 2, 2.0));
+            factuals.processes.insert(31, time_recipe(31, "forage", 0.5, 7, 2.0));
+            factuals.processes.insert(
+                3,
+                Process::new(3, "bake", 0)
+                    .with_input(ProcessInput::new(TIME, 0.2, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(3, 3.0, true)),
+            );
+            factuals
+        }
+
+        fn qty(pop: &Pop, good: usize) -> f64 {
+            pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0)
+        }
+
+        #[test]
+        fn basket_then_craft_spends_time_and_unreserved_grain() {
+            let factuals = basket_world();
+            let mut pop = make_pop();
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(29, 3.0), (30, 3.0), (31, 3.0), (3, 5.0)];
+            pop.run_household_work(&factuals, &MarketHistory::new());
+            // Farm's sale batch is 6 grain. Bread's sale batch takes 5 of it.
+            assert!((qty(&pop, 1) - 6.0).abs() < 1e-9, "grain {}", qty(&pop, 1));
+            assert!(qty(&pop, 2) > 100.0, "water {}", qty(&pop, 2));
+            assert!((qty(&pop, 3) - 15.0).abs() < 1e-9, "bread {}", qty(&pop, 3));
+            assert!(qty(&pop, TIME) < 1.0, "time {}", qty(&pop, TIME));
+        }
+
+        #[test]
+        fn reserved_grain_is_not_a_craft_input() {
+            let factuals = basket_world();
+            let mut pop = make_pop();
+            pop.property.insert(TIME, PopPRow::new(10.0));
+            pop.property.insert(1, PopPRow::new(5.0).with_reserve(5.0));
+            // The desire is what puts the fence back after each recipe.
+            // A manual reserve with no desire is cleared, and spare Time
+            // would then bake the grain.
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.household_work = vec![(3, 5.0)];
+            pop.run_household_work(&factuals, &MarketHistory::new());
+            assert!(qty(&pop, 3).abs() < 1e-9, "bread {}", qty(&pop, 3));
+            assert!((qty(&pop, 1) - 5.0).abs() < 1e-9, "grain {}", qty(&pop, 1));
+            assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+            assert!((qty(&pop, TIME) - 10.0).abs() < 1e-9, "time {}", qty(&pop, TIME));
+        }
+
+        #[test]
+        fn new_grain_is_reserved_before_the_bakery() {
+            let factuals = basket_world();
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(29, 2.0), (3, 5.0)];
+            pop.run_household_work(&factuals, &MarketHistory::new());
+            assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+            assert!(qty(&pop, 1) + 1e-9 >= 5.0, "grain {}", qty(&pop, 1));
+            assert!((qty(&pop, 3) - 15.0).abs() < 1e-9, "bread {}", qty(&pop, 3));
+        }
+
+        fn priced() -> MarketHistory {
+            let mut history = MarketHistory::new();
+            for good in [TIME, 1, 2, 7, 3, 8] {
+                history.prices.insert(good, 100.0);
+            }
+            history
+        }
+
+        #[test]
+        fn profitable_bread_raises_water_above_the_floor() {
+            let mut factuals = basket_world();
+            factuals.processes.insert(
+                3,
+                Process::new(3, "bake", 0)
+                    .with_input(ProcessInput::new(TIME, 0.2, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(2, 1.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(3, 3.0, true)),
+            );
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(29, 3.0), (30, 3.0), (3, 5.0)];
+            pop.run_household_work(&factuals, &priced());
+            assert!((pop.property[&2].reserved - 5.0).abs() < 1e-9);
+            assert!(qty(&pop, 2) + 1e-9 >= 5.0, "water {}", qty(&pop, 2));
+            assert!((qty(&pop, 3) - 15.0).abs() < 1e-9, "bread {}", qty(&pop, 3));
+        }
+
+        #[test]
+        fn unprofitable_cabin_covers_housing_and_does_not_add_a_sale_batch() {
+            let mut factuals = basket_world();
+            factuals.processes.insert(
+                8,
+                Process::new(8, "cabins", 0)
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(7, 3.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(8, 1.0, true)),
+            );
+            factuals.goods.insert(8, good(8, "cabins"));
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(7, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.desires[1].push(make_desire(
+                1,
+                DesireTarget::new(8, DesireTargetType::Consume, 1.0),
+                1.0,
+            ));
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(31, 3.0), (8, 2.0)];
+            pop.run_household_work(&factuals, &priced());
+            assert!((qty(&pop, 8) - 1.0).abs() < 1e-9, "cabins {}", qty(&pop, 8));
+            assert!(qty(&pop, 7) + 1e-9 >= 5.0, "wood {}", qty(&pop, 7));
+            assert!((pop.property[&7].reserved - 5.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn grain_floor_goes_to_the_better_recipe() {
+            let mut factuals = basket_world();
+            factuals.processes.insert(
+                1,
+                Process::new(1, "make grain", 0)
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(1, 6.0, true)),
+            );
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(29, 3.0), (1, 8.0)];
+            let steps = pop.run_household_work(&factuals, &MarketHistory::new());
+            let farm = steps.iter().find(|step| step.process == 29).expect("farm");
+            let extract = steps.iter().find(|step| step.process == 1).expect("extract");
+            assert!(farm.iterations.abs() < 1e-9, "farm {}", farm.iterations);
+            assert!(extract.iterations > 8.0, "extract {}", extract.iterations);
+            assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+        }
+
+        #[test]
+        fn spare_time_leaves_the_wagon_its_time() {
+            let mut factuals = basket_world();
+            let time = factuals.goods.remove(&TIME).expect("time");
+            factuals
+                .goods
+                .insert(TIME, time.with_transport_efficiency(1.0));
+            for id in [2, 3] {
+                let good = factuals.goods.get_mut(&id).expect("good");
+                good.mass = 1.0;
+                good.volume = 0.0;
+            }
+            let mut pop = make_pop();
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.property.insert(3, PopPRow::new(0.0));
+            pop.property.get_mut(&3).unwrap().shop_target = 2.0;
+            pop.household_work = vec![(30, 2.0)];
+            pop.run_household_work(&factuals, &MarketHistory::new());
+            // 2 bread to buy (bulk 2) plus 2 water to pay with (bulk 2) plus the door.
+            assert!((qty(&pop, TIME) - 5.0).abs() < 1e-6, "time {}", qty(&pop, TIME));
+            assert!(qty(&pop, 2) > 4.0, "water {}", qty(&pop, 2));
+        }
+
+        #[test]
+        fn spare_time_keeps_running_the_best_recipe() {
+            let factuals = basket_world();
+            let mut pop = make_pop();
+            pop.property.insert(TIME, PopPRow::new(100.0));
+            pop.household_work = vec![(29, 2.0)];
+            pop.run_household_work(&factuals, &MarketHistory::new());
+            assert!(qty(&pop, 1) > 4.0, "grain {}", qty(&pop, 1));
+            assert!(qty(&pop, TIME) < 1.0, "time {}", qty(&pop, TIME));
+        }
+    }
+
     mod consume_should {
         use super::*;
 
@@ -4481,6 +5404,37 @@ mod pop {
         }
 
         #[test]
+        fn eats_the_bag_and_leaves_a_liable_firms_shelf() {
+            use crate::game::actor::Actor;
+            use crate::game::firm::{Firm, FirmPRow};
+
+            let mut pop = make_pop();
+            pop.id = 3;
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                5.0,
+            ));
+            pop.property.insert(1, PopPRow::new(4.0));
+
+            let mut firm = Firm::new(1, "farm".into(), 1, hexx::Hex::new(0, 0))
+                .with_owner(Actor::Pop(3))
+                .with_owner_liability();
+            firm.property
+                .insert(1, FirmPRow::new().with_quantity(10.0).with_held(3.0));
+
+            pop.consume();
+
+            assert_eq!(pop.property[&1].quantity, 0.0);
+            assert_eq!(pop.property[&1].consumed, 4.0);
+            assert!((pop.desires[0][0].satisfaction - 4.0).abs() < 1e-12);
+            assert_eq!(firm.property[&1].quantity, 10.0);
+            assert_eq!(firm.property[&1].held, 3.0);
+            assert!(firm.owners.liable);
+            assert_eq!(firm.owners.pop_id(), Some(3));
+        }
+
+        #[test]
         fn luxury_oversat_does_not_drive_reserved_negative() {
             let mut pop = make_pop();
             pop.desires[2].push(make_desire(
@@ -4499,7 +5453,7 @@ mod pop {
         }
 
         #[test]
-        fn eats_common_on_hand_when_basic_is_incomplete() {
+        fn leaves_higher_tiers_when_basic_is_incomplete() {
             let mut pop = make_pop();
             pop.desires[0].push(make_desire(
                 0,
@@ -4523,14 +5477,16 @@ mod pop {
             pop.consume();
 
             assert_eq!(pop.property[&100].consumed, 3.0);
-            assert_eq!(pop.property[&200].consumed, 10.0);
+            assert_eq!(pop.property[&200].quantity, 10.0);
+            assert_eq!(pop.property[&200].consumed, 0.0);
+            assert_eq!(pop.property[&300].quantity, 10.0);
             assert_eq!(pop.property[&300].consumed, 0.0);
-            assert_eq!(pop.desires[1][0].satisfaction, 10.0);
+            assert_eq!(pop.desires[1][0].satisfaction, 0.0);
             assert_eq!(pop.desires[2][0].satisfaction, 0.0);
         }
 
         #[test]
-        fn luxury_still_runs_when_common_is_short_if_basic_is_complete() {
+        fn luxury_waits_until_common_is_complete() {
             let mut pop = make_pop();
             pop.desires[0].push(make_desire(
                 0,
@@ -4555,7 +5511,39 @@ mod pop {
 
             assert_eq!(pop.property[&100].consumed, 10.0);
             assert_eq!(pop.property[&200].consumed, 2.0);
+            assert_eq!(pop.property[&300].quantity, 10.0);
+            assert_eq!(pop.property[&300].consumed, 0.0);
+            assert_eq!(pop.desires[2][0].satisfaction, 0.0);
+        }
+
+        #[test]
+        fn luxury_runs_when_basic_and_common_are_complete() {
+            let mut pop = make_pop();
+            pop.desires[0].push(make_desire(
+                0,
+                DesireTarget::new(100, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(200, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.desires[2].push(make_desire(
+                0,
+                DesireTarget::new(300, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property.insert(100, PopPRow::new(10.0));
+            pop.property.insert(200, PopPRow::new(10.0));
+            pop.property.insert(300, PopPRow::new(10.0));
+
+            pop.consume();
+
+            assert_eq!(pop.property[&100].consumed, 10.0);
+            assert_eq!(pop.property[&200].consumed, 10.0);
             assert_eq!(pop.property[&300].consumed, 10.0);
+            assert_eq!(pop.desires[2][0].satisfaction, 10.0);
         }
     }
 
@@ -5201,14 +6189,14 @@ mod pop {
         }
 
         #[test]
-        fn buy_with_firm_tenders_shop_surplus_above_dinner() {
+        fn buy_with_firm_tenders_shelf_above_reserve() {
             use crate::game::firm::{Firm, FirmPRow};
             let pop = make_pop();
             let mut firm = Firm::new(7, "shop".into(), 42, hexx::Hex::new(0, 0))
                 .with_owner(Actor::Pop(0))
                 .with_owner_liability();
-            firm.property.insert(500, FirmPRow::new().with_quantity(10.0));
-            firm.household_demand.insert(500, 2.0);
+            firm.property
+                .insert(500, FirmPRow::new().with_quantity(10.0).with_reserve_target(6.0));
             let factuals = make_default_factuals();
             let history = make_default_market_history();
             let (own, other) = buy_and_offer();
@@ -5244,6 +6232,25 @@ mod pop {
             let history = make_default_market_history();
             let (own, other) = buy_and_offer();
             assert!(pop.buy(&own, &other, &history, &factuals).is_none());
+        }
+
+        #[test]
+        fn buy_spends_higher_tier_stock_on_a_lower_shop() {
+            let mut pop = make_pop();
+            pop.desires[1].push(make_desire(
+                0,
+                DesireTarget::new(500, DesireTargetType::Consume, 1.0),
+                10.0,
+            ));
+            pop.property
+                .insert(500, PopPRow::new(10.0).with_target(10.0).with_reserve(10.0));
+            let factuals = make_default_factuals();
+            let history = make_default_market_history();
+            let (own, other) = buy_and_offer();
+
+            let deal = pop.buy(&own, &other, &history, &factuals).expect("proposal");
+            assert!((deal.goods[&100] + 4.0).abs() < 1e-12);
+            assert!((deal.goods[&500] - 4.0).abs() < 1e-12);
         }
 
         #[test]

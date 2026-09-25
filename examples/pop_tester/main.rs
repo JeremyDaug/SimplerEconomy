@@ -2,12 +2,11 @@
 //!
 //! Copy of `market_tester` with firms left out. Startup loads goods,
 //! processes, and config from `data/world/`, pops from `data/init/`, and
-//! sizes each pop's morning stock cap from the matching init firm's process
-//! outputs (`amount * target`, no scaling). Firms are not kept on the
-//! session. Books come from [`Pop::create_orders`]. `day` / `day N` grants
-//! Time, then tops each pop up to those process outputs, runs the market,
-//! then consume / decay / `record_keeping`. `day N` stops early if any good
-//! AMV goes negative. No firm production or plan.
+//! Firms are read to attach each pop's specialty, then dropped. Books come
+//! from [`Pop::create_orders`]. `day` / `day N` grants Time, reserves
+//! today's consume, runs the household basket and specialty, then the
+//! market, consume, decay, and `record_keeping`. `day N` stops early if
+//! any good AMV goes negative. No firm production or plan.
 //! Each day appends core market CSVs under `data/logs/` (close quotes and
 //! trade candles). Pops are logged only when flagged (`csv on <actor>`).
 //! `csv` shows the files; `csv <name>` changes the stem.
@@ -40,7 +39,7 @@ use simpler_economy::game::market::{
     Market, MarketDayReport, MarketGood, MarketHistory, MeetingOutcome,
 };
 use simpler_economy::game::marketorder::MarketOrder;
-use simpler_economy::game::pop::Pop;
+use simpler_economy::game::pop::{HouseholdStep, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
 
 mod csv;
@@ -179,8 +178,8 @@ struct Session {
     csv_pops: HashSet<usize>,
     /// Firm ids written to `{stem}_firms.csv`. Empty skips that file.
     csv_firms: HashSet<usize>,
-    /// Morning process-output stock cap per pop, loaded from init firms.
-    morning_outputs: MorningOutputs,
+    /// This morning's household recipes, in pop id order.
+    pop_production: Vec<(usize, HouseholdStep)>,
 }
 
 
@@ -417,10 +416,10 @@ fn run_match(session: &mut Session) -> String {
     out
 }
 
-/// Loads the living pop roster, morning process-output caps, and an empty
-/// CSV flag set. Firms are not kept on the session.
+/// Loads the living pop roster and an empty CSV flag set. Firms are not
+/// kept on the session.
 pub(crate) fn boot_session() -> Session {
-    let (pops, firms, factuals, history, morning_outputs) = build_world();
+    let (pops, firms, factuals, history) = build_world();
     debug_assert!(firms.is_empty(), "pop tester does not load firms");
     let mut history = history;
     history.friction = factuals.config.market.friction;
@@ -442,7 +441,7 @@ pub(crate) fn boot_session() -> Session {
         csv_stem: CSV_STEM_DEFAULT.to_string(),
         csv_pops: HashSet::new(),
         csv_firms: HashSet::new(),
-        morning_outputs,
+        pop_production: Vec::new(),
     }
 }
 
@@ -506,21 +505,28 @@ fn run_days(session: &mut Session, n: u32) -> String {
     out
 }
 
-/// Runs one tester calendar day: morning Time and process-output top-up,
-/// labor settle (no-op with no firms), market, consume, sentiments, decay,
-/// salability rot cap, then pop record keeping.
+/// Runs one tester calendar day: morning Time, consume reservation,
+/// household work, labor settle (no-op with no firms), market, consume,
+/// sentiments, decay, salability rot cap, then pop record keeping.
 fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSettlement)>) {
     let mut pops: HashMap<usize, Pop> = session.pops.drain(..).map(|pop| (pop.id, pop)).collect();
     let mut firms: HashMap<usize, Firm> = HashMap::new();
 
-    for pop in pops.values_mut() {
+    session.pop_production.clear();
+    let mut pop_ids: Vec<usize> = pops.keys().copied().collect();
+    pop_ids.sort_unstable();
+    for pop_id in pop_ids {
+        let pop = pops.get_mut(&pop_id).expect("pop id");
         pop.start_day(&vec![(
             TIME,
             ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
         )]);
-        grant_daily_endowment(pop, &session.morning_outputs);
         pop.records.income_amv = 0.0;
         pop.initial_reservations_and_update_satisfaction();
+        let steps = pop.run_household_work(&session.factuals, &session.history);
+        for step in steps {
+            session.pop_production.push((pop_id, step));
+        }
     }
 
     let wages = session
@@ -596,16 +602,12 @@ fn add_decay_rot(into: &mut HashMap<usize, (f64, f64)>, from: HashMap<usize, (f6
 #[cfg(test)]
 mod day_should {
     use super::*;
-    use std::collections::HashMap;
+    use simpler_economy::game::config::pop_constants;
     use simpler_economy::game::desire::DesireTargetType;
-    use simpler_economy::game::init::InitData;
     use simpler_economy::game::pop::PopPRow;
 
-    fn grant_qty(rows: &[(usize, f64)], good: usize) -> f64 {
-        rows.iter()
-            .find(|(id, _)| *id == good)
-            .map(|(_, qty)| *qty)
-            .unwrap_or(0.0)
+    fn qty(pop: &Pop, good: usize) -> f64 {
+        pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0)
     }
 
     #[test]
@@ -613,7 +615,7 @@ mod day_should {
         let session = boot_session();
         assert_eq!(
             catalog_good_ids(&session.factuals),
-            vec![TIME, GRAIN, WATER, BREAD, GOLD, WOOD, CABINS]
+            vec![TIME, GRAIN, WATER, BREAD, GOLD, GOLD_TOKEN, JEWELRY, WOOD, CABINS]
         );
         assert!(!session.factuals.goods.contains_key(&IRON));
         assert!(!session.market.goods.contains_key(&IRON));
@@ -642,11 +644,11 @@ mod day_should {
     #[test]
     fn living_roster_is_eight_village_pops_and_no_firms() {
         let session = boot_session();
-        assert_eq!(session.pops.len(), 8);
+        assert_eq!(session.pops.len(), 5);
         assert!(session.firms.is_empty());
         assert!(session.market.firms.is_empty());
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
-        assert_eq!(ids, (1..=8).collect::<Vec<_>>());
+        assert_eq!(ids, vec![3, 4, 5, 6, 8]);
     }
 
     #[test]
@@ -684,33 +686,32 @@ mod day_should {
     }
 
     #[test]
-    fn living_pops_have_specialty_opening_stock() {
+    fn living_pops_open_with_one_day_of_specialty() {
         let session = boot_session();
         for pop in &session.pops {
-            let rows = session
-                .morning_outputs
-                .get(&pop.id)
-                .map(|rows| rows.as_slice())
-                .unwrap_or(&[]);
-            for &(good, cap) in rows {
-                if good == TIME {
-                    assert!(
-                        pop.property
-                            .get(&TIME)
-                            .map(|row| row.quantity)
-                            .unwrap_or(0.0)
-                            .abs()
-                            < 1e-9
-                    );
-                    continue;
-                }
-                let qty = pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0);
-                // Init grant is the specialty line only; morning cap also includes
-                // subsistence outputs of the same good.
-                assert!(qty <= cap + 1e-9, "pop {} good {good} qty {qty} cap {cap}", pop.id);
-                assert!(qty + 1e-9 >= 0.0);
-            }
+            assert!(pop.household_work.len() >= 4, "pop {}", pop.id);
+            assert_eq!(pop.household_work[0].0, 29);
+            assert_eq!(pop.household_work[1].0, 30);
+            assert_eq!(pop.household_work[2].0, 31);
+            assert!(
+                (pop.household_work[0].1 - pop_constants::HOUSEHOLD_BASKET_CAP).abs() < 1e-9
+            );
+            let &(process, cap) = pop.household_work.last().expect("specialty");
+            let output = &session.factuals.processes[&process].outputs[0];
+            let daily = output.amount * cap;
+            assert!(
+                (qty(pop, output.good) - daily).abs() < 1e-9,
+                "pop {} good {} qty {} daily {daily}",
+                pop.id,
+                output.good,
+                qty(pop, output.good)
+            );
+            assert!(qty(pop, TIME).abs() < 1e-9);
         }
+        let bread = session.pops.iter().find(|pop| pop.id == 3).expect("bread");
+        assert!(qty(bread, GRAIN).abs() < 1e-9);
+        assert!(qty(bread, WATER).abs() < 1e-9);
+        assert!(qty(bread, WOOD).abs() < 1e-9);
     }
 
     #[test]
@@ -721,13 +722,15 @@ mod day_should {
         assert!((house.count - 1.0).abs() < 1e-9);
         assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
         assert_eq!(pop.desires[0].len(), 3);
-        assert_eq!(pop.desires[1].len(), 2);
-        assert_eq!(pop.desires[2].len(), 1);
+        assert_eq!(pop.desires[1].len(), 3);
+        assert_eq!(pop.desires[2].len(), 2);
         assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
         assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
         assert_eq!(pop.desires[1][0].category.as_deref(), Some("housing"));
         assert_eq!(pop.desires[1][1].category.as_deref(), Some("improved food"));
+        assert_eq!(pop.desires[1][2].category.as_deref(), Some("Extra Storage"));
         assert_eq!(pop.desires[2][0].category.as_deref(), Some("shiny"));
+        assert_eq!(pop.desires[2][1].category.as_deref(), Some("rest"));
         for tier in &pop.desires {
             for desire in tier {
                 match desire.scalar {
@@ -764,69 +767,58 @@ mod day_should {
     }
 
     #[test]
-    fn morning_outputs_come_from_init_firm_process_times_target() {
-        let session = boot_session();
-        let init = InitData::load_from_path(init_data_path(), &session.factuals)
-            .expect("load init firms for grant check");
-        let expected = morning_outputs_from_firms(&init.firms, &session.factuals);
-        assert_eq!(session.morning_outputs.len(), expected.len());
-        for (pop_id, rows) in &expected {
-            assert_eq!(session.morning_outputs.get(pop_id), Some(rows));
-        }
-        assert!(session.firms.is_empty());
-        assert_eq!(session.morning_outputs.len(), 8);
-
-        let grain_firm = init.firms.iter().find(|firm| firm.id == 1).expect("firm 1");
-        let grain_line = &grain_firm.production_line[0];
-        let grain_proc = &session.factuals.processes[&grain_line.process];
-        let grain_qty = grain_proc.outputs[0].amount * grain_line.target.unwrap();
-        assert_eq!(grain_proc.outputs[0].good, GRAIN);
-        assert!(grain_qty > 0.0);
-        let farm_qty = session.factuals.processes[&29].outputs[0].amount * 2.0;
-        let grain_cap = grant_qty(&session.morning_outputs[&1], GRAIN);
-        assert!((grain_cap - grain_qty - farm_qty).abs() < 1e-9);
+    fn morning_work_makes_the_basket_and_spends_time() {
+        let mut session = boot_session();
+        let idx = session.pops.iter().position(|pop| pop.id == 3).expect("bread");
+        let bread_before = qty(&session.pops[idx], BREAD);
+        session.pops[idx].start_day(&vec![(
+            TIME,
+            ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
+        )]);
+        let time_granted = qty(&session.pops[idx], TIME);
+        session.pops[idx].initial_reservations_and_update_satisfaction();
+        session.pops[idx].run_household_work(&session.factuals, &session.history);
+        let pop = &session.pops[idx];
+        assert!(qty(pop, TIME) < time_granted, "time {}", qty(pop, TIME));
+        assert!(qty(pop, WATER) > 0.0, "water {}", qty(pop, WATER));
+        assert!(qty(pop, WOOD) > 0.0, "wood {}", qty(pop, WOOD));
         assert!(
-            (grant_qty(&session.morning_outputs[&5], GRAIN) - grain_qty - farm_qty).abs()
-                < 1e-9
+            qty(pop, BREAD) > bread_before,
+            "bread {} before {bread_before}",
+            qty(pop, BREAD)
         );
-
-        let gold_firm = init.firms.iter().find(|firm| firm.id == 4).expect("firm 4");
-        let gold_line = &gold_firm.production_line[0];
-        let gold_proc = &session.factuals.processes[&gold_line.process];
-        let gold_qty = gold_proc.outputs[0].amount * gold_line.target.unwrap();
-        assert_eq!(gold_proc.outputs[0].good, GOLD);
-        assert!(gold_qty > 0.0);
-        assert!((grant_qty(&session.morning_outputs[&4], GOLD) - gold_qty).abs() < 1e-9);
     }
 
     #[test]
-    fn morning_grant_tops_up_to_process_output_and_does_not_overfill() {
-        let session = boot_session();
-        let grain_cap = grant_qty(&session.morning_outputs[&1], GRAIN);
-        let gold_cap = grant_qty(&session.morning_outputs[&4], GOLD);
-        assert!(grain_cap > 0.0);
-        assert!(gold_cap > 0.0);
-
-        let mut grain_pop = empty_pop(1, &session.factuals.config.pop);
-        grant_daily_endowment(&mut grain_pop, &session.morning_outputs);
-        assert!((grain_pop.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
-        let water_cap = grant_qty(&session.morning_outputs[&1], WATER);
-        assert!((grain_pop.property[&WATER].quantity - water_cap).abs() < 1e-9);
-
-        let mut short = empty_pop(1, &session.factuals.config.pop);
-        short.property.insert(GRAIN, PopPRow::new(grain_cap * 0.5));
-        grant_daily_endowment(&mut short, &session.morning_outputs);
-        assert!((short.property[&GRAIN].quantity - grain_cap).abs() < 1e-9);
-
-        let over = grain_cap + 50.0;
-        let mut full = empty_pop(1, &session.factuals.config.pop);
-        full.property.insert(GRAIN, PopPRow::new(over));
-        grant_daily_endowment(&mut full, &session.morning_outputs);
-        assert!((full.property[&GRAIN].quantity - over).abs() < 1e-9);
-
-        let mut gold_pop = empty_pop(4, &session.factuals.config.pop);
-        gold_pop.property.insert(GOLD, PopPRow::new(5.0));
-        grant_daily_endowment(&mut gold_pop, &session.morning_outputs);
-        assert!((gold_pop.property[&GOLD].quantity - gold_cap).abs() < 1e-9);
+    fn reserved_grain_blocks_the_bakery() {
+        let mut session = boot_session();
+        let idx = session.pops.iter().position(|pop| pop.id == 3).expect("bread");
+        session.pops[idx]
+            .household_work
+            .retain(|(process, _)| *process == 3);
+        session.pops[idx]
+            .property
+            .insert(GRAIN, PopPRow::new(5.0).with_reserve(5.0));
+        session.pops[idx]
+            .property
+            .insert(WATER, PopPRow::new(5.0).with_reserve(5.0));
+        session.pops[idx].start_day(&vec![(
+            TIME,
+            ScalingFactor::Labor(pop_constants::TIME_PER_LABOR),
+        )]);
+        let time_granted = qty(&session.pops[idx], TIME);
+        let bread_before = qty(&session.pops[idx], BREAD);
+        session.pops[idx].initial_reservations_and_update_satisfaction();
+        if let Some(row) = session.pops[idx].property.get_mut(&GRAIN) {
+            row.reserved = row.quantity;
+        }
+        if let Some(row) = session.pops[idx].property.get_mut(&WATER) {
+            row.reserved = row.quantity;
+        }
+        session.pops[idx].run_household_work(&session.factuals, &session.history);
+        let pop = &session.pops[idx];
+        assert!((qty(pop, BREAD) - bread_before).abs() < 1e-9);
+        assert!((qty(pop, TIME) - time_granted).abs() < 1e-9);
+        assert!((qty(pop, GRAIN) - 5.0).abs() < 1e-9);
     }
 }

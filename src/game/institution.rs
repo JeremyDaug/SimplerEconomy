@@ -303,6 +303,7 @@ mod institution_tests {
             current_orders: vec![],
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            household_work: Vec::new(),
             records: PopRecords::default(),
         }
     }

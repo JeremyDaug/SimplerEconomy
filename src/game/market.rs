@@ -477,6 +477,12 @@ impl Market {
         }
     }
 
+    /// Registers a firm founded at runtime. Membership only; the caller owns
+    /// the [`crate::game::firm::Firm`].
+    pub fn found_firm(&mut self, firm_id: usize) {
+        self.firms.insert(firm_id);
+    }
+
     /// Sets the market friction factor. Must be `>= 0.0`.
     pub fn with_friction(mut self, friction: f64) -> Self {
         debug_assert!(friction >= 0.0, "friction must be >= 0.0");
@@ -502,8 +508,11 @@ impl Market {
     ///
     /// Runs this market's intramarket day.
     ///
-    /// 1. Collect orders from member pops and firms (`create_orders`) once.
-    ///    Institution and state orders are not collected yet.
+    /// 1. Firms post once. Each pop offers surplus above savings and the
+    ///    consume reserve, and posts one buy for an open-tier good that is
+    ///    already on offer. After that buy fills or closes, the pop looks
+    ///    again while the flat door fee is still payable. Institution and
+    ///    state orders are not collected yet.
     /// 2. Collate opening supply, demand, buyers, and suppliers onto
     ///    [`MarketGood`] rows.
     /// 3. Match until quiet: pick a buy at random among those with an
@@ -535,12 +544,6 @@ impl Market {
         rng: &mut R,
     ) -> MarketDayReport {
         self.unavailable_goods.clear();
-        for &id in &self.firms {
-            firms
-                .get_mut(&id)
-                .unwrap_or_else(|| panic!("market firm {id} missing from firms"))
-                .refresh_household_needs(pops, factuals);
-        }
         for &id in &self.pops {
             pops.get_mut(&id)
                 .unwrap_or_else(|| panic!("market pop {id} missing from pops"))
@@ -555,6 +558,7 @@ impl Market {
         self.reset_day_exchange_stats();
         self.collate_order_books(&buys, &sells, &factuals.config.market);
 
+        let mut gave_up: HashMap<usize, HashSet<usize>> = HashMap::new();
         let mut steps = 0usize;
         loop {
             steps += 1;
@@ -581,6 +585,17 @@ impl Market {
             buys.remove(pair.buy_index);
             sells.remove(pair.sell_index);
 
+            let buyer_pop = match buy_order.origin {
+                Actor::Pop(id) => Some(id),
+                _ => None,
+            };
+            let sought = buy_order.target;
+            let before = buyer_pop
+                .and_then(|id| pops.get(&id))
+                .and_then(|pop| pop.property.get(&sought))
+                .map(|row| row.quantity)
+                .unwrap_or(0.0);
+
             self.settle_pair(
                 buy_order,
                 sell_order,
@@ -592,6 +607,35 @@ impl Market {
                 &mut sells,
                 &mut report.meetings,
             );
+
+            if let Some(pid) = buyer_pop {
+                let after = pops
+                    .get(&pid)
+                    .and_then(|pop| pop.property.get(&sought))
+                    .map(|row| row.quantity)
+                    .unwrap_or(0.0);
+                let still = buys.iter().any(|order| {
+                    order.origin == Actor::Pop(pid)
+                        && order.target == sought
+                        && order.target_amount > 0.0
+                });
+                if !still {
+                    if after <= before + 1e-9 {
+                        gave_up.entry(pid).or_default().insert(sought);
+                    }
+                    let skip = gave_up.get(&pid).cloned().unwrap_or_default();
+                    self.post_next_pop_buy(
+                        pid,
+                        &history,
+                        factuals,
+                        pops,
+                        firms,
+                        &mut buys,
+                        &mut sells,
+                        &skip,
+                    );
+                }
+            }
         }
 
         self.note_buy_stops(pops, factuals, &history, wash_transport(factuals));
@@ -1047,16 +1091,6 @@ impl Market {
         let mut buys = Vec::new();
         let mut sells = Vec::new();
 
-        for &id in &self.pops {
-            let pop = pops.get_mut(&id).expect("market pop missing from pops");
-            let pantry = remainder_pantry_goods(id, firms, factuals);
-            let mut orders = pop.create_orders(history, factuals, &self.unavailable_goods);
-            orders.retain(|order| {
-                order.target_amount <= 0.0 || !pantry.contains(&order.target)
-            });
-            split_into_books(orders, &mut buys, &mut sells);
-        }
-
         for &id in &self.firms {
             let firm = firms.get(&id).expect("market firm missing from firms");
             split_into_books(
@@ -1066,7 +1100,66 @@ impl Market {
             );
         }
 
+        for &id in &self.pops {
+            let pop = pops.get_mut(&id).expect("market pop missing from pops");
+            let offers = pop.consumption_offers(factuals, history, 0.0);
+            pop.current_orders = offers.clone();
+            split_into_books(offers, &mut buys, &mut sells);
+        }
+
+        let pop_ids: Vec<usize> = self.pops.iter().copied().collect();
+        for id in pop_ids {
+            self.post_next_pop_buy(
+                id,
+                history,
+                factuals,
+                pops,
+                firms,
+                &mut buys,
+                &mut sells,
+                &HashSet::new(),
+            );
+        }
+
         (buys, sells)
+    }
+
+    /// Posts this pop's next buy, if one still improves the open tier.
+    fn post_next_pop_buy(
+        &self,
+        pop_id: usize,
+        history: &MarketHistory,
+        factuals: &Factuals,
+        pops: &mut HashMap<usize, Pop>,
+        firms: &HashMap<usize, Firm>,
+        buys: &mut Vec<MarketOrder>,
+        sells: &mut Vec<MarketOrder>,
+        skip: &HashSet<usize>,
+    ) {
+        sells.retain(|order| order.origin != Actor::Pop(pop_id));
+        let pantry = remainder_pantry_goods(pop_id, firms, factuals);
+        let offered: HashSet<usize> = sells
+            .iter()
+            .filter(|order| order.target_amount < 0.0)
+            .map(|order| order.target)
+            .collect();
+        let Some(pop) = pops.get_mut(&pop_id) else {
+            return;
+        };
+        let buy = pop.next_shop_buy(factuals, &offered, skip).filter(|order| {
+            !pantry.contains(&order.target) && !self.unavailable_goods.contains(&order.target)
+        });
+        let cost = buy
+            .as_ref()
+            .map(|order| order.target_amount * history.price(order.target))
+            .unwrap_or(0.0);
+        let offers = pop.consumption_offers(factuals, history, cost);
+        pop.current_orders = offers.clone();
+        split_into_books(offers, buys, sells);
+        if let Some(buy) = buy {
+            pop.current_orders.push(buy.clone());
+            buys.push(buy);
+        }
     }
 
     /// Zeros today's exchange counters on every recorded good. Leaves AMV,
@@ -2585,6 +2678,7 @@ mod run_market_day_should {
             current_orders: vec![],
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            household_work: Vec::new(),
             records: PopRecords::default(),
         };
         pop.property.insert(COIN, PopPRow::new(coin));
@@ -2854,11 +2948,10 @@ mod run_market_day_should {
 
         let report = market.run_market_day(&factuals(), &mut pops, &mut firms, &mut rng());
 
-        assert!(market.unavailable_goods.contains(&GRAIN));
+        assert!(!market.unavailable_goods.contains(&GRAIN));
         assert!((pops[&1].property[&GRAIN].quantity).abs() < 1e-12);
         assert!(market.goods[&GRAIN].purchased.abs() < 1e-12);
-        assert_eq!(report.unmatched_buys.len(), 1);
-        assert_eq!(report.unmatched_buys[0].target, GRAIN);
+        assert!(report.unmatched_buys.is_empty());
         assert!(report.meetings.is_empty());
         assert!((market.goods[&GRAIN].amv - 1.0).abs() < 1e-12);
         assert!((market.goods[&GRAIN].salability - 0.5).abs() < 1e-12);
@@ -2903,7 +2996,7 @@ mod run_market_day_should {
             !(leftover_grain_buys && leftover_grain_sells),
             "grain buy and grain sell should have met, not both leftover"
         );
-        assert!(report.unmatched_buys.iter().any(|order| order.target == BREAD));
+        assert!(report.unmatched_buys.iter().all(|order| order.target != BREAD));
     }
 
     #[test]

@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 mod plan;
 mod orders;
+mod split;
+
+pub use split::{SplitLine, SplitReject};
 
 use hexx::Hex;
 
@@ -91,16 +94,6 @@ pub struct Firm {
     /// Transport units spent this day (buyer haul). Cleared at day start.
     /// Labor budget uses this plus 1 as the next-day Time buffer.
     pub transport_spent: f64,
-    /// Consume-shortfall qty of the owner or workforce, by good.
-    /// Refreshed at market open. Incoming units fill this (and `use_target`)
-    /// at full AMV, then stock/growth bands, then unused haircut.
-    ///
-    /// TOOD: Rename this to something like Worker Desires, or drop/consolidate into
-    /// already existing Workforce contracts.
-    pub household_needs: HashMap<usize, f64>,
-    /// Standing consume demand (`desire_needs`) of the owner or workforce.
-    /// Plan treats this as a self-sale and crafts may not spend it.
-    pub household_demand: HashMap<usize, f64>,
     /// Owner household headcount, cached at labor settle. 0 if unknown.
     /// Self-supplying shops use this to floor subsistence lines.
     /// 
@@ -474,86 +467,7 @@ impl Firm {
             production_line: vec![],
             records: FirmRecords::new(),
             transport_spent: 0.0,
-            household_needs: HashMap::new(),
-            household_demand: HashMap::new(),
             owner_household_size: 0.0,
-        }
-    }
-
-    /// Standing dinner and consume shortfall for goods this shop makes.
-    /// Desire buckets skip substitutes the shop does not produce so remaining
-    /// sat lands on in-shop targets. Call before production and at market open.
-    pub fn refresh_household_needs(&mut self, pops: &HashMap<usize, Pop>, factuals: &Factuals) {
-        self.household_needs.clear();
-        self.household_demand.clear();
-        let outputs = self.produced_goods(factuals);
-        if outputs.is_empty() {
-            return;
-        }
-        let mut ids = Vec::new();
-        if let Some(id) = self.owners.pop_id() {
-            ids.push(id);
-        }
-        for worker in &self.workforce {
-            if worker.id != 0 {
-                ids.push(worker.id);
-            }
-        }
-        ids.sort_unstable();
-        ids.dedup();
-        for pop_id in ids {
-            let Some(pop) = pops.get(&pop_id) else {
-                continue;
-            };
-            for tier in &pop.desires {
-                for desire in tier {
-                    let mut remaining = desire.amount.max(0.0);
-                    for target in desire.ordered_targets() {
-                        if remaining <= 0.0 {
-                            break;
-                        }
-                        if !outputs.contains(&target.good) || target.efficiency <= 0.0 {
-                            continue;
-                        }
-                        let qty = remaining.min(desire.amount * target.cap) / target.efficiency;
-                        if qty <= 0.0 {
-                            continue;
-                        }
-                        self.add_owner_want(pop, target.good, qty);
-                        remaining -= qty * target.efficiency;
-                    }
-                    if remaining <= 0.0 {
-                        continue;
-                    }
-                    for target in desire.ordered_targets() {
-                        if outputs.contains(&target.good) || target.efficiency <= 0.0 {
-                            continue;
-                        }
-                        let qty = remaining.min(desire.amount * target.cap) / target.efficiency;
-                        if qty <= 0.0 {
-                            continue;
-                        }
-                        self.add_owner_want(pop, target.good, qty);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    fn add_owner_want(&mut self, pop: &Pop, good: usize, qty: f64) {
-        if qty <= 0.0 {
-            return;
-        }
-        *self.household_demand.entry(good).or_insert(0.0) += qty;
-        let have = pop
-            .property
-            .get(&good)
-            .map(|row| row.quantity.max(0.0))
-            .unwrap_or(0.0);
-        let short = (qty - have).max(0.0);
-        if short > 0.0 {
-            *self.household_needs.entry(good).or_insert(0.0) += short;
         }
     }
 
@@ -576,8 +490,7 @@ impl Firm {
         goods
     }
 
-    /// Pulls `want` from `quantity` then `held`. Used when the owner eats
-    /// from the shop shelf.
+    /// Pulls `want` from `quantity` then `held`. Remainder payment uses this.
     pub fn take_from_shelf(&mut self, good: usize, want: f64) -> f64 {
         if want <= 0.0 {
             return 0.0;
@@ -594,40 +507,12 @@ impl Firm {
         from_qty + from_held
     }
 
-    /// On-hand plus held, minus owner dinner. Time is not reduced.
+    /// On-hand plus held. Time is included.
     fn production_available(&self) -> HashMap<usize, f64> {
         self.property
             .iter()
-            .map(|(&gid, row)| {
-                let stock = row.production_stock();
-                let dinner = if gid == TIME {
-                    0.0
-                } else {
-                    self.dinner_qty(gid)
-                };
-                (gid, (stock - dinner).max(0.0))
-            })
+            .map(|(&gid, row)| (gid, row.production_stock()))
             .collect()
-    }
-
-    /// Standing dinner qty for `good`, falling back to today's shortfall.
-    pub fn dinner_qty(&self, good: usize) -> f64 {
-        self.household_demand
-            .get(&good)
-            .copied()
-            .or_else(|| self.household_needs.get(&good).copied())
-            .unwrap_or(0.0)
-            .max(0.0)
-    }
-
-    /// Merged standing demand and shortfall, per good.
-    fn dinner_map(&self) -> HashMap<usize, f64> {
-        let mut map = self.household_demand.clone();
-        for (&good, &qty) in &self.household_needs {
-            let entry = map.entry(good).or_insert(0.0);
-            *entry = entry.max(qty.max(0.0));
-        }
-        map
     }
 
     /// Sets the owning actor. `Actor::Pop(0)` is none and is not paid.
@@ -649,8 +534,7 @@ impl Firm {
     /// - Applies consumed inputs to `quantity` first, then `held`. Process
     ///   outputs (and Consumed-input decay products) go to `held`, not
     ///   `quantity`. New output goods are auto-created. Later lines in the
-    ///   same day may spend `held` after on-hand stock, excluding owner
-    ///   dinner.
+    ///   same day may spend `held` after on-hand stock.
     /// - Records day-flows on each [`FirmPRow`]: `produced` for positive changes
     ///   (outputs + decay results), `consumed` for destroyed/consumed inputs.
     ///   Those two input types are not distinguished on the row; decay products of
@@ -673,9 +557,8 @@ impl Firm {
     /// apply elsewhere. Good flows live on the property rows; market
     /// production/consumption totals should sum those rows.
     /// 
-    /// Available stock is `quantity + held` minus owner dinner (Time is
-    /// not reduced). The `market` parameter is used solely to snapshot
-    /// current AMV values for record-keeping.
+    /// Available stock is `quantity + held`. The `market` parameter is
+    /// used solely to snapshot current AMV values for record-keeping.
     /// 
     /// ## Panic
     /// 
@@ -812,9 +695,7 @@ impl Firm {
         row.sync_reserve();
     }
 
-    /// Run owner-dinner lines first, then input-feeding lines, then higher
-    /// recipe AMV profit. Among dinner, Time-only garden lines go before
-    /// crafts that consume those same dinner goods, cheaper Time first.
+    /// Input-feeding lines first, then higher recipe AMV profit, then index.
     fn production_run_order(&self, factuals: &Factuals, market: &Market) -> Vec<usize> {
         let mut needed = HashSet::new();
         for line in &self.production_line {
@@ -842,23 +723,6 @@ impl Firm {
                 .unwrap_or(0.0)
         };
         let process_of = |i: usize| factuals.processes.get(&self.production_line[i].process);
-        let owner_need = |i: usize| {
-            process_of(i).is_some_and(|process| {
-                process.outputs.iter().any(|output| {
-                    self.dinner_qty(output.good) > 0.0
-                })
-            })
-        };
-        let eats_dinner = |i: usize| {
-            process_of(i).is_some_and(|process| {
-                process.inputs.iter().any(|input| {
-                    input.good != TIME
-                        && !input.is_optional()
-                        && !matches!(input.input_type, crate::game::process::InputType::Factor)
-                        && self.dinner_qty(input.good) > 0.0
-                })
-            })
-        };
         let feed = |i: usize| {
             process_of(i).is_some_and(|process| {
                 process
@@ -867,19 +731,6 @@ impl Firm {
                     .any(|output| needed.contains(&output.good))
             })
         };
-        let time_cost = |i: usize| {
-            let line = &self.production_line[i];
-            let time_in = process_of(i)
-                .and_then(|process| {
-                    process
-                        .inputs
-                        .iter()
-                        .find(|input| input.good == TIME)
-                        .map(|input| input.amount.max(0.0))
-                })
-                .unwrap_or(0.0);
-            line.target.unwrap_or(0.0).max(0.0) * time_in
-        };
         let profit = |i: usize| {
             process_of(i)
                 .map(|process| process.recipe_profit_ratio(price))
@@ -887,19 +738,8 @@ impl Firm {
         };
         let mut order: Vec<usize> = (0..self.production_line.len()).collect();
         order.sort_by(|&a, &b| {
-            owner_need(b)
-                .cmp(&owner_need(a))
-                .then(eats_dinner(a).cmp(&eats_dinner(b)))
-                .then(feed(b).cmp(&feed(a)))
-                .then_with(|| {
-                    if owner_need(a) && owner_need(b) {
-                        time_cost(a)
-                            .partial_cmp(&time_cost(b))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
+            feed(b)
+                .cmp(&feed(a))
                 .then_with(|| {
                     profit(b)
                         .partial_cmp(&profit(a))
@@ -1340,7 +1180,8 @@ pub struct ProductionLine {
     /// (outputs + decay) during the last production run.
     pub last_amv_produced: f64,
     /// Consecutive plan days this line sat at `target` 0 with no leftover-buy
-    /// demand. Specialized lines drop after [`FirmConfig::abandon_idle_days`].
+    /// or in-shop input demand. Owner shortfall does not reset the count.
+    /// The line drops after [`FirmConfig::abandon_idle_days`].
     pub idle_days: u32,
 }
 
@@ -2192,8 +2033,7 @@ fn firm_need_want(firm: &Firm, good: usize) -> f64 {
         .get(&good)
         .map(|row| row.purchase_target.max(0.0))
         .unwrap_or(0.0);
-    let household = firm.household_needs.get(&good).copied().unwrap_or(0.0).max(0.0);
-    use_target + purchase + household
+    use_target + purchase
 }
 
 fn firm_need_room(firm: &Firm, good: usize) -> f64 {
@@ -2438,116 +2278,6 @@ mod firm {
             last_amv_consumed: 0.0,
             last_amv_produced: 0.0,
             idle_days: 0,
-        }
-    }
-
-    mod refresh_household_needs_should {
-        use super::*;
-        use crate::game::actor::Actor;
-        use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
-        use crate::game::good::TIME;
-        use crate::game::household::Household;
-        use crate::game::pop::{DemoRow, Pop, PopRecords};
-        use crate::game::scalingfactor::ScalingFactor;
-        use crate::game::sentiment::Sentiment;
-
-        fn owner_pop(id: usize, desire: Desire) -> Pop {
-            let mut pop = Pop {
-                id,
-                job: 0,
-                property: HashMap::new(),
-                desires: vec![vec![]; 3],
-                working_desires: vec![],
-                demographics: DemoRow {
-                    household: Household::new(),
-                    species: 0,
-                    culture: 0,
-                    class: 0,
-                    religion: 0,
-                },
-                current_orders: vec![],
-                stored_effects: vec![],
-                sentiment: Sentiment::new(),
-                records: PopRecords::default(),
-            };
-            pop.desires[0].push(desire);
-            pop
-        }
-
-        #[test]
-        fn in_shop_target_takes_the_full_bucket() {
-            let farm = Process::new(1, "farm", 0)
-                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
-                .with_output(ProcessOutput::new(1, 2.0, true));
-            let mut factuals = make_factuals_with_process(farm);
-            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
-            factuals.goods.insert(3, make_good(3, "bread", HashMap::new()));
-            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
-
-            let food = Desire {
-                source: DesireSource::Species(0, 0),
-                priority: 0,
-                target: vec![
-                    DesireTarget::new(1, DesireTargetType::Consume, 1.0),
-                    DesireTarget::new(3, DesireTargetType::Consume, 1.5),
-                ],
-                amount: 5.0,
-                satisfaction: 0.0,
-                category: Some("food".into()),
-                effect: vec![],
-                scalar: ScalingFactor::All(1.0),
-                decay: 0.0,
-            };
-            let pop = owner_pop(1, food);
-            let mut firm = Firm::new(1, "well".into(), 42, hexx::Hex::new(0, 0))
-                .with_owner(Actor::Pop(1))
-                .with_owner_liability();
-            let mut line = empty_production_line(1);
-            line.target = Some(2.0);
-            firm.production_line.push(line);
-            let pops = HashMap::from([(1, pop)]);
-
-            firm.refresh_household_needs(&pops, &factuals);
-
-            assert_eq!(firm.household_demand.get(&1).copied(), Some(5.0));
-            assert_eq!(firm.household_needs.get(&1).copied(), Some(5.0));
-            assert_eq!(firm.household_demand.get(&3).copied(), None);
-        }
-
-        #[test]
-        fn off_shop_want_stays_on_household_needs() {
-            let farm = Process::new(1, "farm", 0)
-                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
-                .with_output(ProcessOutput::new(1, 2.0, true));
-            let mut factuals = make_factuals_with_process(farm);
-            factuals.goods.insert(1, make_good(1, "grain", HashMap::new()));
-            factuals.goods.insert(4, make_good(4, "gold", HashMap::new()));
-            factuals.goods.insert(TIME, make_good(TIME, "time", HashMap::new()));
-
-            let shiny = Desire {
-                source: DesireSource::Species(0, 5),
-                priority: 5,
-                target: vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
-                amount: 5.0,
-                satisfaction: 0.0,
-                category: Some("shiny".into()),
-                effect: vec![],
-                scalar: ScalingFactor::All(1.0),
-                decay: 0.0,
-            };
-            let pop = owner_pop(1, shiny);
-            let mut firm = Firm::new(1, "well".into(), 42, hexx::Hex::new(0, 0))
-                .with_owner(Actor::Pop(1))
-                .with_owner_liability();
-            let mut line = empty_production_line(1);
-            line.target = Some(2.0);
-            firm.production_line.push(line);
-            let pops = HashMap::from([(1, pop)]);
-
-            firm.refresh_household_needs(&pops, &factuals);
-
-            assert_eq!(firm.household_demand.get(&4).copied(), Some(5.0));
-            assert_eq!(firm.household_needs.get(&4).copied(), Some(5.0));
         }
     }
 
@@ -3358,7 +3088,7 @@ mod firm {
         }
 
         #[test]
-        fn optional_booster_leaves_owner_dinner() {
+        fn optional_booster_spends_on_hand_water() {
             let grain = Process::new(1, "grain", 0)
                 .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
                 .with_input(ProcessInput::new(2, 0.5, true, InputType::Destroyed, true))
@@ -3371,7 +3101,6 @@ mod firm {
 
             let mut firm = Firm::new(1, "farm".into(), 42, hexx::Hex::new(0, 0))
                 .with_owner_liability();
-            firm.household_needs.insert(2, 5.0);
             firm.property.insert(TIME, FirmPRow::new().with_quantity(4.0));
             firm.property.insert(2, FirmPRow::new().with_quantity(6.0));
             let mut grain_line = empty_production_line(1);
@@ -3383,11 +3112,11 @@ mod firm {
 
             assert_eq!(firm.production_line[0].last_iterations, 8.0);
             let water = firm.property[&2].quantity + firm.property[&2].held;
-            assert_eq!(water, 5.0, "optional water ate dinner, left {water}");
+            assert_eq!(water, 2.0, "optional water left {water}");
         }
 
         #[test]
-        fn owner_dinner_runs_before_specialty() {
+        fn higher_profit_runs_before_a_cheaper_line() {
             let gold = Process::new(1, "gold", 0)
                 .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
                 .with_output(ProcessOutput::new(4, 1.0, true));
@@ -3403,7 +3132,6 @@ mod firm {
 
             let mut firm = Firm::new(1, "camp".into(), 42, hexx::Hex::new(0, 0))
                 .with_owner_liability();
-            firm.household_needs.insert(7, 5.0);
             firm.property.insert(TIME, FirmPRow::new().with_quantity(1.0));
             let mut gold_line = empty_production_line(1);
             gold_line.target = Some(5.0);
@@ -3415,15 +3143,12 @@ mod firm {
             let market = make_market_with_amvs(&[(4, 10.0), (7, 1.0), (TIME, 1.0)]);
             firm.run_production(&factuals, &market);
 
-            assert_eq!(firm.production_line[1].last_iterations, 2.0);
-            assert_eq!(
-                firm.production_line[0].last_iterations, 0.0,
-                "specialty spent Time before dinner"
-            );
+            assert_eq!(firm.production_line[0].last_iterations, 2.0);
+            assert_eq!(firm.production_line[1].last_iterations, 0.0);
         }
 
         #[test]
-        fn garden_runs_before_a_craft_that_eats_dinner() {
+        fn higher_profit_craft_runs_before_an_unrelated_extract() {
             let bake = Process::new(1, "bake", 0)
                 .with_input(ProcessInput::new(TIME, 0.2, true, InputType::Destroyed, false))
                 .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
@@ -3441,9 +3166,6 @@ mod firm {
 
             let mut firm = Firm::new(1, "bakery".into(), 42, hexx::Hex::new(0, 0))
                 .with_owner_liability();
-            firm.household_needs.insert(1, 5.0);
-            firm.household_needs.insert(3, 5.0);
-            firm.household_needs.insert(7, 5.0);
             firm.property.insert(TIME, FirmPRow::new().with_quantity(1.0));
             firm.property.insert(1, FirmPRow::new().with_quantity(5.0));
             let mut bake_line = empty_production_line(1);
@@ -3461,11 +3183,8 @@ mod firm {
             ]);
             firm.run_production(&factuals, &market);
 
-            assert_eq!(firm.production_line[1].last_iterations, 2.0);
-            assert_eq!(
-                firm.production_line[0].last_iterations, 0.0,
-                "bake spent Time before heat"
-            );
+            assert_eq!(firm.production_line[0].last_iterations, 5.0);
+            assert_eq!(firm.production_line[1].last_iterations, 0.0);
         }
 
         #[test]
@@ -4009,7 +3728,9 @@ mod firm {
 
     mod plan_should {
         use super::*;
+        use crate::game::actor::Actor;
         use crate::game::good::{GoodTag, TIME};
+        use crate::game::pop::Pop;
         use crate::game::market::MarketHistory;
 
         fn make_history(entries: &[(usize, f64)]) -> MarketHistory {
@@ -4154,14 +3875,28 @@ mod firm {
         }
 
         #[test]
-        fn owner_need_restarts_an_idle_preferred_line() {
+        fn owner_need_does_not_restart_an_idle_line() {
             let (mut factuals, history) = miller_world();
-            add_farm(&mut factuals);
-            let mut firm = remainder_with_farm(0.0);
-            firm.household_needs.insert(10, 5.0);
+            factuals.goods.insert(7, make_good(7, "herb", HashMap::new()));
+            factuals.processes.insert(
+                2,
+                Process::new(2, "garden", 0)
+                    .with_tag(ProcessTag::subsistence(0.25))
+                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(7, 2.0, true)),
+            );
+            let mut firm = miller_firm(4.0).with_owner_liability();
+            let mut garden = empty_production_line(2);
+            garden.target = Some(0.0);
+            firm.production_line.push(garden);
             firm.plan(&factuals, &history);
-            assert_eq!(firm.production_line[1].target, Some(1.0));
-            assert!(firm.property[&10].use_target >= 5.0);
+            assert_eq!(firm.production_line[1].target, Some(0.0));
+            assert_eq!(firm.production_line[1].idle_days, 1);
+            for _ in 1..factuals.config.firm.abandon_idle_days {
+                firm.plan(&factuals, &history);
+            }
+            assert_eq!(firm.production_line.len(), 1);
+            assert_eq!(firm.production_line[0].process, 1);
         }
 
         #[test]
@@ -4667,56 +4402,119 @@ mod firm {
         }
 
         #[test]
-        fn owner_need_without_sales_does_not_cut_quota() {
+        fn owner_need_without_sales_cuts_quota() {
             let (factuals, history) = miller_world();
             let mut firm = miller_firm(4.0);
             mark_hit(&mut firm, 0.0, 4.0, 4.0);
             firm.production_line[0].aim = 4.0;
-            firm.household_needs.insert(20, 5.0);
             let plank = firm.property.get_mut(&20).unwrap();
             plank.amv_target = 5.0;
             plank.average_cost = 5.0;
             firm.plan(&factuals, &history);
             let got = firm.production_line[0].target.unwrap();
-            assert!(got >= 4.0, "cut owner dinner, got {got}");
+            assert!(got < 4.0, "unsold line kept quota, got {got}");
         }
 
         #[test]
-        fn owner_need_above_output_raises_quota() {
+        fn owner_need_above_output_does_not_raise_quota() {
             let (factuals, history) = miller_world();
             let mut firm = miller_firm(4.0);
             mark_hit(&mut firm, 0.0, 4.0, 20.0);
             firm.production_line[0].aim = 4.0;
-            firm.household_needs.insert(20, 5.0);
             let plank = firm.property.get_mut(&20).unwrap();
             plank.amv_target = 5.0;
             plank.average_cost = 5.0;
             plank.sell_no_proposal = 10.0;
             firm.plan(&factuals, &history);
             let got = firm.production_line[0].target.unwrap();
-            assert!(got > 4.0, "did not raise for owner dinner, got {got}");
+            assert!(got <= 4.0, "raised for owner dinner, got {got}");
+        }
+
+        fn owner_wants(good: usize, amount: f64, held: f64) -> HashMap<usize, Pop> {
+            use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+            use crate::game::household::Household;
+            use crate::game::pop::{DemoRow, PopPRow, PopRecords};
+            use crate::game::scalingfactor::ScalingFactor;
+            use crate::game::sentiment::Sentiment;
+            let mut pop = Pop {
+                id: 3,
+                job: 0,
+                property: HashMap::new(),
+                desires: vec![vec![]; 3],
+                working_desires: vec![],
+                demographics: DemoRow {
+                    household: Household::with_count(1.0),
+                    species: 0,
+                    culture: 0,
+                    class: 0,
+                    religion: 0,
+                },
+                current_orders: vec![],
+                stored_effects: vec![],
+                sentiment: Sentiment::new(),
+                household_work: Vec::new(),
+                records: PopRecords::default(),
+            };
+            pop.desires[0].push(Desire {
+                source: DesireSource::Species(0, 0),
+                priority: 0,
+                target: vec![DesireTarget::new(good, DesireTargetType::Consume, 1.0)],
+                amount,
+                satisfaction: 0.0,
+                category: None,
+                effect: vec![],
+                scalar: ScalingFactor::Fixed(1.0),
+                decay: 0.0,
+            });
+            if held > 0.0 {
+                pop.property.insert(good, PopPRow::new(held));
+            }
+            HashMap::from([(3, pop)])
         }
 
         #[test]
-        fn craft_quota_leaves_owner_dinner_inputs() {
+        fn quota_does_not_cut_through_the_owner_floor() {
             let (factuals, history) = miller_world();
-            let mut firm = miller_firm(4.0);
-            firm.household_demand.insert(10, 5.0);
-            firm.plan(&factuals, &history);
-            let got = firm.production_line[0].target.unwrap();
-            assert!(
-                got <= 2.0,
-                "craft spent owner wood, mill {got}"
-            );
-        }
-
-        #[test]
-        fn craft_may_use_surplus_after_dinner() {
-            let (factuals, history) = miller_world();
-            let mut firm = miller_firm(4.0);
-            firm.household_demand.insert(10, 1.0);
-            firm.plan(&factuals, &history);
+            let mut firm = miller_firm(4.0).with_owner(Actor::Pop(3));
+            mark_hit(&mut firm, 0.0, 4.0, 4.0);
+            firm.production_line[0].aim = 4.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 5.0;
+            plank.average_cost = 5.0;
+            let pops = owner_wants(20, 5.0, 0.0);
+            firm.plan_with_owner(&factuals, &history, Some(&pops));
             assert_eq!(firm.production_line[0].target, Some(4.0));
+        }
+
+        #[test]
+        fn quota_above_the_floor_cuts_when_revenue_is_under_cost() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(10.0).with_owner(Actor::Pop(3));
+            mark_hit(&mut firm, 10.0, 10.0, 10.0);
+            firm.production_line[0].aim = 10.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 1.0;
+            plank.average_cost = 5.0;
+            let pops = owner_wants(20, 4.0, 0.0);
+            firm.plan_with_owner(&factuals, &history, Some(&pops));
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got < 10.0, "did not cut a loss, got {got}");
+            assert!(got + 1e-9 >= 4.0, "cut through the floor, got {got}");
+        }
+
+        #[test]
+        fn a_line_that_still_sells_may_rise_above_the_floor() {
+            let (factuals, history) = miller_world();
+            let mut firm = miller_firm(4.0).with_owner(Actor::Pop(3));
+            mark_hit(&mut firm, 4.0, 4.0, 4.0);
+            firm.production_line[0].aim = 4.0;
+            let plank = firm.property.get_mut(&20).unwrap();
+            plank.amv_target = 5.0;
+            plank.average_cost = 1.0;
+            let pops = owner_wants(20, 1.0, 0.0);
+            firm.plan_with_owner(&factuals, &history, Some(&pops));
+            let got = firm.production_line[0].target.unwrap();
+            assert!(got > 4.0, "a clear sale did not raise, got {got}");
         }
 
         #[test]
@@ -5785,9 +5583,8 @@ mod firm {
         }
 
         #[test]
-        fn evaluate_household_need_takes_low_salability_tender() {
-            let mut firm = empty_firm();
-            firm.household_needs.insert(11, 4.0);
+        fn evaluate_rejects_low_salability_tender_without_a_use_target() {
+            let firm = empty_firm();
             let factuals = make_factuals_goods(&[11, 20]);
             let history = make_history(&[(11, 1.0, 0.1), (20, 1.0, 0.4)]);
             let own = MarketOrder::offer_order(
@@ -5807,14 +5604,14 @@ mod firm {
                 .with_good(11, 4.0);
             assert_eq!(
                 firm.evaluate(&deal, &own, &other, &history, &factuals),
-                DealResponse::Accept
+                DealResponse::Reject
             );
         }
 
         #[test]
         fn sell_returns_unused_tender_as_make_change() {
             let mut firm = empty_firm();
-            firm.household_needs.insert(11, 4.0);
+            firm.property.insert(11, FirmPRow::new().with_use_target(4.0));
             let factuals = make_factuals_goods(&[11, 20]);
             let history = make_history(&[(11, 1.0, 0.1), (20, 1.0, 1.0)]);
             let own = MarketOrder::offer_order(
@@ -6049,6 +5846,7 @@ mod firm {
                 current_orders: vec![],
                 stored_effects: vec![],
                 sentiment: Sentiment::new(),
+                household_work: Vec::new(),
                 records: PopRecords::default(),
             }
         }

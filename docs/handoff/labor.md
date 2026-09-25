@@ -46,8 +46,8 @@ PlayState labor fire is still a stub.
 - Remainder owner on a loss (yesterday profit AMV <= 0) covers the AMV
   shortfall vs needs (recipe inputs, wage basket, stock fence) **before**
   wages, from unreserved stock: missing inputs, missing wage goods,
-  production outputs, then exchange. Remainder shops also recap owner consume
-  shortfall (`household_needs`) for goods they actually make. Contributed inputs/outputs are fenced
+  production outputs, then exchange. Owner consume shortfall is not part
+  of that need. Contributed inputs/outputs are fenced
   so leftover remainder cannot take them back the same morning. Limited
   owners do not cover. Vault `Firms.md` does not spell this out; Owners
   rustdoc already says they are accountable for losses.

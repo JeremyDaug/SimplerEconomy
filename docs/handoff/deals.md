@@ -20,7 +20,8 @@ vocabulary (deal, take tenders, make change, AMV keep, whole units, friction).
   positive = tender). Seller adds the map; buyer subtracts it.
 - `buy` ranks the seller's named counter first (any salability), then live
   tenders by salability (pop: free stock above `shop_target.max(reserved)`,
-  minus listed offer qty on `current_orders`, plus remainder-shop shelf
+  except stock whose only desires sit above the buy's shop tier, which can
+  pay for that lower tier; minus listed offer qty on `current_orders`, plus remainder-shop shelf
   above dinner; firm: `free_for_market`
   minus units `create_orders` would sell or liquidate). Pop offer
   `counter_offer` is a good-only hint (no amount); payment still uses market

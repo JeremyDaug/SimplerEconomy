@@ -65,23 +65,16 @@ pub(crate) fn format_home(session: &Session) -> String {
         .iter()
         .map(|firm| fmt_actor(Actor::Firm(firm.id)))
         .collect();
-    out.push('\n');
-    out.push_str(&format!(
-        "pops   {}\n",
+    if !pops.is_empty() {
+        out.push('\n');
+        out.push_str(&format!("pops   {}\n", pops.join("  ")));
+    }
+    if !firms.is_empty() {
         if pops.is_empty() {
-            "(none)".to_string()
-        } else {
-            pops.join("  ")
+            out.push('\n');
         }
-    ));
-    out.push_str(&format!(
-        "firms  {}\n",
-        if firms.is_empty() {
-            "(none)".to_string()
-        } else {
-            firms.join("  ")
-        }
-    ));
+        out.push_str(&format!("firms  {}\n", firms.join("  ")));
+    }
     out.push_str(&format!(
         "books  {} buys / {} sells\n",
         session.buys.len(),
@@ -526,15 +519,13 @@ pub(crate) fn format_day_report(
         }
     }
 
-    out.push_str("\nTrades\n");
     let trades: Vec<_> = report
         .meetings
         .iter()
         .filter(|m| matches!(m.outcome, MeetingOutcome::Traded { .. }))
         .collect();
-    if trades.is_empty() {
-        out.push_str("  (none)\n");
-    } else {
+    if !trades.is_empty() {
+        out.push_str("\nTrades\n");
         out.push_str(&format!(
             "  {:<ACTOR_COL$}  {:>6} {:<8} | {:<ACTOR_COL$}  {}\n",
             "buyer", "qty", "good", "seller", "pays"
@@ -567,11 +558,9 @@ pub(crate) fn format_day_report(
         }
     }
 
-    out.push_str("\nWashes\n");
     let washes = group_washes(&report.meetings);
-    if washes.is_empty() {
-        out.push_str("  (none)\n");
-    } else {
+    if !washes.is_empty() {
+        out.push_str("\nWashes\n");
         out.push_str(&format!(
             "  {:<ACTOR_COL$}  {:<8} | {:<ACTOR_COL$}  {:<14}  {}\n",
             "buyer", "good", "seller", "why", "end"
@@ -606,42 +595,39 @@ pub(crate) fn format_day_report(
         fmt_compact_orders(&mut out, &report.leftover_sells);
     }
 
-    out.push_str("\nOutcomes\n");
-    out.push_str(&format!(
-        "  {:<GOOD_COL$} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
-        "good", "demand", "supply", "bought", "paid", "vol", "amv", "sal"
-    ));
-    out.push_str(&format!(
-        "  {:-<GOOD_COL$} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7}\n",
-        "", "", "", "", "", "", "", ""
-    ));
-    let mut ids: Vec<usize> = session.market.goods.keys().copied().collect();
-    ids.sort_unstable();
-    let mut any_row = false;
-    for id in ids {
-        let row = &session.market.goods[&id];
-        if row.demand == 0.0
-            && row.supply == 0.0
-            && row.purchased == 0.0
-            && row.payment == 0.0
-        {
-            continue;
-        }
-        any_row = true;
+    let mut outcome_ids: Vec<usize> = session.market.goods.keys().copied().collect();
+    outcome_ids.sort_unstable();
+    let outcome_ids: Vec<usize> = outcome_ids
+        .into_iter()
+        .filter(|id| {
+            let row = &session.market.goods[id];
+            row.demand != 0.0 || row.supply != 0.0 || row.purchased != 0.0 || row.payment != 0.0
+        })
+        .collect();
+    if !outcome_ids.is_empty() {
+        out.push_str("\nOutcomes\n");
         out.push_str(&format!(
             "  {:<GOOD_COL$} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
-            fmt_good(id),
-            fmt_qty(row.demand),
-            fmt_qty(row.supply),
-            fmt_qty(row.purchased),
-            fmt_qty(row.payment),
-            fmt_qty(row.volume()),
-            fmt_qty(row.amv),
-            fmt_qty(row.salability)
+            "good", "demand", "supply", "bought", "paid", "vol", "amv", "sal"
         ));
-    }
-    if !any_row {
-        out.push_str("  (none)\n");
+        out.push_str(&format!(
+            "  {:-<GOOD_COL$} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7} {:-<7}\n",
+            "", "", "", "", "", "", "", ""
+        ));
+        for id in outcome_ids {
+            let row = &session.market.goods[&id];
+            out.push_str(&format!(
+                "  {:<GOOD_COL$} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
+                fmt_good(id),
+                fmt_qty(row.demand),
+                fmt_qty(row.supply),
+                fmt_qty(row.purchased),
+                fmt_qty(row.payment),
+                fmt_qty(row.volume()),
+                fmt_qty(row.amv),
+                fmt_qty(row.salability)
+            ));
+        }
     }
     if !session.market.unavailable_goods.is_empty() {
         let mut names: Vec<String> = session
@@ -656,6 +642,7 @@ pub(crate) fn format_day_report(
     }
     out.push('\n');
     out.push_str(&format_wage_report(session, wages));
+    out.push_str(&format_pop_production(session));
     out.push_str(&format_production_report(session));
     out.push_str(&format_plan_report(session));
     out.push_str(&format_pop_report(session));
@@ -697,6 +684,9 @@ fn format_paid_map(paid: &HashMap<usize, f64>) -> String {
 }
 
 pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettlement)]) -> String {
+    if wages.is_empty() {
+        return String::new();
+    }
     let mut out = String::new();
     out.push_str(&format!(
         "Labor  (settle; work-time cap {:.0}%)\n",
@@ -710,10 +700,6 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
         "  {:-<ACTOR_COL$} {:-<ACTOR_COL$} {:-<6} {:-<6}  {:-<24}\n",
         "", "", "", "", ""
     ));
-    if wages.is_empty() {
-        out.push_str("  (none)\n\n");
-        return out;
-    }
     for (firm_id, settle) in wages {
         let firm_name = fmt_actor(Actor::Firm(*firm_id));
         if settle.workers.is_empty() && settle.owner.is_none() {
@@ -762,6 +748,13 @@ pub(crate) fn format_wage_report(session: &Session, wages: &[(usize, LaborSettle
 }
 
 pub(crate) fn format_production_report(session: &Session) -> String {
+    if session
+        .firms
+        .iter()
+        .all(|firm| firm.production_line.is_empty())
+    {
+        return String::new();
+    }
     let mut out = String::new();
     out.push_str("Production  (did today; want is next-day after plan)\n");
     out.push_str(&format!(
@@ -772,10 +765,6 @@ pub(crate) fn format_production_report(session: &Session) -> String {
         "  {:-<ACTOR_COL$} {:-<6} {:-<6}  {:-<28}\n",
         "", "", "", ""
     ));
-    if session.firms.is_empty() {
-        out.push_str("  (none)\n\n");
-        return out;
-    }
     for firm in &session.firms {
         if firm.production_line.is_empty() {
             continue;
@@ -823,6 +812,9 @@ pub(crate) fn format_production_report(session: &Session) -> String {
 }
 
 pub(crate) fn format_plan_report(session: &Session) -> String {
+    if session.firms.is_empty() {
+        return String::new();
+    }
     let mut out = String::new();
     out.push_str("Plans  (after firm record keeping)\n");
     out.push_str(&format!(
@@ -833,10 +825,6 @@ pub(crate) fn format_plan_report(session: &Session) -> String {
         "  {:-<ACTOR_COL$} {:-<7} {:-<8} {:-<6} {:-<6} {:-<GOOD_COL$} {:-<7}\n",
         "", "", "", "", "", "", ""
     ));
-    if session.firms.is_empty() {
-        out.push_str("  (none)\n\n");
-        return out;
-    }
     for firm in &session.firms {
         let want = firm
             .production_line
@@ -866,7 +854,63 @@ pub(crate) fn format_plan_report(session: &Session) -> String {
     out
 }
 
+pub(crate) fn format_pop_production(session: &Session) -> String {
+    if session.pop_production.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("Pop production\n");
+    out.push_str(&format!(
+        "  {:<ACTOR_COL$} {:<22} {:>6} {:>6}  {}\n",
+        "pop", "recipe", "did", "want", "flows / missing"
+    ));
+    out.push_str(&format!(
+        "  {:-<ACTOR_COL$} {:-<22} {:-<6} {:-<6}  {:-<28}\n",
+        "", "", "", "", ""
+    ));
+    for (pop_id, step) in &session.pop_production {
+        let recipe = session
+            .factuals
+            .processes
+            .get(&step.process)
+            .map(|process| process.name.clone())
+            .unwrap_or_else(|| format!("#{}", step.process));
+        let mut bits: Vec<String> = step
+            .changes
+            .iter()
+            .filter(|(_, delta)| *delta > 0.0)
+            .map(|(good, delta)| format!("+{} {}", fmt_qty(*delta), fmt_good(*good)))
+            .collect();
+        bits.extend(
+            step.changes
+                .iter()
+                .filter(|(_, delta)| *delta < 0.0)
+                .map(|(good, delta)| format!("-{} {}", fmt_qty(delta.abs()), fmt_good(*good))),
+        );
+        if !step.missing.is_empty() {
+            let missing: Vec<String> = step.missing.iter().copied().map(fmt_good).collect();
+            bits.push(format!("missing {}", missing.join(", ")));
+        }
+        if bits.is_empty() {
+            bits.push("-".into());
+        }
+        out.push_str(&format!(
+            "  {:<ACTOR_COL$} {:<22} {:>6} {:>6}  {}\n",
+            fmt_actor(Actor::Pop(*pop_id)),
+            recipe,
+            fmt_qty(step.iterations),
+            fmt_qty(step.cap),
+            bits.join("  ")
+        ));
+    }
+    out.push('\n');
+    out
+}
+
 pub(crate) fn format_pop_report(session: &Session) -> String {
+    if session.pops.is_empty() {
+        return String::new();
+    }
     let mut out = String::new();
     out.push_str("Pops  (after consume)\n");
     out.push_str(&format!(
@@ -877,10 +921,6 @@ pub(crate) fn format_pop_report(session: &Session) -> String {
         "  {:-<ACTOR_COL$} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6} {:-<6} {:-<9}\n",
         "", "", "", "", "", "", "", ""
     ));
-    if session.pops.is_empty() {
-        out.push_str("  (none)\n\n");
-        return out;
-    }
     for pop in &session.pops {
         let stop = pop
             .records
@@ -917,8 +957,7 @@ pub(crate) fn format_amv_trail(session: &Session) -> String {
     let mut ids: Vec<usize> = session.market.goods.keys().copied().collect();
     ids.sort_unstable();
     if ids.is_empty() {
-        out.push_str("  (none)\n");
-        return out;
+        return String::new();
     }
     for id in ids {
         let row = &session.market.goods[&id];

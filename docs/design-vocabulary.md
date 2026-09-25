@@ -432,7 +432,7 @@ passive culture/research).
 **Meaning:** Add a new firm actor to a market at runtime. Two methods:
 **split** (first slice) and **savings founding** (later). Not player/
 institution founding in EconCiv `Firms.md`.
-**Code:** none yet
+**Code:** `Firm::split`, `Market::found_firm`
 
 ### Split
 **Preferred:** split  
@@ -445,7 +445,7 @@ goods moves with them. As part of the same act the new firm may **add one
 line and/or remove one line** (example: 10 pops split off 1, take ~1/10 of
 the gardens, add extract grain and/or drop subsistence grain). Not line
 **abandon**. A 1-pop remainder shop cannot split.
-**Code:** none yet
+**Code:** `Firm::split`, `SplitLine`, `SplitReject`
 
 ### Disorganized
 **Preferred:** disorganized, cottage  
@@ -490,7 +490,7 @@ to labor hours. One-line shops pay 0.
 **Avoid:** idle (that is `target` 0 still on the firm)
 
 **Meaning:** Remove a line from the firm after it has been
-idle (`target` 0, no leftover-buy / owner shortfall / in-shop input demand)
+idle (`target` 0, no leftover-buy / in-shop input demand). Owner shortfall does not keep the line.
 for `abandon_idle_days`. The firm actor stays even with no lines.
 **Code:** `ProductionLine.idle_days`, `FirmConfig::abandon_idle_days`
 
@@ -665,9 +665,9 @@ Wages do not yet track market Time AMV (pops cannot move or resize).
 
 **Meaning:** Share of a firm's disposed AMV that was in-kind to the owner or
 workers: `placed_amv / (placed_amv + sold_amv)`. A reading, not a garden
-policy. Owner consume shortfall is the same kind of demand as leftover
-buys: a preferred line (best recipe AMV-out/AMV-in of that good) treats it as
-remaining demand. Weaker duplicate recipes walk down. Placed AMV already
+policy. A quota cut on the preferred line stops at the owner's unmet
+output (desire qty minus bag stock) and does not raise the line to that
+floor. Weaker duplicate recipes walk down. Placed AMV already
 counts toward sell success and realized profit the same as sold, up to
 the operations fence.
 **Code:** `FirmRecords.self_supply`, `Firm::is_self_supplying`

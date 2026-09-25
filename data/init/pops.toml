@@ -4,17 +4,16 @@
 # Keep starter/pops above [[desires]] so they stay root keys.
 # Opening stock is one day of the matching firm's output (Time skipped).
 # Boot record_keeping writes shop targets from desires.
-# Eight pops, ids matching the eight firms. Desires use this village catalog
-# (grain, water, bread, gold, gold_token, jewelry, wood, cabins).
+# Five pops: bread, gold, the second grain shop, the second well, and cabins.
+# Grain, water, and wood specialist pops are omitted. Those firms stay in
+# firms.toml. Desires use this village catalog
+# (grain, water, bread, gold, gold_token, jewelry, wood, cabins, time).
 
 pops = [
-    { id = 1 },
-    { id = 2 },
     { id = 3 },
     { id = 4 },
     { id = 5 },
     { id = 6 },
-    { id = 7 },
     { id = 8 },
 ]
 
@@ -53,9 +52,27 @@ name = "improved food"
 targets = [{ good = "bread", efficiency = 1.0 }]
 
 [[desires]]
-tier = 2
+tier = 1
 id = 5
-name = "shiny"
+name = "Extra Storage"
 targets = [
     { good = "gold", efficiency = 1.0 },
+    { good = "gold_token", efficiency = 2.0 }
+]
+
+[[desires]]
+tier = 2
+id = 6
+name = "shiny"
+targets = [
+    { good = "gold_token", efficiency = 1.0 },
+    { good = "jewelry", efficiency = 1.0 },
+]
+
+[[desires]]
+tier = 2
+id = 7
+name = "rest"
+targets = [
+    { good = "time", efficiency = 1.0 },
 ]

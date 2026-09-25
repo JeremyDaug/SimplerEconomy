@@ -625,6 +625,7 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         grant_daily_endowment(pop, &good_ids);
         pop.records.income_amv = 0.0;
         pop.initial_reservations_and_update_satisfaction();
+        let _steps = pop.run_household_work(&session.factuals, &session.history);
     }
     for firm in firms.values_mut() {
         firm.clear_day_flows();
@@ -632,9 +633,6 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
 
     let wages = session.market.settle_labor(&mut pops, &mut firms, &session.factuals);
 
-    for firm in firms.values_mut() {
-        firm.refresh_household_needs(&pops, &session.factuals);
-    }
     for firm in firms.values_mut() {
         let _effects = firm.run_production(&session.factuals, &session.market);
     }
@@ -651,16 +649,8 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
     let mut pop_ids: Vec<usize> = pops.keys().copied().collect();
     pop_ids.sort_unstable();
     for pop_id in pop_ids {
-        let firm_id = firms.values().find_map(|firm| {
-            (firm.owners.liable && firm.owners.pop_id() == Some(pop_id)).then_some(firm.id)
-        });
         let pop = pops.get_mut(&pop_id).expect("pop id from keys");
-        if let Some(fid) = firm_id {
-            let firm = firms.get_mut(&fid).expect("remainder firm");
-            pop.consume_from_firm(Some(firm), Some(&session.factuals));
-        } else {
-            pop.consume();
-        }
+        pop.consume();
         pop.update_sentiments(&market_close, &session.factuals.config.pop);
         add_decay_rot(&mut rot, pop.decay_goods(&session.factuals));
     }
@@ -684,7 +674,7 @@ fn run_one_day(session: &mut Session) -> (MarketDayReport, Vec<(usize, LaborSett
         firms
             .get_mut(id)
             .expect("firm id from keys")
-            .record_keeping(&session.factuals, &closing);
+            .record_keeping_with_owner(&session.factuals, &closing, Some(&pops));
     }
     let budget_day = session.day + 1;
     session
@@ -717,111 +707,30 @@ mod day_should {
     use super::*;
     use std::collections::HashMap;
     use simpler_economy::game::desire::DesireTargetType;
-    use simpler_economy::game::firm::FirmPRow;
-    use simpler_economy::game::init::{OPENING_COVER_DAYS, SUBSISTENCE_LINE_TARGET};
-
-    fn subsistence_output_opening(
-        factuals: &simpler_economy::game::factuals::Factuals,
-        good: usize,
-    ) -> (f64, f64, f64) {
-        let decay = factuals.goods.get(&good).map(|g| g.decay_rate).unwrap_or(1.0);
-        let mut qty = 0.0;
-        let mut stock = 0.0;
-        let mut sell = 0.0;
-        for process in factuals.processes.values() {
-            if !process.is_subsistence() {
-                continue;
-            }
-            for output in &process.outputs {
-                if output.good != good {
-                    continue;
-                }
-                let daily = output.amount * SUBSISTENCE_LINE_TARGET;
-                let opening = FirmPRow::operations_opening(daily, OPENING_COVER_DAYS, decay);
-                qty += opening.quantity;
-                stock += opening.stock_target;
-                sell += opening.sell_target;
-            }
-        }
-        (qty, stock, sell)
-    }
 
     #[test]
     fn solo_roster_is_one_remainder_pair() {
         let mut session = boot_session();
-        let msg = apply_roster(&mut session, Some(1)).expect("solo 1");
+        let msg = apply_roster(&mut session, Some(3)).expect("solo 3");
         assert!(msg.contains("solo"), "{msg}");
         assert_eq!(session.pops.len(), 1);
         assert_eq!(session.firms.len(), 1);
-        assert_eq!(session.pops[0].id, 1);
-        assert_eq!(session.firms[0].id, 1);
-        assert_eq!(session.firms[0].production_line.len(), 4);
-        assert_eq!(session.solo, Some(1));
+        assert_eq!(session.pops[0].id, 3);
+        assert_eq!(session.firms[0].id, 3);
+        assert_eq!(session.firms[0].production_line.len(), 1);
+        assert_eq!(session.solo, Some(3));
         assert_eq!(session.market.pops.len(), 1);
         assert_eq!(session.market.firms.len(), 1);
         apply_roster(&mut session, None).expect("village");
-        assert_eq!(session.pops.len(), 8);
+        assert_eq!(session.pops.len(), 5);
         assert_eq!(session.solo, None);
-    }
-
-    #[test]
-    fn solo_grain_eats_garden_wood() {
-        let mut session = boot_session();
-        apply_roster(&mut session, Some(1)).expect("solo 1");
-        let _ = run_days(&mut session, 10);
-        let pop = &session.pops[0];
-        for desire in &pop.desires[0] {
-            let name = desire.category.as_deref().unwrap_or("basic");
-            assert!(
-                desire.satisfaction + 1e-6 >= desire.amount,
-                "{name} sat {} want {}",
-                desire.satisfaction,
-                desire.amount
-            );
-        }
-        assert!(
-            pop.records.tier_sat[0] + 1e-6 >= 3.0,
-            "basic {} (dinner lost to production)",
-            pop.records.tier_sat[0]
-        );
-        let forage = session.firms[0]
-            .production_line
-            .iter()
-            .find(|line| {
-                session.factuals.processes.get(&line.process).is_some_and(|p| {
-                    p.outputs.iter().any(|o| o.good == WOOD)
-                })
-            })
-            .expect("forage");
-        assert!(
-            forage.last_iterations > 0.0,
-            "forage did not run"
-        );
-    }
-
-    #[test]
-    fn solo_water_covers_basic_food() {
-        let mut session = boot_session();
-        apply_roster(&mut session, Some(2)).expect("solo 2");
-        let _ = run_days(&mut session, 15);
-        let pop = &session.pops[0];
-        assert!(
-            pop.records.tier_sat[0] + 1e-6 >= 3.0,
-            "basic {} (farm did not cover food)",
-            pop.records.tier_sat[0]
-        );
-        assert!(
-            pop.records.tier_sat[1] <= 1e-6,
-            "common {} (water shop should not fill housing/bread)",
-            pop.records.tier_sat[1]
-        );
     }
 
     #[test]
     fn solo_unknown_id_keeps_the_village() {
         let mut session = boot_session();
         assert!(apply_roster(&mut session, Some(99)).is_err());
-        assert_eq!(session.pops.len(), 8);
+        assert_eq!(session.pops.len(), 5);
     }
 
     #[test]
@@ -829,7 +738,7 @@ mod day_should {
         let session = boot_session();
         assert_eq!(
             catalog_good_ids(&session.factuals),
-            vec![TIME, GRAIN, WATER, BREAD, GOLD, WOOD, CABINS]
+            vec![TIME, GRAIN, WATER, BREAD, GOLD, GOLD_TOKEN, JEWELRY, WOOD, CABINS]
         );
         assert!(!session.factuals.goods.contains_key(&IRON));
         assert!(!session.market.goods.contains_key(&IRON));
@@ -867,12 +776,12 @@ mod day_should {
     #[test]
     fn living_roster_is_eight_village_owner_operators() {
         let session = boot_session();
-        assert_eq!(session.pops.len(), 8);
+        assert_eq!(session.pops.len(), 5);
         assert_eq!(session.firms.len(), 8);
         let ids: Vec<usize> = session.pops.iter().map(|pop| pop.id).collect();
-        assert_eq!(ids, (1..=8).collect::<Vec<_>>());
+        assert_eq!(ids, vec![3, 4, 5, 6, 8]);
         let firm_ids: Vec<usize> = session.firms.iter().map(|firm| firm.id).collect();
-        assert_eq!(firm_ids, ids);
+        assert_eq!(firm_ids, (1..=8).collect::<Vec<_>>());
         let specialties: Vec<&str> = session
             .firms
             .iter()
@@ -899,8 +808,9 @@ mod day_should {
         for firm in &session.firms {
             let process_id = firm.production_line[0].process;
             let good = session.factuals.processes[&process_id].outputs[0].good;
-            assert!(
-                firm.production_line.len() >= 4,
+            assert_eq!(
+                firm.production_line.len(),
+                1,
                 "firm {} lines {}",
                 firm.id,
                 firm.production_line.len()
@@ -932,19 +842,18 @@ mod day_should {
                     simpler_economy::game::init::OPENING_COVER_DAYS,
                     decay,
                 );
-            let extra = subsistence_output_opening(&session.factuals, good);
             if good == TIME || daily <= 0.0 {
                 let qty = firm
                     .property
                     .get(&good)
                     .map(|row| row.quantity)
                     .unwrap_or(0.0);
-                assert!((qty - extra.0).abs() < 1e-9);
+                assert!(qty.abs() < 1e-9);
             } else {
                 let row = firm.property.get(&good).expect("opening output stock");
-                assert!((row.quantity - buffer - extra.0).abs() < 1e-9);
-                assert!((row.stock_target - buffer - extra.1).abs() < 1e-9);
-                assert!((row.sell_target - daily - extra.2).abs() < 1e-9);
+                assert!((row.quantity - buffer).abs() < 1e-9);
+                assert!((row.stock_target - buffer).abs() < 1e-9);
+                assert!((row.sell_target - daily).abs() < 1e-9);
             }
             let process = &session.factuals.processes[&process_id];
             for input in process.requirements() {
@@ -954,22 +863,19 @@ mod day_should {
                 let daily_use = input.amount * target;
                 let row = firm.property.get(&input.good).expect("opening input stock");
                 assert!((row.use_target - daily_use).abs() < 1e-9);
-                let extra = subsistence_output_opening(&session.factuals, input.good);
                 assert!(
                     (row.quantity
-                        - daily_use * simpler_economy::game::init::OPENING_INPUT_DAYS
-                        - extra.0)
+                        - daily_use * simpler_economy::game::init::OPENING_INPUT_DAYS)
                         .abs()
                         < 1e-9
                 );
                 assert!(
                     (row.stock_target
-                        - daily_use * simpler_economy::game::init::OPENING_INPUT_DAYS
-                        - extra.1)
+                        - daily_use * simpler_economy::game::init::OPENING_INPUT_DAYS)
                         .abs()
                         < 1e-9
                 );
-                assert!((row.sell_target - extra.2).abs() < 1e-9);
+                assert!(row.sell_target.abs() < 1e-9);
             }
             assert_eq!(firm.workforce.len(), 1);
             assert_eq!(firm.workforce[0].id, firm.id);
@@ -1067,13 +973,15 @@ mod day_should {
         assert!((house.count - 1.0).abs() < 1e-9);
         assert!((pop.demographics.total_population() - 5.0).abs() < 1e-9);
         assert_eq!(pop.desires[0].len(), 3);
-        assert_eq!(pop.desires[1].len(), 2);
-        assert_eq!(pop.desires[2].len(), 1);
+        assert_eq!(pop.desires[1].len(), 3);
+        assert_eq!(pop.desires[2].len(), 2);
         assert_eq!(pop.desires[0][0].category.as_deref(), Some("food"));
         assert_eq!(pop.desires[0][1].category.as_deref(), Some("hydration"));
         assert_eq!(pop.desires[1][0].category.as_deref(), Some("housing"));
         assert_eq!(pop.desires[1][1].category.as_deref(), Some("improved food"));
+        assert_eq!(pop.desires[1][2].category.as_deref(), Some("Extra Storage"));
         assert_eq!(pop.desires[2][0].category.as_deref(), Some("shiny"));
+        assert_eq!(pop.desires[2][1].category.as_deref(), Some("rest"));
         for tier in &pop.desires {
             for desire in tier {
                 match desire.scalar {

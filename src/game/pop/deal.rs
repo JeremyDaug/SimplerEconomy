@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
 use crate::game::config::deal_constants;
@@ -104,14 +104,15 @@ impl Pop {
     ) -> Option<ProposedDeal> {
         debug_assert_eq!(own_order.origin, Actor::Pop(self.id));
         let targeted_good = own_order.target;
-        let live = pop_live_tenders_with_firm(self, targeted_good, history, factuals, firm);
+        let shop_tier = own_order.shop_tier;
+        let live = pop_live_tenders_with_firm(self, targeted_good, shop_tier, history, factuals, firm);
         let deal = form_buy_proposal(
             Actor::Pop(self.id),
             own_order,
             other_order,
             history,
             factuals.config.deal.high_salability,
-            |good| pop_tenderable_with_firm(self, good, targeted_good, factuals, firm),
+            |good| pop_tenderable_with_firm(self, good, targeted_good, shop_tier, factuals, firm),
             &live,
         )?;
         with_transport_budget(
@@ -121,7 +122,7 @@ impl Pop {
             other_order,
             history,
             factuals,
-            |good| pop_tenderable_with_firm(self, good, targeted_good, factuals, firm),
+            |good| pop_tenderable_with_firm(self, good, targeted_good, shop_tier, factuals, firm),
             &live,
             remainder_transport_cover(self, firm, factuals),
         )
@@ -313,8 +314,16 @@ pub(crate) fn pop_amv_percent_keep(
 }
 
 /// Returns how many units of `good` this pop can tender (0 if it is `targeted_good`).
-/// Free stock above `shop_target.max(reserved)`, minus listed offer qty.
-fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
+/// Same-tier and lower-tier stock stays above `shop_target.max(reserved)`.
+/// Stock whose only desires are above `shop_tier` can pay for this buy.
+/// Listed offer qty is excluded either way.
+fn pop_tenderable(
+    pop: &Pop,
+    good: usize,
+    targeted_good: usize,
+    shop_tier: u8,
+    factuals: &Factuals,
+) -> f64 {
     if good == targeted_good {
         return 0.0;
     }
@@ -324,7 +333,7 @@ fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factu
     let Some(row) = pop.property.get(&good) else {
         return 0.0;
     };
-    let keep = row.shop_target.max(row.reserved);
+    let keep = tender_keep(pop, good, shop_tier);
     let listed: f64 = pop
         .current_orders
         .iter()
@@ -334,7 +343,83 @@ fn pop_tenderable(pop: &Pop, good: usize, targeted_good: usize, factuals: &Factu
     (row.quantity - keep - listed).max(0.0)
 }
 
-/// Shop shelf above owner dinner. Remainder owners pay with this pile.
+/// Units of `good` that stay out of a shop-tier `shop_tier` payment.
+fn tender_keep(pop: &Pop, good: usize, shop_tier: u8) -> f64 {
+    let Some(row) = pop.property.get(&good) else {
+        return 0.0;
+    };
+    let fenced_all = fenced_for_tiers(pop, good, u8::MAX);
+    let manual = (row.reserved - fenced_all).max(0.0);
+    if desire_targets_through(pop, good, shop_tier) {
+        return row.shop_target.max(row.reserved).max(0.0);
+    }
+    if desire_targets_above(pop, good, shop_tier) {
+        return manual;
+    }
+    row.shop_target.max(row.reserved).max(0.0)
+}
+
+fn desire_targets_through(pop: &Pop, good: usize, max_tier: u8) -> bool {
+    pop.desires.iter().take(max_tier as usize + 1).flatten().any(|desire| {
+        desire.target.iter().any(|target| target.good == good)
+    })
+}
+
+fn desire_targets_above(pop: &Pop, good: usize, max_tier: u8) -> bool {
+    pop.desires
+        .iter()
+        .skip(max_tier as usize + 1)
+        .flatten()
+        .any(|desire| desire.target.iter().any(|target| target.good == good))
+}
+
+/// How much of `good` a reservation of tiers `0..=max_tier` would earmark
+/// from the quantity on hand.
+fn fenced_for_tiers(pop: &Pop, good: usize, max_tier: u8) -> f64 {
+    let mut avail: HashMap<usize, f64> = pop
+        .property
+        .iter()
+        .map(|(&id, row)| (id, row.quantity.max(0.0)))
+        .collect();
+    let mut fenced = 0.0;
+    let last = (max_tier as usize).min(pop.desires.len().saturating_sub(1));
+    if pop.desires.is_empty() {
+        return 0.0;
+    }
+    for tier in pop.desires.iter().take(last + 1) {
+        for desire in tier {
+            let amount = desire.amount.max(0.0);
+            if amount <= 0.0 {
+                continue;
+            }
+            let mut remaining = amount;
+            for target in desire.ordered_targets() {
+                if remaining <= 0.0 || target.efficiency <= 0.0 {
+                    break;
+                }
+                let Some(have) = avail.get_mut(&target.good) else {
+                    continue;
+                };
+                if *have <= 0.0 {
+                    continue;
+                }
+                let want_sat = remaining.min(amount * target.cap);
+                if want_sat <= 0.0 {
+                    continue;
+                }
+                let take = (want_sat / target.efficiency).min(*have);
+                *have -= take;
+                if target.good == good {
+                    fenced += take;
+                }
+                remaining -= take * target.efficiency;
+            }
+        }
+    }
+    fenced
+}
+
+/// Shop shelf above the stock reserve. Remainder owners pay with this pile.
 fn remainder_spendable(firm: &Firm, good: usize, targeted_good: usize, factuals: &Factuals) -> f64 {
     if good == targeted_good {
         return 0.0;
@@ -342,22 +427,21 @@ fn remainder_spendable(firm: &Firm, good: usize, targeted_good: usize, factuals:
     if !factuals.find_good(good).is_buyable() {
         return 0.0;
     }
-    let shelf = firm
-        .property
+    firm.property
         .get(&good)
-        .map(|row| row.shelf())
-        .unwrap_or(0.0);
-    (shelf - firm.dinner_qty(good)).max(0.0)
+        .map(|row| row.sellable())
+        .unwrap_or(0.0)
 }
 
 fn pop_tenderable_with_firm(
     pop: &Pop,
     good: usize,
     targeted_good: usize,
+    shop_tier: u8,
     factuals: &Factuals,
     firm: Option<&Firm>,
 ) -> f64 {
-    let bag = pop_tenderable(pop, good, targeted_good, factuals);
+    let bag = pop_tenderable(pop, good, targeted_good, shop_tier, factuals);
     let shop = firm
         .map(|firm| remainder_spendable(firm, good, targeted_good, factuals))
         .unwrap_or(0.0);
@@ -367,6 +451,7 @@ fn pop_tenderable_with_firm(
 fn pop_live_tenders_with_firm(
     pop: &Pop,
     targeted_good: usize,
+    shop_tier: u8,
     history: &MarketHistory,
     factuals: &Factuals,
     firm: Option<&Firm>,
@@ -376,7 +461,7 @@ fn pop_live_tenders_with_firm(
         ids.extend(firm.property.keys().copied());
     }
     collect_tenders(ids, history, |good| {
-        pop_tenderable_with_firm(pop, good, targeted_good, factuals, firm)
+        pop_tenderable_with_firm(pop, good, targeted_good, shop_tier, factuals, firm)
     })
 }
 
@@ -388,7 +473,7 @@ fn remainder_transport_cover(pop: &Pop, firm: Option<&Firm>, factuals: &Factuals
         .collect();
     if let Some(firm) = firm {
         for (&id, row) in &firm.property {
-            let extra = (row.shelf() - firm.dinner_qty(id)).max(0.0);
+            let extra = row.sellable();
             if let Some((_, qty)) = pairs.iter_mut().find(|(good, _)| *good == id) {
                 *qty += extra;
             } else {

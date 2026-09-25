@@ -16,8 +16,8 @@ data** (later, compressed, not for hand-editing). Init files stay short:
 shared desires, optional starter, one line per pop/firm, names or ids, defaults for
 owner/remainder/household. Current scenario is an eight-household village:
 grain, water, bread, gold, wood, cabins (two grain shops, two wells). Specialty
-`target` 8 on grain/water/wood, 5 on bread/gold, 2 on cabins, plus three
-subsistence lines at target 2. Desires are food (grain/bread), water, wood heat,
+`target` 8 on grain/water/wood, 5 on bread/gold, 2 on cabins. One line
+each. Desires are food (grain/bread), water, wood heat,
 one cabin per household, extra bread, and gold. Pops open with one day of the matching firm's specialty output (Time skipped) so day 1 has tenders. Firm `target` is process iterations; opening
 stock is three decay-adjusted days of each process output (yesterday succeeded; Time
 output skipped) plus four days of required non-Time inputs (`use_target` = one day
@@ -46,11 +46,10 @@ Specialized recipes: process id equals the output good id, except Time
 `make grain` and `make wood` may take optional boosters (water / wood_tools).
 Crafted recipes take Time plus at least one destroyed material. Subsistence
 is Time-only and weaker than the matching extract. Sample grain (optional
-boosters), pots (clay + coal), Time, and subsistence farm. Init auto-attaches
-the three subsistence lines (target 2) to every remainder firm; hours are
-the sum of all lines' Time plus a multi-line complexity tax. The living tester
-village is eight firms on a six-good catalog (two grain, two water). Plan
-does not special-case the subsistence tag.
+boosters), pots (clay + coal), Time, and subsistence farm. Init does not
+attach those lines. Hours are the named line's Time. One line pays no
+complexity tax. The living tester village is eight firms on a six-good
+catalog (two grain, two water). Plan does not special-case the subsistence tag.
 
 **Code:** `src/game/factuals.rs`, `src/game/config.rs`, `src/game/init.rs`,
 `data/world/goods.toml`, `processes.toml`, `config.toml`, `data/init/`.

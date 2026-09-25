@@ -17,7 +17,7 @@ Deferred ranking: `docs/proposals/market-order-priority.md`.
 | AMV history ring | Seed opening AMV; push close after daily rescale. Do not rescale old samples. Cap 16 |
 | Time AMV from labor | [`Market::settle_labor`] / [`Market::budget_labor`]. Hours-weighted wage AMV. Tracking only; wages do not follow it yet. Not a goods-book labor market |
 | Institution / state orders | Not collected |
-| New orders after a fill | None. Morning `create_orders` only |
+| New orders after a fill | Firms stay on the morning book. A pop posts one open-tier buy, then another after that buy fills or closes, while the flat door fee is still payable |
 | Leftover book carry | Reported then dropped; next day recasts from `create_orders` |
 | Multimatch | Later. Do not start |
 
@@ -31,7 +31,7 @@ tonight's rot. Call the vault conflict; do not invent a third clock.
 `run_market_day(factuals, pops, firms, rng)`. Only ids in `self.pops` /
 `self.firms`. Lookups via `as_deal_maker(_mut)`; member ids are `expect`ed.
 
-1. **Collect** `Pop` / `Firm` `create_orders` once.
+1. **Collect.** Firms call `create_orders` once. Each pop offers surplus above savings and the consume reserve, and posts one buy for an open-tier good already on offer. After that buy fills or closes, the pop looks again while the flat door is still payable.
 2. **Collate** opening supply/demand/buyers/suppliers. Zero day exchange
    counters first (not AMV, salability, average price, stock, production,
    consumption, imports).

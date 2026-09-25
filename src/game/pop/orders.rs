@@ -117,6 +117,212 @@ impl Pop {
         orders
     }
 
+    /// Surplus above the savings pile and the consume reserve. These are the
+    /// goods the pop does not need for the tier it is on. Savings stays off
+    /// the book.
+    pub(crate) fn consumption_offers(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        mut hold_back_amv: f64,
+    ) -> Vec<MarketOrder> {
+        let mut goods: Vec<usize> = self.property.keys().copied().collect();
+        goods.sort_by(|&a, &b| {
+            history
+                .salability(b)
+                .partial_cmp(&history.salability(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+        let priority = factuals.config.market_priority.pop_start;
+        let mut orders = Vec::new();
+        for good in goods {
+            if good == TIME {
+                continue;
+            }
+            if !factuals.goods.get(&good).is_some_and(|row| row.is_buyable()) {
+                continue;
+            }
+            let Some(row) = self.property.get(&good) else {
+                continue;
+            };
+            let keep = row.shop_target.max(row.reserved);
+            let mut free = whole_units((row.quantity - keep).max(0.0));
+            if free < 1.0 {
+                continue;
+            }
+            let price = history.price(good).max(0.0);
+            if hold_back_amv > 0.0 && price > 0.0 {
+                let cover = whole_units_up(hold_back_amv / price).min(free);
+                free -= cover;
+                hold_back_amv -= cover * price;
+            }
+            if free < 1.0 {
+                continue;
+            }
+            orders.push(MarketOrder::offer_order(
+                Actor::Pop(self.id),
+                good,
+                -free,
+                priority,
+            ));
+        }
+        orders
+    }
+
+    /// The next buy, or nothing. Posts one open-tier good that somebody is
+    /// already selling, and only when the pop can still pay the flat door.
+    /// `skip` holds goods whose buy already closed without a fill.
+    pub(crate) fn next_shop_buy(
+        &self,
+        factuals: &Factuals,
+        offered: &HashSet<usize>,
+        skip: &HashSet<usize>,
+    ) -> Option<MarketOrder> {
+        let fee = if factuals.goods.values().any(|good| good.is_transport()) {
+            factuals.config.market.transaction_cost.max(0.0)
+        } else {
+            0.0
+        };
+        if self.shopping_cover(factuals) + 1e-12 < fee {
+            return None;
+        }
+        if let Some(tier) = self.open_shop_tier() {
+            if let Some(order) = self.buy_open_tier(tier, factuals, offered, skip) {
+                return Some(order);
+            }
+        }
+        self.buy_shop_shortfall(factuals, offered, skip)
+    }
+
+    fn buy_open_tier(
+        &self,
+        tier: usize,
+        factuals: &Factuals,
+        offered: &HashSet<usize>,
+        skip: &HashSet<usize>,
+    ) -> Option<MarketOrder> {
+        let priority = factuals.config.market_priority.pop_start;
+        for desire in &self.desires[tier] {
+            if desire.amount <= 0.0 {
+                continue;
+            }
+            for target in desire.ordered_targets() {
+                if skip.contains(&target.good) || !offered.contains(&target.good) {
+                    continue;
+                }
+                if target.efficiency <= 0.0 {
+                    continue;
+                }
+                if !factuals
+                    .goods
+                    .get(&target.good)
+                    .is_some_and(|good| good.is_buyable())
+                {
+                    continue;
+                }
+                let need = desire.amount * target.cap / target.efficiency;
+                let have = self
+                    .property
+                    .get(&target.good)
+                    .map(|row| row.quantity.max(0.0))
+                    .unwrap_or(0.0);
+                let short = whole_units_up((need - have).max(0.0));
+                if short < 1.0 || !self.has_consumption_payment(target.good) {
+                    continue;
+                }
+                return Some(
+                    MarketOrder::request_order(Actor::Pop(self.id), target.good, short, priority)
+                        .with_shop_tier(tier as u8),
+                );
+            }
+        }
+        None
+    }
+
+    /// One planned restock when every desire tier is already covered.
+    fn buy_shop_shortfall(
+        &self,
+        factuals: &Factuals,
+        offered: &HashSet<usize>,
+        skip: &HashSet<usize>,
+    ) -> Option<MarketOrder> {
+        let priority = factuals.config.market_priority.pop_start;
+        let mut goods: Vec<usize> = self.property.keys().copied().collect();
+        goods.sort_unstable();
+        for good in goods {
+            if skip.contains(&good) || !offered.contains(&good) {
+                continue;
+            }
+            if !factuals.goods.get(&good).is_some_and(|row| row.is_buyable()) {
+                continue;
+            }
+            let Some(row) = self.property.get(&good) else {
+                continue;
+            };
+            let short = whole_units_up((row.shop_target - row.quantity).max(0.0));
+            if short < 1.0 || !self.has_consumption_payment(good) {
+                continue;
+            }
+            return Some(MarketOrder::request_order(
+                Actor::Pop(self.id),
+                good,
+                short,
+                priority,
+            ));
+        }
+        None
+    }
+
+    /// First tier whose one level is not covered by what is on hand.
+    /// `None` when every tier is covered: the pop is content.
+    fn open_shop_tier(&self) -> Option<usize> {
+        let mut avail: HashMap<usize, f64> = self
+            .property
+            .iter()
+            .map(|(&id, row)| (id, row.quantity.max(0.0)))
+            .collect();
+        for (idx, tier) in self.desires.iter().enumerate() {
+            let mut open = false;
+            for desire in tier {
+                if desire.amount <= 0.0 {
+                    continue;
+                }
+                let mut remaining = desire.amount;
+                for target in desire.ordered_targets() {
+                    if remaining <= 1e-12 || target.efficiency <= 0.0 {
+                        break;
+                    }
+                    let have = avail.get(&target.good).copied().unwrap_or(0.0);
+                    if have <= 0.0 {
+                        continue;
+                    }
+                    let want = remaining.min(desire.amount * target.cap.max(0.0));
+                    let take = (want / target.efficiency).min(have);
+                    if let Some(slot) = avail.get_mut(&target.good) {
+                        *slot -= take;
+                    }
+                    remaining -= take * target.efficiency;
+                }
+                if remaining > 1e-9 {
+                    open = true;
+                }
+            }
+            if open {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn has_consumption_payment(&self, except: usize) -> bool {
+        self.property.iter().any(|(&id, row)| {
+            id != except
+                && id != TIME
+                && whole_units((row.quantity - row.save_target.max(row.reserved)).max(0.0)) >= 1.0
+        })
+    }
+
     /// Transport cover for the market door. Time uses unreserved
     /// stock; other transport goods use on-hand quantity.
     pub(crate) fn shopping_cover(&self, factuals: &Factuals) -> f64 {

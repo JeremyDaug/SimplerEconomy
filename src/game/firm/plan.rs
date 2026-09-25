@@ -4,8 +4,9 @@ use crate::game::config::{firm_constants, FirmConfig};
 use crate::game::factuals::Factuals;
 use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
+use crate::game::pop::Pop;
 use crate::game::process::{InputType, ProcessInput};
-use crate::game::util::{lerp, whole_units};
+use crate::game::util::lerp;
 
 use super::{Firm, FirmAmvBound, FirmPRow, ProductionLine};
 
@@ -17,9 +18,20 @@ impl Firm {
     /// Do not also call [`Firm::plan`] on the same day until
     /// snapshot work is split out.
     pub fn record_keeping(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        self.record_keeping_with_owner(factuals, history, None);
+    }
+
+    /// Same as [`Self::record_keeping`], with the owner's bag and desires
+    /// available so a quota cut stops at unmet output.
+    pub fn record_keeping_with_owner(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        pops: Option<&HashMap<usize, Pop>>,
+    ) {
         self.update_rolling_averages(&factuals.config.firm);
         self.update_records(&factuals.config.firm);
-        self.plan(factuals, history);
+        self.plan_with_owner(factuals, history, pops);
     }
 
     /// Sets `rolling_average` on every property row to a lerp toward `quantity`.
@@ -121,20 +133,30 @@ impl Firm {
     ///    quote from sold-through vs failed meetings. Quiet days lerp quota toward `aim`.
     ///    A line at 0 that is starting snaps to at least 1 iteration.
     ///    Missing inputs keep aim and quota (a supply miss is not a scale miss).
-    ///    Leftover buys, owner consume shortfall, and in-shop recipe input
-    ///    need are remaining demand: not a sell miss, and an idle preferred
-    ///    line restarts at 1 iteration. Weaker duplicate recipes walk down.
+    ///    Leftover buys and in-shop recipe input need are remaining demand:
+    ///    not a sell miss, and an idle preferred line restarts at 1 iteration.
+    ///    A cut stops at the owner's unmet output of goods this shop makes.
+    ///    That floor does not raise quota. Revenue below unit cost cuts
+    ///    quota. Weaker duplicate recipes walk down.
     /// 3. [`Self::rewrite_property_targets`]: input use/stock/purchase/reserve,
     ///    AMV bounds, merchant restock. Input cover is a floor; excess output
     ///    above `output_cover` days is added to `sell_target`.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        self.plan_with_owner(factuals, history, None);
+    }
+
+    /// [`Self::plan`] with the owner pop, so quota cuts respect unmet output.
+    pub fn plan_with_owner(
+        &mut self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        pops: Option<&HashMap<usize, Pop>>,
+    ) {
         let cfg = factuals.config.firm;
         let info = self.gather_plan_info(factuals, history);
-        self.apply_plan_adjustments(&info, history, &cfg);
-        self.cap_crafts_after_dinner(factuals);
+        self.apply_plan_adjustments(&info, history, &cfg, factuals, pops);
         self.abandon_idle_lines(factuals, history, &cfg);
         self.rewrite_property_targets(factuals, history, &cfg);
-        self.fence_owner_needs(factuals);
     }
 
     /// Checks if a firm has a Liable owner-operator which sends enough of it's
@@ -149,117 +171,9 @@ impl Firm {
             && self.records.self_supply + 1e-12 >= cfg.self_supply_threshold
     }
 
-    /// Fence goods this shop makes that the owner still needs, so leftover
-    /// remainder / sells do not dump dinner. Uses `reserve_target`, not
-    /// `use_target`, so finished output is not treated as a recipe input.
-    fn fence_owner_needs(&mut self, factuals: &Factuals) {
-        if !self.owners.liable {
-            return;
-        }
-        let mut goods: Vec<(usize, f64)> = Vec::new();
-        for line in &self.production_line {
-            if line.target.unwrap_or(0.0) <= 0.0 {
-                continue;
-            }
-            let Some(process) = factuals.processes.get(&line.process) else {
-                continue;
-            };
-            for output in &process.outputs {
-                if output.good == TIME {
-                    continue;
-                }
-                let short = self
-                    .household_needs
-                    .get(&output.good)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .max(0.0);
-                if short > 0.0 {
-                    goods.push((output.good, short));
-                }
-            }
-        }
-        for (good, short) in goods {
-            let row = self.property.entry(good).or_insert_with(FirmPRow::new);
-            if row.reserve_target < short {
-                row.reserve_target = short;
-            }
-            row.sync_reserve();
-        }
-    }
-
-    /// Caps craft lines so they only spend intermediates left after owner
-    /// dinner. Time-only lines are left alone.
-    fn cap_crafts_after_dinner(&mut self, factuals: &Factuals) {
-        let (_, make_qty) = recipe_flows(&self.production_line, factuals);
-        let dinner = self.dinner_map();
-        let mut leftover: HashMap<usize, f64> = HashMap::new();
-        let mut goods: HashSet<usize> = make_qty.keys().copied().collect();
-        goods.extend(self.property.keys().copied());
-        goods.extend(dinner.keys().copied());
-        for good in goods {
-            if good == TIME {
-                continue;
-            }
-            let have = self
-                .property
-                .get(&good)
-                .map(|row| row.quantity.max(0.0))
-                .unwrap_or(0.0);
-            let made = make_qty.get(&good).copied().unwrap_or(0.0);
-            let reserve = dinner.get(&good).copied().unwrap_or(0.0);
-            leftover.insert(good, (made + have - reserve).max(0.0));
-        }
-        for line in &mut self.production_line {
-            let Some(target) = line.target else {
-                continue;
-            };
-            if target <= 0.0 {
-                continue;
-            }
-            let Some(process) = factuals.processes.get(&line.process) else {
-                continue;
-            };
-            let mut take: Vec<(usize, f64)> = Vec::new();
-            let mut max_iters = target;
-            let mut eats = false;
-            for input in &process.inputs {
-                if input.good == TIME
-                    || input.is_optional()
-                    || matches!(input.input_type, InputType::Factor)
-                {
-                    continue;
-                }
-                if dinner.get(&input.good).copied().unwrap_or(0.0) <= 0.0 {
-                    continue;
-                }
-                eats = true;
-                let amount = input.amount.max(0.0);
-                if amount <= 0.0 {
-                    continue;
-                }
-                let avail = leftover.get(&input.good).copied().unwrap_or(0.0);
-                max_iters = max_iters.min(whole_units(avail / amount));
-                take.push((input.good, amount));
-            }
-            if !eats {
-                continue;
-            }
-            let take_iters = max_iters.max(0.0);
-            if take_iters + 1e-12 < target {
-                line.target = Some(take_iters);
-            }
-            for (good, amount) in take {
-                if let Some(left) = leftover.get_mut(&good) {
-                    *left = (*left - take_iters * amount).max(0.0);
-                }
-            }
-        }
-    }
-
-    /// Count idle days at target 0 with no leftover-buy, owner, or in-shop
-    /// input demand. Drop after `abandon_idle_days`. The firm actor is kept
-    /// even if no lines remain.
+    /// Count idle days at target 0 with no leftover-buy or in-shop input
+    /// demand. Owner shortfall does not keep the line. Drop after
+    /// `abandon_idle_days`. The firm actor is kept even with no lines.
     fn abandon_idle_lines(
         &mut self,
         factuals: &Factuals,
@@ -269,14 +183,12 @@ impl Firm {
         let limit = cfg.abandon_idle_days;
         let preferred = preferred_line_indices(&self.production_line, factuals, history);
         let needed = in_shop_input_goods(&self.production_line, factuals);
-        let dinner = self.dinner_map();
         for (i, line) in self.production_line.iter_mut().enumerate() {
             let idle = matches!(line.target, Some(target) if target <= 0.0)
                 && !line_has_keep_demand(
                     line,
                     factuals,
                     history,
-                    &dinner,
                     &needed,
                     preferred.contains(&i),
                 );
@@ -356,9 +268,6 @@ impl Firm {
                 }
             }
         }
-        for facts in goods.values_mut() {
-            facts.owner_need = self.dinner_qty(facts.good);
-        }
         mark_preferred_makers(&mut lines);
         PlanGather { lines, goods }
     }
@@ -376,6 +285,8 @@ impl Firm {
         info: &PlanGather,
         history: &MarketHistory,
         cfg: &FirmConfig,
+        factuals: &Factuals,
+        pops: Option<&HashMap<usize, Pop>>,
     ) {
         let n = self.production_line.len();
         let pace = cfg.planning_lerp_rate;
@@ -488,6 +399,28 @@ impl Firm {
             let aim = self.production_line[facts.index].aim;
             desired_line[facts.index] =
                 Some(next_line_target(facts.target.unwrap(), aim, pace));
+        }
+
+        let floors = consumption_floors(self, &info.lines, pops, factuals);
+        for facts in &info.lines {
+            let Some(next) = desired_line[facts.index] else {
+                continue;
+            };
+            let Some(current) = facts.target else {
+                continue;
+            };
+            if next + 1e-12 >= current {
+                continue;
+            }
+            let floor = floors[facts.index];
+            if floor <= 0.0 {
+                continue;
+            }
+            if current <= floor + 1e-12 {
+                desired_line[facts.index] = Some(current);
+            } else {
+                desired_line[facts.index] = Some(next.max(floor));
+            }
         }
 
         for (line, want) in self.production_line.iter_mut().zip(desired_line) {
@@ -788,7 +721,6 @@ struct GoodFacts {
     sell_no_proposal_avg: f64,
     average_cost: f64,
     leftover_buy: f64,
-    owner_need: f64,
     internal_need: f64,
     maker_lines: Vec<usize>,
 }
@@ -840,7 +772,6 @@ fn good_facts_from_row(
         sell_no_proposal_avg: row.map(|r| r.sell_no_proposal_avg).unwrap_or(0.0),
         average_cost: row.map(|r| r.average_cost.max(0.0)).unwrap_or(0.0),
         leftover_buy: history.leftover_buy(good),
-        owner_need: 0.0,
         internal_need: 0.0,
         maker_lines: Vec::new(),
     }
@@ -864,9 +795,9 @@ fn walk_sold(good: &GoodFacts) -> f64 {
     }
 }
 
-/// Market sold plus still-open owner and leftover-buy demand.
+/// Market sold plus still-open leftover-buy demand.
 fn walk_demand(good: &GoodFacts) -> f64 {
-    walk_sold(good) + good.owner_need.max(0.0) + good.leftover_buy.max(0.0)
+    walk_sold(good) + good.leftover_buy.max(0.0)
 }
 
 fn walk_meets(good: &GoodFacts) -> (f64, f64) {
@@ -904,11 +835,102 @@ struct WalkChoice {
     quote: f64,
 }
 
-/// Quota from demand; quote from meetings. Demand is market sold plus owner
-/// dinner and leftover buys. Uncovered owner / leftover-buy / in-shop input
-/// raises quota even when leftover sells fail. Remainder placement is not
-/// demand. A Time-starved shop does not raise quota. Failed meetings raise
-/// quote, not scale.
+/// Owner shortfall, in output units, for goods this shop's running lines make.
+/// On-hand bag stock counts as already covered. Empty when the owner is absent.
+fn owner_unmet_output(
+    firm: &Firm,
+    pops: &HashMap<usize, Pop>,
+    factuals: &Factuals,
+) -> HashMap<usize, f64> {
+    let mut unmet = HashMap::new();
+    let Some(id) = firm.owners.pop_id() else {
+        return unmet;
+    };
+    let Some(pop) = pops.get(&id) else {
+        return unmet;
+    };
+    let made = firm.produced_goods(factuals);
+    if made.is_empty() {
+        return unmet;
+    }
+    for tier in &pop.desires {
+        for desire in tier {
+            let mut remaining = desire.amount.max(0.0);
+            if remaining <= 0.0 {
+                continue;
+            }
+            for target in desire.ordered_targets() {
+                if remaining <= 0.0 {
+                    break;
+                }
+                if target.efficiency <= 0.0 || !made.contains(&target.good) {
+                    continue;
+                }
+                let qty = (remaining.min(desire.amount.max(0.0) * target.cap) / target.efficiency)
+                    .max(0.0);
+                if qty <= 0.0 {
+                    continue;
+                }
+                *unmet.entry(target.good).or_insert(0.0) += qty;
+                remaining -= qty * target.efficiency;
+            }
+        }
+    }
+    for (good, qty) in unmet.iter_mut() {
+        let have = pop
+            .property
+            .get(good)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        *qty = (*qty - have).max(0.0);
+    }
+    unmet.retain(|_, qty| *qty > 0.0);
+    unmet
+}
+
+/// Iteration floor for each line. Only the preferred recipe of an unmet
+/// output is held. Zero when no owner was passed in.
+fn consumption_floors(
+    firm: &Firm,
+    lines: &[LineFacts],
+    pops: Option<&HashMap<usize, Pop>>,
+    factuals: &Factuals,
+) -> Vec<f64> {
+    let mut floors = vec![0.0; lines.len()];
+    let Some(pops) = pops else {
+        return floors;
+    };
+    let unmet = owner_unmet_output(firm, pops, factuals);
+    if unmet.is_empty() {
+        return floors;
+    }
+    for facts in lines {
+        if !facts.preferred {
+            continue;
+        }
+        let mut floor = 0.0_f64;
+        for &(good, amount) in &facts.outputs {
+            if good == TIME || amount <= 0.0 {
+                continue;
+            }
+            let qty = unmet.get(&good).copied().unwrap_or(0.0);
+            if qty > 0.0 {
+                floor = floor.max(qty / amount);
+            }
+        }
+        if facts.index < floors.len() {
+            floors[facts.index] = floor;
+        }
+    }
+    floors
+}
+
+/// Quota from demand; quote from meetings. Demand is market sold plus
+/// leftover buys. Uncovered leftover-buy and in-shop input need raise
+/// quota even when leftover sells fail. Revenue below unit cost cuts
+/// quota. A later clamp stops that cut at the owner's unmet output.
+/// Remainder placement is not demand. A Time-starved shop does not raise
+/// quota. Failed meetings raise quote, not scale.
 fn plan_walk(
     good: &GoodFacts,
     lines: &[LineFacts],
@@ -930,8 +952,10 @@ fn plan_walk(
     let strong = plan > 0.0 && sold / plan >= cfg.sell_success_grow;
     let extra_ok = strong && failed_share <= 0.0 && (meets > 0.0 || sold > 0.0);
     let cost = output_unit_cost(good, lines);
-    let underwater = plan > 0.0
-        && sold * quote0 <= current_qty.max(plan) * cost + 1e-12;
+    let bill = current_qty.max(plan) * cost;
+    let revenue = sold * quote0;
+    let underwater = cost > 0.0 && plan > 0.0 && revenue <= bill + 1e-12;
+    let losing = cost > 0.0 && plan > 0.0 && revenue + 1e-12 < bill;
     let input_blocked = good.maker_lines.iter().any(|&i| {
         lines
             .get(i)
@@ -939,15 +963,12 @@ fn plan_walk(
     });
     let miss = !input_blocked
         && good.leftover_buy <= 0.0
-        && good.owner_need <= 0.0
         && plan > 0.0
         && walk_sold(good) / plan < cfg.sell_success_shrink;
-    let uncovered = good.owner_need.max(0.0)
-        + good.leftover_buy.max(0.0)
-        + good.internal_need.max(0.0);
+    let uncovered = good.leftover_buy.max(0.0) + good.internal_need.max(0.0);
     let need_raise = current_qty + 1e-12 < uncovered;
 
-    let step = if miss {
+    let step = if miss || (losing && !need_raise) {
         WalkStep::CutQuota
     } else if need_raise && !time_starved {
         WalkStep::RaiseQuota
@@ -1191,7 +1212,6 @@ fn line_has_keep_demand(
     line: &ProductionLine,
     factuals: &Factuals,
     history: &MarketHistory,
-    household_needs: &HashMap<usize, f64>,
     needed: &HashSet<usize>,
     preferred: bool,
 ) -> bool {
@@ -1203,9 +1223,7 @@ fn line_has_keep_demand(
     };
     process.outputs.iter().any(|output| {
         output.good != TIME
-            && (history.leftover_buy(output.good) > 0.0
-                || household_needs.get(&output.good).copied().unwrap_or(0.0) > 0.0
-                || needed.contains(&output.good))
+            && (history.leftover_buy(output.good) > 0.0 || needed.contains(&output.good))
     })
 }
 
@@ -1216,9 +1234,7 @@ fn line_has_leftover_demand(facts: &LineFacts, goods: &HashMap<usize, GoodFacts>
     facts.outputs.iter().any(|(good, amount)| {
         *amount > 0.0
             && *good != TIME
-            && goods.get(good).is_some_and(|g| {
-                g.leftover_buy > 0.0 || g.owner_need > 0.0 || g.internal_need > 0.0
-            })
+            && goods.get(good).is_some_and(|g| g.leftover_buy > 0.0 || g.internal_need > 0.0)
     })
 }
 

@@ -21,6 +21,11 @@ pub mod pop_constants {
     /// 1 Labor => 16 hrs => 64 quarter hours => 64 units of Time.
     pub const TIME_PER_LABOR: f64 = 64.0;
 
+    /// Iterations of each subsistence recipe a household runs in a morning.
+    /// Farm, water, and forage output 2 per iteration, so 3 covers a
+    /// 5-person desire of 5 and costs 3.6 Time.
+    pub const HOUSEHOLD_BASKET_CAP: f64 = 3.0;
+
     /// Default days of basic+common consume-need to hold as a buffer (1.0 = 1 day).
     pub const DEFAULT_SAVINGS_RATIO: f64 = 0.20;
     /// Default required return (personal interest rate). Higher = more impatient.

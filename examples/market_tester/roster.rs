@@ -183,6 +183,7 @@ pub(crate) fn empty_pop(id: usize, pop_cfg: &PopConfig) -> Pop {
         current_orders: vec![],
         stored_effects: vec![],
         sentiment: Sentiment::new(),
+        household_work: Vec::new(),
         records: PopRecords::from_config(pop_cfg),
     }
 }

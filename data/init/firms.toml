@@ -1,8 +1,7 @@
 # Scenario kickoff firms. Init data, not world factuals, not a save.
 # process is a name or id. remainder defaults true. owner defaults to the firm id.
-# target is specialty process iterations. Hours default to the sum of all
-# lines (specialty plus auto-attached subsistence farm/water/forage at
-# target 2). Time output is not stocked. Opening output is three
+# target is process iterations. Hours default to that line's recipe Time.
+# One line pays no complexity tax. Time output is not stocked. Opening output is three
 # decay-adjusted days. Opening inputs are four days of required non-Time
 # materials (use_target = one day).
 #

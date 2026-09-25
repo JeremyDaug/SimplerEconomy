@@ -674,10 +674,10 @@ mod csv_should {
     #[test]
     fn flags_specialty_prefab_names() {
         let mut session = session();
-        let msg = handle_csv_command(&mut session, &["on", "pop1-grain", "pop3-bread"]);
-        assert!(msg.contains("logging pop1-grain pop3-bread"), "{msg}");
-        assert!(session.csv_pops.contains(&1));
+        let msg = handle_csv_command(&mut session, &["on", "pop3-bread", "pop4-gold"]);
+        assert!(msg.contains("logging pop3-bread pop4-gold"), "{msg}");
         assert!(session.csv_pops.contains(&3));
+        assert!(session.csv_pops.contains(&4));
         let firm = handle_csv_command(&mut session, &["on", "firm1-grain"]);
         assert!(firm.contains("not on the roster"), "{firm}");
         assert!(session.csv_firms.is_empty());
@@ -686,36 +686,36 @@ mod csv_should {
     #[test]
     fn flags_only_named_roster_actors() {
         let mut session = session();
-        let msg = handle_csv_command(&mut session, &["on", "pop1", "pop2"]);
-        assert!(msg.contains("logging pop1-grain pop2-water"), "{msg}");
-        assert!(session.csv_pops.contains(&1));
-        assert!(session.csv_pops.contains(&2));
-        assert!(!session.csv_pops.contains(&3));
+        let msg = handle_csv_command(&mut session, &["on", "pop3", "pop4"]);
+        assert!(msg.contains("logging pop3-bread pop4-gold"), "{msg}");
+        assert!(session.csv_pops.contains(&3));
+        assert!(session.csv_pops.contains(&4));
+        assert!(!session.csv_pops.contains(&5));
         assert!(session.csv_firms.is_empty());
         assert_eq!(csv_kind_brace(&session), "{market,trades,pops}");
 
         let pop_header = pop_csv_header(&session);
         assert!(
-            pop_header.contains("pop1_grain_living_standard"),
+            pop_header.contains("pop3_bread_living_standard"),
             "{pop_header}"
         );
         assert!(
-            pop_header.contains("pop2_water_living_standard"),
+            pop_header.contains("pop4_gold_living_standard"),
             "{pop_header}"
         );
-        assert!(!pop_header.contains("pop3_"), "{pop_header}");
+        assert!(!pop_header.contains("pop5_"), "{pop_header}");
 
-        let off = handle_csv_command(&mut session, &["off", "pop1"]);
-        assert!(off.contains("stopped pop1-grain"), "{off}");
-        assert!(!session.csv_pops.contains(&1));
-        assert!(session.csv_pops.contains(&2));
+        let off = handle_csv_command(&mut session, &["off", "pop3"]);
+        assert!(off.contains("stopped pop3-bread"), "{off}");
+        assert!(!session.csv_pops.contains(&3));
+        assert!(session.csv_pops.contains(&4));
         assert_eq!(csv_kind_brace(&session), "{market,trades,pops}");
     }
 
     #[test]
     fn off_with_no_actors_clears_all_flags() {
         let mut session = session();
-        handle_csv_command(&mut session, &["on", "pop1", "pop2"]);
+        handle_csv_command(&mut session, &["on", "pop3", "pop4"]);
         assert!(!session.csv_pops.is_empty());
         let msg = handle_csv_command(&mut session, &["off"]);
         assert!(msg.contains("flags cleared"), "{msg}");
@@ -750,7 +750,8 @@ mod csv_should {
         let header = market_csv_header(&session);
         assert!(header.contains("grain_amv"), "{header}");
         assert!(header.contains("cabins_amv"), "{header}");
-        assert!(!header.contains("gold_token_amv"), "{header}");
+        assert!(header.contains("gold_token_amv"), "{header}");
+        assert!(header.contains("jewelry_amv"), "{header}");
         assert!(!header.contains("iron_amv"), "{header}");
         assert!(!header.contains("beer_amv"), "{header}");
         assert!(!header.contains("wood_tools"), "{header}");

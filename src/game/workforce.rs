@@ -870,34 +870,6 @@ impl Firm {
                 }
             }
         }
-        if self.owners.liable {
-            for line in &self.production_line {
-                if line.target.unwrap_or(0.0) <= 0.0 {
-                    continue;
-                }
-                let Some(process) = factuals.processes.get(&line.process) else {
-                    continue;
-                };
-                for output in &process.outputs {
-                    if output.good == TIME {
-                        continue;
-                    }
-                    let short = self
-                        .household_needs
-                        .get(&output.good)
-                        .copied()
-                        .unwrap_or(0.0)
-                        .max(0.0);
-                    if short <= 0.0 {
-                        continue;
-                    }
-                    let entry = need.entry(output.good).or_insert(0.0);
-                    if short > *entry {
-                        *entry = short;
-                    }
-                }
-            }
-        }
         need
     }
 
@@ -1113,28 +1085,6 @@ impl Firm {
                 }
             }
         }
-        if self.owners.liable {
-            for line in &self.production_line {
-                if line.target.unwrap_or(0.0) <= 0.0 {
-                    continue;
-                }
-                let Some(process) = factuals.processes.get(&line.process) else {
-                    continue;
-                };
-                for output in &process.outputs {
-                    if output.good != TIME
-                        && self
-                            .household_needs
-                            .get(&output.good)
-                            .copied()
-                            .unwrap_or(0.0)
-                            > 0.0
-                    {
-                        fence.insert(output.good);
-                    }
-                }
-            }
-        }
         fence
     }
 
@@ -1334,6 +1284,7 @@ mod settle_labor_contracts_should {
             current_orders: vec![],
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            household_work: Vec::new(),
             records: PopRecords::default(),
         }
     }
@@ -1909,7 +1860,7 @@ mod settle_labor_contracts_should {
     }
 
     #[test]
-    fn remainder_cover_owner_staples_with_inputs_when_self_supplying() {
+    fn remainder_cover_does_not_pull_an_output_the_owner_holds() {
         const GRAIN: usize = 1;
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
@@ -1921,7 +1872,6 @@ mod settle_labor_contracts_should {
                 .with_quantity(10.0)
                 .with_stock_target(10.0),
         );
-        firm.household_needs.insert(GRAIN, 5.0);
         let mut farm = mill_line(1.0);
         farm.process = 2;
         farm.inputs.clear();
@@ -1941,13 +1891,13 @@ mod settle_labor_contracts_should {
         let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
 
         let owner = report.owner.expect("cover");
-        let grain_need = pops[&3].demographics.household.household_size();
-        assert!((owner.recap.get(&GRAIN).copied().unwrap_or(0.0) - grain_need).abs() < 1e-12);
-        assert!((firm.property[&GRAIN].quantity - grain_need).abs() < 1e-12);
+        assert_eq!(owner.recap.get(&GRAIN).copied().unwrap_or(0.0), 0.0);
+        assert!(firm.property.get(&GRAIN).is_none());
+        assert_eq!(pops[&3].property[&GRAIN].quantity, 10.0);
     }
 
     #[test]
-    fn remainder_cover_owner_staples_when_specialty_sold_nothing() {
+    fn remainder_cover_on_a_loss_does_not_pull_owner_grain() {
         const GRAIN: usize = 1;
         let mut firm = Firm::new(1, "mill".into(), 1, hexx::Hex::new(0, 0))
             .with_owner(Actor::Pop(3))
@@ -1961,7 +1911,6 @@ mod settle_labor_contracts_should {
         );
         firm.records.sold_amv = 0.0;
         firm.records.sell_success = 0.0;
-        firm.household_needs.insert(GRAIN, 5.0);
         let mut farm = mill_line(1.0);
         farm.process = 2;
         farm.inputs.clear();
@@ -1980,8 +1929,8 @@ mod settle_labor_contracts_should {
 
         let report = LaborSettlement::settle(&mut firm, &mut pops, &history, &factuals);
         let owner = report.owner.expect("cover");
-        let grain_need = pops[&3].demographics.household.household_size();
-        assert!((owner.recap.get(&GRAIN).copied().unwrap_or(0.0) - grain_need).abs() < 1e-12);
+        assert_eq!(owner.recap.get(&GRAIN).copied().unwrap_or(0.0), 0.0);
+        assert_eq!(pops[&3].property[&GRAIN].quantity, 10.0);
     }
 
     #[test]
@@ -2236,6 +2185,7 @@ mod budget_labor_should {
             current_orders: vec![],
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            household_work: Vec::new(),
             records: PopRecords::default(),
         }
     }

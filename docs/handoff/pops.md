@@ -9,7 +9,8 @@ ratio, reserved, sentiment). Household primer:
 
 | Piece | Status |
 |-------|--------|
-| Consume / growth / sentiments / record keeping / decay | Closed on `Pop`. Consume always eats common; luxury waits on basic. PlayState wires these as they mature |
+| Consume / growth / sentiments / record keeping / decay | Closed on `Pop`. Consume eats the pop bag only. A higher tier waits until every lower tier is complete. An empty tier counts as complete. A firm's shelf is not dinner. PlayState wires these as they mature |
+| Household work | `Pop::run_household_work`. Recipes are `(process id, iteration cap)` on `household_work`, basket then specialty. Not a firm line. Spends unreserved quantity and Time. Outputs land in `quantity`. Reserved stock is not an input. Basket cap is `pop_constants::HOUSEHOLD_BASKET_CAP` (3). Specialty cap is the init firm's target. Init attaches subsistence 29/30/31 then that firm's process |
 | `create_orders` | Shop-plan **requests** (ceil) then leftover **offers** (floor). Higher consume tier only if the wallet covers the lower one. Tender freeze covers posted request AMV. After cover, at least `TENDER_WALLET_FLOOR` (0.25) of leftover free units stay unlisted |
 | `start_day` | Exists. Tester uses it. PlayState day-start still stub |
 | `extract_special_resources` | First pass exists. Yield is **not** routed onto `State.resources` |
@@ -35,14 +36,35 @@ demographic ids only. Do not reopen the household-rates model.
 - Savings ratio is **days of buffer**, not a share of leftover liquid wealth.
   Save pile does not shrink on decline.
 - Reserved is never negative. Extra luxury consume eats unreserved stock.
-- Consume always runs common (eat on-hand even if basic is short). Luxury
-  is skipped unless every basic desire has a full level. Empty tier counts
-  as complete. Morning `create_orders` still gates posting a higher shop
-  tier on the wallet covering the lower one.
-- Shop ambition: all tiers get spread consume need. Luxury leftover dump
-  only if leftover AMV remains (none after 100% decay). `Desire.amount`
-  does not rise. Morning `create_orders` is what skips a higher tier when
-  the wallet cannot cover the lower one.
+- Household work runs after the morning reservation, and
+  `reserve_for_desires` runs again after each recipe. New output covers
+  one desire level before the next recipe or the market can take it.
+  A good has one output floor, shared by every recipe that makes it.
+  The higher profit ratio takes that floor. If that recipe's output is
+  worth more than its inputs, it also runs its stored cap for sale.
+  A worse recipe for the same good stays at 0. Inputs of a planned
+  recipe raise the floor of the good they consume. Time the morning
+  shop needs for the wagon stays in the bag: one transaction cost per
+  good still short of its shop target, plus the bulk of those units and
+  of the surplus that pays for them. Time still left, which would decay
+  in full, is spent on the best recipe that can still run.
+  Surplus above the reserve is what `create_orders` can sell or tender.
+  It does not call `Firm::plan`.
+- Consume runs a tier only after every lower tier is complete. An empty
+  tier counts as complete. The morning earmark stops at the first tier
+  stock cannot fill. Shop and save stop at the first tier that is not
+  satisfied, judged after consume, so eaten staples still restock and the
+  next open tier is still bought. A higher tier is not earmarked, shopped,
+  or used as the savings pile.
+- Shop ambition: the open tier and every lower one get spread consume
+  need. Luxury leftover dump only when luxury is that open tier, and only
+  if leftover AMV remains (none after 100% decay). `Desire.amount` does
+  not rise.
+- The market day posts firm orders once. A pop offers surplus above
+  savings and the consume reserve, then one buy for an open-tier good
+  somebody is already selling. After that buy fills or closes, the pop
+  looks again while the flat door fee is still payable. Savings is not
+  tendered for that loop.
 - `create_orders`: basic shop, parked save, then common, then luxury.
   A higher consume tier is posted in full only when remaining budget covers
   **all** of that tier; otherwise walk until overdraw and skip the next.

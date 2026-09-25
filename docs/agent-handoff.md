@@ -1,7 +1,7 @@
 # Agent handoff — EconCiv rework
 
 **Branch:** `EconCiv-Rework-Branch`  
-**Updated:** 2026-09-23
+**Updated:** 2026-09-24
 
 **Router, not a dump.** Read **Status** + **Routing**. Open **one** topic file
 and the listed code. Session order and "do not open" list: `AGENTS.md`.
@@ -19,8 +19,9 @@ invariants and traps, not a substitute for the code.
   `counter_offer` good (no AMV or amount). Shop need spends on-hand then
   spreads leftover sat across buyable substitutes. Morning `create_orders`
   posts a higher tier only when the wallet covers the lower one. Save AMV
-  scales with durability (decay 1.0 => no save). Consume always eats
-  common on-hand; luxury is skipped unless basic is complete.
+  scales with durability (decay 1.0 => no save). Consume runs a higher
+  tier only after every lower tier is complete. An empty tier counts
+  as complete.
   `run_market_day` posts once, then matches until quiet: random buy among
   those with an other-origin sell, sell weighted by listed amount
   (coincidence multiplies). Same origin never pairs. No leftover-book AMV.
@@ -45,8 +46,8 @@ invariants and traps, not a substitute for the code.
   Outgoing units peel extra → save → consume at those same factors. The
   0.50 floor always applies (no floor-drop).
 - Live intramarket loop: `Market::run_market_day`. Tester day is labor,
-  produce onto `held`, market (may sell `held`), remainder consume from
-  the shop shelf, decay (`held` skips tonight), plan. Vault `Turns.md`
+  produce onto `held`, market (may sell `held`), pop consume from the
+  bag, decay (`held` skips tonight), plan. Vault `Turns.md`
   is market then production.
   PlayState intramarket and production phases are stubs.
 - `Firm::plan` rewrites production and property targets. Line `aim` lerps
@@ -67,24 +68,25 @@ invariants and traps, not a substitute for the code.
   `OPENING_INPUT_DAYS` (4) of required non-Time inputs. Recap does not fill
   output stock.
   In-kind remainder/wage transfers record `placed` at market AMV; sell
-  success credits `min(placed, stock_fence)` plus sold. Owner consume
-  shortfall is the same kind of demand as leftover buys. A run miss walks
-  quota toward last iterations unless the miss is missing materials or
-  leftover buys / owner need / in-shop input still want the output.
-  Missing Time is a scale miss. Idle `target` 0 restarts at 1 when that
-  demand exists and the line is the best recipe for the good. Weaker
+  success credits `min(placed, stock_fence)` plus sold. Leftover buys
+  and in-shop input need are the same kind of demand as a sale. A quota
+  cut stops at the owner's unmet output and does not raise a line to it.
+  Revenue below unit cost cuts quota above that floor. A run miss walks quota toward
+  last iterations unless the miss is missing materials or leftover buys
+  / in-shop input still want the output. Missing Time is a scale miss.
+  Idle `target` 0 restarts at 1 when that demand exists and the line is
+  the best recipe for the good. Weaker
   duplicate recipes (lower AMV profit) walk down. Lines idle
   `abandon_idle_days` (5) without demand are dropped. Empty firms remain;
   tester tables print `dead/abandoned`. Production pays the firm-wide
-  complexity Time tax first, then Time-only owner-dinner, then crafts that
-  eat dinner goods, then input-feeding.
+  complexity Time tax first, then input-feeding lines, then higher
+  recipe AMV profit.
   Remainder
-  recap/fence uses goods the shop makes. Remainder owners eat from the
-  shop shelf and tender shop surplus above dinner; dinner is in-shop
-  desire fill plus leftover off-shop wants; dinner fence is reserve,
-  not recipe use. Uncovered owner need raises quota. Production
-  spendable stock leaves owner dinner. Finished output can tender for
-  inputs the shop cannot make.
+  recap fills recipe inputs, wages, and the input stock fence. It does
+  not pull owner dinner. Owners eat from their own bag and may still
+  tender shelf above the stock reserve. Production spendable stock
+  is on-hand plus held. Finished output can tender for inputs the shop
+  cannot make.
   `growth_target` is the expansion gap on a grow, else 0.
 - Time is good id 0 (untradeable, transport 1.0, bulk 0). Pops get 64 * household labor
   at `Pop::start_day`. Live intramarket friction is 1 (`TRANSACTION_COST + bulk`).
@@ -107,16 +109,18 @@ invariants and traps, not a substitute for the code.
   recipes: one per good (Time is process 28). Subsistence farm / water /
   forage are processes 29–31, tagged weight 0.25 (untagged 1.0, weight > 0).
   Raw extracts take Time only as required; grain and wood may take optional
-  boosters. Crafted recipes take Time plus a destroyed material. Init
-  remainder firms auto-attach the three subsistence lines at target 2;
-  hours are the sum of all lines plus the multi-line complexity tax.
+  boosters. Crafted recipes take Time plus a destroyed material. Init firms
+  keep the one process named in their file. Hours are that line's Time.
+  One-line shops pay no complexity tax.
 - Tester CLIs are **paused** unless asked. `market_tester` `solo` is one
   remainder pair (default id 1) for internal plan. Living roster loads from `data/init/`
-  (eight remainder owner-operators: grain, water, bread, gold, wood, cabins;
-  two grain shops and two wells). Load drops unused world goods so CLI/CSV
-  only show the village catalog. `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
+  (five pops: bread, gold, the second grain shop, the second well, and
+  cabins. Grain, water, and wood firms remain without those pops). Load
+  drops unused world goods so CLI/CSV only show the village catalog.
+  `pop_tester` is the same pops with no firms; each morning the matching init firm's process outputs (`amount * target`) are a stock cap (add the shortfall only). Opening AMV 100.0 / salability 0.1 on every good.
   Village consume desires (basic food/hydration/wood heat, common one cabin
-  per household plus extra bread, luxury gold / gold_token / jewelry) are duplicated onto every pop.
+  per household, extra bread, extra storage on gold / gold_token, luxury
+  gold_token / jewelry, and rest on Time) are duplicated onto every pop.
   Food/water/heat/bread/gold are 1 unit per member (5 units). **No** opening 1-of-each kit
   (init starter empty; `DAILY_ENDOWMENT` 0). Pops open with one day of the
   matching firm's output (Time skipped). Each morning: `start_day` Time, then specialty
@@ -143,19 +147,25 @@ invariants and traps, not a substitute for the code.
   **Checkpoint:** with mean 100 and ±1 imbalance kick, a 180-day pop_tester
   run held AMVs off the bounce (gold ~12, tools ~300). Do not retune leftover
   AMV or re-add the 1-of-each grant unless asked.
-  Remainder village feeds itself and trades some bread/gold/cabins. Extracts
-  staying mixed is expected. Pickup: [`creation.md`](handoff/creation.md).
+  Init firms are specialty-only. The household basket is off the shop.
+  Owners eat from their own bag. A pop's morning work shares one output
+  floor per good. The higher profit ratio takes that floor, and its
+  stored cap when the output is worth selling. A worse recipe for the
+  same good stays at 0. Time the morning shop needs for the wagon stays
+  in the bag. Time still left is spent on the best recipe that can
+  still run. A firm quota cut stops at
+  the owner's unmet output; revenue below unit cost walks extra output
+  down. Split of a divided multi-pop shop is landed
+  ([`creation.md`](handoff/creation.md)). The eight 1-pop shops cannot
+  split. Savings founding waits on a money good.
 
-**Next (named):** firm **founding**. First slice: **split** a divided
-(disorganized) multi-pop subsistence shop — scale lines with the departing
-pop, then add and/or remove one line. The eight 1-pop remainder shops
-cannot split. Savings founding, hiring classes, and money wait. Do not
-add lines to the current remainder shops. Do not retune remainder plan
-for extract aggression.
-Home production vs buy: if Time+friction to trade exceeds recipe Time,
-prefer making it; output bulk as a soft floor on that Time. Input slots /
-good class for tools is a later note. Do not add subsistence plots or
-firm-pop contracts unless asked.
+**Next (named):** savings founding is parked. Split is landed
+(`Firm::split`): one workforce pop leaves a shop of two or more, lines
+scale by `1/n`, whole-unit stock goes with them, and the child may add
+one line and/or remove one. Do not split the eight 1-pop shops. Do not
+re-attach subsistence lines onto firms. Do not put the dinner fence,
+shelf-eating, or a raise-to-hunger rule back. Do not call `Firm::plan`
+from a pop. Do not retune remainder plan.
 
 **Vault conflict:** `Turns.md` puts firm planning before consume. Live order is
 produce, then consume, then plan. Call it out; do not silently "fix" either side.
@@ -221,10 +231,12 @@ init/save data; class demographics; capital amortization; AMV as a matching
 weight; intra-day luxury loop; leftover-book AMV (off).
 
 If the user did not name a task, **ask**. Do not pick a next system on your own.
-If they ask "what's next": firm founding ([`creation.md`](handoff/creation.md)),
-first slice **split** of a divided multi-pop shop. PlayState
-`phase_intra_market_day` is still unwired. Hiring classes and savings
-founding wait. Village remainder pickup is landed; those 1-pop shops
+If they ask "what's next": savings founding is parked until a money
+good ([`creation.md`](handoff/creation.md)). Split is landed. Ask before
+starting another system. The thin plan is landed
+([`firms.md`](handoff/firms.md)).
+PlayState `phase_intra_market_day` is still unwired. Hiring classes and
+savings founding wait. The eight 1-pop shops are specialty-only and
 cannot split.
 
 ---

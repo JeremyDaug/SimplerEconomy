@@ -34,10 +34,11 @@ obvious) and only garden lines. Split off **one** pop with the matching
 fraction of each line’s quota and a matching fraction of stock. The child
 may add one specialized line and/or remove one garden line in that same
 act. Child is remainder for the departing pop. Parent keeps the other pops
-and scaled lines. Tester: a dedicated roster or `market_tester` hook; do
-not add pages or CSV series unless asked. Prove: parent still gardens at
-the reduced scale; child has the swapped line; departing pop eats from the
-child shelf; parent pops stay on the parent; hours follow the people.
+and scaled lines. Lib tests are the proof. Do not add tester pages or CSV
+series unless asked. Parent still gardens at the reduced scale. The child
+has the swapped line. The departing pop is the child's remainder owner and
+is off the parent workforce. Hours move with that pop. Owners eat from
+their own bag, not the shop shelf.
 
 **Pin before coding.** Current labor is **one pop, one employer**
 (`labor.md`). Split **fits** that if the departing pop leaves the parent
@@ -68,8 +69,8 @@ divided shop. Do not mix those. Do not edit the vault unless asked.
 | Line **abandon** (remove a line, firm stays) | Landed. Not a split. Split may remove one line on the **child** as part of founding |
 | Init load of firms | Landed. One remainder owner per firm. No runtime founding |
 | `Market.firms` membership | Landed as a set of ids. No helper to register a new firm mid-game |
-| Multi-pop subsistence / disorganized firm | **Stub.** Needed before split |
-| Split / found | **Stub.** No `Firm::found`, no tester command |
+| Multi-pop subsistence / disorganized firm | Fixture in `Firm::split` tests. Not a new org type. Not the eight 1-pop shops |
+| Split / found | Landed. `Firm::split`, `Market::found_firm`. One departing pop, `1/n` of each line, whole-unit in-kind share, optional one-line add and/or remove on the child. 1-pop shop returns `SplitReject::NotDivided` |
 | Savings founding | Parked (second slice; wants money) |
 | Disorganized as a type | Parked as a full type. First slice may fixture the behavior without a new org enum |
 | Company / `FirmOrganization` | Placeholder; unused |
@@ -86,8 +87,8 @@ divided shop. Do not mix those. Do not edit the vault unless asked.
   leftover-buy.
 - Departing pop is remainder owner of the child. Parent keeps the others.
   One pop, one employer.
-- Do not auto-attach farm/water/forage on the child. If it still gardens,
-  those lines came from the scaled parent copy, not init attach.
+- Load does not attach farm/water/forage. A child gardens only when the
+  scaled parent lines include those processes.
 - Tester CLIs stay paused except as needed to watch the split. No extra CSV
   series unless asked.
 
@@ -98,8 +99,8 @@ divided shop. Do not mix those. Do not edit the vault unless asked.
   divided.
 - Do not treat split as “peel the specialty line, same owner, two shops.”
   That fights one-employer labor and is not the design.
-- Init auto-attach of subsistence is load-only. A child that dropped
-  subsistence grain must not get it re-attached.
+- Do not put subsistence attach back on load. A child that dropped
+  subsistence grain must not gain it from init.
 - Empty firms already exist after abandon-all-lines. Founding is the
   opposite direction; do not reuse abandon as spawn.
 - Gold_token / jewelry are **unloaded** in the village catalog. Firm ids 5/6
@@ -111,10 +112,9 @@ divided shop. Do not mix those. Do not edit the vault unless asked.
 
 ## Code
 
-- New: a split/found helper (scale lines, move a pop, optional one-line
-  add/remove); market membership insert; a multi-pop subsistence fixture
-- Touch: `src/game/init.rs` (fixture, do not reuse auto-attach on the
-  child), `src/game/firm.rs` (lines, property, owners, workforce),
+- Landed: `src/game/firm/split.rs` (`Firm::split`), `Market::found_firm`
+- Touch: `src/game/init.rs` (fixture; load does not attach subsistence),
+  `src/game/firm.rs` (lines, property, owners, workforce),
   `src/game/workforce.rs` (pop leaves parent, joins child),
   `src/game/market.rs` (register the new firm id), `examples/market_tester/`
 - Read first: this file, `labor.md` (one pop, one employer), `firms.md`
