@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
+use crate::game::actor::Actor;
+use crate::game::deal::DealMaker;
 use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, pop::Pop};
 
 /// # Actors
@@ -23,6 +25,44 @@ impl Actors {
             pops: HashMap::new(),
             firms: HashMap::new(),
             institutions: HashMap::new(),
+        }
+    }
+
+    /// The actor stored for this id. Panics if the id is not in the set.
+    pub fn get(&self, actor: Actor) -> &dyn DealMaker {
+        match actor {
+            Actor::Pop(id) => self
+                .pops
+                .get(&id)
+                .unwrap_or_else(|| panic!("pop {id} is not in Actors")),
+            Actor::Firm(id) => self
+                .firms
+                .get(&id)
+                .unwrap_or_else(|| panic!("firm {id} is not in Actors")),
+            Actor::Institution(id) => self
+                .institutions
+                .get(&id)
+                .unwrap_or_else(|| panic!("institution {id} is not in Actors")),
+            Actor::State(id) => panic!("state {id} is not stored in Actors"),
+        }
+    }
+
+    /// Mutable access to the actor stored for this id. Panics if it is missing.
+    pub fn get_mut(&mut self, actor: Actor) -> &mut dyn DealMaker {
+        match actor {
+            Actor::Pop(id) => self
+                .pops
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("pop {id} is not in Actors")),
+            Actor::Firm(id) => self
+                .firms
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("firm {id} is not in Actors")),
+            Actor::Institution(id) => self
+                .institutions
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("institution {id} is not in Actors")),
+            Actor::State(id) => panic!("state {id} is not stored in Actors"),
         }
     }
 

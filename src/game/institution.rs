@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use crate::game::{
+    actor::Actor,
+    deal::DealMaker,
     factuals::Factuals,
     firm::Firm,
-    market::Market,
+    market::{Market, MarketHistory},
+    marketorder::MarketOrder,
     pop::Pop,
 };
 
@@ -164,5 +167,23 @@ impl Institution {
     pub fn decay_goods(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Institution decay goods")
+    }
+}
+
+impl DealMaker for Institution {
+    fn actor(&self) -> Actor {
+        Actor::Institution(self.id)
+    }
+
+    fn sell_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+        Vec::new()
+    }
+
+    fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+        Vec::new()
+    }
+
+    fn free_units(&self, _good: usize) -> f64 {
+        0.0
     }
 }

@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::game::actor::Actor;
 use crate::game::actors::Actors;
+use crate::game::deal::{matched_on, DealResponse, ProposedDeal, SellerBook};
+use crate::game::marketorder::MarketOrder;
 use crate::game::factuals::Factuals;
+use crate::game::good::GoodTag;
 
 /// Dead zone around zero for a stored AMV.
 ///
@@ -75,6 +79,162 @@ impl Market {
         history.friction = self.friction;
         history
     }
+
+    /// # Match Deals
+    ///
+    /// Collects sell orders, then picks a buyer at random from those who still
+    /// have a buy, and a seller at random from the valid matches.
+    /// The buyer sees that seller's offers and requests and either proposes
+    /// a basket or abandons. The seller accepts or rejects. An accepted
+    /// basket is finalized, freight included. The buyer pays that freight
+    /// from transport they already hold and from transport the basket buys.
+    ///
+    /// After every meeting both sides reevaluate their orders. A rejected or
+    /// abandoned pair is not tried again this call.
+    pub fn match_deals(
+        &self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        rng: &mut impl rand::RngCore,
+    ) -> Vec<ProposedDeal> {
+        let history = self.history();
+        let members = self.members();
+        let mut sells = Vec::new();
+        for actor in &members {
+            sells.extend(listed_sells(actors, *actor, &history, factuals));
+        }
+
+        let mut tried: HashSet<(Actor, Actor, usize)> = HashSet::new();
+        let mut deals = Vec::new();
+        loop {
+            let mut candidates = Vec::new();
+            for buyer in &members {
+                for buy in actors.get(*buyer).buy_orders(&history) {
+                    if buy.target_amount < 1.0 || !tradeable(factuals, buy.target) {
+                        continue;
+                    }
+                    let matches: Vec<MarketOrder> = sells
+                        .iter()
+                        .filter(|sell| {
+                            matched_on(&buy, sell)
+                                && !tried.contains(&(*buyer, sell.origin, buy.target))
+                        })
+                        .cloned()
+                        .collect();
+                    if !matches.is_empty() {
+                        candidates.push((*buyer, buy, matches));
+                    }
+                }
+            }
+            if candidates.is_empty() {
+                break;
+            }
+            let pick = crate::game::util::random_index(rng, candidates.len());
+            let (buyer, buy, matches) = candidates.swap_remove(pick);
+            let sell = matches[crate::game::util::random_index(rng, matches.len())].clone();
+            tried.insert((buyer, sell.origin, buy.target));
+            if let Some(deal) = self.meet(actors, buyer, &sell, &history, factuals, rng) {
+                deals.push(deal);
+            }
+            replace_sells(&mut sells, actors, buyer, &history, factuals);
+            replace_sells(&mut sells, actors, sell.origin, &history, factuals);
+        }
+        deals
+    }
+
+    /// One meeting. The buyer proposes from the seller's book. The seller
+    /// accepts or rejects. Both sides then rewrite their orders.
+    fn meet(
+        &self,
+        actors: &mut Actors,
+        buyer: Actor,
+        sell: &MarketOrder,
+        history: &MarketHistory,
+        factuals: &Factuals,
+        rng: &mut impl rand::RngCore,
+    ) -> Option<ProposedDeal> {
+        let seller = sell.origin;
+        let book = SellerBook {
+            seller,
+            offers: listed_sells(actors, seller, history, factuals),
+            requests: actors.get(seller).buy_orders(history),
+        };
+        let mut accepted = None;
+        if let Some(proposal) = actors.get(buyer).propose(sell.target, &book, history, factuals) {
+            if actors.get(seller).evaluate(&proposal, history, factuals) == DealResponse::Accept
+                && is_valid_exchange(actors, &proposal)
+            {
+                actors.get_mut(buyer).finalize(&proposal, factuals);
+                actors.get_mut(seller).finalize(&proposal, factuals);
+                accepted = Some(proposal);
+            }
+        }
+        actors.get_mut(buyer).reevaluate(history, rng);
+        actors.get_mut(seller).reevaluate(history, rng);
+        accepted
+    }
+
+    /// Member actors, pops then firms then institutions, each id ascending.
+    fn members(&self) -> Vec<Actor> {
+        let mut actors = Vec::new();
+        let mut ids: Vec<usize> = self.pops.iter().copied().collect();
+        ids.sort_unstable();
+        actors.extend(ids.iter().copied().map(Actor::Pop));
+        ids.clear();
+        ids.extend(self.firms.iter().copied());
+        ids.sort_unstable();
+        actors.extend(ids.iter().copied().map(Actor::Firm));
+        ids.clear();
+        ids.extend(self.institution_ids.iter().copied());
+        ids.sort_unstable();
+        actors.extend(ids.iter().copied().map(Actor::Institution));
+        actors
+    }
+}
+
+fn listed_sells(
+    actors: &Actors,
+    actor: Actor,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Vec<MarketOrder> {
+    actors
+        .get(actor)
+        .sell_orders(history)
+        .into_iter()
+        .filter(|order| order.target_amount < 0.0 && tradeable(factuals, order.target))
+        .collect()
+}
+
+/// Both sides can spare the goods the basket moves.
+fn is_valid_exchange(actors: &Actors, proposal: &ProposedDeal) -> bool {
+    proposal.goods.iter().all(|(&good, &qty)| {
+        if qty > 0.0 {
+            actors.get(proposal.seller).free_units(good) >= qty
+        } else if qty < 0.0 {
+            actors.get(proposal.buyer).free_units(good) >= -qty
+        } else {
+            true
+        }
+    })
+}
+
+fn replace_sells(
+    sells: &mut Vec<MarketOrder>,
+    actors: &Actors,
+    actor: Actor,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) {
+    sells.retain(|order| order.origin != actor);
+    sells.extend(listed_sells(actors, actor, history, factuals));
+}
+
+fn tradeable(factuals: &Factuals, good: usize) -> bool {
+    factuals
+        .goods
+        .get(&good)
+        .is_none_or(|row| !row.tags.contains(&GoodTag::Untradeable))
 }
 
 /// A saved price snapshot for one market.

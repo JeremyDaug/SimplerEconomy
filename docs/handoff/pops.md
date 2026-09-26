@@ -1,8 +1,7 @@
 # Pops
 
-Read this for desire satisfaction and consume. The current goal is a market
-pop tester: a simple market, pops, and trade. Shopping and exchange are not
-written yet. Satisfaction is the step in front of that.
+Read this for desire satisfaction, consume, and the first deal pass. The
+current goal is a market pop tester: a simple market, pops, and trade.
 
 ## Landed vs stub
 
@@ -13,14 +12,14 @@ written yet. Satisfaction is the step in front of that.
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Old all-at-once eater. Not called. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Not written. Intended order is tier, then that tier's savings, then the next tier. Luxury is level, savings, next level |
-| Exchange | Not written. Releasing an earlier reservation is an exchange question |
+| `Market::match_deals` | Pair on one good, buyer proposes a basket from the seller's book, seller accepts or rejects, accept finalizes and pays friction. Both sides reevaluate afterward |
 | Class desires | Unimplemented |
 | `Desire.decay` | Field only. Nothing multiplies satisfaction by it |
 
 ## Satisfy
 
-Order is tier, then list index, then target by efficiency descending.
-`ordered_targets` (high priority, then efficiency) is not used.
+Order is tier, then list index. The good inside a desire's bucket is
+chosen at random. `ordered_targets` is not used.
 
 Basic and common each get one level. Luxury repeats one level at a time.
 The next luxury level starts only after every luxury desire has reached the
@@ -31,7 +30,7 @@ Free stock is `quantity - reserved`. A take adds to `reserved` and to
 is kept. Later targets in that bucket, and every later desire, are left alone.
 A target whose cap is filled does not stop the desire; the next target is used.
 
-The bookmark is tier, desire index, target index in that efficiency order,
+The bookmark is tier, desire index, the chosen target's index in the bucket,
 the satisfaction the desire already had when that target started, and the
 level being filled. `satisfy_continue` only reserves the cap still open above
 that recorded satisfaction, and only the gap up to the current level
@@ -65,4 +64,30 @@ Running it on goods `satisfy` already counted records the level twice.
   additive effects. Birth, mortality, sentiment, and satisfaction arms stay
   at demo values.
 
-**Code:** `src/game/pop.rs`, `src/game/desire.rs`, `src/game/pop_property.rs`.
+## Match
+
+Exchange, production, and consumption stay separate phases.
+
+`Market::match_deals` collects sells, then picks a buyer at random from those
+who still have a buy, and a seller at random from the valid matches for that
+buy. They meet because one sought good is one offered good. The buyer is
+shown the seller's whole book and either proposes a basket or abandons.
+The seller accepts or rejects. Accept moves every good in the basket.
+The basket is one map: positive units come to the buyer, negative units
+leave. Freight is not a second list. Transport the buyer receives is in
+that map, and after the goods move the buyer spends transport they then
+hold until the bill is covered. If stock plus that purchase cannot cover
+it, the buyer abandons before a proposal exists.
+Reject and abandon move nothing.
+
+After every meeting both sides `reevaluate`. A pop with a satisfaction
+bookmark runs `satisfy_continue`, so goods just received get reserved. Offers
+are read from free stock the next time they are asked, so a spent offer
+shrinks or disappears. A rejected pair is not retried in that call.
+
+A seller who is requesting something rejects a basket that does not give them
+one of those goods. With no request, they accept when the payment AMV covers
+what they give and they can spare it.
+
+**Code:** `src/game/pop.rs`, `src/game/deal.rs`, `src/game/market.rs`,
+`src/game/desire.rs`, `src/game/pop_property.rs`.

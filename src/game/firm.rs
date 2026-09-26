@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use hexx::Hex;
 
 use crate::game::{
-    actor::Actor, contract::Contract, factuals::Factuals, firmorganization::FirmOrganization,
-    good::GoodTag, pop::Pop, workforce::Workforce,
+    actor::Actor, contract::Contract, deal::DealMaker, factuals::Factuals,
+    firmorganization::FirmOrganization, good::GoodTag, market::MarketHistory,
+    marketorder::MarketOrder, pop::Pop, workforce::Workforce,
 };
 
 /// A firm is one workshop: production, stock, and the people tied to it.
@@ -180,6 +181,106 @@ impl Firm {
     pub fn process_internal_labor_migration(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Firm process internal labor migration")
+    }
+}
+
+impl DealMaker for Firm {
+    fn actor(&self) -> Actor {
+        Actor::Firm(self.id)
+    }
+
+    /// Free stock (`quantity - reserve`) listed with no named payment good.
+    fn sell_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+        let mut orders = Vec::new();
+        for (&good, row) in &self.property {
+            let units = (row.quantity - row.reserve).floor();
+            if units >= 1.0 {
+                orders.push(MarketOrder::sell(self.actor(), good, units));
+            }
+        }
+        orders
+    }
+
+    /// Firms do not post buys until they plan purchases again.
+    fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+        Vec::new()
+    }
+
+    fn free_units(&self, good: usize) -> f64 {
+        self.property
+            .get(&good)
+            .map(|row| (row.quantity - row.reserve).max(0.0))
+            .unwrap_or(0.0)
+    }
+
+    fn evaluate(
+        &self,
+        proposal: &crate::game::deal::ProposedDeal,
+        history: &MarketHistory,
+        _factuals: &Factuals,
+    ) -> crate::game::deal::DealResponse {
+        if crate::game::deal::seller_can_accept(self, proposal, history) {
+            crate::game::deal::DealResponse::Accept
+        } else {
+            crate::game::deal::DealResponse::Reject
+        }
+    }
+
+    fn finalize(&mut self, proposal: &crate::game::deal::ProposedDeal, factuals: &Factuals) {
+        let id = self.actor();
+        let sign = if proposal.buyer == id {
+            1.0
+        } else if proposal.seller == id {
+            -1.0
+        } else {
+            return;
+        };
+        for (&good, &qty) in &proposal.goods {
+            self.move_good(good, sign * qty);
+        }
+        if proposal.buyer == id {
+            self.pay_freight(proposal.freight, factuals);
+        }
+    }
+}
+
+impl Firm {
+    fn pay_freight(&mut self, amount: f64, factuals: &Factuals) {
+        if amount <= 0.0 {
+            return;
+        }
+        let mut ids: Vec<usize> = self.property.keys().copied().collect();
+        ids.sort_unstable();
+        let mut left = amount;
+        for id in ids {
+            if left <= 0.0 {
+                break;
+            }
+            let Some(good) = factuals.goods.get(&id) else {
+                continue;
+            };
+            let efficiency = good.transport_efficiency();
+            if efficiency <= 0.0 {
+                continue;
+            }
+            let free = self.free_units(id);
+            if free <= 0.0 {
+                continue;
+            }
+            let take = (left / efficiency).min(free);
+            self.move_good(id, -take);
+            if let Some(row) = self.property.get_mut(&id) {
+                row.consumed += take;
+            }
+            left -= take * efficiency;
+        }
+    }
+}
+
+impl Firm {
+    fn move_good(&mut self, good: usize, delta: f64) {
+        let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+        row.quantity = (row.quantity + delta).max(row.reserve).max(0.0);
     }
 }
 

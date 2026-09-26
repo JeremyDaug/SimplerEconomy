@@ -10,6 +10,7 @@ hexx = "0.24.0"
 bitflags = "2.13.1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+rand = "0.8"
 
 ### Debug mode Optimizations
 # Enable a small amount of optimization in the dev profile.
