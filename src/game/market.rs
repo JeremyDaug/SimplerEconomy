@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
 use crate::game::actors::Actors;
-use crate::game::deal::{matched_on, DealResponse, ProposedDeal, SellerBook};
+use crate::game::deal::{matched_on, DealResponse, Meeting, MeetingOutcome, ProposedDeal, SellerBook};
 use crate::game::marketorder::MarketOrder;
 use crate::game::factuals::Factuals;
 use crate::game::good::GoodTag;
@@ -15,10 +15,41 @@ use crate::game::good::GoodTag;
 pub const AMV_EPSILON: f64 = 1e-9;
 
 /// Salability of a good with no recorded value yet.
-pub const SALABILITY_DEFAULT: f64 = 0.4;
+pub const SALABILITY_DEFAULT: f64 = 0.1;
 
 /// Salability clamp. `0..=1` is illiquid to par. Above 1 is at-par and currency.
 pub const SALABILITY_MAX: f64 = 2.0;
+
+/// Floor and ceiling of the factor that scales a positive AMV.
+///
+/// Salability below this floor still counts as the floor. Salability above 1
+/// does not raise the factor past 1; that excess is [`monetary_rating`].
+pub const AMV_SCALE_MIN: f64 = 0.05;
+
+/// Largest one-night AMV move from unmet buys versus unsold offers, as a
+/// fraction of the current absolute AMV.
+const AMV_STEP_CAP: f64 = 0.25;
+
+/// Largest one-night AMV move from production minus consumption, as a
+/// fraction of the current absolute AMV.
+const AMV_FLOW_CAP: f64 = 0.05;
+
+/// Salability gained on a night the good was taken in payment and its AMV
+/// did not fall.
+const SALABILITY_UP_STEP: f64 = 0.05;
+
+/// Largest salability lost on a night the AMV fell.
+const SALABILITY_LOSS_CAP: f64 = 0.2;
+
+/// Factor applied to a positive AMV. Clamped to [`AMV_SCALE_MIN`]..=1.
+pub fn amv_scale(salability: f64) -> f64 {
+    salability.clamp(AMV_SCALE_MIN, 1.0)
+}
+
+/// Monetary standing above par. Zero while salability is at or below 1.
+pub fn monetary_rating(salability: f64) -> f64 {
+    (salability - 1.0).max(0.0)
+}
 
 /// A local market. Member ids point at actors. Goods hold the stored price.
 #[derive(Debug, Clone)]
@@ -57,10 +88,56 @@ impl Market {
         self
     }
 
-    /// End-of-day market bookkeeping. Not written yet.
+    /// End-of-day market bookkeeping.
+    ///
+    /// Writes tomorrow's AMV and salability from each good's day record, then
+    /// clears that record. Stock is left as it stands. `factuals` is unused:
+    /// rot is added through [`Self::note_decay`] before this runs.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Market record keeping")
+        let _ = factuals;
+        let mut ids: Vec<usize> = self.goods.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let good = self.goods.get_mut(&id).expect("id was just copied from goods");
+            let old = good.amv;
+            let denom = good.sought_unmet + good.offered_unsold + good.traded + 1.0;
+            let pressure = (good.sought_unmet - good.offered_unsold) / denom;
+            let step = pressure.clamp(-AMV_STEP_CAP, AMV_STEP_CAP);
+            let flow_denom = good.stock + good.production + good.consumption + 1.0;
+            let flow = ((good.consumption - good.production) / flow_denom)
+                .clamp(-AMV_FLOW_CAP, AMV_FLOW_CAP);
+            let mut next = old + old.abs().max(AMV_EPSILON) * (step + flow);
+            let decayed = good.decayed;
+            let decay_base = if good.volume > 0.0 {
+                good.volume
+            } else {
+                good.stock
+            };
+            if decay_base > 0.0 && decayed > 0.0 {
+                let fraction = (decayed / decay_base).clamp(0.0, 1.0);
+                next -= next.abs() * fraction;
+            }
+            let paid = good.paid;
+            let informed = good.traded + good.paid + good.offered_unsold > 0.0;
+            good.set_amv(next);
+            let fell = good.amv < old;
+            if fell && old.abs() >= AMV_EPSILON {
+                let drop = ((old - good.amv) / old.abs()).min(SALABILITY_LOSS_CAP);
+                good.set_salability(good.salability - drop);
+            } else if informed && paid > 0.0 {
+                good.set_salability(good.salability + SALABILITY_UP_STEP);
+            }
+            good.clear_day();
+        }
+    }
+
+    /// Add rot observed today for `good`. `decayed` is units lost. `volume`
+    /// is the stock those units came from. [`Self::record_keeping`] turns
+    /// `decayed / volume` (or stock, when volume is 0) into an AMV reduction.
+    pub fn note_decay(&mut self, good: usize, decayed: f64, volume: f64) {
+        let row = self.goods.entry(good).or_insert_with(MarketGood::new);
+        row.decayed += decayed.max(0.0);
+        row.volume += volume.max(0.0);
     }
 
     /// Aggregate emigration and hiring pressure for this region. Not written yet.
@@ -80,6 +157,46 @@ impl Market {
         history
     }
 
+    /// One day for the actors registered on this market.
+    ///
+    /// Reserve, produce, [`Self::match_deals`], consume, decay, then actor
+    /// record keeping and planning, then [`Self::record_keeping`].
+    ///
+    /// Institutions and states use the empty defaults, so their unimplemented
+    /// decay and record-keeping methods stay uncalled.
+    ///
+    /// Returns every meeting from the exchange.
+    pub fn market_day(
+        &mut self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        rng: &mut impl rand::RngCore,
+    ) -> Vec<Meeting> {
+        let members = self.members();
+        for actor in &members {
+            actors.get_mut(*actor).reserve(factuals, rng);
+        }
+        for actor in &members {
+            actors.get_mut(*actor).produce(factuals);
+        }
+        let meetings = self.match_deals(actors, factuals, rng);
+        for actor in &members {
+            actors.get_mut(*actor).consume();
+        }
+        for actor in &members {
+            for (good, (decayed, volume)) in actors.get_mut(*actor).decay_goods(factuals) {
+                self.note_decay(good, decayed, volume);
+            }
+        }
+        let history = self.history();
+        for actor in &members {
+            actors.get_mut(*actor).record_keeping(factuals, &history);
+            actors.get_mut(*actor).plan(factuals, &history);
+        }
+        self.record_keeping(factuals);
+        meetings
+    }
+
     /// # Match Deals
     ///
     /// Collects sell orders, then picks a buyer at random from those who still
@@ -91,12 +208,14 @@ impl Market {
     ///
     /// After every meeting both sides reevaluate their orders. A rejected or
     /// abandoned pair is not tried again this call.
+    ///
+    /// Returns every meeting. Only [`MeetingOutcome::Accepted`] moves goods.
     pub fn match_deals(
-        &self,
+        &mut self,
         actors: &mut Actors,
         factuals: &Factuals,
         rng: &mut impl rand::RngCore,
-    ) -> Vec<ProposedDeal> {
+    ) -> Vec<Meeting> {
         let history = self.history();
         let members = self.members();
         let mut sells = Vec::new();
@@ -105,7 +224,8 @@ impl Market {
         }
 
         let mut tried: HashSet<(Actor, Actor, usize)> = HashSet::new();
-        let mut deals = Vec::new();
+        let mut meetings = Vec::new();
+        let mut accepted = Vec::new();
         loop {
             let mut candidates = Vec::new();
             for buyer in &members {
@@ -133,13 +253,71 @@ impl Market {
             let (buyer, buy, matches) = candidates.swap_remove(pick);
             let sell = matches[crate::game::util::random_index(rng, matches.len())].clone();
             tried.insert((buyer, sell.origin, buy.target));
-            if let Some(deal) = self.meet(actors, buyer, &sell, &history, factuals, rng) {
-                deals.push(deal);
+            let meeting = self.meet(actors, buyer, &sell, &history, factuals, rng);
+            if meeting.outcome == MeetingOutcome::Accepted {
+                if let Some(deal) = meeting.proposal.clone() {
+                    accepted.push(deal);
+                }
             }
+            meetings.push(meeting);
             replace_sells(&mut sells, actors, buyer, &history, factuals);
             replace_sells(&mut sells, actors, sell.origin, &history, factuals);
         }
-        deals
+        self.record_match_tape(actors, factuals, &history, &accepted);
+        meetings
+    }
+
+    /// Record units traded and what was still on the book when matching stopped.
+    ///
+    /// Does not write AMV or salability. Those move in [`Self::record_keeping`].
+    fn record_match_tape(
+        &mut self,
+        actors: &Actors,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        deals: &[ProposedDeal],
+    ) {
+        for deal in deals {
+            for (&good, &qty) in &deal.goods {
+                if qty == 0.0 {
+                    continue;
+                }
+                let row = self.goods.entry(good).or_insert_with(MarketGood::new);
+                row.traded += qty.abs();
+                if qty < 0.0 {
+                    row.paid += -qty;
+                }
+            }
+        }
+        for row in self.goods.values_mut() {
+            row.sought_unmet = 0.0;
+            row.offered_unsold = 0.0;
+        }
+        let members = self.members();
+        let mut sought: HashMap<usize, f64> = HashMap::new();
+        let mut offered: HashMap<usize, f64> = HashMap::new();
+        for actor in &members {
+            for buy in actors.get(*actor).buy_orders(history) {
+                if buy.target_amount >= 1.0 && tradeable(factuals, buy.target) {
+                    *sought.entry(buy.target).or_insert(0.0) += buy.target_amount.floor();
+                }
+            }
+            for sell in listed_sells(actors, *actor, history, factuals) {
+                *offered.entry(sell.target).or_insert(0.0) += (-sell.target_amount).floor();
+            }
+        }
+        for (good, qty) in sought {
+            self.goods
+                .entry(good)
+                .or_insert_with(MarketGood::new)
+                .sought_unmet += qty;
+        }
+        for (good, qty) in offered {
+            self.goods
+                .entry(good)
+                .or_insert_with(MarketGood::new)
+                .offered_unsold += qty;
+        }
     }
 
     /// One meeting. The buyer proposes from the seller's book. The seller
@@ -152,26 +330,37 @@ impl Market {
         history: &MarketHistory,
         factuals: &Factuals,
         rng: &mut impl rand::RngCore,
-    ) -> Option<ProposedDeal> {
+    ) -> Meeting {
         let seller = sell.origin;
+        let match_good = sell.target;
         let book = SellerBook {
             seller,
             offers: listed_sells(actors, seller, history, factuals),
             requests: actors.get(seller).buy_orders(history),
         };
-        let mut accepted = None;
-        if let Some(proposal) = actors.get(buyer).propose(sell.target, &book, history, factuals) {
-            if actors.get(seller).evaluate(&proposal, history, factuals) == DealResponse::Accept
-                && is_valid_exchange(actors, &proposal)
+        let proposal = actors.get(buyer).propose(match_good, &book, history, factuals);
+        let outcome = if let Some(proposal) = &proposal {
+            if actors.get(seller).evaluate(proposal, history, factuals) == DealResponse::Accept
+                && is_valid_exchange(actors, proposal)
             {
-                actors.get_mut(buyer).finalize(&proposal, factuals);
-                actors.get_mut(seller).finalize(&proposal, factuals);
-                accepted = Some(proposal);
+                actors.get_mut(buyer).finalize(proposal, factuals);
+                actors.get_mut(seller).finalize(proposal, factuals);
+                MeetingOutcome::Accepted
+            } else {
+                MeetingOutcome::Rejected
             }
-        }
+        } else {
+            MeetingOutcome::Abandoned
+        };
         actors.get_mut(buyer).reevaluate(history, rng);
         actors.get_mut(seller).reevaluate(history, rng);
-        accepted
+        Meeting {
+            buyer,
+            seller,
+            match_good,
+            proposal,
+            outcome,
+        }
     }
 
     /// Member actors, pops then firms then institutions, each id ascending.
@@ -278,6 +467,19 @@ impl MarketHistory {
             .copied()
             .unwrap_or(self.default_salability)
     }
+
+    /// Indirect value of one unit on this card.
+    ///
+    /// A positive AMV is multiplied by [`amv_scale`]. A negative AMV is the
+    /// cost of holding it and is not scaled.
+    pub fn holding_per_unit(&self, good_id: usize) -> f64 {
+        let amv = self.price(good_id);
+        if amv > 0.0 {
+            amv * amv_scale(self.salability(good_id))
+        } else {
+            amv
+        }
+    }
 }
 
 /// Per-market price snapshots plus pop-id to market-id.
@@ -340,7 +542,9 @@ pub struct MarketGood {
     /// Abstract market value. May be negative. Not stored as zero.
     /// Assign through [`Self::set_amv`] so the dead zone is applied.
     pub amv: f64,
-    /// How readily the good trades. Clamped to `0.0..=`[`SALABILITY_MAX`].
+    /// How readily the good trades. `0..=1` scales a positive AMV down to par.
+    /// Above 1 keeps full AMV credit; the excess is monetary rating.
+    /// Clamped to `0.0..=`[`SALABILITY_MAX`].
     pub salability: f64,
     /// Units made today.
     pub production: f64,
@@ -348,6 +552,18 @@ pub struct MarketGood {
     pub consumption: f64,
     /// Units already in the market from yesterday.
     pub stock: f64,
+    /// Units that changed hands in accepted deals today.
+    pub traded: f64,
+    /// Units that changed hands as payment today.
+    pub paid: f64,
+    /// Buy-order units still open when matching stopped.
+    pub sought_unmet: f64,
+    /// Sell-order units still open when matching stopped.
+    pub offered_unsold: f64,
+    /// Units lost to rot today.
+    pub decayed: f64,
+    /// Stock those lost units came from. The night uses `decayed / volume`.
+    pub volume: f64,
 }
 
 impl Default for MarketGood {
@@ -358,6 +574,12 @@ impl Default for MarketGood {
             production: 0.0,
             consumption: 0.0,
             stock: 0.0,
+            traded: 0.0,
+            paid: 0.0,
+            sought_unmet: 0.0,
+            offered_unsold: 0.0,
+            decayed: 0.0,
+            volume: 0.0,
         }
     }
 }
@@ -402,5 +624,99 @@ impl MarketGood {
     pub fn set_stock(&mut self, stock: f64) {
         debug_assert!(stock >= 0.0, "stock must be >= 0");
         self.stock = stock;
+    }
+
+    /// Zeros today's flows. Leaves AMV, salability, and stock.
+    fn clear_day(&mut self) {
+        self.production = 0.0;
+        self.consumption = 0.0;
+        self.traded = 0.0;
+        self.paid = 0.0;
+        self.sought_unmet = 0.0;
+        self.offered_unsold = 0.0;
+        self.decayed = 0.0;
+        self.volume = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        amv_scale, monetary_rating, Market, MarketGood, MarketHistory,
+        SALABILITY_DEFAULT,
+    };
+
+    #[test]
+    fn amv_scale_clamps_and_monetary_rating_starts_at_par() {
+        assert!((amv_scale(0.0) - 0.05).abs() < 1e-12);
+        assert!((amv_scale(0.1) - 0.1).abs() < 1e-12);
+        assert!((amv_scale(1.5) - 1.0).abs() < 1e-12);
+        assert!((monetary_rating(1.5) - 0.5).abs() < 1e-12);
+        assert_eq!(monetary_rating(0.1), 0.0);
+        assert!((SALABILITY_DEFAULT - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn holding_value_uses_the_scale_not_the_raw_salability() {
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 2.0);
+        history.salability.insert(1, 1.5);
+        assert!((history.holding_per_unit(1) - 2.0).abs() < 1e-12);
+        history.salability.insert(1, 0.1);
+        assert!((history.holding_per_unit(1) - 0.2).abs() < 1e-12);
+        history.prices.insert(1, -2.0);
+        history.salability.insert(1, 0.1);
+        assert!((history.holding_per_unit(1) - -2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn record_keeping_lowers_an_unsold_good_and_clears_the_tape() {
+        let mut market = Market::new(1);
+        let mut good = MarketGood::new().with_amv(2.0).with_salability(1.0);
+        good.offered_unsold = 10.0;
+        market.goods.insert(1, good);
+        let before = market.history();
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((before.price(1) - 2.0).abs() < 1e-12);
+        assert!((market.goods[&1].amv - 1.5).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 0.8).abs() < 1e-9);
+        assert_eq!(market.goods[&1].offered_unsold, 0.0);
+    }
+
+    #[test]
+    fn record_keeping_raises_salability_when_payment_does_not_drop_amv() {
+        let mut market = Market::new(1);
+        let mut good = MarketGood::new().with_amv(2.0).with_salability(0.5);
+        good.traded = 4.0;
+        good.paid = 4.0;
+        market.goods.insert(1, good);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn record_keeping_cuts_amv_by_the_share_that_rotted() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(2.0).with_salability(1.5));
+        market.note_decay(1, 5.0, 10.0);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.3).abs() < 1e-9);
+        assert_eq!(market.goods[&1].decayed, 0.0);
+        assert_eq!(market.goods[&1].volume, 0.0);
+    }
+
+    #[test]
+    fn record_keeping_production_lowers_amv_and_salability_with_it() {
+        let mut market = Market::new(1);
+        let mut good = MarketGood::new().with_amv(2.0).with_salability(1.5);
+        good.production = 10.0;
+        market.goods.insert(1, good);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        // flow cap 0.05 of |amv|: 2 - 0.1 = 1.9. That loss also ticks salability.
+        assert!((market.goods[&1].amv - 1.9).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.45).abs() < 1e-9);
+        assert_eq!(market.goods[&1].production, 0.0);
     }
 }

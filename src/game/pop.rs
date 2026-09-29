@@ -6,8 +6,8 @@ use crate::game::{
     desire::{Desire, DesireSource, DesireTargetType},
     factuals::Factuals,
     good::GoodTag,
-    household::DemographicRates,
-    market::{Market, MarketHistory, AMV_EPSILON},
+    household::{DemographicRates, Household},
+    market::{Market, MarketHistory},
     marketorder::MarketOrder,
     scalingfactor::ScalingFactor,
     sentiment::Sentiment,
@@ -46,11 +46,21 @@ pub struct Pop {
     satisfy_cursor: Option<SatisfyCursor>,
 }
 
+/// How far holding-value cost may run past face credit when satisfaction rose.
+const LOSS_LIMIT: f64 = 4.0;
+
+/// Satisfaction one basket side places on a single desire.
+struct EndUse {
+    tier: usize,
+    order: usize,
+    satisfaction: f64,
+}
+
 /// Bookmark for one satisfaction walk.
 ///
-/// `target_index` is into the desire's targets in highest-efficiency-first
-/// order. `target_start_satisfaction` is the desire's satisfaction when that
-/// target began receiving goods, so a resume does not spend its cap twice.
+/// `target_index` is into `desire.target` as stored. The walk picks that
+/// target at random. `target_start_satisfaction` is the desire's satisfaction
+/// when that target began receiving goods, so a resume does not spend its cap twice.
 #[derive(Debug, Clone, Copy)]
 struct SatisfyCursor {
     tier: usize,
@@ -82,6 +92,26 @@ enum SatisfyProgress {
 }
 
 impl Pop {
+    /// Empty pop. Three desire tiers, no stock, no satisfaction bookmark.
+    pub fn new(id: usize) -> Self {
+        Self {
+            id,
+            property: HashMap::new(),
+            desires: vec![vec![]; 3],
+            demographics: DemoRow {
+                household: Household::new(),
+                species: 0,
+                culture: 0,
+                class: 0,
+                religion: 0,
+            },
+            stored_effects: vec![],
+            sentiment: Sentiment::new(),
+            records: PopRecords::default(),
+            satisfy_cursor: None,
+        }
+    }
+
     /// Emigration pressure. Not written yet.
     pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals, _region: &Market) {
         let _ = (self, factuals);
@@ -607,6 +637,9 @@ impl Pop {
     /// End-of-day bookkeeping. The record struct is empty, so this is a no-op.
     pub fn record_keeping(&mut self, _factuals: &Factuals, _history: &MarketHistory) {}
 
+    /// End-of-day planning. Not written yet.
+    pub fn plan(&mut self, _factuals: &Factuals, _history: &MarketHistory) {}
+
     /// End-of-day decay.
     ///
     /// 1. Return `used` to `quantity`.
@@ -713,21 +746,39 @@ impl Pop {
         Some(MarketOrder::buy(Actor::Pop(self.id), target.good, units))
     }
 
-    /// Seller requests first, then the buyer's other free goods by salability.
+    /// Seller requests first, then the buyer's other free goods.
+    ///
+    /// A good that still feeds the lowest open tier is left out. Higher tiers
+    /// can be spent on that tier. Free goods go highest monetary rating first,
+    /// then lowest id. Reserved stock is already excluded by `available`.
+    /// Transport is included here and skipped later unless the seller requested it.
     fn payment_goods(
         &self,
         book: &SellerBook,
         history: &MarketHistory,
         avoid: usize,
     ) -> Vec<usize> {
-        let mut goods: Vec<usize> = book.requests.iter().map(|order| order.target).collect();
+        let mut goods: Vec<usize> = book
+            .requests
+            .iter()
+            .map(|order| order.target)
+            .filter(|good| *good != avoid && !self.feeds_open_tier(*good))
+            .collect();
         let mut extras: Vec<(usize, f64)> = self
             .property
             .iter()
             .filter(|(good, row)| {
-                **good != avoid && !goods.contains(*good) && row.available().floor() >= 1.0
+                **good != avoid
+                    && !goods.contains(*good)
+                    && row.available().floor() >= 1.0
+                    && !self.feeds_open_tier(**good)
             })
-            .map(|(good, _)| (*good, history.salability(*good)))
+            .map(|(good, _)| {
+                (
+                    *good,
+                    crate::game::market::monetary_rating(history.salability(*good)),
+                )
+            })
             .collect();
         extras.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
@@ -736,6 +787,137 @@ impl Pop {
         });
         goods.extend(extras.into_iter().map(|(good, _)| good));
         goods
+    }
+
+    /// True when free units of `good` still feed the lowest tier that has room.
+    ///
+    /// Those goods are not sold and are not used as payment. A higher tier
+    /// can be given in exchange for this one.
+    fn feeds_open_tier(&self, good: usize) -> bool {
+        let Some(floor) = self.desires.iter().enumerate().find_map(|(tier, desires)| {
+            let open = desires.iter().any(|desire| {
+                desire.target.iter().any(|target| {
+                    if target.efficiency <= 0.0 {
+                        return false;
+                    }
+                    let room = desire.amount * target.cap - desire.satisfaction;
+                    (room / target.efficiency).floor() >= 1.0
+                })
+            });
+            open.then_some(tier)
+        }) else {
+            return false;
+        };
+        self.end_uses(good, self.free_units(good))
+            .iter()
+            .any(|use_| use_.tier == floor)
+    }
+
+    /// Whole units of `good` placed on the earliest desire that still has room.
+    fn end_uses(&self, good: usize, qty: f64) -> Vec<EndUse> {
+        let mut left = if qty.is_finite() && qty > 0.0 {
+            qty.floor()
+        } else {
+            0.0
+        };
+        let mut found = Vec::new();
+        for (tier, desires) in self.desires.iter().enumerate() {
+            for (order, desire) in desires.iter().enumerate() {
+                if left < 1.0 {
+                    return found;
+                }
+                let Some(target) = desire.target.iter().find(|target| target.good == good) else {
+                    continue;
+                };
+                if target.efficiency <= 0.0 {
+                    continue;
+                }
+                let room = desire.amount * target.cap - desire.satisfaction;
+                if room <= 0.0 {
+                    continue;
+                }
+                let take = (room / target.efficiency).floor().min(left);
+                if take < 1.0 {
+                    continue;
+                }
+                found.push(EndUse {
+                    tier,
+                    order,
+                    satisfaction: take * target.efficiency,
+                });
+                left -= take;
+            }
+        }
+        found
+    }
+
+    /// Pop verdict on giving `given` and receiving `received`.
+    ///
+    /// Both maps are positive quantities. Firms do not use this.
+    fn exchange_ok(
+        &self,
+        given: &HashMap<usize, f64>,
+        received: &HashMap<usize, f64>,
+        history: &MarketHistory,
+    ) -> bool {
+        let mut given_uses = Vec::new();
+        for (&good, &qty) in given {
+            given_uses.extend(self.end_uses(good, qty));
+        }
+        let mut received_uses = Vec::new();
+        for (&good, &qty) in received {
+            received_uses.extend(self.end_uses(good, qty));
+        }
+        let best = received_uses.iter().min_by(|a, b| {
+            a.tier.cmp(&b.tier).then(a.order.cmp(&b.order))
+        });
+        for use_ in &given_uses {
+            let blocked = match best {
+                None => true,
+                Some(best) => {
+                    use_.tier < best.tier
+                        || (use_.tier == best.tier && use_.order < best.order)
+                }
+            };
+            if blocked {
+                return false;
+            }
+        }
+        let direct = if let Some(best) = best {
+            let gain: f64 = received_uses
+                .iter()
+                .filter(|use_| use_.tier == best.tier)
+                .map(|use_| use_.satisfaction)
+                .sum();
+            let loss: f64 = given_uses
+                .iter()
+                .filter(|use_| use_.tier == best.tier)
+                .map(|use_| use_.satisfaction)
+                .sum();
+            if gain <= loss {
+                return false;
+            }
+            gain - loss
+        } else {
+            0.0
+        };
+        let cost: f64 = given
+            .iter()
+            .map(|(&good, &qty)| history.holding_per_unit(good) * qty)
+            .sum();
+        let mut credit = 0.0;
+        for (&good, &qty) in received {
+            if self.end_uses(good, qty).is_empty() {
+                credit += history.holding_per_unit(good) * qty;
+            } else {
+                credit += history.price(good) * qty;
+            }
+        }
+        if direct == 0.0 {
+            credit > cost
+        } else {
+            cost <= credit * LOSS_LIMIT
+        }
     }
 
     fn move_good(&mut self, good: usize, delta: f64) {
@@ -780,8 +962,8 @@ impl Pop {
                 let mut trial = goods.clone();
                 *trial.entry(order.target).or_insert(0.0) += 1.0;
                 let mut trial_covered = *covered;
-                let price = history.price(order.target).abs();
-                if price < AMV_EPSILON
+                let price = history.holding_per_unit(order.target);
+                if price <= 0.0
                     || !self.add_payment(
                         factuals,
                         history,
@@ -810,8 +992,12 @@ impl Pop {
         }
     }
 
-    /// Add `need` more AMV of payment. Skips transport goods unless the seller
-    /// requested them, so transport stock stays available for freight.
+    /// Add `need` more holding value of payment. Skips transport goods unless
+    /// the seller requested them, so transport stock stays available for freight.
+    ///
+    /// `covered` is holding value already offered. Returns when `covered`
+    /// reaches `covered + need`. A later step adds one more unit when that
+    /// tie would leave a seller with no desires unmoved.
     fn add_payment(
         &self,
         factuals: &Factuals,
@@ -827,34 +1013,99 @@ impl Pop {
             if *covered >= target {
                 return true;
             }
-            let is_transport = factuals
-                .goods
-                .get(&good)
-                .is_some_and(|row| row.is_transport());
-            let requested = book.requests.iter().any(|order| order.target == good);
-            if is_transport && !requested {
+            if self.skips_transport(factuals, book, good) {
                 continue;
             }
-            let pay_amv = history.price(good).abs();
-            if pay_amv < AMV_EPSILON {
+            let per = history.holding_per_unit(good);
+            if per <= 0.0 {
                 continue;
             }
-            let already = goods.get(&good).copied().unwrap_or(0.0).min(0.0).abs();
-            let mut free = self.free_units(good).floor() - already;
-            if let Some(request) = book.requests.iter().find(|order| order.target == good) {
-                free = free.min(request.target_amount.floor() - already).max(0.0);
-            }
+            let free = self.payable_units(book, goods, good);
             if free < 1.0 {
                 continue;
             }
-            let take = ((target - *covered) / pay_amv).ceil().min(free);
+            let take = ((target - *covered) / per).ceil().min(free);
             if take < 1.0 {
                 continue;
             }
             *goods.entry(good).or_insert(0.0) -= take;
-            *covered += take * pay_amv;
+            *covered += take * per;
         }
         *covered >= target
+    }
+
+    /// One more unit of the first payable good. Used to break a holding-value tie.
+    fn add_one_payment(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        book: &SellerBook,
+        avoid: usize,
+        goods: &mut HashMap<usize, f64>,
+        covered: &mut f64,
+    ) -> bool {
+        for good in self.payment_goods(book, history, avoid) {
+            if self.skips_transport(factuals, book, good) {
+                continue;
+            }
+            let per = history.holding_per_unit(good);
+            if per <= 0.0 || self.payable_units(book, goods, good) < 1.0 {
+                continue;
+            }
+            *goods.entry(good).or_insert(0.0) -= 1.0;
+            *covered += per;
+            return true;
+        }
+        false
+    }
+
+    fn skips_transport(&self, factuals: &Factuals, book: &SellerBook, good: usize) -> bool {
+        let is_transport = factuals
+            .goods
+            .get(&good)
+            .is_some_and(|row| row.is_transport());
+        let requested = book.requests.iter().any(|order| order.target == good);
+        is_transport && !requested
+    }
+
+    /// Free whole units of `good` still available to put in `goods`, capped
+    /// by the seller's request when they asked for it.
+    fn payable_units(&self, book: &SellerBook, goods: &HashMap<usize, f64>, good: usize) -> f64 {
+        let already = goods.get(&good).copied().unwrap_or(0.0).min(0.0).abs();
+        let mut free = self.free_units(good).floor() - already;
+        if let Some(request) = book.requests.iter().find(|order| order.target == good) {
+            free = free.min(request.target_amount.floor() - already).max(0.0);
+        }
+        free
+    }
+
+    /// Holding value of the positive side minus holding value of the payment.
+    fn holding_shortfall(history: &MarketHistory, goods: &HashMap<usize, f64>) -> f64 {
+        let mut cost = 0.0;
+        let mut credit = 0.0;
+        for (&good, &qty) in goods {
+            let per = history.holding_per_unit(good);
+            if qty > 0.0 {
+                cost += per * qty;
+            } else if qty < 0.0 {
+                credit += per * -qty;
+            }
+        }
+        cost - credit
+    }
+
+    /// Buyer side of the same verdict `evaluate` uses for the seller.
+    fn buyer_accepts(&self, goods: &HashMap<usize, f64>, history: &MarketHistory) -> bool {
+        let mut given = HashMap::new();
+        let mut received = HashMap::new();
+        for (&good, &qty) in goods {
+            if qty > 0.0 {
+                received.insert(good, qty);
+            } else if qty < 0.0 {
+                given.insert(good, -qty);
+            }
+        }
+        self.exchange_ok(&given, &received, history)
     }
 
     fn free_stock(&self) -> HashMap<usize, f64> {
@@ -903,7 +1154,7 @@ impl DealMaker for Pop {
         let mut orders = Vec::new();
         for (&good, row) in &self.property {
             let units = row.available().floor();
-            if units >= 1.0 {
+            if units >= 1.0 && !self.feeds_open_tier(good) {
                 orders.push(MarketOrder::sell(self.actor(), good, units));
             }
         }
@@ -937,25 +1188,50 @@ impl DealMaker for Pop {
         if qty < 1.0 {
             return None;
         }
-        let good_amv = history.price(match_good).abs();
-        if good_amv < AMV_EPSILON {
+        if history.price(match_good) == 0.0 {
             return None;
         }
         let mut goods = HashMap::from([(match_good, qty)]);
         let mut covered = 0.0;
-        let need = qty * good_amv;
-        if !self.add_payment(
-            factuals,
-            history,
-            book,
-            match_good,
-            &mut goods,
-            &mut covered,
-            need,
-        ) {
+        let need = history.holding_per_unit(match_good) * qty;
+        if need > 0.0
+            && !self.add_payment(
+                factuals,
+                history,
+                book,
+                match_good,
+                &mut goods,
+                &mut covered,
+                need,
+            )
+        {
             return None;
         }
         self.buy_transport_for_freight(factuals, history, book, &mut goods, &mut covered)?;
+        if Self::holding_shortfall(history, &goods) >= 0.0
+            && !self.add_one_payment(
+                factuals,
+                history,
+                book,
+                match_good,
+                &mut goods,
+                &mut covered,
+            )
+        {
+            return None;
+        }
+        if crate::game::deal::freight_shortfall(
+            factuals,
+            history.friction,
+            &goods,
+            &self.free_stock(),
+        ) > 0.0
+        {
+            return None;
+        }
+        if !self.buyer_accepts(&goods, history) {
+            return None;
+        }
         Some(ProposedDeal {
             buyer: self.actor(),
             seller: book.seller,
@@ -971,23 +1247,29 @@ impl DealMaker for Pop {
         history: &MarketHistory,
         _factuals: &Factuals,
     ) -> DealResponse {
-        if !crate::game::deal::seller_can_accept(self, proposal, history) {
+        let mut given = HashMap::new();
+        let mut received = HashMap::new();
+        for (&good, &qty) in &proposal.goods {
+            if qty > 0.0 {
+                given.insert(good, qty);
+            } else if qty < 0.0 {
+                received.insert(good, -qty);
+            }
+        }
+        let match_qty = given.get(&proposal.match_good).copied().unwrap_or(0.0);
+        if match_qty < 1.0 || received.is_empty() {
             return DealResponse::Reject;
         }
-        let wants: Vec<usize> = self
-            .buy_orders(history)
-            .into_iter()
-            .map(|order| order.target)
-            .collect();
-        if !wants.is_empty()
-            && !proposal
-                .goods
-                .iter()
-                .any(|(good, qty)| *qty < 0.0 && wants.contains(good))
-        {
-            return DealResponse::Reject;
+        for (&good, &qty) in &given {
+            if self.free_units(good) < qty {
+                return DealResponse::Reject;
+            }
         }
-        DealResponse::Accept
+        if self.exchange_ok(&given, &received, history) {
+            DealResponse::Accept
+        } else {
+            DealResponse::Reject
+        }
     }
 
     fn finalize(&mut self, proposal: &ProposedDeal, factuals: &Factuals) {
@@ -1013,6 +1295,26 @@ impl DealMaker for Pop {
             self.satisfy_continue(rng);
         }
     }
+
+    fn reserve(&mut self, _factuals: &Factuals, rng: &mut dyn rand::RngCore) {
+        self.satisfy(rng);
+    }
+
+    fn consume(&mut self) {
+        Pop::consume(self);
+    }
+
+    fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
+        Pop::decay_goods(self, factuals)
+    }
+
+    fn record_keeping(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        Pop::record_keeping(self, factuals, history);
+    }
+
+    fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        Pop::plan(self, factuals, history);
+    }
 }
 
 fn target_cap_left(desire: &Desire, index: usize, resumed_start: Option<f64>) -> f64 {
@@ -1029,10 +1331,12 @@ fn target_cap_left(desire: &Desire, index: usize, resumed_start: Option<f64>) ->
 mod pop {
     use std::collections::{HashMap, HashSet};
 
+    use crate::game::actor::Actor;
     use crate::game::actors::Actors;
+    use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal};
     use crate::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
     use crate::game::factuals::Factuals;
-    use crate::game::market::{Market, MarketGood};
+    use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::good::{Good, GoodTag};
     use crate::game::household::Household;
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
@@ -1052,14 +1356,21 @@ mod pop {
     }
 
     fn do_match(
-        market: &Market,
+        market: &mut Market,
         actors: &mut Actors,
         factuals: &Factuals,
     ) -> Vec<crate::game::deal::ProposedDeal> {
         let mut rng = StdRng::seed_from_u64(1);
-        market.match_deals(actors, factuals, &mut rng)
+        market
+            .match_deals(actors, factuals, &mut rng)
+            .into_iter()
+            .filter(|meeting| meeting.outcome == MeetingOutcome::Accepted)
+            .filter_map(|meeting| meeting.proposal)
+            .collect()
     }
 
+    /// Makes pop for testing
+    /// no specific data attached, just boiler plate.
     fn make_pop() -> Pop {
         Pop {
             id: 1,
@@ -1339,20 +1650,25 @@ mod pop {
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
 
-        let deals = do_match(&market, &mut actors, &Factuals::new());
+        let deals = do_match(&mut market, &mut actors, &Factuals::new());
 
         assert_eq!(deals.len(), 1);
         assert_eq!(deals[0].goods.get(&2), Some(&4.0));
-        assert_eq!(deals[0].goods.get(&9), Some(&-8.0));
+        assert_eq!(deals[0].goods.get(&9), Some(&-9.0));
         assert!((actors.pops[&1].property[&2].quantity - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pops[&1].property[&9].quantity - 1.0).abs() < 1e-9);
         assert!((actors.pops[&2].property[&2].quantity - 6.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&9].quantity - 8.0).abs() < 1e-9);
+        assert!((actors.pops[&2].property[&9].quantity - 9.0).abs() < 1e-9);
         assert!((actors.pops[&1].property[&2].reserved - 4.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 2.0).abs() < 1e-12);
+        assert!((market.goods[&9].amv - 1.0).abs() < 1e-12);
+        assert!((market.goods[&2].traded - 4.0).abs() < 1e-9);
+        assert_eq!(market.goods[&2].paid, 0.0);
+        assert!((market.goods[&9].paid - 9.0).abs() < 1e-9);
     }
 
     #[test]
-    fn match_deals_rejects_when_the_seller_wanted_a_different_good() {
+    fn match_deals_buys_bread_the_seller_does_not_use() {
         let mut buyer = make_pop();
         buyer.id = 1;
         buyer.property.insert(9, PopPRow::new(10.0));
@@ -1382,7 +1698,104 @@ mod pop {
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
 
-        let deals = do_match(&market, &mut actors, &Factuals::new());
+        let deals = do_match(&mut market, &mut actors, &Factuals::new());
+
+        assert_eq!(deals.len(), 1);
+        assert_eq!(deals[0].goods.get(&2), Some(&4.0));
+        assert_eq!(deals[0].goods.get(&9), Some(&-9.0));
+    }
+
+    #[test]
+    fn match_deals_pays_a_higher_tier_good_for_a_lower_tier_good() {
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        buyer.property.insert(4, PopPRow::new(10.0));
+        buyer.property.insert(8, PopPRow::new(1.0));
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        buyer.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        buyer.desires[1].push(desire(
+            4,
+            vec![DesireTarget::new(6, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        buyer.desires[2].push(desire(
+            3,
+            vec![DesireTarget::new(8, DesireTargetType::Consume, 10.0)],
+            10.0,
+        ));
+        do_satisfy(&mut buyer).expect("buyer wants bread");
+
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(10.0));
+
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        market.goods.insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.goods.insert(4, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.goods.insert(8, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, seller);
+
+        let deals = do_match(&mut market, &mut actors, &Factuals::new());
+
+        assert_eq!(deals.len(), 1);
+        assert_eq!(deals[0].goods.get(&2), Some(&1.0));
+        assert_eq!(deals[0].goods.get(&8), Some(&-1.0));
+        assert!(deals[0].goods.get(&4).is_none());
+        assert_eq!(actors.pops[&1].property[&4].quantity, 10.0);
+        assert_eq!(actors.pops[&1].property[&8].quantity, 0.0);
+        assert_eq!(actors.pops[&2].property[&8].quantity, 1.0);
+        assert_eq!(actors.pops[&1].property[&2].quantity, 1.0);
+    }
+
+    #[test]
+    fn match_deals_rejects_bread_that_still_feeds_a_later_desire() {
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        buyer.property.insert(9, PopPRow::new(10.0));
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        do_satisfy(&mut buyer).expect("buyer wants bread");
+
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(10.0));
+        seller.desires[0].push(desire(
+            3,
+            vec![DesireTarget::new(3, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        seller.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        do_satisfy(&mut seller).expect("seller is stuck on tools");
+
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        market.goods.insert(2, MarketGood::new().with_amv(2.0));
+        market.goods.insert(9, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, seller);
+
+        let deals = do_match(&mut market, &mut actors, &Factuals::new());
 
         assert!(deals.is_empty());
         assert!((actors.pops[&1].property[&9].quantity - 10.0).abs() < 1e-9);
@@ -1420,7 +1833,7 @@ mod pop {
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
 
-        let deals = do_match(&market, &mut actors, &Factuals::new().with_good(time_good()));
+        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
 
         assert!(deals.is_empty());
         assert!((actors.pops[&1].property[&9].quantity - 10.0).abs() < 1e-9);
@@ -1453,7 +1866,7 @@ mod pop {
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
 
-        let deals = do_match(&market, &mut actors, &Factuals::new().with_good(time_good()));
+        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
 
         assert_eq!(deals.len(), 1);
         assert!((deals[0].freight - 1.0).abs() < 1e-9);
@@ -1461,7 +1874,7 @@ mod pop {
         assert!(actors.pops[&2].property.get(&0).is_none());
         assert!((actors.pops[&1].property[&0].quantity - 4.0).abs() < 1e-9);
         assert!((actors.pops[&1].property[&0].consumed - 1.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pops[&1].property[&9].quantity - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1491,13 +1904,283 @@ mod pop {
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
 
-        let deals = do_match(&market, &mut actors, &Factuals::new().with_good(time_good()));
+        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
 
         assert_eq!(deals.len(), 1);
         assert_eq!(deals[0].goods.get(&0), Some(&1.0));
         assert!(actors.pops[&1].property.get(&0).is_none_or(|row| row.quantity < 1e-9));
         assert!((actors.pops[&1].property[&0].consumed - 1.0).abs() < 1e-9);
         assert!((actors.pops[&2].property[&0].quantity - 3.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 11.0).abs() < 1e-9);
+        assert!((actors.pops[&1].property[&9].quantity - 10.0).abs() < 1e-9);
+    }
+
+    /// Yesterday's card. Each row is `(good, AMV, salability)`.
+    fn card(rows: &[(usize, f64, f64)]) -> MarketHistory {
+        let mut history = MarketHistory::new();
+        for &(good, amv, salability) in rows {
+            history.prices.insert(good, amv);
+            history.salability.insert(good, salability);
+        }
+        history
+    }
+
+    /// A basket from the seller's side. Positive quantity is what the seller
+    /// gives. Negative quantity is what the seller receives.
+    fn proposal(match_good: usize, goods: HashMap<usize, f64>) -> ProposedDeal {
+        ProposedDeal {
+            buyer: Actor::Pop(1),
+            seller: Actor::Pop(2),
+            match_good,
+            goods,
+            freight: 0.0,
+        }
+    }
+
+    /// Seller gives 4 of good 2 and receives 9 of good 9.
+    ///
+    /// Good 2 still fills the seller's basic desire, 4 satisfaction at
+    /// efficiency 1. Good 9 feeds no desire. At salability 1 the payment is
+    /// a holding gain, cost 8 against credit 9, which would be enough if the
+    /// seller wanted nothing. A good that still feeds a desire is given up
+    /// when the goods received feed that desire or an earlier one. Good 9
+    /// feeds nothing, so the seller rejects.
+    #[test]
+    fn evaluate_rejects_a_good_that_still_feeds_the_open_desire() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(10.0));
+        seller.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 1.0)]);
+        let deal = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+    }
+
+    /// Both goods feed basic desires. Good 2 is earlier in the tier than good 9.
+    /// The seller gives 4 of good 9, which is 4 satisfaction.
+    ///
+    /// On the tier of the best good received, satisfaction gained has to
+    /// exceed satisfaction given up. Receiving 2 of good 2 puts 2 satisfaction
+    /// in place of 4, so the seller rejects. Receiving 5 puts 5 in place of 4,
+    /// so the seller accepts. Giving the later good is allowed because good 2
+    /// feeds the earlier desire on that same tier.
+    #[test]
+    fn evaluate_requires_same_tier_satisfaction_to_increase() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(9, PopPRow::new(10.0));
+        seller.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            10.0,
+        ));
+        seller.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
+            10.0,
+        ));
+        let history = card(&[(2, 1.0, 1.0), (9, 1.0, 1.0)]);
+        // 4 satisfaction given up, 2 gained.
+        let short = proposal(9, HashMap::from([(9, 4.0), (2, -2.0)]));
+        assert_eq!(
+            seller.evaluate(&short, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+        // 4 satisfaction given up, 5 gained.
+        let ahead = proposal(9, HashMap::from([(9, 4.0), (2, -5.0)]));
+        assert_eq!(
+            seller.evaluate(&ahead, &history, &Factuals::new()),
+            DealResponse::Accept
+        );
+    }
+
+    /// No desires at first. Good 2 is AMV 2 and good 9 is AMV 1, both at
+    /// salability 1, so holding value equals face AMV.
+    ///
+    /// With no satisfaction change, holding credit has to be strictly above
+    /// holding cost. Giving 4 of good 2 costs 8. Receiving 8 of good 9
+    /// credits 8, a tie, so the seller rejects. Receiving 9 credits 9, a
+    /// gain, so the seller accepts.
+    ///
+    /// Good 2 then feeds a basic desire. The seller gives 100 of good 9
+    /// (holding cost 100, no desire on it) and receives 1 of good 2
+    /// (satisfaction rises by 1, and a desired good is credited at face
+    /// AMV, so credit is 2). A satisfaction gain may cost up to 4 times
+    /// that credit. 100 is past 8, so the seller rejects.
+    #[test]
+    fn evaluate_rejects_a_holding_tie_and_a_loss_past_the_limit() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(10.0));
+        seller.property.insert(9, PopPRow::new(100.0));
+        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 1.0)]);
+        // Holding 8 for 8.
+        let tie = proposal(2, HashMap::from([(2, 4.0), (9, -8.0)]));
+        assert_eq!(
+            seller.evaluate(&tie, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+        // Holding 8 for 9.
+        let cleared = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
+        assert_eq!(
+            seller.evaluate(&cleared, &history, &Factuals::new()),
+            DealResponse::Accept
+        );
+
+        seller.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        // Satisfaction +1, holding cost 100 against a limit of 8.
+        let fortune = proposal(9, HashMap::from([(9, 100.0), (2, -1.0)]));
+        assert_eq!(
+            seller.evaluate(&fortune, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+    }
+
+    /// No desires. The seller gives 1 of good 9 (AMV -0.1) and receives 1 of
+    /// good 8 (AMV -0.2). Both salabilities are 0.1.
+    ///
+    /// A negative AMV is the cost of holding the good. Salability would
+    /// shrink a positive AMV, and it leaves a negative AMV at its face
+    /// value. Holding moves from -0.1 to -0.2. With no satisfaction change
+    /// that is a loss, so the seller rejects.
+    #[test]
+    fn evaluate_does_not_soften_a_negative_amv() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(9, PopPRow::new(4.0));
+        let history = card(&[(9, -0.1, 0.1), (8, -0.2, 0.1)]);
+        let deal = proposal(9, HashMap::from([(9, 1.0), (8, -1.0)]));
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+    }
+
+    /// No desires. The seller gives 4 of good 2 (AMV 2, salability 1) and
+    /// receives 5 of good 9 (AMV 1, salability 2).
+    ///
+    /// Salability of 1 or more prices a positive AMV at face, so good 9's
+    /// salability of 2 leaves its holding value at 1. Holding falls from 8
+    /// to 5. With no satisfaction change the seller rejects that loss.
+    #[test]
+    fn evaluate_rejects_an_amv_loss_when_salability_is_at_least_par() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(4.0));
+        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 2.0)]);
+        let deal = proposal(2, HashMap::from([(2, 4.0), (9, -5.0)]));
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+    }
+
+    /// No desires. The seller gives 1 of good 2 (AMV 1) and receives 1 of
+    /// good 9 (AMV 2). At face value the seller gains. Salability below 1
+    /// multiplies a positive AMV down to a floor of 0.05.
+    ///
+    /// Both goods at salability 1 keep holding equal to face AMV, cost 1
+    /// against credit 2, so the seller accepts. Good 9 at salability 0.4
+    /// has holding credit 0.8 against a cost of 1, so the seller rejects.
+    /// Good 2 at 0.5 and good 9 at 0.2 make the cost 0.5 and the credit 0.4,
+    /// so the seller rejects again.
+    #[test]
+    fn evaluate_rejects_a_face_gain_that_salability_discounts_away() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(10.0));
+        let deal = proposal(2, HashMap::from([(2, 1.0), (9, -1.0)]));
+        // Face gain, and salability is high enough to keep it.
+        let at_par = card(&[(2, 1.0, 1.0), (9, 2.0, 1.0)]);
+        assert_eq!(
+            seller.evaluate(&deal, &at_par, &Factuals::new()),
+            DealResponse::Accept
+        );
+        // Same quantities. The received good's salability cuts its holding below the cost.
+        let received_illiquid = card(&[(2, 1.0, 1.0), (9, 2.0, 0.4)]);
+        assert_eq!(
+            seller.evaluate(&deal, &received_illiquid, &Factuals::new()),
+            DealResponse::Reject
+        );
+        // Both below par, and the dearer good is discounted harder: 0.4 against 0.5.
+        let both_illiquid = card(&[(2, 1.0, 0.5), (9, 2.0, 0.2)]);
+        assert_eq!(
+            seller.evaluate(&deal, &both_illiquid, &Factuals::new()),
+            DealResponse::Reject
+        );
+    }
+
+    /// The seller gives 1 of good 8 and receives 1 of good 2. Good 8 is a
+    /// luxury desire, and one unit yields 10 satisfaction. Good 2 is a basic
+    /// desire, and one unit yields 1. Both AMVs are 1 at salability 1.
+    ///
+    /// A higher tier may be given for a lower tier. Satisfaction is compared
+    /// on the basic tier only: the seller gains 1 there and gives up 0. The
+    /// luxury's 10 satisfaction is a higher tier, so it stays out of that
+    /// comparison. Holding cost is 1, and a satisfaction gain may cost up to
+    /// 4 times the basic good's face credit of 1, so the seller accepts.
+    #[test]
+    fn evaluate_accepts_a_higher_tier_good_for_a_lower_tier_good() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(8, PopPRow::new(1.0));
+        seller.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        seller.desires[2].push(desire(
+            2,
+            vec![DesireTarget::new(8, DesireTargetType::Consume, 10.0)],
+            10.0,
+        ));
+        let history = card(&[(2, 1.0, 1.0), (8, 1.0, 1.0)]);
+        let deal = proposal(8, HashMap::from([(8, 1.0), (2, -1.0)]));
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Accept
+        );
+    }
+
+    /// The seller gives 1 of good 9 and receives 1 of good 2. Both AMVs are
+    /// 1 at salability 1, so holding value is unchanged.
+    ///
+    /// With no desires the exchange is a holding tie, and a tie is rejected.
+    /// A basic desire for good 2 is then added. The seller gains 1
+    /// satisfaction from good 2 and gives up none, because good 9 feeds no
+    /// desire. That gain allows a holding cost up to 4 times good 2's face
+    /// credit, and a cost of 1 is inside the limit, so the seller accepts.
+    #[test]
+    fn evaluate_accepts_satisfaction_gained_when_none_is_lost() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(9, PopPRow::new(4.0));
+        let history = card(&[(2, 1.0, 1.0), (9, 1.0, 1.0)]);
+        let deal = proposal(9, HashMap::from([(9, 1.0), (2, -1.0)]));
+        // No desire on either good: holding 1 for 1.
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Reject
+        );
+        seller.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        // Good 2 now gains 1 satisfaction. Good 9 still feeds nothing.
+        assert_eq!(
+            seller.evaluate(&deal, &history, &Factuals::new()),
+            DealResponse::Accept
+        );
     }
 }

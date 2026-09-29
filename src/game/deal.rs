@@ -41,6 +41,31 @@ pub enum DealResponse {
     Reject,
 }
 
+/// What a meeting did with its basket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeetingOutcome {
+    /// The buyer did not propose a basket.
+    Abandoned,
+    /// A basket was proposed and nothing moved.
+    Rejected,
+    /// The basket was accepted and settled.
+    Accepted,
+}
+
+/// One buyer-seller meeting.
+///
+/// `proposal` is `None` when the buyer abandons. `outcome` says whether that
+/// basket settled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Meeting {
+    pub buyer: Actor,
+    pub seller: Actor,
+    /// The good that caused the meeting.
+    pub match_good: usize,
+    pub proposal: Option<ProposedDeal>,
+    pub outcome: MeetingOutcome,
+}
+
 /// An actor the market can match, ask for a basket, and settle.
 ///
 /// `sell_orders`, `buy_orders`, `propose`, and `evaluate` do not move stock.
@@ -88,6 +113,36 @@ pub trait DealMaker {
     /// Rewrite orders after a meeting. Pops reserve goods they just received.
     fn reevaluate(&mut self, history: &MarketHistory, rng: &mut dyn rand::RngCore) {
         let _ = (self, history, rng);
+    }
+
+    /// Morning reservation. Pops satisfy open desires. Firms reserve stock
+    /// for production and savings.
+    fn reserve(&mut self, factuals: &Factuals, rng: &mut dyn rand::RngCore) {
+        let _ = (self, factuals, rng);
+    }
+
+    /// Today's productive work.
+    fn produce(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+    }
+
+    /// Pops eat or use goods for desires.
+    fn consume(&mut self) {}
+
+    /// Units lost to rot and the stock they came from, per good.
+    fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
+        let _ = (self, factuals);
+        HashMap::new()
+    }
+
+    /// End-of-day books. `history` is still today's card.
+    fn record_keeping(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        let _ = (self, factuals, history);
+    }
+
+    /// End-of-day planning.
+    fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        let _ = (self, factuals, history);
     }
 }
 

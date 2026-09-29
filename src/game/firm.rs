@@ -81,6 +81,20 @@ impl Firm {
         self
     }
 
+    /// Reserve stock for today's production and for savings. Not written yet.
+    pub fn reserve_for_day(&mut self, _factuals: &Factuals) {}
+
+    /// Run today's production lines. Not written yet.
+    pub fn produce(&mut self, _factuals: &Factuals) {}
+
+    /// End-of-day planning. Not written yet.
+    pub fn plan(&mut self, _factuals: &Factuals, _history: &MarketHistory) {}
+
+    /// Zeros today's production flow counters.
+    pub fn record_keeping(&mut self, _factuals: &Factuals) {
+        self.clear_property_records();
+    }
+
     /// Firm bonuses pushed onto pops. No catalog yet.
     pub fn apply_passive_bonuses(&self, pops: &mut HashMap<usize, Pop>) {
         let _ = (self, pops);
@@ -241,6 +255,26 @@ impl DealMaker for Firm {
         if proposal.buyer == id {
             self.pay_freight(proposal.freight, factuals);
         }
+    }
+
+    fn reserve(&mut self, factuals: &Factuals, _rng: &mut dyn rand::RngCore) {
+        Firm::reserve_for_day(self, factuals);
+    }
+
+    fn produce(&mut self, factuals: &Factuals) {
+        Firm::produce(self, factuals);
+    }
+
+    fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
+        Firm::decay_goods(self, factuals)
+    }
+
+    fn record_keeping(&mut self, factuals: &Factuals, _history: &MarketHistory) {
+        Firm::record_keeping(self, factuals);
+    }
+
+    fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        Firm::plan(self, factuals, history);
     }
 }
 
