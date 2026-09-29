@@ -498,6 +498,29 @@ impl Desire {
         });
         targets
     }
+    
+    /// # Get Bonus Satisfaction
+    ///
+    /// Sums [`DesireEffect::Satisfaction`] attached to this desire.
+    /// Should automatically scale the effect to the size of the pop through the use of 
+    /// [`Self::tiers_satisfied`].
+    ///
+    /// A bonus is multiplied by [`Self::tiers_satisfied`], so it grows as the
+    /// desire is met and keeps growing on further levels.
+    ///
+    /// A malus is multiplied by the unmet share of one level,
+    /// `(1 - tiers).max(0)`. It is strongest with nothing satisfied and reaches
+    /// zero once one full level is met. Further levels leave it at zero.
+    pub(crate) fn get_bonus_satisfaction(&self) -> f64 {
+        let tiers = self.tiers_satisfied();
+        self.effect.iter().fold(0.0, |sum, effect| {
+            if matches!(effect, DesireEffect::Satisfaction(..)) {
+                sum + effect.signed_strength_raw(tiers)
+            } else {
+                sum
+            }
+        })
+    }
 }
 
 /// # Desire Target 
@@ -627,5 +650,86 @@ impl DesireSource {
             DesireSource::Class(_, _) => 2,
             DesireSource::Religion(_, _) => 3,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Desire, DesireEffect, DesireSource};
+    use crate::game::scalingfactor::ScalingFactor;
+
+    fn desire(amount: f64, satisfaction: f64, effect: Vec<DesireEffect>) -> Desire {
+        Desire {
+            source: DesireSource::Species(0, 1),
+            priority: 0,
+            target: vec![],
+            amount,
+            satisfaction,
+            category: None,
+            effect,
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        }
+    }
+
+    #[test]
+    fn bonus_satisfaction_is_zero_without_a_satisfaction_effect() {
+        let plain = desire(4.0, 4.0, vec![]);
+        assert_eq!(plain.get_bonus_satisfaction(), 0.0);
+        let other = desire(
+            4.0,
+            4.0,
+            vec![
+                DesireEffect::Birthrate(0.2, true),
+                DesireEffect::Culture(3.0, true),
+            ],
+        );
+        assert_eq!(other.get_bonus_satisfaction(), 0.0);
+    }
+
+    #[test]
+    fn bonus_scales_up_with_tiers_satisfied() {
+        // Half a level yields half of a bonus of 6.
+        let half = desire(4.0, 2.0, vec![DesireEffect::Satisfaction(6.0, true)]);
+        assert_eq!(half.get_bonus_satisfaction(), 3.0);
+        // One full level yields the bonus itself.
+        let full = desire(4.0, 4.0, vec![DesireEffect::Satisfaction(6.0, true)]);
+        assert_eq!(full.get_bonus_satisfaction(), 6.0);
+        // A second level doubles it.
+        let twice = desire(4.0, 8.0, vec![DesireEffect::Satisfaction(6.0, true)]);
+        assert_eq!(twice.get_bonus_satisfaction(), 12.0);
+        // Nothing satisfied yields no bonus.
+        let empty = desire(4.0, 0.0, vec![DesireEffect::Satisfaction(6.0, true)]);
+        assert_eq!(empty.get_bonus_satisfaction(), 0.0);
+    }
+
+    #[test]
+    fn malus_scales_down_with_the_unmet_share() {
+        // Unmet: the full malus.
+        let unmet = desire(4.0, 0.0, vec![DesireEffect::Satisfaction(6.0, false)]);
+        assert_eq!(unmet.get_bonus_satisfaction(), -6.0);
+        // Half met: half the malus remains.
+        let half = desire(4.0, 2.0, vec![DesireEffect::Satisfaction(6.0, false)]);
+        assert_eq!(half.get_bonus_satisfaction(), -3.0);
+        // One full level clears it.
+        let met = desire(4.0, 4.0, vec![DesireEffect::Satisfaction(6.0, false)]);
+        assert_eq!(met.get_bonus_satisfaction(), 0.0);
+        // Further levels leave the malus at zero.
+        let over = desire(4.0, 8.0, vec![DesireEffect::Satisfaction(6.0, false)]);
+        assert_eq!(over.get_bonus_satisfaction(), 0.0);
+    }
+
+    #[test]
+    fn bonus_and_malus_satisfaction_add() {
+        let mixed = desire(
+            4.0,
+            2.0,
+            vec![
+                DesireEffect::Satisfaction(6.0, true),
+                DesireEffect::Satisfaction(4.0, false),
+            ],
+        );
+        // 6 * 0.5 + -(4 * 0.5) = 1
+        assert_eq!(mixed.get_bonus_satisfaction(), 1.0);
     }
 }

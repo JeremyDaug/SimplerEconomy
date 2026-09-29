@@ -27,4 +27,20 @@ Whole goods use `trunc` or `floor` at the call. `whole_units_up` rounds a wage b
 - `cargo test --lib` for library changes.
 - `cargo run --example rates_tester` for the household probe.
 
-Match the surrounding module. Comments only for a non-obvious constraint. No drive-by formatting. When the user names a file, edit only that file.
+Match the surrounding module. Follow the style rules below. No drive-by formatting. When the user names a file, edit only that file.
+
+## Style
+
+A boolean checker that changes nothing is named as a question. `exchange_ok` is `is_exchange_ok` or `is_valid_exchange`.
+
+Reads from storage types (`Actors`, `Players`, `Factuals`, `MapData`, and the same kind of holder) go through a getter. If the getter is missing, add it and keep the expect or panic on that getter. Call sites use the getter.
+
+### Comments
+
+Every function doc starts with a `#` header of the name. The header may expand the name: `get_sol` can be `# Get Standard of Living`.
+
+The doc says the inputs, the logic, and the outputs. Small and private functions get that doc too.
+
+A step inside a function gets a one-line comment of what that step does when the code does not already say it. `Market::market_day` labels each phase that way. Longer notes stay on the parts that are hard to follow.
+
+When a comment already matches the code, add a link, a highlight, or a connection. Leave the paragraph in place. If a comment looks unclear or wrong and the function was not just changed, ask before rewriting it. When the function changed and the comment no longer matches, edit the comment to match the new logic.

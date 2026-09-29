@@ -91,8 +91,10 @@ impl Market {
     /// End-of-day market bookkeeping.
     ///
     /// Writes tomorrow's AMV and salability from each good's day record, then
-    /// clears that record. Stock is left as it stands. `factuals` is unused:
-    /// rot is added through [`Self::note_decay`] before this runs.
+    /// clears the exchange and flow counters. [`MarketGood::decayed`] and
+    /// `volume` stay until the next morning's reset. Stock is left as it
+    /// stands. `factuals` is unused: rot is added through [`Self::note_decay`]
+    /// before this runs.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = factuals;
         let mut ids: Vec<usize> = self.goods.keys().copied().collect();
@@ -127,7 +129,7 @@ impl Market {
             } else if informed && paid > 0.0 {
                 good.set_salability(good.salability + SALABILITY_UP_STEP);
             }
-            good.clear_day();
+            good.clear_exchange();
         }
     }
 
@@ -157,37 +159,50 @@ impl Market {
         history
     }
 
+    /// # Market Day
+    ///
     /// One day for the actors registered on this market.
     ///
-    /// Reserve, produce, [`Self::match_deals`], consume, decay, then actor
+    /// Clears yesterday's day-records and each member's
+    /// [`crate::game::deal::DealMaker::reset_day`],
+    /// then reserve, produce, [`Self::match_deals`], consume, decay, then actor
     /// record keeping and planning, then [`Self::record_keeping`].
     ///
     /// Institutions and states use the empty defaults, so their unimplemented
     /// decay and record-keeping methods stay uncalled.
     ///
-    /// Returns every meeting from the exchange.
+    /// Returns every meeting from the exchange. Today's rot stays on
+    /// [`MarketGood::decayed`]. Inter-market work stays outside this call.
     pub fn market_day(
         &mut self,
         actors: &mut Actors,
         factuals: &Factuals,
         rng: &mut impl rand::RngCore,
     ) -> Vec<Meeting> {
+        // Cleanup Phase. Drop yesterday before this day records anything.
+        self.reset_day(actors);
         let members = self.members();
+        // Day start reservations
         for actor in &members {
             actors.get_mut(*actor).reserve(factuals, rng);
         }
+        // Production Phase
         for actor in &members {
             actors.get_mut(*actor).produce(factuals);
         }
+        // Exchange Phase
         let meetings = self.match_deals(actors, factuals, rng);
+        // Consumption Phase
         for actor in &members {
             actors.get_mut(*actor).consume();
         }
+        // Decay Phase
         for actor in &members {
-            for (good, (decayed, volume)) in actors.get_mut(*actor).decay_goods(factuals) {
-                self.note_decay(good, decayed, volume);
+            for (good, (lost, volume)) in actors.get_mut(*actor).decay_goods(factuals) {
+                self.note_decay(good, lost, volume);
             }
         }
+        // Record Keeping and Planning phase.
         let history = self.history();
         for actor in &members {
             actors.get_mut(*actor).record_keeping(factuals, &history);
@@ -195,6 +210,22 @@ impl Market {
         }
         self.record_keeping(factuals);
         meetings
+    }
+
+    /// # Reset Day
+    ///
+    /// Clears this market's day tape and each member's yesterday.
+    ///
+    /// `actors` supplies the members. AMV, salability, and stock stay.
+    /// Pop satisfaction and reserves go to zero. Firms and institutions
+    /// keep the empty [`crate::game::deal::DealMaker::reset_day`] default.
+    fn reset_day(&mut self, actors: &mut Actors) {
+        for good in self.goods.values_mut() {
+            good.clear_day();
+        }
+        for actor in self.members() {
+            actors.get_mut(actor).reset_day();
+        }
     }
 
     /// # Match Deals
@@ -626,14 +657,28 @@ impl MarketGood {
         self.stock = stock;
     }
 
-    /// Zeros today's flows. Leaves AMV, salability, and stock.
-    fn clear_day(&mut self) {
+    /// # Clear Exchange
+    ///
+    /// Zeros today's exchange and production flow.
+    ///
+    /// Leaves AMV, salability, stock, and rot (`decayed`, `volume`).
+    fn clear_exchange(&mut self) {
         self.production = 0.0;
         self.consumption = 0.0;
         self.traded = 0.0;
         self.paid = 0.0;
         self.sought_unmet = 0.0;
         self.offered_unsold = 0.0;
+    }
+
+    /// # Clear Day
+    ///
+    /// Zeros today's flows, including rot.
+    ///
+    /// Leaves AMV, salability, and stock. The morning reset uses this so
+    /// yesterday's rot does not feed the next night.
+    fn clear_day(&mut self) {
+        self.clear_exchange();
         self.decayed = 0.0;
         self.volume = 0.0;
     }
@@ -703,8 +748,8 @@ mod tests {
         market.record_keeping(&crate::game::factuals::Factuals::new());
         assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
         assert!((market.goods[&1].salability - 1.3).abs() < 1e-9);
-        assert_eq!(market.goods[&1].decayed, 0.0);
-        assert_eq!(market.goods[&1].volume, 0.0);
+        assert!((market.goods[&1].decayed - 5.0).abs() < 1e-9);
+        assert!((market.goods[&1].volume - 10.0).abs() < 1e-9);
     }
 
     #[test]

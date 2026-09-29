@@ -181,9 +181,12 @@ fn print_household(label: &str, h: &Household) {
 
 fn print_row(year: u32, h: &Household, g: f64) {
     let g_s = if g.is_finite() {
-        format!("{:+.4}", g * 100.0)
+        // edited to keep compiler from complaining.
+        let t = format!("{:+.4}", g * 100.0);
+        t
     } else {
-        "   -".to_string()
+        let t = "   -".to_string();
+        t
     };
     println!(
         "{:>6}  {:>10.4}  {:>8.4}  {:>8.4}  {:>8.4}  {:>8.4}  {:>10.4}  {:>10}",

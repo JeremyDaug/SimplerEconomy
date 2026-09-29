@@ -4,6 +4,7 @@ use rayon::prelude::*;
 
 use crate::game::actor::Actor;
 use crate::game::deal::DealMaker;
+use crate::game::scalingfactor::ScalingFactor;
 use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, pop::Pop};
 
 /// # Actors
@@ -45,6 +46,48 @@ impl Actors {
                 .unwrap_or_else(|| panic!("institution {id} is not in Actors")),
             Actor::State(id) => panic!("state {id} is not stored in Actors"),
         }
+    }
+
+    /// # Pop
+    ///
+    /// The pop stored under `id`.
+    ///
+    /// Panics if that pop is missing.
+    pub fn pop(&self, id: usize) -> &Pop {
+        self.pops
+            .get(&id)
+            .unwrap_or_else(|| panic!("pop {id} is not in Actors"))
+    }
+
+    /// # Pop Mut
+    ///
+    /// Mutable access to the pop stored under `id`.
+    ///
+    /// Panics if that pop is missing.
+    pub fn pop_mut(&mut self, id: usize) -> &mut Pop {
+        self.pops
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("pop {id} is not in Actors"))
+    }
+
+    /// # Pops In Craft
+    ///
+    /// Pop ids whose job has this craft, lowest id first.
+    ///
+    /// Craft `0` is no job and returns an empty list. A pop whose craft
+    /// differs is left out. This is a lookup: each pop keeps its own job.
+    pub fn pops_in_craft(&self, craft: usize) -> Vec<usize> {
+        if craft == 0 {
+            return Vec::new();
+        }
+        let mut ids: Vec<usize> = self
+            .pops
+            .iter()
+            .filter(|(_, pop)| pop.job.has_craft(craft))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Mutable access to the actor stored for this id. Panics if it is missing.
@@ -99,5 +142,22 @@ impl Actors {
                     .for_each(|(_, institution)| institution.decay_goods(factuals));
             });
         });
+    }
+    
+    /// # Day Start
+    /// 
+    /// Calls the day_start function on actors as needed. 
+    /// 
+    /// Currently, the day start only adds time to pops based on their labor efficiency.
+    /// 
+    /// Later, this may be expanded to include other daily initialization logic, which 
+    /// would more than likely tied to game rules or special effects tied to markets,
+    /// players, demographics, or environment.
+    pub fn start_day(&mut self) {
+        // add time to pops.
+        let time_gen = [(0, ScalingFactor::Labor(1.0))];
+        for (_, pop) in self.pops.iter_mut() {
+            pop.start_day(&time_gen);
+        }
     }
 }

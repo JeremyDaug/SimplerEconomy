@@ -40,7 +40,6 @@ fn main() {
 
     let mut buyer = Pop::new(1);
     buyer.property.insert(gold, PopPRow::new(20.0));
-    buyer.property.insert(time, PopPRow::new(40.0));
     buyer.desires[0].push(desire(1, bread, 4.0));
 
     let mut seller = Pop::new(2);
@@ -49,7 +48,8 @@ fn main() {
     let mut market = Market::new(1).with_friction(factuals.config.market.friction);
     market.pops.insert(buyer.id);
     market.pops.insert(seller.id);
-    // Opening card. The day reads this and does not invent a price.
+    // Opening market board. The day reads this and does not invent a price.
+    market.goods.insert(time, MarketGood::new().with_amv(1.0).with_salability(1.0));
     market.goods.insert(bread, MarketGood::new().with_amv(1.0).with_salability(1.0));
     market.goods.insert(gold, MarketGood::new().with_amv(1.0).with_salability(1.0));
 
@@ -70,11 +70,11 @@ fn main() {
     ids.sort_unstable();
     for day in 1..=days {
         println!("=== day {day} ===");
+        actors.start_day();
         let meetings = market.market_day(&mut actors, &factuals, &mut rng);
-        print_meetings(&factuals, &meetings);
-        print_holdings(&factuals, &actors, &ids);
-        print_card(&factuals, &market);
-        println!();
+        print_exchanges(&factuals, &meetings);
+        print_pops(&factuals, &mut actors, &ids);
+        print_market_board(&factuals, &market);
     }
 }
 
@@ -109,71 +109,167 @@ fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
         .unwrap_or("unknown")
 }
 
-fn print_meetings(factuals: &Factuals, meetings: &[Meeting]) {
-    if meetings.is_empty() {
-        println!("no meetings");
-        return;
-    }
-    for meeting in meetings {
-        println!(
-            "match: {} met {} on {}",
-            actor_name(meeting.buyer),
-            actor_name(meeting.seller),
-            good_name(factuals, meeting.match_good)
-        );
-        match &meeting.proposal {
-            Some(proposal) => println!("proposal: {}", basket(factuals, proposal)),
-            None => println!("proposal: none"),
-        }
-        println!("outcome: {}", outcome_name(meeting.outcome));
-    }
+/// # Print Exchanges
+///
+/// Prints one row per meeting.
+///
+/// Columns are buyer, seller, the good they met on, the outcome, and the
+/// basket. An empty day still prints the header.
+fn print_exchanges(factuals: &Factuals, meetings: &[Meeting]) {
+    let rows = meetings
+        .iter()
+        .map(|meeting| {
+            let basket = match &meeting.proposal {
+                Some(proposal) => basket(factuals, proposal),
+                None => "none".to_string(),
+            };
+            vec![
+                actor_name(meeting.buyer),
+                actor_name(meeting.seller),
+                good_name(factuals, meeting.match_good).to_string(),
+                outcome_name(meeting.outcome).to_string(),
+                basket,
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        "exchanges",
+        &["buyer", "seller", "good", "outcome", "basket"],
+        &rows,
+    );
 }
 
-fn print_holdings(factuals: &Factuals, actors: &Actors, ids: &[usize]) {
-    for id in ids {
-        let pop = actors
-            .pops
-            .get(id)
-            .unwrap_or_else(|| panic!("pop {id} is missing"));
-        let mut rows: Vec<(&Good, f64)> = pop
-            .property
-            .iter()
-            .filter(|(_, row)| row.quantity != 0.0)
-            .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.quantity)))
-            .collect();
-        rows.sort_by_key(|(good, _)| good.id);
-        let holdings = if rows.is_empty() {
-            "nothing".to_string()
-        } else {
-            rows.iter()
-                .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        println!("pop {id}: {holdings}");
-    }
+/// # Print Pops
+///
+/// Prints each pop's standard of living and what they still hold.
+///
+/// `ids` is the pop order. Standard of living is today's satisfaction,
+/// including desire bonuses. Holdings skip goods whose quantity is 0.
+fn print_pops(factuals: &Factuals, actors: &mut Actors, ids: &[usize]) {
+    let rows = ids
+        .iter()
+        .map(|id| {
+            let pop = actors.pop_mut(*id);
+            let sol = pop.calculate_sol(factuals);
+            vec![id.to_string(), qty_text(sol), holdings(factuals, pop)]
+        })
+        .collect::<Vec<_>>();
+    print_table("pops", &["pop", "sol", "holdings"], &rows);
 }
 
-fn print_card(factuals: &Factuals, market: &Market) {
+/// # Print Market Board
+///
+/// Prints each good's AMV, salability, units lost to rot, and that loss as
+/// a percent of the stock it came from.
+fn print_market_board(factuals: &Factuals, market: &Market) {
     let mut ids: Vec<usize> = market.goods.keys().copied().collect();
     ids.sort_unstable();
-    if ids.is_empty() {
-        println!("card: empty");
-        return;
-    }
-    let parts: Vec<String> = ids
+    let rows = ids
         .into_iter()
         .map(|id| {
             let good = &market.goods[&id];
-            format!(
-                "{} amv {} salability {}",
-                good_name(factuals, id),
+            vec![
+                good_name(factuals, id).to_string(),
                 qty_text(good.amv),
-                qty_text(good.salability)
-            )
+                qty_text(good.salability),
+                qty_text(good.decayed),
+                format!("{}%", qty_text(decay_percent(good))),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        "market board",
+        &["good", "amv", "salability", "decay", "decay %"],
+        &rows,
+    );
+}
+
+/// # Decay Percent
+///
+/// Units lost over the stock they came from, as a percent.
+///
+/// The base is `volume` when that is positive, otherwise `stock`. That is
+/// the same base the night uses. No base yields 0.
+fn decay_percent(good: &MarketGood) -> f64 {
+    let base = if good.volume > 0.0 {
+        good.volume
+    } else {
+        good.stock
+    };
+    if base > 0.0 {
+        (good.decayed / base).clamp(0.0, 1.0) * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// # Holdings
+///
+/// Goods this pop still has, lowest id first.
+///
+/// A quantity of 0 is left out. No stock reads as "nothing".
+fn holdings(factuals: &Factuals, pop: &Pop) -> String {
+    let mut rows: Vec<(&Good, f64)> = pop
+        .property
+        .iter()
+        .filter(|(_, row)| row.quantity != 0.0)
+        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.quantity)))
+        .collect();
+    rows.sort_by_key(|(good, _)| good.id);
+    if rows.is_empty() {
+        "nothing".to_string()
+    } else {
+        rows.iter()
+            .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// # Print Table
+///
+/// Prints `title`, then a header and one row per entry in `rows`.
+///
+/// Columns line up by the widest cell. `rows` may be empty.
+fn print_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
+    println!("{title}");
+    let widths: Vec<usize> = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
+            let widest = rows
+                .iter()
+                .map(|row| row.get(column).map(String::len).unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            header.len().max(widest)
         })
         .collect();
-    println!("card: {}", parts.join("; "));
+    println!("{}", table_line(headers, &widths));
+    println!(
+        "{}",
+        widths
+            .iter()
+            .map(|width| "-".repeat(*width))
+            .collect::<Vec<_>>()
+            .join("  ")
+    );
+    for row in rows {
+        println!("{}", table_line(row, &widths));
+    }
+    println!();
+}
+
+fn table_line(cells: &[impl AsRef<str>], widths: &[usize]) -> String {
+    cells
+        .iter()
+        .enumerate()
+        .map(|(column, cell)| {
+            let width = widths.get(column).copied().unwrap_or(0);
+            format!("{:width$}", cell.as_ref())
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn basket(factuals: &Factuals, proposal: &ProposedDeal) -> String {

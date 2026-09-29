@@ -6,6 +6,7 @@ pub mod market;
 pub mod config;
 pub mod pop;
 pub mod pop_property;
+pub mod job;
 pub mod species;
 pub mod culture;
 pub mod desire;

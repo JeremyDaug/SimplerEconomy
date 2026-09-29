@@ -410,6 +410,16 @@ impl Factuals {
         self
     }
 
+    /// # Get Process
+    ///
+    /// The process stored under `id`.
+    ///
+    /// Returns `None` when the world has no process with that id. A job line
+    /// can name a process that is not loaded, and that line does not run.
+    pub fn get_process(&self, id: usize) -> Option<&Process> {
+        self.processes.get(&id)
+    }
+
     /// Looks up a species by id. Panics if missing.
     pub fn find_species(&self, id: usize) -> &Species {
         self.species.get(&id)

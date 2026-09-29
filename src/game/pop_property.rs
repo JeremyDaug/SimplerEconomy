@@ -48,6 +48,7 @@ pub struct PopPRow {
     /// Units earmarked for today's uses. `quantity - reserved` is free stock.
     pub reserved: f64,
     /// Units output by a process today. Not decayed today.
+    /// [`crate::game::pop::Pop::decay_goods`] leaves this portion of `quantity` in place.
     pub process_output: f64,
     /// Consumed today. Removed from `quantity` when recorded, destroyed at decay.
     pub consumed: f64,
@@ -88,4 +89,11 @@ impl PopPRow {
 ///
 /// The field stays on [`crate::game::pop::Pop`]. What it records is not chosen yet.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct PopRecords {}
+pub struct PopRecords {
+    /// The total satisfaction for the pop.
+    /// 
+    /// This value should never be negative, but may be +inf. 
+    /// 
+    /// If it is +inf, then the pop has no desires and is always satisfied.
+    pub satisfaction: f64,
+}

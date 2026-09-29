@@ -70,7 +70,8 @@ pub struct Meeting {
 ///
 /// `sell_orders`, `buy_orders`, `propose`, and `evaluate` do not move stock.
 /// [`DealMaker::finalize`] does. [`DealMaker::reevaluate`] runs after every
-/// meeting, accepted or not.
+/// meeting, accepted or not. [`DealMaker::reset_day`] runs at the start of
+/// [`crate::game::market::Market::market_day`].
 pub trait DealMaker {
     fn actor(&self) -> Actor;
 
@@ -115,13 +116,21 @@ pub trait DealMaker {
         let _ = (self, history, rng);
     }
 
-    /// Morning reservation. Pops satisfy open desires. Firms reserve stock
-    /// for production and savings.
+    /// # Reset Day
+    ///
+    /// Drops yesterday's same-day state before this market day starts.
+    ///
+    /// `self` is the actor. Nothing is returned. The default leaves the
+    /// actor unchanged. Pops clear satisfaction and reserves here.
+    fn reset_day(&mut self) {}
+
+    /// Morning reservation. Pops satisfy open desires, then reserve inputs
+    /// for their job. Firms reserve stock for production and savings.
     fn reserve(&mut self, factuals: &Factuals, rng: &mut dyn rand::RngCore) {
         let _ = (self, factuals, rng);
     }
 
-    /// Today's productive work.
+    /// Today's productive work. Pops run their job.
     fn produce(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
     }
