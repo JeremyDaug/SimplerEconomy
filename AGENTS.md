@@ -44,3 +44,15 @@ The doc says the inputs, the logic, and the outputs. Small and private functions
 A step inside a function gets a one-line comment of what that step does when the code does not already say it. `Market::market_day` labels each phase that way. Longer notes stay on the parts that are hard to follow.
 
 When a comment already matches the code, add a link, a highlight, or a connection. Leave the paragraph in place. If a comment looks unclear or wrong and the function was not just changed, ask before rewriting it. When the function changed and the comment no longer matches, edit the comment to match the new logic.
+
+## Session roles
+
+These are session hats, not standing Grok Bots. Default is Implementer.
+
+Name a role in the first message: Design, Implementer, or Reviewer. One role at a time.
+
+- Design — read-only. Overview terms, matching code paths, conflicts, open decisions. No invented mechanics or version cuts. No file edits.
+- Implementer — named files only. This style section. `cargo test --lib` after a library change.
+- Reviewer — no new features. Simplify, refine, debug. Cite `docs/handoff/pops.md` on satisfy, consume, propose, evaluate, or `match_deals`. Edits only when asked to apply a specific fix.
+
+Cursor copies live in `.grok/agents/`. The working skill lives in `.grok/skills/econciv-reboot/`.
