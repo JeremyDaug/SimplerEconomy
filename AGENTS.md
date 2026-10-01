@@ -45,6 +45,8 @@ A step inside a function gets a one-line comment of what that step does when the
 
 When a comment already matches the code, add a link, a highlight, or a connection. Leave the paragraph in place. If a comment looks unclear or wrong and the function was not just changed, ask before rewriting it. When the function changed and the comment no longer matches, edit the comment to match the new logic.
 
+A comment states a fact the surrounding code owns. Put that fact on the type or function that decides it, once. Other functions in the same change, and callers that do not decide it, do not repeat it.
+
 ## Session roles
 
 These are session hats, not standing Grok Bots. Default is Implementer.

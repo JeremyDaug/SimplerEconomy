@@ -1,13 +1,16 @@
-//! Two pops, one market, a few days.
+//! A few pops, one market, a few days.
 //!
-//! Loads world goods and config, places a buyer and a seller, then runs
-//! [`Market::market_day`]. This file does not decide prices, baskets, or
-//! accept/reject.
+//! Loads world data and `data/pop_tester/scenario.toml`, then runs
+//! [`Market::market_day`]. The scenario file sets the opening board, each
+//! pop's craft, and that morning's work. This file does not decide prices,
+//! baskets, or accept/reject.
 //!
 //! ```text
 //! cargo run --example pop_tester
 //! cargo run --example pop_tester -- 5
 //! ```
+
+mod load;
 
 use std::path::PathBuf;
 
@@ -16,54 +19,35 @@ use rand::SeedableRng;
 use simpler_economy::game::actor::Actor;
 use simpler_economy::game::actors::Actors;
 use simpler_economy::game::deal::{Meeting, MeetingOutcome, ProposedDeal};
-use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::good::Good;
 use simpler_economy::game::market::{Market, MarketGood};
-use simpler_economy::game::pop::{Pop, PopPRow};
-use simpler_economy::game::scalingfactor::ScalingFactor;
+use simpler_economy::game::pop::Pop;
 
 fn main() {
     let days = std::env::args()
         .nth(1)
         .and_then(|arg| arg.parse::<u32>().ok())
         .unwrap_or(3);
-    let world = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+    let world = root.join("world");
+    let scenario_path = root.join("pop_tester").join("scenario.toml");
     let factuals = Factuals::load_from_path(&world).unwrap_or_else(|err| {
         eprintln!("load {}: {err}", world.display());
         std::process::exit(1);
     });
-
-    let bread = good_id(&factuals, "bread");
-    let gold = good_id(&factuals, "gold");
-    let time = good_id(&factuals, "time");
-
-    let mut buyer = Pop::new(1);
-    buyer.property.insert(gold, PopPRow::new(20.0));
-    buyer.desires[0].push(desire(1, bread, 4.0));
-
-    let mut seller = Pop::new(2);
-    seller.property.insert(bread, PopPRow::new(10.0));
-
-    let mut market = Market::new(1).with_friction(factuals.config.market.friction);
-    market.pops.insert(buyer.id);
-    market.pops.insert(seller.id);
-    // Opening market board. The day reads this and does not invent a price.
-    market.goods.insert(time, MarketGood::new().with_amv(1.0).with_salability(1.0));
-    market.goods.insert(bread, MarketGood::new().with_amv(1.0).with_salability(1.0));
-    market.goods.insert(gold, MarketGood::new().with_amv(1.0).with_salability(1.0));
-
-    let mut actors = Actors::new();
-    actors.pops.insert(buyer.id, buyer);
-    actors.pops.insert(seller.id, seller);
+    let scenario = load::load_scenario(&scenario_path, &factuals).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    });
+    let mut market = scenario.market;
+    let mut actors = scenario.actors;
 
     let mut rng = StdRng::seed_from_u64(1);
     println!("pop tester");
     println!("world: {}", world.display());
+    println!("scenario: {}", scenario_path.display());
     println!("days: {days}");
-    println!(
-        "pop 1 holds gold and time, and wants 4 bread. pop 2 holds bread."
-    );
     println!();
 
     let mut ids: Vec<usize> = market.pops.iter().copied().collect();
@@ -76,29 +60,6 @@ fn main() {
         print_pops(&factuals, &mut actors, &ids);
         print_market_board(&factuals, &market);
     }
-}
-
-fn desire(id: usize, good: usize, amount: f64) -> Desire {
-    Desire {
-        source: DesireSource::Species(0, id),
-        priority: 0,
-        target: vec![DesireTarget::new(good, DesireTargetType::Consume, 1.0)],
-        amount,
-        satisfaction: 0.0,
-        category: None,
-        effect: vec![],
-        scalar: ScalingFactor::Fixed(1.0),
-        decay: 0.0,
-    }
-}
-
-fn good_id(factuals: &Factuals, name: &str) -> usize {
-    factuals
-        .goods
-        .values()
-        .find(|good| good.name == name)
-        .unwrap_or_else(|| panic!("world data has no good named {name}"))
-        .id
 }
 
 fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
@@ -141,7 +102,8 @@ fn print_exchanges(factuals: &Factuals, meetings: &[Meeting]) {
 
 /// # Print Pops
 ///
-/// Prints each pop's standard of living and what they still hold.
+/// Prints each pop's craft, the schedule left on the job, what that day
+/// made, standard of living, and what they still hold.
 ///
 /// `ids` is the pop order. Standard of living is today's satisfaction,
 /// including desire bonuses. Holdings skip goods whose quantity is 0.
@@ -151,10 +113,78 @@ fn print_pops(factuals: &Factuals, actors: &mut Actors, ids: &[usize]) {
         .map(|id| {
             let pop = actors.pop_mut(*id);
             let sol = pop.calculate_sol(factuals);
-            vec![id.to_string(), qty_text(sol), holdings(factuals, pop)]
+            vec![
+                id.to_string(),
+                craft_name(factuals, pop.job.craft),
+                schedule(factuals, pop),
+                made(factuals, pop),
+                qty_text(sol),
+                holdings(factuals, pop),
+            ]
         })
         .collect::<Vec<_>>();
-    print_table("pops", &["pop", "sol", "holdings"], &rows);
+    print_table(
+        "pops",
+        &["pop", "craft", "schedule", "made", "sol", "holdings"],
+        &rows,
+    );
+}
+
+/// # Craft Name
+///
+/// The craft's display name, or `none` when the pop has no baseline craft.
+fn craft_name(factuals: &Factuals, craft: usize) -> String {
+    factuals
+        .get_craft(craft)
+        .map(|craft| craft.name.clone())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+/// # Schedule
+///
+/// Each job line as `process target`, in line order.
+///
+/// A missing process keeps its id. No lines read as "idle".
+fn schedule(factuals: &Factuals, pop: &Pop) -> String {
+    if pop.job.lines.is_empty() {
+        return "idle".to_string();
+    }
+    pop.job
+        .lines
+        .iter()
+        .map(|line| {
+            let name = factuals
+                .get_process(line.process)
+                .map(|process| process.name.as_str())
+                .unwrap_or("unknown");
+            let target = line.target.map(qty_text).unwrap_or_else(|| "open".to_string());
+            format!("{name} {target}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// # Made
+///
+/// Goods this pop's job put out today, lowest id first.
+///
+/// Reads `process_output`. Nothing made reads as "nothing".
+fn made(factuals: &Factuals, pop: &Pop) -> String {
+    let mut rows: Vec<(&Good, f64)> = pop
+        .property
+        .iter()
+        .filter(|(_, row)| row.process_output > 0.0)
+        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.process_output)))
+        .collect();
+    rows.sort_by_key(|(good, _)| good.id);
+    if rows.is_empty() {
+        "nothing".to_string()
+    } else {
+        rows.iter()
+            .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// # Print Market Board

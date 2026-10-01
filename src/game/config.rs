@@ -18,6 +18,12 @@ use serde::Deserialize;
 /// 1 labor is a 16 hour day, counted as 64 quarter-hours.
 pub const TIME_PER_LABOR: f64 = 64.0;
 
+/// Pop cottage-work tunables.
+pub mod pop_constants {
+    /// Full weight of one extra process in [`crate::game::craft::Craft::craft_distance`].
+    pub const CRAFT_DISTANCE: f64 = 0.1;
+}
+
 /// Transport bill pieces. Not prices.
 pub mod market_constants {
     /// Flat transport units charged per meeting. Not AMV.
@@ -84,6 +90,7 @@ impl GameConfig {
     /// Returns `Err` when a loaded value is outside its stated bound.
     pub fn validate(&self) -> Result<(), ConfigLoadError> {
         let mut problems = Vec::new();
+        self.pop.validate(&mut problems);
         self.market.validate(&mut problems);
         if problems.is_empty() {
             Ok(())
@@ -93,10 +100,32 @@ impl GameConfig {
     }
 }
 
-/// Pop-day tunables. Empty until the rebuilt pop needs them.
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+/// Pop-day tunables.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct PopConfig {}
+pub struct PopConfig {
+    /// Full per-process weight for [`crate::game::craft::Craft::craft_distance`].
+    ///
+    /// Must be `>= 0`.
+    pub craft_distance: f64,
+}
+
+impl Default for PopConfig {
+    fn default() -> Self {
+        Self {
+            craft_distance: pop_constants::CRAFT_DISTANCE,
+        }
+    }
+}
+
+impl PopConfig {
+    /// # Validate
+    ///
+    /// Appends a problem when `craft_distance` is non-finite or below 0.
+    fn validate(&self, problems: &mut Vec<String>) {
+        at_least(problems, "pop.craft_distance", self.craft_distance, 0.0);
+    }
+}
 
 /// Player-score yields. Empty until those pools are wired again.
 /// The pools themselves live on [`crate::game::player_resources::PlayerResources`].
@@ -177,6 +206,20 @@ mod config_should {
     fn load_from_toml_keeps_defaults_for_missing_keys() {
         let cfg = GameConfig::load_from_toml("").expect("toml");
         assert_eq!(cfg, GameConfig::default());
+    }
+
+    #[test]
+    fn load_from_toml_reads_craft_distance() {
+        let cfg = GameConfig::load_from_toml("[pop]\ncraft_distance = 0.2\n").expect("toml");
+        assert!((cfg.pop.craft_distance - 0.2).abs() < 1e-12);
+        assert_eq!(cfg.market.friction, market_constants::FRICTION);
+    }
+
+    #[test]
+    fn load_from_toml_rejects_negative_craft_distance() {
+        let err = GameConfig::load_from_toml("[pop]\ncraft_distance = -0.1\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.craft_distance"), "{msg}");
     }
 
     #[test]

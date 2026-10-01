@@ -1,0 +1,21 @@
+# Baseline crafts. Process ids are the starting list for a job of this craft.
+
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [29, 30, 31]
+
+[[crafts]]
+id = 2
+name = "farming"
+processes = [1]
+
+[[crafts]]
+id = 3
+name = "watering"
+processes = [2]
+
+[[crafts]]
+id = 4
+name = "baking"
+processes = [3]

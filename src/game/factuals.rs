@@ -5,16 +5,67 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::game::{
-    config::{ConfigLoadError, GameConfig}, culture::Culture, desire::{DemoDesire, Desire, DesireSource}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
+    config::{ConfigLoadError, GameConfig}, craft::{Craft, CulturalCraft}, culture::Culture, desire::{DemoDesire, Desire, DesireSource}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
 };
 
-/// TOML world-data file of goods and/or processes (factuals).
+/// TOML world-data file of goods, processes, and crafts (factuals).
 #[derive(Debug, Deserialize)]
 struct WorldFile {
     #[serde(default)]
     goods: Vec<Good>,
     #[serde(default)]
     processes: Vec<ProcessFile>,
+    #[serde(default)]
+    crafts: Vec<CraftFile>,
+    #[serde(default)]
+    culture_crafts: Vec<CultureCraftFile>,
+    #[serde(default)]
+    religion_crafts: Vec<ReligionCraftFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CraftFile {
+    id: usize,
+    name: String,
+    #[serde(default)]
+    processes: Vec<usize>,
+    #[serde(default = "default_complexity_modifier")]
+    complexity_modifier: f64,
+}
+
+/// # Default Complexity Modifier
+///
+/// A craft or overlay that omits `complexity_modifier` loads as 1.0.
+fn default_complexity_modifier() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Deserialize)]
+struct CultureCraftFile {
+    culture: usize,
+    #[serde(default)]
+    name: String,
+    craft: usize,
+    #[serde(default)]
+    add: Vec<usize>,
+    #[serde(default)]
+    remove: Vec<usize>,
+    #[serde(default = "default_complexity_modifier")]
+    complexity_modifier: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReligionCraftFile {
+    religion: usize,
+    #[serde(default)]
+    name: String,
+    craft: usize,
+    #[serde(default)]
+    add: Vec<usize>,
+    #[serde(default)]
+    remove: Vec<usize>,
+    #[serde(default = "default_complexity_modifier")]
+    complexity_modifier: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,8 +80,16 @@ struct ProcessFile {
     outputs: Vec<ProcessOutputFile>,
     #[serde(default)]
     effects: Vec<ProcessEffectFile>,
-    #[serde(default)]
-    tags: Vec<ProcessTagFile>,
+    /// Management overhead. Omitted world data is 1.0. Below 1.0 is subsistence.
+    #[serde(default = "default_process_complexity")]
+    complexity: f64,
+}
+
+/// # Default Process Complexity
+///
+/// World data that omits complexity loads as 1.0, which is not subsistence.
+fn default_process_complexity() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +153,11 @@ pub enum FactualsLoadError {
     DuplicateGood(usize),
     DuplicateProcess(usize),
     DuplicateProcessInput { process: usize, good: usize },
+    DuplicateCraft(usize),
+    DuplicateCultureCraft { culture: usize, craft: usize },
+    DuplicateReligionCraft { religion: usize, craft: usize },
     InvalidProcess(String),
+    InvalidCraft(String),
     Config(ConfigLoadError),
 }
 
@@ -108,7 +171,15 @@ impl fmt::Display for FactualsLoadError {
             Self::DuplicateProcessInput { process, good } => {
                 write!(f, "process {process} repeats input good {good}")
             }
+            Self::DuplicateCraft(id) => write!(f, "duplicate craft id {id} in world data"),
+            Self::DuplicateCultureCraft { culture, craft } => {
+                write!(f, "culture {culture} repeats craft {craft}")
+            }
+            Self::DuplicateReligionCraft { religion, craft } => {
+                write!(f, "religion {religion} repeats craft {craft}")
+            }
             Self::InvalidProcess(msg) => write!(f, "{msg}"),
+            Self::InvalidCraft(msg) => write!(f, "{msg}"),
             Self::Config(err) => write!(f, "{err}"),
         }
     }
@@ -119,8 +190,10 @@ impl std::error::Error for FactualsLoadError {}
 impl ProcessFile {
     fn into_process(self, factuals: &Factuals) -> Result<Process, FactualsLoadError> {
         let id = self.id;
+        check_process_complexity(id, self.complexity)?;
         let mut seen_inputs = HashSet::new();
-        let mut process = Process::new(id, self.name, self.tech_source);
+        let mut process = Process::new(id, self.name, self.tech_source)
+            .with_complexity(self.complexity);
         for input in self.inputs {
             if !seen_inputs.insert(input.good) {
                 return Err(FactualsLoadError::DuplicateProcessInput {
@@ -136,41 +209,7 @@ impl ProcessFile {
         for effect in self.effects {
             process = process.with_effect(effect.into());
         }
-        for tag in self.tags {
-            process = process.with_tag(tag.into_tag(id)?);
-        }
         Ok(process)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ProcessTagFile {
-    Name(String),
-    Subsistence { subsistence: f64 },
-}
-
-impl ProcessTagFile {
-    fn into_tag(self, process: usize) -> Result<crate::game::process::ProcessTag, FactualsLoadError> {
-        use crate::game::process::{ProcessTag, SUBSISTENCE_WEIGHT};
-        let weight = match self {
-            Self::Name(name) => {
-                if name != "subsistence" {
-                    return Err(FactualsLoadError::InvalidProcess(format!(
-                        "process {process} unknown tag {name}"
-                    )));
-                }
-                SUBSISTENCE_WEIGHT
-            }
-            Self::Subsistence { subsistence } => subsistence,
-        };
-        if weight > 0.0 && weight.is_finite() {
-            Ok(ProcessTag::subsistence(weight))
-        } else {
-            Err(FactualsLoadError::InvalidProcess(format!(
-                "process {process} complexity weight must be finite and > 0"
-            )))
-        }
     }
 }
 
@@ -198,6 +237,36 @@ impl ProcessOutputFile {
         check_process_amount(process, "output", self.amount)?;
         check_process_good(process, self.good, factuals)?;
         Ok(ProcessOutput::new(self.good, self.amount, self.fixed))
+    }
+}
+
+/// # Check Process Complexity
+///
+/// `process` is the process id. `complexity` is the value from world data.
+/// Accepts a finite number greater than 0. Anything else is an invalid process.
+fn check_process_complexity(process: usize, complexity: f64) -> Result<(), FactualsLoadError> {
+    if complexity > 0.0 && complexity.is_finite() {
+        Ok(())
+    } else {
+        Err(FactualsLoadError::InvalidProcess(format!(
+            "process {process} complexity must be finite and > 0"
+        )))
+    }
+}
+
+/// # Check Complexity Modifier
+///
+/// `label` names the row. `modifier` is the value from world data.
+///
+/// A finite modifier is kept, including a negative one. NaN and infinity
+/// are an invalid craft.
+fn check_complexity_modifier(label: &str, modifier: f64) -> Result<(), FactualsLoadError> {
+    if modifier.is_finite() {
+        Ok(())
+    } else {
+        Err(FactualsLoadError::InvalidCraft(format!(
+            "{label} complexity modifier must be finite"
+        )))
     }
 }
 
@@ -267,7 +336,7 @@ impl From<ProcessEffectFile> for ProcessEffect {
 /// processes exist, these rarely, if ever change, and should even be mostly the same
 /// between games.
 /// 
-/// This should include Goods, Processes, Game Rules, etc.
+/// This should include Goods, Processes, Crafts, Game Rules, etc.
 /// 
 /// This is as compared to 'game state' which is the current state fo the world in a 
 /// given game, such as the map, players, goods in the market, prices, etc.
@@ -275,6 +344,8 @@ impl From<ProcessEffectFile> for ProcessEffect {
 pub struct Factuals {
     pub goods: HashMap<usize, Good>,
     pub processes: HashMap<usize, Process>,
+    /// Baseline crafts, keyed by id.
+    pub crafts: HashMap<usize, Craft>,
     pub species: HashMap<usize, Species>,
     pub cultures: HashMap<usize, Culture>,
     pub religion: HashMap<usize, Religion>,
@@ -290,6 +361,7 @@ impl Factuals {
         Factuals {
             goods: HashMap::new(),
             processes: HashMap::new(),
+            crafts: HashMap::new(),
             cultures: HashMap::new(),
             species: HashMap::new(),
             religion: HashMap::new(),
@@ -299,9 +371,11 @@ impl Factuals {
 
     /// Loads world data from `path`.
     ///
-    /// A directory loads `goods.toml`, `processes.toml` if present, and
-    /// `config.toml` if present. A file is treated as a single TOML document
-    /// (goods and/or processes). Species, cultures, and religions stay empty.
+    /// A directory loads `goods.toml`, `processes.toml` if present,
+    /// `crafts.toml` if present, and `config.toml` if present. A file is
+    /// treated as a single TOML document (goods, processes, and/or crafts).
+    /// A culture or religion craft in that file creates the holder when that
+    /// id is not already loaded. Species stay empty.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, FactualsLoadError> {
         let path = path.as_ref();
         if path.is_dir() {
@@ -320,6 +394,11 @@ impl Factuals {
         let processes_path = dir.join("processes.toml");
         if processes_path.exists() {
             let text = std::fs::read_to_string(&processes_path).map_err(FactualsLoadError::Io)?;
+            factuals.insert_world_file(&text)?;
+        }
+        let crafts_path = dir.join("crafts.toml");
+        if crafts_path.exists() {
+            let text = std::fs::read_to_string(&crafts_path).map_err(FactualsLoadError::Io)?;
             factuals.insert_world_file(&text)?;
         }
         let config_path = dir.join("config.toml");
@@ -348,6 +427,100 @@ impl Factuals {
         for process in file.processes {
             self.insert_process_file(process)?;
         }
+        for craft in file.crafts {
+            self.insert_craft_file(craft)?;
+        }
+        for craft in file.culture_crafts {
+            self.insert_culture_craft(craft)?;
+        }
+        for craft in file.religion_crafts {
+            self.insert_religion_craft(craft)?;
+        }
+        Ok(())
+    }
+
+    fn insert_craft_file(&mut self, file: CraftFile) -> Result<(), FactualsLoadError> {
+        if file.id == 0 {
+            return Err(FactualsLoadError::InvalidCraft(
+                "craft id 0 is no craft".into(),
+            ));
+        }
+        if self.crafts.contains_key(&file.id) {
+            return Err(FactualsLoadError::DuplicateCraft(file.id));
+        }
+        let mut seen = HashSet::new();
+        for process in &file.processes {
+            if !seen.insert(*process) {
+                return Err(FactualsLoadError::InvalidCraft(format!(
+                    "craft {} repeats process {process}",
+                    file.id
+                )));
+            }
+        }
+        check_complexity_modifier(&format!("craft {}", file.id), file.complexity_modifier)?;
+        self.crafts.insert(
+            file.id,
+            Craft {
+                id: file.id,
+                name: file.name,
+                processes: file.processes,
+                complexity_modifier: file.complexity_modifier,
+            },
+        );
+        Ok(())
+    }
+
+    fn insert_culture_craft(&mut self, file: CultureCraftFile) -> Result<(), FactualsLoadError> {
+        check_complexity_modifier(
+            &format!("culture {} craft {}", file.culture, file.craft),
+            file.complexity_modifier,
+        )?;
+        let culture = self
+            .cultures
+            .entry(file.culture)
+            .or_insert_with(|| Culture::new(file.culture, file.name));
+        if culture.crafts.contains_key(&file.craft) {
+            return Err(FactualsLoadError::DuplicateCultureCraft {
+                culture: file.culture,
+                craft: file.craft,
+            });
+        }
+        culture.crafts.insert(
+            file.craft,
+            CulturalCraft {
+                craft: file.craft,
+                add: file.add,
+                remove: file.remove,
+                complexity_modifier: file.complexity_modifier,
+            },
+        );
+        Ok(())
+    }
+
+    fn insert_religion_craft(&mut self, file: ReligionCraftFile) -> Result<(), FactualsLoadError> {
+        check_complexity_modifier(
+            &format!("religion {} craft {}", file.religion, file.craft),
+            file.complexity_modifier,
+        )?;
+        let religion = self
+            .religion
+            .entry(file.religion)
+            .or_insert_with(|| Religion::new(file.religion, file.name));
+        if religion.crafts.contains_key(&file.craft) {
+            return Err(FactualsLoadError::DuplicateReligionCraft {
+                religion: file.religion,
+                craft: file.craft,
+            });
+        }
+        religion.crafts.insert(
+            file.craft,
+            CulturalCraft {
+                craft: file.craft,
+                add: file.add,
+                remove: file.remove,
+                complexity_modifier: file.complexity_modifier,
+            },
+        );
         Ok(())
     }
 
@@ -400,6 +573,19 @@ impl Factuals {
         self
     }
 
+    /// Adds a craft; panics if its id is `0` or already present.
+    pub fn with_craft(mut self, craft: Craft) -> Self {
+        let id = craft.id;
+        if id == 0 {
+            panic!("Craft id 0 is no craft.");
+        }
+        if self.crafts.contains_key(&id) {
+            panic!("Craft ID {id} already exists in factuals.");
+        }
+        self.crafts.insert(id, craft);
+        self
+    }
+
     /// Adds a religion; panics if its ID is already present.
     pub fn with_religion(mut self, religion: Religion) -> Self {
         let id = religion.id;
@@ -418,6 +604,57 @@ impl Factuals {
     /// can name a process that is not loaded, and that line does not run.
     pub fn get_process(&self, id: usize) -> Option<&Process> {
         self.processes.get(&id)
+    }
+
+    /// # Get Craft
+    ///
+    /// The base craft stored under `id`.
+    ///
+    /// Returns `None` when the world has no craft with that id.
+    pub fn get_craft(&self, id: usize) -> Option<&Craft> {
+        self.crafts.get(&id)
+    }
+
+    /// # Effective Craft
+    ///
+    /// The base craft after `culture` and then `religion`.
+    ///
+    /// Starts from the stored craft. Applies that culture's overlay, then that
+    /// religion's. Craft id `0`, or a missing base craft, returns `None`.
+    /// Culture or religion id `0`, a missing holder, or a missing overlay
+    /// skips that part.
+    pub fn effective_craft(&self, craft: usize, culture: usize, religion: usize) -> Option<Craft> {
+        if craft == 0 {
+            return None;
+        }
+        let mut resolved = self.get_craft(craft)?.clone();
+        if culture != 0 {
+            if let Some(overlay) = self.cultures.get(&culture).and_then(|row| row.get_craft(craft))
+            {
+                resolved = resolved.with_overlay(overlay);
+            }
+        }
+        if religion != 0 {
+            if let Some(overlay) = self
+                .religion
+                .get(&religion)
+                .and_then(|row| row.get_craft(craft))
+            {
+                resolved = resolved.with_overlay(overlay);
+            }
+        }
+        Some(resolved)
+    }
+
+    /// # Craft Processes
+    ///
+    /// Process ids of [`Self::effective_craft`] for these ids.
+    ///
+    /// An absent craft returns an empty list.
+    pub fn craft_processes(&self, craft: usize, culture: usize, religion: usize) -> Vec<usize> {
+        self.effective_craft(craft, culture, religion)
+            .map(|craft| craft.processes)
+            .unwrap_or_default()
     }
 
     /// Looks up a species by id. Panics if missing.
@@ -559,7 +796,9 @@ impl Factuals {
 #[cfg(test)]
 mod factuals_should {
     use super::*;
+    use super::{CraftFile, CultureCraftFile};
     use crate::game::config::GameConfig;
+    use crate::game::craft::{Craft, CulturalCraft};
     use crate::game::effects::ProcessEffect;
     use crate::game::good::{GoodTag, TIME};
     use crate::game::process::InputType;
@@ -632,6 +871,208 @@ tags = ["untradeable", { transport = 2.0 }]
     }
 
     #[test]
+    fn load_from_toml_reads_crafts_and_overlays() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [29, 30]
+
+[[culture_crafts]]
+culture = 4
+name = "welsh"
+craft = 1
+remove = [30]
+add = [3]
+
+[[religion_crafts]]
+religion = 5
+name = "old faith"
+craft = 1
+add = [30, 2]
+"#,
+        )
+        .expect("toml");
+
+        assert_eq!(factuals.get_craft(1).expect("subsistence").name, "subsistence");
+        assert_eq!(factuals.craft_processes(1, 0, 0), vec![29, 30]);
+        assert_eq!(factuals.craft_processes(1, 4, 0), vec![29, 3]);
+        assert_eq!(factuals.craft_processes(1, 4, 5), vec![29, 3, 30, 2]);
+        assert!(factuals.craft_processes(0, 4, 5).is_empty());
+        assert!(factuals.craft_processes(9, 4, 5).is_empty());
+        assert_eq!(factuals.find_culture(4).name, "welsh");
+        assert_eq!(factuals.find_religion(5).name, "old faith");
+    }
+
+    #[test]
+    fn effective_craft_stacks_processes_and_modifiers() {
+        let factuals = Factuals::new()
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_process(1)
+                    .with_process(2)
+                    .with_complexity_modifier(0.4),
+            )
+            .with_culture(
+                Culture::new(2, "welsh").with_craft(
+                    CulturalCraft::new(1)
+                        .with_remove(2)
+                        .with_add(3)
+                        .with_complexity_modifier(0.5),
+                ),
+            )
+            .with_religion(
+                Religion::new(3, "old faith")
+                    .with_craft(CulturalCraft::new(1).with_complexity_modifier(0.5)),
+            );
+
+        let craft = factuals.effective_craft(1, 2, 3).expect("craft");
+        assert_eq!(craft.processes, vec![1, 3]);
+        assert!((craft.complexity_modifier - 0.1).abs() < 1e-12);
+        assert_eq!(factuals.craft_processes(1, 2, 3), vec![1, 3]);
+        assert!(factuals.effective_craft(0, 2, 3).is_none());
+        assert!(factuals.effective_craft(9, 2, 3).is_none());
+    }
+
+    #[test]
+    fn load_from_toml_reads_craft_complexity_modifiers() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [29, 30]
+complexity_modifier = 0.4
+
+[[crafts]]
+id = 2
+name = "plain"
+processes = [1]
+
+[[culture_crafts]]
+culture = 4
+name = "welsh"
+craft = 1
+complexity_modifier = 0.5
+
+[[culture_crafts]]
+culture = 4
+craft = 2
+
+[[religion_crafts]]
+religion = 5
+name = "old faith"
+craft = 1
+complexity_modifier = 0.5
+"#,
+        )
+        .expect("toml");
+
+        assert!((factuals.get_craft(1).expect("subsistence").complexity_modifier - 0.4).abs() < 1e-12);
+        assert!((factuals.get_craft(2).expect("plain").complexity_modifier - 1.0).abs() < 1e-12);
+        assert!(
+            (factuals.find_culture(4).get_craft(1).expect("welsh").complexity_modifier - 0.5).abs()
+                < 1e-12
+        );
+        assert!(
+            (factuals
+                .find_culture(4)
+                .get_craft(2)
+                .expect("plain overlay")
+                .complexity_modifier
+                - 1.0)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (factuals
+                .find_religion(5)
+                .get_craft(1)
+                .expect("old faith")
+                .complexity_modifier
+                - 0.5)
+                .abs()
+                < 1e-12
+        );
+
+        let stacked = factuals.effective_craft(1, 4, 5).expect("stacked");
+        assert!((stacked.complexity_modifier - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn load_rejects_a_non_finite_craft_modifier() {
+        let mut factuals = Factuals::new();
+        let err = factuals
+            .insert_craft_file(CraftFile {
+                id: 1,
+                name: "bad".into(),
+                processes: vec![],
+                complexity_modifier: f64::NAN,
+            })
+            .expect_err("nan");
+        assert!(matches!(err, FactualsLoadError::InvalidCraft(_)));
+        assert!(factuals.get_craft(1).is_none());
+
+        let err = factuals
+            .insert_culture_craft(CultureCraftFile {
+                culture: 4,
+                name: "welsh".into(),
+                craft: 1,
+                add: vec![],
+                remove: vec![],
+                complexity_modifier: f64::INFINITY,
+            })
+            .expect_err("infinity");
+        assert!(matches!(err, FactualsLoadError::InvalidCraft(_)));
+        assert!(factuals.cultures.get(&4).is_none());
+    }
+
+    #[test]
+    fn load_from_toml_rejects_craft_zero_and_duplicates() {
+        let zero = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 0
+name = "none"
+"#,
+        );
+        assert!(zero.is_err());
+
+        let repeated = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [29, 29]
+"#,
+        );
+        assert!(repeated.is_err());
+
+        let duplicate = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 1
+name = "subsistence"
+
+[[crafts]]
+id = 1
+name = "again"
+"#,
+        );
+        assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn load_from_path_reads_world_crafts() {
+        let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
+        let subsistence = factuals.get_craft(1).expect("subsistence");
+        assert_eq!(subsistence.name, "subsistence");
+        assert_eq!(subsistence.processes, vec![29, 30, 31]);
+        assert!((subsistence.complexity_modifier - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn load_from_path_reads_world_dir_goods_and_processes() {
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         assert!(!factuals.goods.is_empty());
@@ -651,7 +1092,7 @@ tags = ["untradeable", { transport = 2.0 }]
             assert!(!time_in.is_optional());
             assert_eq!(process.outputs.len(), 1);
             assert!(process.outputs[0].amount > 0.0 && process.outputs[0].amount <= 8.0);
-            assert!(process.complexity_weight() > 0.0);
+            assert!(process.complexity > 0.0);
             let output_name = factuals
                 .goods
                 .get(&process.outputs[0].good)
@@ -663,7 +1104,8 @@ tags = ["untradeable", { transport = 2.0 }]
             if process.is_subsistence() || process.outputs[0].good == TIME {
                 assert!(!required_material, "{} should be Time-only", process.name);
                 if process.is_subsistence() {
-                    assert!((process.complexity_weight() - 0.25).abs() < 1e-12);
+                    assert!(process.complexity < 1.0);
+                    assert!((process.complexity - 0.25).abs() < 1e-12);
                 }
             } else if RAW_EXTRACTS.contains(&output_name) {
                 assert!(
@@ -679,7 +1121,7 @@ tags = ["untradeable", { transport = 2.0 }]
         assert_eq!(grain.name, "make grain");
         assert_eq!(grain.outputs[0].good, 1);
         assert!(!grain.is_subsistence());
-        assert!((grain.complexity_weight() - 1.0).abs() < 1e-12);
+        assert!((grain.complexity - 1.0).abs() < 1e-12);
         assert_eq!(grain.inputs.len(), 3);
         assert!((grain.inputs[0].amount - 0.5).abs() < 1e-12);
         assert!(grain.inputs[1].is_optional());
@@ -687,7 +1129,7 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!((grain.outputs[0].amount - 6.0).abs() < 1e-12);
         let farm = factuals.processes.get(&29).expect("subsistence farm");
         assert!(farm.is_subsistence());
-        assert!((farm.complexity_weight() - 0.25).abs() < 1e-12);
+        assert!((farm.complexity - 0.25).abs() < 1e-12);
         assert_eq!(farm.outputs[0].good, 1);
         assert_eq!(farm.inputs.len(), 1);
         let pots = factuals.processes.get(&27).expect("make pots");
@@ -727,38 +1169,58 @@ effects = [{ research = 4.0 }]
         assert!(matches!(mill.inputs[0].input_type, InputType::Consumed));
         assert!(mill.outputs[0].fixed);
         assert!(matches!(mill.effects[0], ProcessEffect::Research(v) if v == 4.0));
+        assert!(!mill.is_subsistence());
+        assert!((mill.complexity - 1.0).abs() < 1e-12);
     }
 
     #[test]
-    fn load_from_toml_reads_subsistence_tag_and_rejects_zero_weight() {
+    fn load_from_toml_reads_complexity_and_rejects_non_positive() {
         let factuals = Factuals::load_from_toml(
             r#"
 [[processes]]
 id = 40
 name = "camp"
-tags = ["subsistence"]
+complexity = 0.25
 inputs = [{ good = 0, amount = 0.5 }]
+outputs = [{ good = 1, amount = 1.0 }]
+
+[[processes]]
+id = 42
+name = "specialized"
+complexity = 1.0
+outputs = [{ good = 1, amount = 1.0 }]
+
+[[processes]]
+id = 43
+name = "works"
+complexity = 2.5
 outputs = [{ good = 1, amount = 1.0 }]
 "#,
         )
         .expect("toml");
         let camp = factuals.processes.get(&40).expect("camp");
         assert!(camp.is_subsistence());
-        assert!((camp.complexity_weight() - 0.25).abs() < 1e-12);
+        assert!((camp.complexity - 0.25).abs() < 1e-12);
+        let specialized = factuals.processes.get(&42).expect("specialized");
+        assert!(!specialized.is_subsistence());
+        assert!((specialized.complexity - 1.0).abs() < 1e-12);
+        let works = factuals.processes.get(&43).expect("works");
+        assert!(!works.is_subsistence());
+        assert!((works.complexity - 2.5).abs() < 1e-12);
 
         let err = Factuals::load_from_toml(
             r#"
 [[processes]]
 id = 41
 name = "bad"
-tags = [{ subsistence = 0.0 }]
+complexity = 0.0
 outputs = [{ good = 1, amount = 1.0 }]
 "#,
         )
-        .expect_err("zero weight");
+        .expect_err("zero complexity");
         match err {
             FactualsLoadError::InvalidProcess(msg) => {
-                assert!(msg.contains("complexity weight"));
+                assert!(msg.contains("complexity"));
             }
             other => panic!("expected InvalidProcess, got {other}"),
         }

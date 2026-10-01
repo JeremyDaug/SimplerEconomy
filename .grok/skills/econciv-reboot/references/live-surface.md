@@ -1,6 +1,6 @@
 # Live surface on EconCiv-Reboot
 
-Confirm against the branch tip. This note tracked SHA `bd60ac45` (2026-09-29).
+Confirm against the branch tip. Refreshed 2026-09-30 for cottage jobs and the file-loaded pop tester.
 
 ## Landed
 
@@ -8,12 +8,14 @@ Confirm against the branch tip. This note tracked SHA `bd60ac45` (2026-09-29).
 - `Pop::satisfy_continue` resumes from that bookmark. After new stock arrives inside a day, `reevaluate` uses this, not a fresh `satisfy`.
 - `Pop::consume` / `consume_tier` / `consume_one_desire` run after exchange in `Market::market_day`. Consume ignores satisfaction already recorded and can count a level twice if both satisfy and consume run. That is the current day path.
 - `Market::match_deals` pairs on one good. Buyer proposes, seller accepts or rejects. Only an accepted basket moves goods and pays freight. Both sides reevaluate after.
-- `Market::market_day` order — reserve, produce, `match_deals`, consume, decay, actor books and planning, night card.
+- `Market::market_day` order — reset, reserve, produce, `match_deals`, consume, decay, actor books and planning, night card. A pop's reserve is satisfy, then `apply_craft`, then the job reserve.
+- A pop `Job` plans, reserves, produces, and shops on the pop's stock. Craft `0` is no baseline; lines still run. An empty line list skips the work. `Pop::plan` rewrites every line target after decay. `Pop::complexity_cost` is available and does not scale iterations.
+- `examples/pop_tester` loads `data/pop_tester/scenario.toml` and calls `Actors::start_day` before `market_day`. The scenario's line targets are the first morning. The night plan replaces them.
 - Night `record_keeping` writes trade pressure, production flow, rot, and salability drift. Deals do not write the published AMV/salability card during the day. History snapshots the card at the start of `match_deals`.
 
 ## Empty or stub
 
-- `Firm::reserve_for_day`, `Firm::produce`, `Firm::plan`, `Pop::plan`
+- `Firm::reserve_for_day`, `Firm::produce`, `Firm::plan`
 - `PlayState` phase methods including intramarket and pop consumption
 - Class desires
 - `Desire.decay` field exists; nothing multiplies satisfaction by it
@@ -32,5 +34,5 @@ Confirm against the branch tip. This note tracked SHA `bd60ac45` (2026-09-29).
 ## Tests and examples
 
 - `cargo test --lib`
-- `examples/pop_tester` — two pops, one market, `Market::market_day`
+- `examples/pop_tester` — scenario file, one market, `Actors::start_day`, then `Market::market_day`
 - `examples/rates_tester` — household demographics

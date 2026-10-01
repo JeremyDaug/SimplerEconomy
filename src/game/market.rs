@@ -168,6 +168,8 @@ impl Market {
     /// then reserve, produce, [`Self::match_deals`], consume, decay, then actor
     /// record keeping and planning, then [`Self::record_keeping`].
     ///
+    /// A pop's reserve applies its craft before the job reserves inputs.
+    ///
     /// Institutions and states use the empty defaults, so their unimplemented
     /// decay and record-keeping methods stay uncalled.
     ///
@@ -369,7 +371,11 @@ impl Market {
             offers: listed_sells(actors, seller, history, factuals),
             requests: actors.get(seller).buy_orders(history),
         };
-        let proposal = actors.get(buyer).propose(match_good, &book, history, factuals);
+        let mut proposal = actors.get(buyer).propose(match_good, &book, history, factuals);
+        if let Some(deal) = &mut proposal {
+            // The basket is chosen. Record each giver's fresh fraction before anyone moves.
+            deal.stamp_fresh_shares(|actor, good| actors.get(actor).fresh_share(good));
+        }
         let outcome = if let Some(proposal) = &proposal {
             if actors.get(seller).evaluate(proposal, history, factuals) == DealResponse::Accept
                 && is_valid_exchange(actors, proposal)

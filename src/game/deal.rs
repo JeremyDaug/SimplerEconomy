@@ -24,6 +24,8 @@ pub struct SellerBook {
 /// buyer. Negative units move from the buyer to the seller. A good is only
 /// on one side. `freight` is the transport bill for that move, paid by the
 /// buyer from transport they hold after the goods have changed hands.
+/// `fresh` is the giver's fresh fraction for each good in `goods`. Propose
+/// and evaluate do not read it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProposedDeal {
     pub buyer: Actor,
@@ -31,7 +33,42 @@ pub struct ProposedDeal {
     /// The good that caused the meeting.
     pub match_good: usize,
     pub goods: HashMap<usize, f64>,
+    /// Giver's fresh fraction for that good. `0.0` to `1.0`. Missing is `0.0`.
+    pub fresh: HashMap<usize, f64>,
     pub freight: f64,
+}
+
+impl ProposedDeal {
+    /// # Stamp Fresh Shares
+    ///
+    /// Records the giver's fresh fraction for each good in `goods`.
+    ///
+    /// `share` reads one actor's fraction for one good. Positive quantities
+    /// use the seller. Negative quantities use the buyer. Each fraction is
+    /// clamped to `0..=1`. A zero quantity is skipped.
+    pub fn stamp_fresh_shares(&mut self, share: impl Fn(Actor, usize) -> f64) {
+        let lines: Vec<(usize, f64)> = self.goods.iter().map(|(&good, &qty)| (good, qty)).collect();
+        for (good, qty) in lines {
+            if qty == 0.0 {
+                continue;
+            }
+            let giver = if qty > 0.0 { self.seller } else { self.buyer };
+            self.fresh.insert(good, share(giver, good).clamp(0.0, 1.0));
+        }
+    }
+
+    /// # Fresh Share
+    ///
+    /// Fresh fraction recorded for `good`.
+    ///
+    /// A missing entry is `0`. The result is clamped to `0..=1`.
+    pub fn fresh_share(&self, good: usize) -> f64 {
+        self.fresh
+            .get(&good)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+    }
 }
 
 /// Seller's verdict on a [`ProposedDeal`].
@@ -82,6 +119,17 @@ pub trait DealMaker {
     /// Units of `good` this actor can give up without touching a reserve.
     fn free_units(&self, good: usize) -> f64;
 
+    /// # Fresh Share
+    ///
+    /// Fraction of `good` on hand that is fresh.
+    ///
+    /// `good` is the good id. Returns `0` when this actor has no fresh pile.
+    /// Pops report [`crate::game::pop_property::PopPRow::fresh_share`].
+    fn fresh_share(&self, good: usize) -> f64 {
+        let _ = (self, good);
+        0.0
+    }
+
     /// Build a basket from `book`, or abandon the meeting.
     fn propose(
         &self,
@@ -124,8 +172,8 @@ pub trait DealMaker {
     /// actor unchanged. Pops clear satisfaction and reserves here.
     fn reset_day(&mut self) {}
 
-    /// Morning reservation. Pops satisfy open desires, then reserve inputs
-    /// for their job. Firms reserve stock for production and savings.
+    /// Morning reservation. Pops satisfy open desires, apply their craft, then
+    /// reserve inputs for their job. Firms reserve stock for production and savings.
     fn reserve(&mut self, factuals: &Factuals, rng: &mut dyn rand::RngCore) {
         let _ = (self, factuals, rng);
     }
@@ -326,6 +374,7 @@ mod tests {
             seller: Actor::Pop(2),
             match_good: 2,
             goods: HashMap::from([(2, 4.0), (9, -8.0)]),
+            fresh: HashMap::new(),
             freight: 0.0,
         };
         let history = MarketHistory::new();

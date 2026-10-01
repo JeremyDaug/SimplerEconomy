@@ -1,8 +1,13 @@
 # Pops
 
-Read this for desire satisfaction, consume, and the first deal pass.
-`examples/pop_tester` loads `data/world`, places two pops on one market, and
-runs `Market::market_day`. It does not choose baskets or prices.
+Read this for desire satisfaction, consume, cottage work, and the first deal pass.
+`examples/pop_tester` loads `data/world` and `data/pop_tester/scenario.toml`,
+places those pops on one market, grants the day's Time, and runs
+`Market::market_day`. The scenario sets the opening board, crafts, stock,
+household size, and the first morning's line targets. The tester prints the
+meetings. It does not choose baskets or prices. The night's plan rewrites
+every line target. `docs/handoff/desire.md` sketches how a platonic desire
+becomes a demographic desire and then a pop desire.
 
 ## Landed vs stub
 
@@ -14,7 +19,9 @@ runs `Market::market_day`. It does not choose baskets or prices.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Not written. Intended order is tier, then that tier's savings, then the next tier. Luxury is level, savings, next level |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reserve, produce, `match_deals`, consume, decay, actor books and planning, then the night card. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, `match_deals`, consume, decay, actor books and planning, then the night card. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
+| `Pop::plan` | Rewrites every job line's target from desires, stock, and today's card. `Firm::plan` is empty |
 | Class desires | Unimplemented |
 | `Desire.decay` | Field only. Nothing multiplies satisfaction by it |
 
@@ -67,6 +74,57 @@ Running it on goods `satisfy` already counted records the level twice.
 - `DemoDesire::create_desire` is the demo-to-pop path. It scales `amount` and
   additive effects. Birth, mortality, sentiment, and satisfaction arms stay
   at demo values.
+
+## Cottage work
+
+A pop's `Job` (`src/game/job.rs`) runs on that pop's property. It does not
+set a price and does not sell. `Pop::sell_orders` offers free whole units
+that do not feed the lowest tier with room left.
+
+Craft `0` is no baseline. Lines still run. An empty line list skips plan,
+reserve, produce, and job buys. Two pops of the same craft keep separate
+lines, targets, and stock.
+
+`data/world/crafts.toml` is the base list. A culture overlay, then a
+religion overlay, drops and appends process ids and multiplies
+`complexity_modifier`. An omitted modifier is `1.0`. Morning `apply_craft`
+adds only processes the job does not already run, as resting lines
+(`Some(0.0)`). A line already present keeps its target, so a process added
+that morning produces on a later day, after the night's plan.
+
+`JobLine.target` is the quota. `None` runs as far as inputs on hand allow
+and does not shop. `Some(0.0)` skips the line. `Some(n)` with `n > 0` runs
+up to `n` and shops the shortfall. Required inputs are always drawn.
+Optional inputs are drawn when the line lists them. A missing required
+factor shops one unit and leaves the other inputs free.
+
+Produce runs before exchange. Inputs destroyed that morning, including
+Time, are gone before freight. New output lands in `quantity` and
+`process_output`. Output that still feeds an open desire stays off the
+sell book that day. Consume runs after exchange, so the tester's extra
+bread is offered at the next day's exchange.
+
+`Actors::start_day` grants good 0 by `ScalingFactor::Labor(1.0)`. That
+call sits in the tester, before `market_day`. The library day does not
+grant Time.
+
+`Pop::plan` runs after decay and calls `Job::plan`, which writes `Some` on
+every line. For each desire, the highest-efficiency target is the good to
+make. Units wanted are `amount / efficiency`, one tier, summed when several
+desires share that good. The gap is wanted minus `quantity`. Iterations are
+the largest `gap / output.amount`. With no gap, the target is `1` when any
+output has a positive holding value, and `0` when none does. The module
+note that sums complexity squared times iterations is not what this plan
+computes.
+
+`Pop::complexity_cost` is `(complexity_modifier + craft_distance)`, capped
+at `1.0`. The weight is `pop.craft_distance` in config (default `0.1`):
+half for a missing baseline process, full for an extra process. No base
+craft returns `1.0`. The day does not scale iterations by that cost.
+
+Job buys are the shopping list, floored to a whole unit, added onto an
+open desire buy for the same good. A purchase shrinks that list. The next
+morning's reset drops the list and the claim book. Targets stay.
 
 ## Match
 
@@ -174,14 +232,17 @@ from the card is inserted at AMV `1` and salability `0.1`.
 Actor `record_keeping` and `plan` read a snapshot taken after decay and
 before that night write, so they still see today's card. Exchange priced
 itself from the snapshot at the start of `match_deals`. Firm record keeping
-clears that firm's production counters. `Pop::plan`, `Firm::reserve_for_day`,
-`Firm::produce`, and `Firm::plan` are empty.
+clears that firm's production counters. `Pop::plan` rewrites job targets
+from that snapshot. `Firm::reserve_for_day`, `Firm::produce`, and
+`Firm::plan` are empty.
 
 PlayState's phase methods are still stubs. Institution decay and institution
 record keeping still panic and are not called.
 
-**Code:** `src/game/pop.rs` (`propose`, `evaluate`), `src/game/deal.rs`
+**Code:** `src/game/pop.rs` (`propose`, `evaluate`, `apply_craft`, `plan`),
+`src/game/job.rs`, `src/game/craft.rs`, `src/game/deal.rs`
 (`Meeting`, `seller_can_accept`, `freight_shortfall`, `DealMaker` day steps),
 `src/game/market.rs` (`market_day`, `MarketGood`, `history`, `record_keeping`),
-`examples/pop_tester/main.rs`. Also `src/game/desire.rs`,
-`src/game/pop_property.rs`.
+`examples/pop_tester/main.rs`, `examples/pop_tester/load.rs`,
+`data/pop_tester/scenario.toml`, `data/world/crafts.toml`. Also
+`src/game/desire.rs`, `src/game/pop_property.rs`.

@@ -5,22 +5,65 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
+use crate::game::craft::Craft;
 use crate::game::factuals::Factuals;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::MarketOrder;
 use crate::game::pop_property::PopPRow;
 use crate::game::process::{InputType, Process, ProcessEffect, ProcessResult};
 
-/// Cottage work for one pop.
-///
-/// Craft `0` is no job. Two pops with the same craft do the same work and
-/// still keep separate lines, targets, and stock. The craft changes only
-/// when the pop changes work.
+/// # Job
+/// 
+/// The Job of a pop, helping to define their work, skills, and the work they do at home.
+/// 
+/// As compared to a firm, this is disorganized work done by pops within their own home
+/// and with their own property. 
+/// 
+/// It's primary advantage is what it gives to the pop, subsistence and stability when 
+/// the wider market is underdeveloped. It's also highly stable in that it typically 
+/// supplies most of it's effective wages directly rather than needing to trade for them.
+/// This makes it highly stable, even in shaky markets.
+/// 
+/// The disadvantages: It can't play the market, simply accepting at or near market AMV
+/// price. It can't do directed research, simply pushing a bit of research everywhere
+/// and quickly distributing it to the wider society, reducing it's competative
+/// advantage. It can't separate pop consumption from the work fully. It has a higher
+/// complexity penalty, as it's not unified. It's also self-competing, if prices are
+/// falling, it has no mechanism to manage that beyond cutting back on production and
+/// reducing supply.
+/// 
+/// ## Additional Notes
+/// 
+/// Two pops with the same craft do similar work and still keep separate
+/// lines, targets, and stock. The craft changes only when the pop changes work.
+/// 
+/// ## Production Complexity Cost
+/// 
+/// Firms hav their own, altered, complexity costs to their production 
+/// lines. Job complexity cost grows much faster with the complexity of 
+/// the job, and gains reduced integration benefits. Complexity cost looks
+/// something like:
+/// 
+/// sum(craft_modifier * (process.complexity^2 - (k * process_overlap_percent)) * j * iterations of line) 
+/// 
+/// The general idea being that 'subsistence' or simple processes are 
+/// lighter while more complex processes are harder. It's best to think
+/// of the entire pop trying to do an apropriate share of each process
+/// as though they were each independent of each other.
+/// 
+/// Additionally, the craft can give a complexity cost modifier,
+/// and if the job diverges, it pays a penalty on.
 #[derive(Debug, Clone)]
 pub struct Job {
-    /// Craft id. `0` means this pop has no job.
+    /// The craft Id, which point's towards a baseline set of processes the job has/had.
+    ///
+    /// Craft does not define the processes. `0` means this pop has no baseline job.
+    /// Craft ID should change as it's processes and owning pop
+    /// approaches a different craft.
     pub craft: usize,
     /// Processes this pop can run, and the quota for each.
+    ///
+    /// If there are no processes, the job does not run.
     pub lines: Vec<JobLine>,
     /// Units this job added to `PopPRow.reserved` this morning.
     ///
@@ -72,7 +115,7 @@ impl JobLine {
 impl Job {
     /// # None
     ///
-    /// A pop with no job. Craft `0`, no lines, nothing claimed or shopped.
+    /// A job with craft `0`, no lines, and nothing claimed or shopped.
     pub fn none() -> Self {
         Self::new(0, Vec::new())
     }
@@ -81,14 +124,41 @@ impl Job {
     ///
     /// A job of `craft` with these lines.
     ///
-    /// Claimed inputs and the shopping list start empty. Craft `0` does not
-    /// reserve, produce, shop, or replan.
+    /// Claimed inputs and the shopping list start empty.
     pub fn new(craft: usize, lines: Vec<JobLine>) -> Self {
         Self {
             craft,
             lines,
             claimed: HashMap::new(),
             shopping: HashMap::new(),
+        }
+    }
+
+    /// # Complexity Cost
+    ///
+    /// The cost of this job's lines against `baseline`.
+    ///
+    /// `weight` is the full distance of one extra process. Collects the
+    /// process id of each line and returns [`Craft::complexity_cost`].
+    pub fn complexity_cost(&self, baseline: &Craft, weight: f64) -> f64 {
+        let processes: Vec<usize> = self.lines.iter().map(|line| line.process).collect();
+        baseline.complexity_cost(&processes, weight)
+    }
+
+    /// # Ensure Lines
+    ///
+    /// Adds a resting line for each process id this job does not already have.
+    ///
+    /// `processes` is the list to cover, in order. A process already on a line
+    /// is left as it is, including its target and optional inputs. A new line
+    /// uses `Some(0.0)` and no optional inputs.
+    pub fn ensure_lines(&mut self, processes: &[usize]) {
+        for process in processes {
+            if self.lines.iter().any(|line| line.process == *process) {
+                continue;
+            }
+            self.lines
+                .push(JobLine::new(*process, Some(0.0), Vec::new()));
         }
     }
 
@@ -108,7 +178,7 @@ impl Job {
     ///
     /// True when this job's craft is `craft`.
     ///
-    /// Craft `0` is no job, so `has_craft(0)` is false even for an empty job.
+    /// A `craft` of `0` does not match.
     pub fn has_craft(&self, craft: usize) -> bool {
         craft != 0 && self.craft == craft
     }
@@ -124,17 +194,15 @@ impl Job {
 
     /// # Plan
     ///
-    /// Writes each line's iteration target for the next morning.
-    ///
-    /// `wanted` is units of output the household still needs for one tier.
-    /// `on_hand` is units already in quantity. `factuals` supplies processes.
-    /// `history` is yesterday's market board.
-    ///
-    /// Craft `0` returns without changes. A missing process is set to
-    /// `Some(0.0)`. Otherwise the target is the most iterations any output
-    /// needs to close its gap (`gap / amount per iteration`). When every gap
-    /// is already closed, the target is `1` if any output has a positive
-    /// holding value, and `0` when none does.
+    /// Plan reworks the current job lines in a way that is more profitable
+    /// to the pop. That means maximizing AMV produced by the work, ensuring the 
+    /// pop is satisfied, and feeding it's own input needs (roughly in this order).
+    /// 
+    /// It also means avoiding unprotifable lines, reducing volatility, reducing
+    /// decay, and avoiding pop starvation.
+    /// 
+    /// TODO: this function will need to be reworked to match the comments above. 
+    /// More details on this are to be worked out.
     pub fn plan(
         &mut self,
         wanted: &HashMap<usize, f64>,
@@ -142,8 +210,7 @@ impl Job {
         factuals: &Factuals,
         history: &MarketHistory,
     ) {
-        // Craft 0 is no job. Leave the targets already stored.
-        if self.craft == 0 {
+        if self.lines.is_empty() {
             return;
         }
         for line in &mut self.lines {
@@ -169,12 +236,9 @@ impl Job {
     /// when the line lists them. `None` claims what is free and does not
     /// shop an open-ended amount. `Some(0.0)` skips the line.
     pub fn reserve(&mut self, property: &mut HashMap<usize, PopPRow>, factuals: &Factuals) {
-        if self.craft == 0 {
+        if self.lines.is_empty() {
             return;
         }
-        // A second call starts from the same free stock as the first.
-        self.release_claims(property, &HashSet::new());
-        self.shopping.clear();
 
         let lines = self.lines.clone();
         for line in &lines {
@@ -211,7 +275,7 @@ impl Job {
         property: &mut HashMap<usize, PopPRow>,
         factuals: &Factuals,
     ) -> Vec<ProcessEffect> {
-        if self.craft == 0 {
+        if self.lines.is_empty() {
             return Vec::new();
         }
         let mut effects = Vec::new();
@@ -245,10 +309,10 @@ impl Job {
     /// One buy per shopped good, lowest good id first.
     ///
     /// The amount is the shortfall floored to a whole unit. A shortfall
-    /// under one unit is skipped. Craft `0` buys nothing. These are buys:
-    /// the job does not offer stock for sale.
+    /// under one unit is skipped. These are buys: the job does not offer
+    /// stock for sale.
     pub fn buy_orders(&self, origin: Actor) -> Vec<MarketOrder> {
-        if self.craft == 0 {
+        if self.lines.is_empty() {
             return Vec::new();
         }
         let mut goods: Vec<usize> = self.shopping.keys().copied().collect();
@@ -594,6 +658,7 @@ mod job {
     use std::collections::HashMap;
 
     use crate::game::actor::Actor;
+    use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
     use crate::game::job::{Job, JobLine};
     use crate::game::market::MarketHistory;
@@ -616,6 +681,39 @@ mod job {
         assert!(farmers.is_same_craft(&Job::new(4, vec![])));
         assert!(!farmers.is_same_craft(&Job::new(5, vec![])));
         assert!(!idle.is_same_craft(&Job::none()));
+    }
+
+    #[test]
+    fn ensure_lines_adds_missing_processes_and_keeps_the_rest() {
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![4])]);
+
+        job.ensure_lines(&[7, 9, 7]);
+
+        assert_eq!(job.lines.len(), 2);
+        assert_eq!(job.lines[0].process, 7);
+        assert_eq!(job.lines[0].target, Some(2.0));
+        assert_eq!(job.lines[0].inputs, vec![4]);
+        assert_eq!(job.lines[1].process, 9);
+        assert_eq!(job.lines[1].target, Some(0.0));
+        assert!(job.lines[1].inputs.is_empty());
+    }
+
+    #[test]
+    fn complexity_cost_uses_the_line_processes() {
+        let craft = Craft::new(1, "subsistence")
+            .with_process(1)
+            .with_complexity_modifier(0.4);
+        let matched = Job::new(1, vec![JobLine::new(1, Some(0.0), vec![])]);
+        let extra = Job::new(
+            1,
+            vec![
+                JobLine::new(1, Some(0.0), vec![]),
+                JobLine::new(2, Some(0.0), vec![]),
+            ],
+        );
+
+        assert!((matched.complexity_cost(&craft, 0.1) - 0.4).abs() < 1e-12);
+        assert!((extra.complexity_cost(&craft, 0.1) - 0.5).abs() < 1e-12);
     }
 
     #[test]
@@ -653,13 +751,52 @@ mod job {
     }
 
     #[test]
-    fn plan_leaves_targets_alone_when_the_craft_is_none() {
+    fn plan_runs_a_line_when_the_craft_is_none() {
         let mut job = Job::new(0, vec![JobLine::new(7, Some(4.0), vec![])]);
         let factuals = Factuals::new().with_process(bake());
 
         job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new());
 
-        assert_eq!(job.lines[0].target, Some(4.0));
+        // 9 bread wanted, 1 per batch, nothing on hand.
+        assert_eq!(job.lines[0].target, Some(9.0));
+    }
+
+    #[test]
+    fn no_lines_skips_plan_reserve_produce_and_buys() {
+        let mut job = Job::new(4, vec![]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut property = HashMap::from([(1, PopPRow::new(5.0))]);
+
+        job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new());
+        job.reserve(&mut property, &factuals);
+        let effects = job.produce(&mut property, &factuals);
+
+        assert!(job.lines.is_empty());
+        assert_eq!(property[&1].quantity, 5.0);
+        assert_eq!(property[&1].reserved, 0.0);
+        assert!(effects.is_empty());
+        assert!(job.buy_orders(Actor::Pop(1)).is_empty());
+    }
+
+    #[test]
+    fn craft_zero_still_reserves_produces_and_buys() {
+        let mut job = Job::new(0, vec![JobLine::new(7, Some(4.0), vec![])]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut property = HashMap::from([(1, PopPRow::new(1.0))]);
+
+        job.reserve(&mut property, &factuals);
+
+        assert_eq!(property[&1].reserved, 1.0);
+        let orders = job.buy_orders(Actor::Pop(1));
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].target, 1);
+        assert_eq!(orders[0].target_amount, 3.0);
+
+        let effects = job.produce(&mut property, &factuals);
+        assert!(effects.is_empty());
+        assert_eq!(property[&1].quantity, 0.0);
+        assert_eq!(property[&2].quantity, 1.0);
+        assert_eq!(property[&2].process_output, 1.0);
     }
 
     #[test]

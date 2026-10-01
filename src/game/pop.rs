@@ -12,8 +12,8 @@ pub use crate::game::pop_property::{DemoRow, PopPRow, PopRecords};
 pub struct Pop {
     pub id: usize,
 
-    /// This pop's cottage work. Craft 0 is no job. The value is this pop's own
-    /// plan; another pop with the same craft is a different job.
+    /// This pop's cottage work. The value is this pop's own plan; another pop
+    /// with the same craft is a different job.
     pub job: Job,
 
     /// Goods on hand.
@@ -201,6 +201,41 @@ impl Pop {
                 }
             }
         }
+    }
+
+    /// # Apply Craft
+    ///
+    /// Gives this pop's job the processes of its craft that it does not already run.
+    ///
+    /// `factuals` supplies the base craft and this pop's culture and religion
+    /// overlays. A line already on the job is left alone. Craft `0`, or a craft
+    /// the world does not have, adds nothing.
+    pub fn apply_craft(&mut self, factuals: &Factuals) {
+        let processes = factuals.craft_processes(
+            self.job.craft,
+            self.demographics.culture,
+            self.demographics.religion,
+        );
+        self.job.ensure_lines(&processes);
+    }
+
+    /// # Complexity Cost
+    ///
+    /// This pop's complexity cost for its job against the effective craft.
+    ///
+    /// `factuals` resolves the craft from the job's craft id and this pop's
+    /// culture and religion, and supplies the craft-distance weight. The
+    /// job's lines are the processes measured. No base craft returns `1.0`.
+    pub fn complexity_cost(&self, factuals: &Factuals) -> f64 {
+        let Some(craft) = factuals.effective_craft(
+            self.job.craft,
+            self.demographics.culture,
+            self.demographics.religion,
+        ) else {
+            return 1.0;
+        };
+        self.job
+            .complexity_cost(&craft, factuals.config.pop.craft_distance)
     }
 
     /// Removes this good's row and returns the on-hand quantity.
@@ -1078,6 +1113,19 @@ impl Pop {
         row.quantity = (row.quantity + delta).max(0.0);
     }
 
+    /// # Move Process Output
+    ///
+    /// Adds `delta` to `process_output` for `good`.
+    ///
+    /// Creates the row when it is missing. The result is clamped at `0`.
+    fn move_process_output(&mut self, good: usize, delta: f64) {
+        if delta == 0.0 {
+            return;
+        }
+        let row = self.property.entry(good).or_insert_with(|| PopPRow::new(0.0));
+        row.process_output = (row.process_output + delta).max(0.0);
+    }
+
     /// Buy transport the seller is offering when that lowers the unpaid freight.
     ///
     /// Returns `None` when freight remains and no further purchase helps.
@@ -1333,6 +1381,16 @@ impl DealMaker for Pop {
             .unwrap_or(0.0)
     }
 
+    /// # Fresh Share
+    ///
+    /// `good`'s [`PopPRow::fresh_share`], or `0` when this pop does not hold it.
+    fn fresh_share(&self, good: usize) -> f64 {
+        self.property
+            .get(&good)
+            .map(PopPRow::fresh_share)
+            .unwrap_or(0.0)
+    }
+
     fn propose(
         &self,
         match_good: usize,
@@ -1408,6 +1466,7 @@ impl DealMaker for Pop {
             match_good,
             freight: crate::game::deal::freight_bill(factuals, history.friction, &goods),
             goods,
+            fresh: HashMap::new(),
         })
     }
 
@@ -1452,7 +1511,11 @@ impl DealMaker for Pop {
             return;
         };
         for (&good, &qty) in &proposal.goods {
-            self.move_good(good, sign * qty);
+            let delta = sign * qty;
+            let fresh_units = delta * proposal.fresh_share(good);
+            // Aged and fresh both sit in quantity. process_output marks the fresh share.
+            self.move_good(good, delta);
+            self.move_process_output(good, fresh_units);
             // Goods just received count against the job's shopping list.
             if sign > 0.0 && qty > 0.0 {
                 self.job.note_purchase(good, qty);
@@ -1477,6 +1540,7 @@ impl DealMaker for Pop {
     fn reserve(&mut self, factuals: &Factuals, rng: &mut dyn rand::RngCore) {
         // Desires claim first. The job takes only what is still free.
         self.satisfy(rng);
+        self.apply_craft(factuals);
         self.job.reserve(&mut self.property, factuals);
     }
 
@@ -1522,7 +1586,10 @@ mod pop {
     use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal};
     use crate::game::desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType};
     use crate::game::effects::PopEffect;
+    use crate::game::craft::{Craft, CulturalCraft};
+    use crate::game::culture::Culture;
     use crate::game::factuals::Factuals;
+    use crate::game::religion::Religion;
     use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::good::{Good, GoodTag};
     use crate::game::household::Household;
@@ -1746,6 +1813,34 @@ mod pop {
     }
 
     #[test]
+    fn complexity_cost_follows_the_culture_overlay() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(1, Some(0.0), vec![])]);
+        pop.demographics.culture = 2;
+        let base = Factuals::new().with_craft(
+            Craft::new(1, "subsistence")
+                .with_process(1)
+                .with_complexity_modifier(0.4),
+        );
+
+        assert!((pop.complexity_cost(&base) - 0.4).abs() < 1e-12);
+
+        let mut cultured = base.with_culture(
+            Culture::new(2, "welsh").with_craft(
+                CulturalCraft::new(1).with_complexity_modifier(0.5),
+            ),
+        );
+        assert!((pop.complexity_cost(&cultured) - 0.2).abs() < 1e-12);
+
+        pop.job.lines.push(JobLine::new(2, Some(0.0), vec![]));
+        cultured.config.pop.craft_distance = 0.2;
+        assert!((pop.complexity_cost(&cultured) - 0.4).abs() < 1e-12);
+
+        pop.job.craft = 0;
+        assert!((pop.complexity_cost(&cultured) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn pops_in_craft_groups_pops_doing_the_same_work() {
         let mut actors = Actors::new();
         let mut welsh = Pop::new(2);
@@ -1763,6 +1858,53 @@ mod pop {
         assert_eq!(actors.pops_in_craft(5), vec![3]);
         assert!(actors.pops_in_craft(0).is_empty());
         assert!(actors.pops_in_craft(6).is_empty());
+    }
+
+    #[test]
+    fn market_day_applies_the_craft_then_runs_it() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(4, Some(1.0), vec![])]);
+        pop.demographics.culture = 2;
+        pop.demographics.religion = 3;
+        pop.property.insert(1, PopPRow::new(4.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+
+        let factuals = Factuals::new()
+            .with_good(make_good(1, "grain", 0.0))
+            .with_good(make_good(2, "bread", 0.0))
+            .with_process(bake())
+            .with_craft(Craft::new(1, "subsistence").with_process(7).with_process(8))
+            .with_culture(
+                Culture::new(2, "welsh").with_craft(CulturalCraft::new(1).with_remove(8).with_add(9)),
+            )
+            .with_religion(
+                Religion::new(3, "old faith").with_craft(CulturalCraft::new(1).with_add(8)),
+            );
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        let pop = actors.pop(1);
+        let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
+        assert_eq!(processes, vec![4, 7, 9, 8]);
+        assert_eq!(pop.job.lines[1].target, Some(4.0));
+        assert_eq!(pop.property.get(&2).map(|row| row.quantity).unwrap_or(0.0), 0.0);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        let pop = actors.pop(1);
+        assert_eq!(pop.property[&1].quantity, 0.0);
+        assert_eq!(pop.property[&2].quantity, 0.0);
+        assert_eq!(pop.property[&2].process_output, 4.0);
+        assert_eq!(pop.desires[0][0].satisfaction, 4.0);
     }
 
     fn bake() -> Process {
@@ -2280,8 +2422,69 @@ mod pop {
             seller: Actor::Pop(2),
             match_good,
             goods,
+            fresh: HashMap::new(),
             freight: 0.0,
         }
+    }
+
+    #[test]
+    fn finalize_keeps_the_givers_fresh_share() {
+        let mut seller = make_pop();
+        seller.id = 2;
+        let mut bread = PopPRow::new(10.0);
+        bread.process_output = 3.0;
+        seller.property.insert(2, bread);
+
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        let mut coin = PopPRow::new(10.0);
+        coin.process_output = 5.0;
+        buyer.property.insert(9, coin);
+
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, seller);
+        let mut deal = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
+        deal.stamp_fresh_shares(|actor, good| actors.get(actor).fresh_share(good));
+
+        assert!((deal.fresh_share(2) - 0.3).abs() < 1e-12);
+        assert!((deal.fresh_share(9) - 0.5).abs() < 1e-12);
+
+        actors
+            .pops
+            .get_mut(&1)
+            .expect("buyer")
+            .finalize(&deal, &Factuals::new());
+        actors
+            .pops
+            .get_mut(&2)
+            .expect("seller")
+            .finalize(&deal, &Factuals::new());
+
+        let buyer = &actors.pops[&1];
+        let seller = &actors.pops[&2];
+        assert!((buyer.property[&2].quantity - 4.0).abs() < 1e-12);
+        assert!((buyer.property[&2].process_output - 1.2).abs() < 1e-12);
+        assert!((seller.property[&2].quantity - 6.0).abs() < 1e-12);
+        assert!((seller.property[&2].process_output - 1.8).abs() < 1e-12);
+        assert!((buyer.property[&9].quantity - 1.0).abs() < 1e-12);
+        assert!((buyer.property[&9].process_output - 0.5).abs() < 1e-12);
+        assert!((seller.property[&9].quantity - 9.0).abs() < 1e-12);
+        assert!((seller.property[&9].process_output - 4.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fresh_share_caps_when_process_output_exceeds_quantity() {
+        let mut row = PopPRow::new(10.0);
+        row.process_output = 15.0;
+        assert!((row.fresh_share() - 1.0).abs() < 1e-12);
+
+        row.process_output = 0.0;
+        assert_eq!(row.fresh_share(), 0.0);
+
+        let mut empty = PopPRow::new(0.0);
+        empty.process_output = 4.0;
+        assert_eq!(empty.fresh_share(), 0.0);
     }
 
     /// Seller gives 4 of good 2 and receives 9 of good 9.

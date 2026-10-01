@@ -83,6 +83,20 @@ impl PopPRow {
     pub fn available(&self) -> f64 {
         self.quantity - self.reserved
     }
+
+    /// # Fresh Share
+    ///
+    /// Fraction of `quantity` that [`crate::game::pop::Pop::decay_goods`] skips.
+    ///
+    /// `process_output` is clamped into `0..=quantity`, then divided by
+    /// `quantity`. Returns `0` when `quantity` is `0`.
+    pub fn fresh_share(&self) -> f64 {
+        let quantity = self.quantity.max(0.0);
+        if quantity == 0.0 {
+            return 0.0;
+        }
+        self.process_output.max(0.0).min(quantity) / quantity
+    }
 }
 
 /// Day-end records for a pop.

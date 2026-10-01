@@ -1,6 +1,5 @@
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 
 use crate::game::factuals::Factuals;
 use crate::game::household::HouseholdTarget;
@@ -31,65 +30,24 @@ pub struct Process {
     pub effects: Vec<ProcessEffect>,
     /// The technology that unlockes the process.
     pub tech_source: usize,
-    /// Process tags (subsistence, later complexity). Empty = specialized.
-    pub tags: HashSet<ProcessTag>,
-}
-
-/// Complexity weight of an untagged (specialized) process.
-pub const SPECIALIZED_WEIGHT: f64 = 1.0;
-/// Default complexity weight of a subsistence process.
-pub const SUBSISTENCE_WEIGHT: f64 = 0.25;
-
-/// # Process Tag
-///
-/// Tags for processes. Subsistence carries a complexity weight **> 0**.
-#[derive(Debug, Clone, Copy)]
-pub enum ProcessTag {
-    /// Household recipe. Weight is used later for managerial Time tax.
-    Subsistence(f64),
-}
-
-impl ProcessTag {
-    /// Subsistence tag. `weight` must be finite and **> 0**.
-    pub fn subsistence(weight: f64) -> Self {
-        debug_assert!(
-            weight > 0.0 && weight.is_finite(),
-            "complexity weight must be > 0"
-        );
-        Self::Subsistence(weight)
-    }
-
-    /// Complexity weight if this is a subsistence tag.
-    pub fn complexity_weight(self) -> f64 {
-        match self {
-            Self::Subsistence(weight) => weight,
-        }
-    }
-}
-
-impl PartialEq for ProcessTag {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Subsistence(a), Self::Subsistence(b)) => a.to_bits() == b.to_bits(),
-        }
-    }
-}
-
-impl Eq for ProcessTag {}
-
-impl Hash for ProcessTag {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        let Self::Subsistence(weight) = self;
-        weight.to_bits().hash(state);
-    }
+    /// The complexity of the process, used for complexty cost 
+    /// calculations which adds management/organizational overhead to
+    /// a job or firm which does the process.
+    /// 
+    /// This can be thought of as a combo of internal friction and
+    /// organizational complexity. Values < 1.0 lean toward 
+    /// subsistence/cottage processes, values > 1.0 lean industrial
+    /// processes.
+    /// 
+    /// Defaults to 1.0. Below 1.0 the process is subsistence.
+    pub complexity: f64,
 }
 
 impl Process {
     /// # New 
     /// 
     /// Create a new process with the given id, name, and technology source.
-    /// Inputs, outputs, and effects start empty.
+    /// Inputs, outputs, and effects start empty. Complexity starts at 1.0.
     pub fn new(id: usize, name: impl Into<String>, tech_source: usize) -> Self {
         Process {
             id,
@@ -98,31 +56,29 @@ impl Process {
             outputs: Vec::new(),
             effects: Vec::new(),
             tech_source,
-            tags: HashSet::new(),
+            complexity: 1.0,
         }
     }
 
-    /// Add a process tag.
-    pub fn with_tag(mut self, tag: ProcessTag) -> Self {
-        self.tags.insert(tag);
+    /// # With Complexity
+    ///
+    /// Stores `complexity` on the process and returns it.
+    ///
+    /// # Asserts
+    ///
+    /// Complexity must be finite and > 0.
+    pub fn with_complexity(mut self, complexity: f64) -> Self {
+        debug_assert!(complexity > 0.0 && complexity.is_finite(), "complexity must be > 0");
+        self.complexity = complexity;
         self
     }
 
-    /// True if this process is tagged subsistence.
+    /// # Is Subsistence
+    /// 
+    /// Check that a process is considered subsistence which is defined as
+    /// a complexity value of < 1.0.
     pub fn is_subsistence(&self) -> bool {
-        self.tags
-            .iter()
-            .any(|tag| matches!(tag, ProcessTag::Subsistence(_)))
-    }
-
-    /// Complexity weight: subsistence tag value, else [`SPECIALIZED_WEIGHT`].
-    pub fn complexity_weight(&self) -> f64 {
-        self.tags
-            .iter()
-            .find_map(|tag| match tag {
-                ProcessTag::Subsistence(weight) => Some(*weight),
-            })
-            .unwrap_or(SPECIALIZED_WEIGHT)
+        self.complexity < 1.0
     }
 
     /// AMV-out / AMV-in of one iteration at `price`. Optional and factor

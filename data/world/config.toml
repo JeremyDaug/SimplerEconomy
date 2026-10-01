@@ -2,6 +2,9 @@
 # Missing keys keep the defaults in src/game/config.rs.
 # Other GameConfig sections are reserved and currently empty.
 
+[pop]
+craft_distance = 0.1
+
 [market]
 transaction_cost = 1.0
 friction = 1.0

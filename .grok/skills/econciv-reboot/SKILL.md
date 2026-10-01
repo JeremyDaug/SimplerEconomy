@@ -17,15 +17,15 @@ description: Working rules for JeremyDaug/SimplerEconomy on EconCiv-Reboot. Trig
 
 Rust 2024 lib crate `simpler_economy`. No binary. No Bevy in simulation code. `std` collections. `hexx` for the hex map. Bring Bevy back only with a client.
 
-World factuals live in `data/world`. `examples/rates_tester.rs` probes household demographics. `examples/pop_tester` loads two pops and calls `Market::market_day`.
+World factuals live in `data/world`. `examples/rates_tester.rs` probes household demographics. `examples/pop_tester` loads `data/world` and `data/pop_tester/scenario.toml`, grants Time, and calls `Market::market_day`.
 
 Money, time, land, and skills are goods with modifiers, not separate magic resources. Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` stacks species base plus culture and religion addends via `Factuals::work_time_fraction`.
 
 ## Live work (do not pretend it is finished)
 
-Current surface is pop satisfy/consume plus `Market::market_day` (pop-pop deals). Firm produce, reserve, and plan are empty. PlayState phase methods are stubs. Institution decay and institution record keeping still panic and are not called.
+Current surface is pop satisfy/consume, cottage jobs, and `Market::market_day` (pop-pop deals). Firm produce, reserve, and plan are empty. PlayState phase methods are stubs. Institution decay and institution record keeping still panic and are not called.
 
-Read `docs/handoff/pops.md` before touching satisfy, consume, propose, evaluate, or `match_deals`. That note lists landed vs stub and known traps. Details that change often live in `references/live-surface.md`.
+Read `docs/handoff/pops.md` before touching satisfy, consume, propose, evaluate, `match_deals`, jobs, or crafts. That note lists landed vs stub and known traps. Details that change often live in `references/live-surface.md`.
 
 ## Edit rules
 
@@ -36,6 +36,7 @@ Read `docs/handoff/pops.md` before touching satisfy, consume, propose, evaluate,
 - Every function doc starts with a `#` header of the name. The doc says inputs, logic, and outputs. Small and private functions get that too.
 - A step inside a function gets a one-line comment when the code does not already say it. `Market::market_day` labels each phase that way.
 - When a comment already matches the code, add a link or connection. Leave the paragraph. If a comment looks wrong and the function was not just changed, ask before rewriting it.
+- A comment states a fact the surrounding code owns. Put it on the type or function that decides it, once. Do not repeat it on other functions in the change, or on a caller that does not decide it.
 - Whole goods use `trunc` or `floor` at the call. `whole_units_up` rounds a wage basket away from zero.
 
 ## Checks

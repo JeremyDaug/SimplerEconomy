@@ -3,8 +3,9 @@
 #
 # Specialized recipes: process id equals the output good id, except Time
 # (good 0) which is process 28 so id 0 stays none. Subsistence recipes are
-# 29..=31 (household farm / water / forage); tags = ["subsistence"] is
-# complexity weight 0.25 (untagged is 1.0; weight must be > 0).
+# 29..=31 (household farm / water / forage). complexity below 1.0 is
+# subsistence; these three use 0.25. Omitted complexity is 1.0, and the
+# value must be finite and > 0.
 #
 # Raw extracts take Time only as required input; grain and wood may take
 # optional boosters. Crafted recipes take Time plus at least one destroyed
@@ -248,20 +249,20 @@ outputs = [{ good = 0, amount = 1.0 }]
 [[processes]]
 id = 29
 name = "subsistence farm"
-tags = ["subsistence"]
+complexity = 0.25
 inputs = [{ good = 0, amount = 0.5 }]
 outputs = [{ good = 1, amount = 2.0 }]
 
 [[processes]]
 id = 30
 name = "subsistence water"
-tags = ["subsistence"]
+complexity = 0.25
 inputs = [{ good = 0, amount = 0.2 }]
 outputs = [{ good = 2, amount = 2.0 }]
 
 [[processes]]
 id = 31
 name = "subsistence forage"
-tags = ["subsistence"]
+complexity = 0.25
 inputs = [{ good = 0, amount = 0.5 }]
 outputs = [{ good = 7, amount = 2.0 }]

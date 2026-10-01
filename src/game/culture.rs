@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::DemographicRates};
+use crate::game::{
+    craft::CulturalCraft, desire::DemoDesire, effects::DemographicEffect,
+    household::DemographicRates,
+};
 
 /// # Culture
 /// 
@@ -32,6 +35,8 @@ pub struct Culture {
     /// Added to the species work-time fraction. `0` leaves the species value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
+    /// Overlays on baseline crafts, keyed by the base craft id.
+    pub crafts: HashMap<usize, CulturalCraft>,
     /// A helper flag to mark when a culture has changed, and so pop_households should
     /// also be updated. 
     /// 
@@ -60,6 +65,7 @@ impl Culture {
             culture_effects: vec![],
             culture_demo_eff: DemographicRates::zero(),
             work_time_fraction: 0.0,
+            crafts: HashMap::new(),
             household_changed: false,
         }
     }
@@ -97,5 +103,25 @@ impl Culture {
     /// Finds a demo desire by id.
     pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
         self.desires.get(&desire_id)
+    }
+
+    /// # With Craft
+    ///
+    /// Adds an overlay keyed by its base craft id.
+    ///
+    /// Panics if this culture already has an overlay for that craft.
+    pub fn with_craft(mut self, craft: CulturalCraft) -> Self {
+        let id = craft.craft;
+        if self.crafts.insert(id, craft).is_some() {
+            panic!("Cultural craft {id} already exists on culture {}.", self.id);
+        }
+        self
+    }
+
+    /// # Get Craft
+    ///
+    /// The overlay for base craft `craft`, if this culture has one.
+    pub fn get_craft(&self, craft: usize) -> Option<&CulturalCraft> {
+        self.crafts.get(&craft)
     }
 }

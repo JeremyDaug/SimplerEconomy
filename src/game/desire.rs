@@ -396,10 +396,6 @@ impl DesireEffectRate {
 /// # Desire
 /// 
 /// A Desire is things or groups of things that are desired by a pop.
-/// 
-/// ## Contracts
-/// 
-/// Teh ordering of DesireTarget in here should be in the same order as the 
 #[derive(Debug, Clone)]
 pub struct Desire {
     /// Where this desire comes from, including the source demographic id and the
