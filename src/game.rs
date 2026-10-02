@@ -10,6 +10,7 @@ pub mod job;
 pub mod craft;
 pub mod species;
 pub mod culture;
+pub mod demographic_source;
 pub mod desire;
 pub mod firm;
 pub mod unit;

@@ -1,51 +1,63 @@
-/// A baseline set of processes a job can point at.
+use std::collections::HashSet;
+
+use crate::game::demographic_source::DemographicSource;
+
+/// A set of processes a job can point at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Craft {
     /// Craft id. `0` is not a craft.
     pub id: usize,
     /// Display name.
     pub name: String,
-    /// Process ids in the baseline, in run order.
+    /// Demographic this craft is attached to. `None` is the open craft.
+    pub origin: Option<DemographicSource>,
+    /// Process ids. [`Self::apply_to`] appends any that are not already present.
     pub processes: Vec<usize>,
+    /// Process ids [`Self::apply_to`] drops.
+    pub remove: Vec<usize>,
     /// A multiplier to the complexity costs of the processes in the craft.
     ///
     /// The distance of a job from its base craft reduces this bonus' effect.
     pub complexity_modifier: f64,
 }
 
-/// A culture's or religion's change to one base craft.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CulturalCraft {
-    /// Base craft id this overlay belongs to.
-    pub craft: usize,
-    /// Process ids appended when they are not already in the list.
-    pub add: Vec<usize>,
-    /// Process ids dropped from the list this overlay is applied to.
-    pub remove: Vec<usize>,
-    /// Multiplied into the base craft's complexity modifier when this overlay applies.
-    ///
-    /// `1.0` leaves the base modifier unchanged.
-    pub complexity_modifier: f64,
-}
-
 impl Craft {
     /// # New
     ///
-    /// A craft with `id` and `name`, no processes, and a complexity modifier of 1.0.
+    /// A craft with `id` and `name`, no processes, nothing removed, an open
+    /// origin, and a complexity modifier of 1.0.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
             id,
             name: name.into(),
+            origin: None,
             processes: Vec::new(),
+            remove: Vec::new(),
             complexity_modifier: 1.0,
         }
     }
 
+    /// # With Origin
+    ///
+    /// Sets [`Self::origin`].
+    pub fn with_origin(mut self, origin: Option<DemographicSource>) -> Self {
+        self.origin = origin;
+        self
+    }
+
     /// # With Process
     ///
-    /// Appends `process` to the baseline.
+    /// Appends `process` to [`Self::processes`].
     pub fn with_process(mut self, process: usize) -> Self {
         self.processes.push(process);
+        self
+    }
+
+    /// # With Remove
+    ///
+    /// Appends `process` to [`Self::remove`].
+    pub fn with_remove(mut self, process: usize) -> Self {
+        self.remove.push(process);
         self
     }
 
@@ -57,22 +69,32 @@ impl Craft {
         self
     }
 
-    /// # With Overlay
+    /// # Apply To
     ///
-    /// Applies one culture or religion change to this craft.
+    /// `processes` is the list so far.
     ///
-    /// `overlay` supplies the process changes and a modifier. Process ids
-    /// follow [`CulturalCraft::apply`]. The modifier is multiplied into
-    /// [`Self::complexity_modifier`]. Id and name stay. Returns this craft.
-    pub fn with_overlay(mut self, overlay: &CulturalCraft) -> Self {
-        self.processes = overlay.apply(&self.processes);
-        self.complexity_modifier *= overlay.complexity_modifier;
-        self
+    /// Ids in [`Self::remove`] are dropped. Ids in [`Self::processes`] are
+    /// appended when they are not already present. Returns the new list, in
+    /// that order.
+    pub fn apply_to(&self, processes: &[usize]) -> Vec<usize> {
+        let mut next: Vec<usize> = processes
+            .iter()
+            .copied()
+            .filter(|id| !self.remove.contains(id))
+            .collect();
+        for id in &self.processes {
+            if !next.contains(id) {
+                next.push(*id);
+            }
+        }
+        next
     }
 
     /// # Complexity Cost
     ///
-    /// The complexity cost of `processes` against this craft.
+    /// The complexity cost of our list of processes against this craft.
+    /// Basen on the difference of processes, not the complexity of the processses
+    /// themselves.
     ///
     /// `weight` is the full distance of one extra process, passed to
     /// [`Self::craft_distance`]. Distance adds to the modifier until the
@@ -91,84 +113,18 @@ impl Craft {
     ///
     /// `(missing * weight / 2) + (additional * weight)`.
     pub fn craft_distance(&self, processes: &Vec<usize>, weight: f64) -> f64 {
-        let mut missing = 0;
-        for id in &self.processes {
-            if !processes.contains(id) {
-                missing += 1;
-            }
-        }
-        let mut additional = 0;
-        for id in processes {
-            if !self.processes.contains(id) {
-                additional += 1;
-            }
-        }
+        let baseline: HashSet<usize> = self.processes.iter().copied().collect();
+        let present: HashSet<usize> = processes.iter().copied().collect();
+        let missing = baseline.iter().filter(|id| !present.contains(*id)).count();
+        let additional = present.iter().filter(|id| !baseline.contains(*id)).count();
         (missing as f64 * weight * 0.5) + (additional as f64 * weight)
-    }
-}
-
-impl CulturalCraft {
-    /// # New
-    ///
-    /// An overlay for base craft `craft`, with nothing added or removed
-    /// and a complexity modifier of 1.0.
-    pub fn new(craft: usize) -> Self {
-        Self {
-            craft,
-            add: Vec::new(),
-            remove: Vec::new(),
-            complexity_modifier: 1.0,
-        }
-    }
-
-    /// # With Add
-    ///
-    /// Appends `process` to the processes this overlay adds.
-    pub fn with_add(mut self, process: usize) -> Self {
-        self.add.push(process);
-        self
-    }
-
-    /// # With Remove
-    ///
-    /// Appends `process` to the processes this overlay drops.
-    pub fn with_remove(mut self, process: usize) -> Self {
-        self.remove.push(process);
-        self
-    }
-
-    /// # With Complexity Modifier
-    ///
-    /// Sets the complexity modifier for this overlay.
-    pub fn with_complexity_modifier(mut self, modifier: f64) -> Self {
-        self.complexity_modifier = modifier;
-        self
-    }
-
-    /// # Apply
-    ///
-    /// `processes` is the list so far.
-    ///
-    /// Ids in [`Self::remove`] are dropped. Ids in [`Self::add`] are appended
-    /// when they are not already present. Returns the new list, in that order.
-    pub fn apply(&self, processes: &[usize]) -> Vec<usize> {
-        let mut next: Vec<usize> = processes
-            .iter()
-            .copied()
-            .filter(|id| !self.remove.contains(id))
-            .collect();
-        for id in &self.add {
-            if !next.contains(id) {
-                next.push(*id);
-            }
-        }
-        next
     }
 }
 
 #[cfg(test)]
 mod craft {
-    use super::{Craft, CulturalCraft};
+    use super::Craft;
+    use crate::game::demographic_source::DemographicSource;
 
     fn subsistence() -> Craft {
         Craft::new(1, "subsistence")
@@ -186,6 +142,10 @@ mod craft {
         assert!(craft.craft_distance(&vec![1, 2], 0.1).abs() < 1e-12);
         assert!(craft.craft_distance(&vec![1, 1, 2], 0.1).abs() < 1e-12);
         assert!((craft.craft_distance(&vec![1, 2, 3], 0.1) - 0.1).abs() < 1e-12);
+        // Missing 2 is half of 0.1. The two 3s are one extra process.
+        assert!((craft.craft_distance(&vec![1, 3, 3], 0.1) - 0.15).abs() < 1e-12);
+        let repeated = Craft::new(1, "subsistence").with_process(2).with_process(2);
+        assert!((repeated.craft_distance(&vec![], 0.1) - 0.05).abs() < 1e-12);
         assert!((craft.craft_distance(&vec![1], 0.2) - 0.1).abs() < 1e-12);
         assert!((craft.craft_distance(&vec![1, 2, 3], 0.2) - 0.2).abs() < 1e-12);
     }
@@ -202,21 +162,17 @@ mod craft {
     }
 
     #[test]
-    fn overlay_rewrites_processes_and_multiplies_its_modifier() {
-        let plain = CulturalCraft::new(1);
-        assert!((plain.complexity_modifier - 1.0).abs() < 1e-12);
-        let kept = subsistence().with_overlay(&plain);
-        assert!((kept.complexity_modifier - 0.4).abs() < 1e-12);
+    fn apply_to_drops_removed_ids_then_appends_new_ones() {
+        let open = subsistence();
+        assert_eq!(open.origin, None);
+        assert!(open.remove.is_empty());
 
-        let overlay = CulturalCraft::new(1)
+        let attached = Craft::new(1, "subsistence")
+            .with_origin(Some(DemographicSource::Culture(2)))
             .with_remove(2)
-            .with_add(3)
-            .with_complexity_modifier(0.5);
-        let craft = subsistence().with_overlay(&overlay);
-
-        assert_eq!(craft.id, 1);
-        assert_eq!(craft.name, "subsistence");
-        assert_eq!(craft.processes, vec![1, 3]);
-        assert!((craft.complexity_modifier - 0.2).abs() < 1e-12);
+            .with_process(3);
+        assert_eq!(attached.apply_to(&[1, 2]), vec![1, 3]);
+        assert_eq!(attached.apply_to(&[1, 3]), vec![1, 3]);
+        assert_eq!(attached.origin, Some(DemographicSource::Culture(2)));
     }
 }

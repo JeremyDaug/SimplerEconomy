@@ -47,9 +47,12 @@ pub struct PopPRow {
     pub quantity: f64,
     /// Units earmarked for today's uses. `quantity - reserved` is free stock.
     pub reserved: f64,
-    /// Units output by a process today. Not decayed today.
-    /// [`crate::game::pop::Pop::decay_goods`] leaves this portion of `quantity` in place.
-    pub process_output: f64,
+    /// Fresh units inside `quantity`.
+    ///
+    /// [`crate::game::pop::Pop::decay_goods`] leaves this portion in place.
+    pub fresh: f64,
+    /// Units a process put out today.
+    pub produced: f64,
     /// Consumed today. Removed from `quantity` when recorded, destroyed at decay.
     pub consumed: f64,
     /// Used and not destroyed. Returned to `quantity` at day end, then decayed.
@@ -88,14 +91,14 @@ impl PopPRow {
     ///
     /// Fraction of `quantity` that [`crate::game::pop::Pop::decay_goods`] skips.
     ///
-    /// `process_output` is clamped into `0..=quantity`, then divided by
-    /// `quantity`. Returns `0` when `quantity` is `0`.
+    /// `fresh` is clamped into `0..=quantity`, then divided by `quantity`.
+    /// Returns `0` when `quantity` is `0`.
     pub fn fresh_share(&self) -> f64 {
         let quantity = self.quantity.max(0.0);
         if quantity == 0.0 {
             return 0.0;
         }
-        self.process_output.max(0.0).min(quantity) / quantity
+        self.fresh.max(0.0).min(quantity) / quantity
     }
 }
 

@@ -90,7 +90,9 @@ impl Firm {
     /// End-of-day planning. Not written yet.
     pub fn plan(&mut self, _factuals: &Factuals, _history: &MarketHistory) {}
 
-    /// Zeros today's production flow counters.
+    /// # Record Keeping
+    ///
+    /// Zeros each row's consumed counter through [`Self::clear_property_records`].
     pub fn record_keeping(&mut self, _factuals: &Factuals) {
         self.clear_property_records();
     }
@@ -114,12 +116,18 @@ impl Firm {
         goods
     }
 
-    /// End-of-day decay.
+    /// # Decay Goods
     ///
-    /// Returns `used` to `quantity`, decays that quantity (Exposure skips while
-    /// owned), credits byproducts, then moves `held` into `quantity`.
-    /// `consumed` is a flow counter and is not destroyed again here.
-    /// Returns `(decayed, volume)` per good.
+    /// End-of-day decay for this firm's stock.
+    ///
+    /// Returns `used` to `quantity`, then decays the aging part of `quantity`
+    /// by the good's rate. [`FirmPRow::fresh`] is the fresh portion and stays
+    /// in place. [`GoodTag::Exposure`] skips decay while the good is owned.
+    /// Byproducts are credited into `quantity`. `consumed` is a flow counter
+    /// and is not destroyed here.
+    ///
+    /// Returns `(decayed, volume)` per good. Volume is on-hand after `used`
+    /// returns, plus `consumed`, including fresh stock.
     pub fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
         let mut gains: HashMap<usize, f64> = HashMap::new();
         let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
@@ -133,9 +141,12 @@ impl Firm {
             let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
+            // Fresh stock stays whole. Only the older pile rots.
+            let fresh = row.fresh.max(0.0).min(row.quantity.max(0.0));
+            let aging = (row.quantity - fresh).max(0.0);
             let mut lost = 0.0;
-            if !exposure && good.decay_rate > 0.0 && row.quantity > 0.0 {
-                lost = row.quantity * good.decay_rate;
+            if !exposure && good.decay_rate > 0.0 && aging > 0.0 {
+                lost = aging * good.decay_rate;
                 row.quantity -= lost;
                 for (&byproduct, &ratio) in &good.decay_result {
                     if ratio != 0.0 && lost != 0.0 {
@@ -159,29 +170,40 @@ impl Firm {
                 .or_insert_with(FirmPRow::new)
                 .quantity += amount;
         }
-
-        for row in self.property.values_mut() {
-            if row.held != 0.0 {
-                row.quantity += row.held;
-                row.held = 0.0;
-            }
-        }
         rot
     }
 
-    /// Zeros today's production flow counters. Leaves stock in place.
+    /// # Reset Day
+    ///
+    /// Clears yesterday's fresh marker and yesterday's production record.
+    ///
+    /// `fresh` and `produced` on every property row are set to 0. Quantity
+    /// stays, so those units can rot on the coming night.
+    pub fn reset_day(&mut self) {
+        for row in self.property.values_mut() {
+            row.fresh = 0.0;
+            row.produced = 0.0;
+        }
+    }
+
+    /// # Clear Property Records
+    ///
+    /// Zeros today's consumed counter. Leaves stock, `fresh`, and `produced`.
     pub fn clear_property_records(&mut self) {
         for row in self.property.values_mut() {
-            row.produced = 0.0;
             row.consumed = 0.0;
         }
     }
 
-    /// Removes the row and returns on-hand quantity plus `held`.
+    /// # Take Good
+    ///
+    /// Removes this good's row and returns the on-hand quantity.
+    ///
+    /// `fresh` is a portion of that quantity, so it is not added again.
     pub fn take_good(&mut self, good: usize) -> f64 {
         self.property
             .remove(&good)
-            .map(|row| row.quantity + row.held)
+            .map(|row| row.quantity)
             .unwrap_or(0.0)
     }
 
@@ -227,6 +249,16 @@ impl DealMaker for Firm {
             .unwrap_or(0.0)
     }
 
+    /// # Fresh Share
+    ///
+    /// `good`'s [`FirmPRow::fresh_share`], or `0` when this firm does not hold it.
+    fn fresh_share(&self, good: usize) -> f64 {
+        self.property
+            .get(&good)
+            .map(FirmPRow::fresh_share)
+            .unwrap_or(0.0)
+    }
+
     fn evaluate(
         &self,
         proposal: &crate::game::deal::ProposedDeal,
@@ -250,11 +282,18 @@ impl DealMaker for Firm {
             return;
         };
         for (&good, &qty) in &proposal.goods {
-            self.move_good(good, sign * qty);
+            let delta = sign * qty;
+            let fresh_units = delta * proposal.fresh_share(good);
+            self.move_good(good, delta);
+            self.move_fresh(good, fresh_units);
         }
         if proposal.buyer == id {
             self.pay_freight(proposal.freight, factuals);
         }
+    }
+
+    fn reset_day(&mut self) {
+        Firm::reset_day(self);
     }
 
     fn reserve(&mut self, factuals: &Factuals, _rng: &mut dyn rand::RngCore) {
@@ -316,6 +355,19 @@ impl Firm {
         let row = self.property.entry(good).or_insert_with(FirmPRow::new);
         row.quantity = (row.quantity + delta).max(row.reserve).max(0.0);
     }
+
+    /// # Move Fresh
+    ///
+    /// Adds `delta` to `fresh` for `good`.
+    ///
+    /// Creates the row when it is missing. The result is clamped at `0`.
+    fn move_fresh(&mut self, good: usize, delta: f64) {
+        if delta == 0.0 {
+            return;
+        }
+        let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+        row.fresh = (row.fresh + delta).max(0.0);
+    }
 }
 
 /// Who owns the firm and whether they carry the residual.
@@ -364,8 +416,8 @@ pub struct FirmPRow {
     pub reserve: f64,
     /// Capital tied up in a run. Returned to `quantity` at decay.
     pub used: f64,
-    /// Today's output. Moved to `quantity` after decay.
-    pub held: f64,
+    /// Fresh units in `quantity`. [`Firm::decay_goods`] leaves this portion in place.
+    pub fresh: f64,
     /// Destroyed in production today. Already left `quantity`.
     pub consumed: f64,
     /// Units produced today, including decay byproducts when a run records them.
@@ -387,5 +439,142 @@ impl FirmPRow {
         debug_assert!(reserve >= 0.0, "reserve must be >= 0.0");
         self.reserve = reserve;
         self
+    }
+
+    /// # Fresh Share
+    ///
+    /// Fraction of `quantity` that [`Firm::decay_goods`] skips.
+    ///
+    /// `fresh` is clamped into `0..=quantity`, then divided by `quantity`.
+    /// Returns `0` when `quantity` is `0`.
+    pub fn fresh_share(&self) -> f64 {
+        let quantity = self.quantity.max(0.0);
+        if quantity == 0.0 {
+            return 0.0;
+        }
+        self.fresh.max(0.0).min(quantity) / quantity
+    }
+}
+
+#[cfg(test)]
+mod firm_should {
+    use std::collections::{HashMap, HashSet};
+
+    use hexx::Hex;
+
+    use super::{DealMaker, Firm, FirmPRow};
+    use crate::game::actor::Actor;
+    use crate::game::deal::ProposedDeal;
+    use crate::game::factuals::Factuals;
+    use crate::game::good::Good;
+
+    fn mill(id: usize) -> Firm {
+        Firm::new(id, format!("mill {id}"), 1, Hex::new(0, 0))
+    }
+
+    fn bread() -> Good {
+        Good {
+            id: 2,
+            name: "bread".into(),
+            class: None,
+            decay_rate: 0.5,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    /// Buyer firm 1 receives `goods`. Seller firm 2 pays the negative lines.
+    fn deal(goods: HashMap<usize, f64>, fresh: HashMap<usize, f64>) -> ProposedDeal {
+        ProposedDeal {
+            buyer: Actor::Firm(1),
+            seller: Actor::Firm(2),
+            match_good: 2,
+            goods,
+            fresh,
+            freight: 0.0,
+        }
+    }
+
+    #[test]
+    fn finalize_moves_the_givers_fresh_share() {
+        let mut buyer = mill(1);
+        let mut seller = mill(2);
+        let mut row = FirmPRow::new().with_quantity(10.0);
+        row.fresh = 3.0;
+        row.produced = 3.0;
+        seller.property.insert(2, row);
+
+        assert!((seller.fresh_share(2) - 0.3).abs() < 1e-12);
+        assert_eq!(buyer.fresh_share(2), 0.0);
+
+        let proposal = deal(HashMap::from([(2, 4.0)]), HashMap::from([(2, 0.3)]));
+        buyer.finalize(&proposal, &Factuals::new());
+        seller.finalize(&proposal, &Factuals::new());
+
+        assert!((buyer.property[&2].quantity - 4.0).abs() < 1e-12);
+        assert!((buyer.property[&2].fresh - 1.2).abs() < 1e-12);
+        assert_eq!(buyer.property[&2].produced, 0.0);
+        assert!((seller.property[&2].quantity - 6.0).abs() < 1e-12);
+        assert!((seller.property[&2].fresh - 1.8).abs() < 1e-12);
+        assert_eq!(seller.property[&2].produced, 3.0);
+    }
+
+    #[test]
+    fn decay_spares_fresh_inside_quantity() {
+        let mut firm = mill(1);
+        let mut row = FirmPRow::new().with_quantity(10.0);
+        row.fresh = 4.0;
+        firm.property.insert(2, row);
+        let factuals = Factuals::new().with_good(bread());
+
+        let rot = firm.decay_goods(&factuals);
+
+        assert_eq!(firm.property[&2].quantity, 7.0);
+        assert_eq!(firm.property[&2].fresh, 4.0);
+        assert_eq!(rot[&2].0, 3.0);
+        assert_eq!(rot[&2].1, 10.0);
+    }
+
+    #[test]
+    fn reset_day_clears_fresh_and_produced_and_keeps_quantity() {
+        let mut firm = mill(1);
+        let mut row = FirmPRow::new().with_quantity(10.0);
+        row.fresh = 4.0;
+        row.produced = 4.0;
+        firm.property.insert(2, row);
+
+        DealMaker::reset_day(&mut firm);
+
+        assert_eq!(firm.property[&2].quantity, 10.0);
+        assert_eq!(firm.property[&2].fresh, 0.0);
+        assert_eq!(firm.property[&2].produced, 0.0);
+    }
+
+    #[test]
+    fn fresh_share_caps_when_fresh_exceeds_quantity() {
+        let mut row = FirmPRow::new().with_quantity(10.0);
+        row.fresh = 15.0;
+        assert!((row.fresh_share() - 1.0).abs() < 1e-12);
+
+        row.fresh = 0.0;
+        assert_eq!(row.fresh_share(), 0.0);
+
+        let mut empty = FirmPRow::new();
+        empty.fresh = 4.0;
+        assert_eq!(empty.fresh_share(), 0.0);
+    }
+
+    #[test]
+    fn take_good_returns_quantity_once() {
+        let mut firm = mill(1);
+        let mut row = FirmPRow::new().with_quantity(10.0);
+        row.fresh = 4.0;
+        firm.property.insert(2, row);
+
+        assert_eq!(firm.take_good(2), 10.0);
+        assert!(firm.property.get(&2).is_none());
     }
 }

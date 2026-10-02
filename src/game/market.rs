@@ -165,8 +165,12 @@ impl Market {
     ///
     /// Clears yesterday's day-records and each member's
     /// [`crate::game::deal::DealMaker::reset_day`],
-    /// then reserve, produce, [`Self::match_deals`], consume, decay, then actor
+    /// then reserve, produce, [`Self::match_deals`], consume, pop growth,
+    /// decay, [`crate::game::pop::Pop::rescale_desires`], then actor
     /// record keeping and planning, then [`Self::record_keeping`].
+    ///
+    /// Rescale is after decay, so this day's desire effects stay at the
+    /// previous size. Planning then reads the new targets.
     ///
     /// A pop's reserve applies its craft before the job reserves inputs.
     ///
@@ -198,10 +202,22 @@ impl Market {
         for actor in &members {
             actors.get_mut(*actor).consume();
         }
+        // Growth. The new size is applied to desires after decay.
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).growth_phase(factuals);
+            }
+        }
         // Decay Phase
         for actor in &members {
             for (good, (lost, volume)) in actors.get_mut(*actor).decay_goods(factuals) {
                 self.note_decay(good, lost, volume);
+            }
+        }
+        // Match desires to the new size now that this day's effects are spent.
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).rescale_desires(factuals);
             }
         }
         // Record Keeping and Planning phase.
@@ -219,8 +235,9 @@ impl Market {
     /// Clears this market's day tape and each member's yesterday.
     ///
     /// `actors` supplies the members. AMV, salability, and stock stay.
-    /// Pop satisfaction and reserves go to zero. Firms and institutions
-    /// keep the empty [`crate::game::deal::DealMaker::reset_day`] default.
+    /// Pop satisfaction and reserves go to zero. Firms run
+    /// [`crate::game::firm::Firm::reset_day`]. Institutions keep the empty
+    /// [`crate::game::deal::DealMaker::reset_day`] default.
     fn reset_day(&mut self, actors: &mut Actors) {
         for good in self.goods.values_mut() {
             good.clear_day();

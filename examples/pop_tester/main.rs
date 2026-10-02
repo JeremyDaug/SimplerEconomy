@@ -168,13 +168,13 @@ fn schedule(factuals: &Factuals, pop: &Pop) -> String {
 ///
 /// Goods this pop's job put out today, lowest id first.
 ///
-/// Reads `process_output`. Nothing made reads as "nothing".
+/// Reads `produced`. Nothing made reads as "nothing".
 fn made(factuals: &Factuals, pop: &Pop) -> String {
     let mut rows: Vec<(&Good, f64)> = pop
         .property
         .iter()
-        .filter(|(_, row)| row.process_output > 0.0)
-        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.process_output)))
+        .filter(|(_, row)| row.produced > 0.0)
+        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.produced)))
         .collect();
     rows.sort_by_key(|(good, _)| good.id);
     if rows.is_empty() {

@@ -38,21 +38,17 @@ use crate::game::process::{InputType, Process, ProcessEffect, ProcessResult};
 /// lines, targets, and stock. The craft changes only when the pop changes work.
 /// 
 /// ## Production Complexity Cost
-/// 
-/// Firms hav their own, altered, complexity costs to their production 
-/// lines. Job complexity cost grows much faster with the complexity of 
-/// the job, and gains reduced integration benefits. Complexity cost looks
-/// something like:
-/// 
-/// sum(craft_modifier * (process.complexity^2 - (k * process_overlap_percent)) * j * iterations of line) 
-/// 
-/// The general idea being that 'subsistence' or simple processes are 
-/// lighter while more complex processes are harder. It's best to think
-/// of the entire pop trying to do an apropriate share of each process
-/// as though they were each independent of each other.
-/// 
-/// Additionally, the craft can give a complexity cost modifier,
-/// and if the job diverges, it pays a penalty on.
+///
+/// Firms have their own complexity costs. A job's cost grows with the
+/// square of each process's complexity, so a subsistence process stays
+/// light. [`Self::complexity_cost`] is the modifier: the craft's
+/// complexity modifier, plus a penalty when the lines diverge from that
+/// craft.
+///
+/// [`Self::plan`] stores the cost of those targets. For each line it is
+/// `modifier * (complexity^2 - overlap) * iterations`. Overlap is the
+/// share of that line's goods that another line also uses. The weights
+/// on overlap and on iterations are both 1.
 #[derive(Debug, Clone)]
 pub struct Job {
     /// The craft Id, which point's towards a baseline set of processes the job has/had.
@@ -65,6 +61,10 @@ pub struct Job {
     ///
     /// If there are no processes, the job does not run.
     pub lines: Vec<JobLine>,
+    /// Complexity cost of the targets [`Job::plan`] last wrote.
+    ///
+    /// `0` before the first plan, and when no line has a positive target.
+    pub plan_cost: f64,
     /// Units this job added to `PopPRow.reserved` this morning.
     ///
     /// Produce spends this claim and leaves desire reserves alone.
@@ -129,6 +129,7 @@ impl Job {
         Self {
             craft,
             lines,
+            plan_cost: 0.0,
             claimed: HashMap::new(),
             shopping: HashMap::new(),
         }
@@ -136,13 +137,75 @@ impl Job {
 
     /// # Complexity Cost
     ///
-    /// The cost of this job's lines against `baseline`.
+    /// This job's modifier against `baseline`.
     ///
-    /// `weight` is the full distance of one extra process. Collects the
-    /// process id of each line and returns [`Craft::complexity_cost`].
+    /// `weight` is the full distance of one extra process. Each line's
+    /// process id is counted once. Returns [`Craft::complexity_cost`]:
+    /// the craft's complexity modifier plus that distance, capped at 1.0.
     pub fn complexity_cost(&self, baseline: &Craft, weight: f64) -> f64 {
-        let processes: Vec<usize> = self.lines.iter().map(|line| line.process).collect();
+        let mut processes = Vec::new();
+        for line in &self.lines {
+            if !processes.contains(&line.process) {
+                processes.push(line.process);
+            }
+        }
         baseline.complexity_cost(&processes, weight)
+    }
+
+    /// # Plan Complexity Cost
+    ///
+    /// Complexity cost of the current targets.
+    ///
+    /// `modifier` is [`Self::complexity_cost`]. A line with a positive
+    /// target adds `modifier * complexity * (1 - overlap / 2) * iterations`.
+    /// Overlap comes from [`Self::overlap_percent`]. A missing process,
+    /// or a target that is not positive, adds nothing.
+    /// 
+    /// TODO: Check the math on this. It will either need to be corrected, planned around, or limited to keep funny values out.
+    pub fn plan_complexity_cost(&self, factuals: &Factuals, modifier: f64) -> f64 {
+        let mut total = 0.0;
+        for (index, line) in self.lines.iter().enumerate() {
+            let Some(iterations) = line.target.filter(|n| *n > 0.0) else {
+                continue;
+            };
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            let overlap = self.overlap_percent(index, factuals);
+            let weight = process.complexity * (1.0 - overlap / 2.0);
+            total += modifier * weight * iterations;
+        }
+        total
+    }
+
+    /// # Overlap Percent
+    ///
+    /// Fraction of line `index`'s goods that another line also uses.
+    ///
+    /// Goods are that process's inputs and outputs. A missing process,
+    /// or a process with no goods, returns `0`.
+    fn overlap_percent(&self, index: usize, factuals: &Factuals) -> f64 {
+        let Some(line) = self.lines.get(index) else {
+            return 0.0;
+        };
+        let Some(mine) = process_goods(factuals, line.process) else {
+            return 0.0;
+        };
+        if mine.is_empty() {
+            return 0.0;
+        }
+        let mut others = HashSet::new();
+        for (other_index, other) in self.lines.iter().enumerate() {
+            if other_index == index {
+                continue;
+            }
+            let Some(goods) = process_goods(factuals, other.process) else {
+                continue;
+            };
+            others.extend(goods);
+        }
+        let shared = mine.iter().filter(|good| others.contains(good)).count();
+        shared as f64 / mine.len() as f64
     }
 
     /// # Ensure Lines
@@ -201,16 +264,28 @@ impl Job {
     /// It also means avoiding unprotifable lines, reducing volatility, reducing
     /// decay, and avoiding pop starvation.
     /// 
-    /// TODO: this function will need to be reworked to match the comments above. 
-    /// More details on this are to be worked out.
+    /// TODO: The planner below is the thin one, kept for basic testing.
+    /// Filling out the notes above is later work.
+    ///
+    /// TODO: Cutting production when prices fall is later, more advanced
+    /// planning. Keep these targets until the current plans have been tested.
+    ///
+    /// `wanted` is units still short. `on_hand` is stock. `factuals`
+    /// supplies processes. `history` is the market board. `modifier` is
+    /// [`Self::complexity_cost`]. Each line's target comes from
+    /// [`target_iterations`]. An empty line list stores [`Self::plan_cost`]
+    /// as `0` and returns. Otherwise [`Self::plan_cost`] is the complexity
+    /// cost of the targets just written.
     pub fn plan(
         &mut self,
         wanted: &HashMap<usize, f64>,
         on_hand: &HashMap<usize, f64>,
         factuals: &Factuals,
         history: &MarketHistory,
+        modifier: f64,
     ) {
         if self.lines.is_empty() {
+            self.plan_cost = 0.0;
             return;
         }
         for line in &mut self.lines {
@@ -221,6 +296,7 @@ impl Job {
             };
             line.target = Some(target_iterations(process, wanted, on_hand, history));
         }
+        self.plan_cost = self.plan_complexity_cost(factuals, modifier);
     }
 
     /// # Reserve
@@ -263,8 +339,8 @@ impl Job {
     /// Runs each line up to its target and writes the result onto `property`.
     ///
     /// Returns the process effects. Negative changes leave `quantity` and
-    /// the claim. Positive changes are new stock and `process_output`, so
-    /// decay spares them today. Capital moves from `quantity` into `used`.
+    /// the claim. Positive changes are new stock, added to `quantity`,
+    /// `fresh`, and `produced`. Capital moves from `quantity` into `used`.
     /// Factor claims stay reserved so the factor is not sold. Other leftover
     /// claims are released. Shopping stays for [`Job::buy_orders`].
     ///
@@ -459,17 +535,18 @@ impl Job {
     ///
     /// Writes one [`ProcessResult`] onto the pop's rows and this job's claim.
     ///
-    /// A negative change is input spent. A positive change is new output.
+    /// A negative change is input spent. A positive change is new output,
+    /// added to `quantity`, [`PopPRow::fresh`], and [`PopPRow::produced`].
     /// `used_inputs` is capital set aside for the day.
     fn apply_result(&mut self, property: &mut HashMap<usize, PopPRow>, result: &ProcessResult) {
         for (&good, &change) in &result.changes {
             if change < 0.0 {
                 self.spend(property, good, -change, false);
             } else if change > 0.0 {
-                // New today. decay_goods reads process_output and skips this portion.
                 let row = property.entry(good).or_insert_with(|| PopPRow::new(0.0));
                 row.quantity += change;
-                row.process_output += change;
+                row.fresh += change;
+                row.produced += change;
             }
         }
         for (&good, &used) in &result.used_inputs {
@@ -587,6 +664,22 @@ fn target_iterations(
     } else {
         0.0
     }
+}
+
+/// # Process Goods
+///
+/// Input and output good ids of `process`, or `None` when the world has
+/// no such process.
+fn process_goods(factuals: &Factuals, process: usize) -> Option<HashSet<usize>> {
+    let process = factuals.get_process(process)?;
+    let mut goods = HashSet::new();
+    for input in &process.inputs {
+        goods.insert(input.good);
+    }
+    for output in &process.outputs {
+        goods.insert(output.good);
+    }
+    Some(goods)
 }
 
 /// # Free Of
@@ -717,13 +810,109 @@ mod job {
     }
 
     #[test]
+    fn complexity_cost_counts_a_repeated_process_once() {
+        let craft = Craft::new(1, "subsistence")
+            .with_process(1)
+            .with_complexity_modifier(0.4);
+        let doubled = Job::new(
+            1,
+            vec![
+                JobLine::new(2, Some(0.0), vec![]),
+                JobLine::new(2, Some(0.0), vec![]),
+            ],
+        );
+
+        // Missing process 1 costs half of 0.1. Process 2 is one extra process.
+        assert!((doubled.complexity_cost(&craft, 0.1) - 0.55).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_stores_the_complexity_cost_of_the_targets() {
+        let mut job = Job::new(1, vec![JobLine::new(7, None, vec![])]);
+        let factuals = Factuals::new().with_process(bake());
+
+        job.plan(
+            &HashMap::from([(2, 4.0)]),
+            &HashMap::from([(2, 1.0)]),
+            &factuals,
+            &MarketHistory::new(),
+            0.4,
+        );
+
+        // 0.4 * 1 * (1 - 0) * 3 iterations.
+        assert_eq!(job.lines[0].target, Some(3.0));
+        assert!((job.plan_cost - 1.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_cost_subtracts_goods_shared_with_another_line() {
+        let mill = Process::new(3, "mill", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let shared = Process::new(7, "bake", 0)
+            .with_input(ProcessInput::new(3, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let mut job = Job::new(
+            1,
+            vec![JobLine::new(3, None, vec![]), JobLine::new(7, None, vec![])],
+        );
+        let factuals = Factuals::new().with_process(mill).with_process(shared);
+
+        job.plan(&HashMap::new(), &HashMap::new(), &factuals, &MarketHistory::new(), 1.0);
+
+        // Each line shares one of two goods: 1 * (1 - 0.5 / 2) * 1, twice.
+        assert_eq!(job.lines[0].target, Some(1.0));
+        assert_eq!(job.lines[1].target, Some(1.0));
+        assert!((job.plan_cost - 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_cost_stays_light_for_a_subsistence_process() {
+        let forage = Process::new(31, "forage", 0)
+            .with_output(ProcessOutput::new(7, 2.0, true))
+            .with_complexity(0.25);
+        let mut job = Job::new(1, vec![JobLine::new(31, None, vec![])]);
+        let factuals = Factuals::new().with_process(forage);
+
+        job.plan(&HashMap::new(), &HashMap::new(), &factuals, &MarketHistory::new(), 1.0);
+
+        // 1 * 0.25 * (1 - 0) * 1.
+        assert_eq!(job.lines[0].target, Some(1.0));
+        assert!((job.plan_cost - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_cost_counts_overlap_on_a_resting_line() {
+        let running = Process::new(3, "mill", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let resting = Process::new(7, "bake", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(4, 1.0, true));
+        let mut job = Job::new(
+            1,
+            vec![JobLine::new(3, None, vec![]), JobLine::new(7, None, vec![])],
+        );
+        let factuals = Factuals::new().with_process(running).with_process(resting);
+        let mut history = MarketHistory::new();
+        history.prices.insert(4, 0.0);
+
+        job.plan(&HashMap::new(), &HashMap::new(), &factuals, &history, 1.0);
+
+        // The resting line still shares one of two goods, so the weight is 0.75.
+        assert_eq!(job.lines[0].target, Some(1.0));
+        assert_eq!(job.lines[1].target, Some(0.0));
+        assert!((job.plan_cost - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
     fn plan_sets_iterations_from_the_desire_gap() {
         let mut job = Job::new(1, vec![JobLine::new(7, None, vec![])]);
         let factuals = Factuals::new().with_process(bake());
         let wanted = HashMap::from([(2, 4.0)]);
         let on_hand = HashMap::from([(2, 1.0)]);
 
-        job.plan(&wanted, &on_hand, &factuals, &MarketHistory::new());
+        job.plan(&wanted, &on_hand, &factuals, &MarketHistory::new(), 1.0);
 
         assert_eq!(job.lines[0].target, Some(3.0));
     }
@@ -733,7 +922,7 @@ mod job {
         let mut job = Job::new(1, vec![JobLine::new(7, Some(0.0), vec![])]);
         let factuals = Factuals::new().with_process(bake());
         // No gap. A default board prices bread at 1, so one batch is worth making.
-        job.plan(&HashMap::new(), &HashMap::from([(2, 5.0)]), &factuals, &MarketHistory::new());
+        job.plan(&HashMap::new(), &HashMap::from([(2, 5.0)]), &factuals, &MarketHistory::new(), 1.0);
 
         assert_eq!(job.lines[0].target, Some(1.0));
     }
@@ -745,9 +934,10 @@ mod job {
         let mut history = MarketHistory::new();
         history.prices.insert(2, 0.0);
 
-        job.plan(&HashMap::new(), &HashMap::from([(2, 5.0)]), &factuals, &history);
+        job.plan(&HashMap::new(), &HashMap::from([(2, 5.0)]), &factuals, &history, 1.0);
 
         assert_eq!(job.lines[0].target, Some(0.0));
+        assert!(job.plan_cost.abs() < 1e-12);
     }
 
     #[test]
@@ -755,7 +945,7 @@ mod job {
         let mut job = Job::new(0, vec![JobLine::new(7, Some(4.0), vec![])]);
         let factuals = Factuals::new().with_process(bake());
 
-        job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new());
+        job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new(), 1.0);
 
         // 9 bread wanted, 1 per batch, nothing on hand.
         assert_eq!(job.lines[0].target, Some(9.0));
@@ -767,11 +957,12 @@ mod job {
         let factuals = Factuals::new().with_process(bake());
         let mut property = HashMap::from([(1, PopPRow::new(5.0))]);
 
-        job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new());
+        job.plan(&HashMap::from([(2, 9.0)]), &HashMap::new(), &factuals, &MarketHistory::new(), 1.0);
         job.reserve(&mut property, &factuals);
         let effects = job.produce(&mut property, &factuals);
 
         assert!(job.lines.is_empty());
+        assert!(job.plan_cost.abs() < 1e-12);
         assert_eq!(property[&1].quantity, 5.0);
         assert_eq!(property[&1].reserved, 0.0);
         assert!(effects.is_empty());
@@ -796,16 +987,18 @@ mod job {
         assert!(effects.is_empty());
         assert_eq!(property[&1].quantity, 0.0);
         assert_eq!(property[&2].quantity, 1.0);
-        assert_eq!(property[&2].process_output, 1.0);
+        assert_eq!(property[&2].fresh, 1.0);
+        assert_eq!(property[&2].produced, 1.0);
     }
 
     #[test]
     fn plan_stops_a_line_whose_process_is_missing() {
         let mut job = Job::new(1, vec![JobLine::new(99, Some(4.0), vec![])]);
 
-        job.plan(&HashMap::new(), &HashMap::new(), &Factuals::new(), &MarketHistory::new());
+        job.plan(&HashMap::new(), &HashMap::new(), &Factuals::new(), &MarketHistory::new(), 1.0);
 
         assert_eq!(job.lines[0].target, Some(0.0));
+        assert!(job.plan_cost.abs() < 1e-12);
     }
 
     #[test]
@@ -865,7 +1058,8 @@ mod job {
         assert_eq!(property[&1].quantity, 0.0);
         assert_eq!(property[&1].reserved, 0.0);
         assert_eq!(property[&2].quantity, 1.0);
-        assert_eq!(property[&2].process_output, 1.0);
+        assert_eq!(property[&2].fresh, 1.0);
+        assert_eq!(property[&2].produced, 1.0);
         assert!(job.claimed.get(&1).is_none());
     }
 
@@ -882,6 +1076,7 @@ mod job {
         job.produce(&mut property, &factuals);
         assert_eq!(property[&1].quantity, 0.0);
         assert_eq!(property[&2].quantity, 3.0);
+        assert_eq!(property[&2].produced, 3.0);
     }
 
     #[test]

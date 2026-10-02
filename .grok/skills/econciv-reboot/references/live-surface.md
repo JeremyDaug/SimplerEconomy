@@ -1,6 +1,6 @@
 # Live surface on EconCiv-Reboot
 
-Confirm against the branch tip. Refreshed 2026-09-30 for cottage jobs and the file-loaded pop tester.
+Confirm against the branch tip. Refreshed 2026-10-02 for fresh versus produced output, craft origin, and day-end desire rescale.
 
 ## Landed
 
@@ -8,15 +8,15 @@ Confirm against the branch tip. Refreshed 2026-09-30 for cottage jobs and the fi
 - `Pop::satisfy_continue` resumes from that bookmark. After new stock arrives inside a day, `reevaluate` uses this, not a fresh `satisfy`.
 - `Pop::consume` / `consume_tier` / `consume_one_desire` run after exchange in `Market::market_day`. Consume ignores satisfaction already recorded and can count a level twice if both satisfy and consume run. That is the current day path.
 - `Market::match_deals` pairs on one good. Buyer proposes, seller accepts or rejects. Only an accepted basket moves goods and pays freight. Both sides reevaluate after.
-- `Market::market_day` order — reset, reserve, produce, `match_deals`, consume, decay, actor books and planning, night card. A pop's reserve is satisfy, then `apply_craft`, then the job reserve.
-- A pop `Job` plans, reserves, produces, and shops on the pop's stock. Craft `0` is no baseline; lines still run. An empty line list skips the work. `Pop::plan` rewrites every line target after decay. `Pop::complexity_cost` is available and does not scale iterations.
+- `Market::market_day` order — reset, reserve, produce, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. `market_day` does not grant Time.
+- A pop `Job` plans, reserves, produces, and shops on the pop's stock. Craft `0` is no baseline; lines still run. An empty line list skips the work. `Pop::plan` rewrites every line target after `rescale_desires`. `Pop::complexity_cost` is available and does not scale iterations. New output lands in `quantity`, `fresh`, and `produced`. Deals move `fresh` and leave `produced`.
 - `examples/pop_tester` loads `data/pop_tester/scenario.toml` and calls `Actors::start_day` before `market_day`. The scenario's line targets are the first morning. The night plan replaces them.
 - Night `record_keeping` writes trade pressure, production flow, rot, and salability drift. Deals do not write the published AMV/salability card during the day. History snapshots the card at the start of `match_deals`.
 
 ## Empty or stub
 
 - `Firm::reserve_for_day`, `Firm::produce`, `Firm::plan`
-- `PlayState` phase methods including intramarket and pop consumption
+- `PlayState` phase methods including intramarket and pop consumption. `phase_pop_growth` only grows. A turn that also runs `market_day` grows those pops twice.
 - Class desires
 - `Desire.decay` field exists; nothing multiplies satisfaction by it
 - Savings between tiers and between luxury iterations

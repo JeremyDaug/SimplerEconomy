@@ -5,7 +5,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 use simpler_economy::game::actors::Actors;
-use simpler_economy::game::desire::{Desire, DesireSource, DesireTarget, DesireTargetType};
+use simpler_economy::game::demographic_source::DemographicSource;
+use simpler_economy::game::desire::{Desire, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::household::Household;
 use simpler_economy::game::job::{Job, JobLine};
@@ -110,7 +111,13 @@ pub fn load_scenario(path: &Path, factuals: &Factuals) -> Result<Scenario, Strin
     let file: ScenarioFile = toml::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))?;
     let goods = names(&factuals.goods, |good| &good.name, "good")?;
     let processes = names(&factuals.processes, |process| &process.name, "process")?;
-    let crafts = names(&factuals.crafts, |craft| &craft.name, "craft")?;
+    let mut open_crafts = HashMap::new();
+    for ((id, origin), craft) in &factuals.crafts {
+        if origin.is_none() {
+            open_crafts.insert(*id, craft);
+        }
+    }
+    let crafts = names(&open_crafts, |craft| &craft.name, "craft")?;
 
     let mut market = Market::new(1).with_friction(factuals.config.market.friction);
     let mut seen_goods = HashSet::new();
@@ -183,7 +190,8 @@ pub fn load_scenario(path: &Path, factuals: &Factuals) -> Result<Scenario, Strin
             }
             let good = lookup(&goods, "good", &desire.good)?;
             pop.desires[desire.tier].push(Desire {
-                source: DesireSource::Species(0, index + 1),
+                source: DemographicSource::Species(0),
+                demo_desire_id: index + 1,
                 priority: index as isize,
                 target: vec![DesireTarget::new(good, DesireTargetType::Consume, 1.0)],
                 amount: desire.amount,

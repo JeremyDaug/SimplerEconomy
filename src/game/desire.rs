@@ -3,6 +3,7 @@ use std::debug_assert;
 
 use itertools::Itertools;
 
+use crate::game::demographic_source::DemographicSource;
 use crate::game::{pop::Pop, scalingfactor::ScalingFactor};
 
 pub use crate::game::effects::DesireEffect;
@@ -41,10 +42,8 @@ pub struct PlatonicDesire {
     /// 
     /// This should Never be empty.
     pub tiers: Vec<usize>,
-    /// The Desire Sources which are valid for using this Platonic Desire.
-    /// 
-    /// The ID is ignored in this case, instead focusing on the determinent.
-    pub users: Vec<DesireSource>
+    /// The demographics which may use this platonic desire.
+    pub users: Vec<DemographicSource>
 }
 
 impl PlatonicDesire {
@@ -70,7 +69,7 @@ impl PlatonicDesire {
         }
     }
 
-    pub fn with_user(mut self, user: DesireSource) -> Self {
+    pub fn with_user(mut self, user: DemographicSource) -> Self {
         self.users.push(user);
         self
     }
@@ -117,30 +116,42 @@ impl PlatonicDesire {
     }
 
     /// # Create Empty Demo Desire
-    /// 
-    /// Creates and initializes a demographic desire based on this Platonic Desire.
-    /// 
-    /// Gives it the Platonic ID, base effects, scalar, and decay.
-    /// 
-    /// Sets priority to 1.
+    ///
+    /// Creates a demographic desire from this platonic desire with an empty bucket.
+    ///
+    /// `id` is the new desire's id. `tier` must be one this platonic desire
+    /// lists. Priority is 1. Scalar, decay, and the effect rate are copied.
+    /// Amount starts at 1, and the platonic effects are scaled to that amount.
     pub fn create_empty_demo_desire(&self, id: usize, tier: usize) -> DemoDesire {
         debug_assert!(self.tiers.contains(&tier), 
             "Tier must be a valid tier for the Platonic Desire.");
-        DemoDesire {
+        let mut demo = DemoDesire {
             id,
             platonic_id: self.id,
             bucket: vec![],
-            effects: self.effects.clone(),
+            effects: vec![],
+            base_effects: self.effects.clone(),
+            effect_rate: self.effect_rate,
             amount: 1.0,
             scalar: self.scalar,
             decay: self.decay,
             tier,
             category: "".into(),
             priority: 1,
-        }
+        };
+        demo.scale_effects_to_amount();
+        demo
     }
 
     /// # Derive Demographic Desire
+    ///
+    /// Builds a demographic desire from this platonic desire.
+    ///
+    /// `id` is the new desire's id. `tier` must be one this platonic desire
+    /// lists. `amount` is the satisfaction target and must be `>= 1.0`.
+    /// `desire_targets` keeps bucket goods whose id is in that list.
+    /// `priority` is stored on the result. Scalar, decay, and the effect rate
+    /// are copied. [`DemoDesire::set_amount`] then writes `amount` and the effects.
     pub fn derive_demographic_desire(&self, id: usize, tier: usize, amount: f64,
         desire_targets: Vec<usize>, priority: isize) -> DemoDesire {
         debug_assert!(self.tiers.contains(&tier),
@@ -150,23 +161,22 @@ impl PlatonicDesire {
             .filter(|x| desire_targets.contains(&x.good))
             .map(|x| x.clone())
             .collect_vec();
-        let effect_scale = self.effect_rate.calculate(amount);
-        let effects = self.effects.iter()
-            .map(|x| {
-                x.scale_by(effect_scale)
-            }).collect_vec();
-        DemoDesire {
+        let mut demo = DemoDesire {
             id,
             platonic_id: self.id,
             bucket: first_desire,
-            effects,
-            amount,
+            effects: vec![],
+            base_effects: self.effects.clone(),
+            effect_rate: self.effect_rate,
+            amount: 1.0,
             scalar: self.scalar,
             decay: self.decay,
             tier,
             category: "".into(),
             priority,
-        }
+        };
+        demo.set_amount(amount);
+        demo
     }
 }
 
@@ -198,11 +208,18 @@ pub struct DemoDesire {
     /// the rate defined by the Platonic Desire's Desire Effect Rate.
     /// 
     /// This is the result of meeting the amount fully.
+    /// [`Self::set_amount`] rewrites it from the platonic magnitudes.
     pub effects: Vec<DesireEffect>,
+    /// Platonic effect magnitudes, before the amount curve.
+    base_effects: Vec<DesireEffect>,
+    /// Curve copied from the platonic desire. [`Self::set_amount`] uses it.
+    pub effect_rate: DesireEffectRate,
     /// The units of satisfaction needed to fully satisfy this desire.
     /// This is multiplied by the Scaling factor to produce the final target per whatever.
     /// 
     /// Effectively equivalent to 1 per Scalar.
+    ///
+    /// Change it through [`Self::set_amount`] so `effects` stay matched to it.
     pub amount: f64,
     /// The Scaling Factor of the Desire. Multiply this value by the amount for the
     /// actual target amount.
@@ -229,6 +246,8 @@ impl DemoDesire {
             platonic_id: 0,
             bucket: vec![],
             effects: vec![],
+            base_effects: vec![],
+            effect_rate: DesireEffectRate::Linear(1.0),
             amount: 1.0,
             scalar: ScalingFactor::Household(1.0),
             decay: 0.0,
@@ -256,18 +275,57 @@ impl DemoDesire {
         self
     }
 
-    /// Adds an effect produced when this desire is satisfied.
+    /// # With Effect
+    ///
+    /// Adds `effect` at its platonic magnitude and rescales `effects` to the
+    /// current amount.
     pub fn with_effect(mut self, effect: DesireEffect) -> Self {
-        self.effects.push(effect);
+        self.base_effects.push(effect);
+        self.scale_effects_to_amount();
         self
     }
 
-    /// Sets the units of satisfaction needed to fully satisfy this desire.
-    /// Debug-asserts that `amount` is positive.
-    pub fn with_amount(mut self, amount: f64) -> Self {
-        debug_assert!(amount > 0.0, "Amount must be positive.");
-        self.amount = amount;
+    /// # With Effect Rate
+    ///
+    /// Sets the curve and rescales `effects` to the current amount.
+    pub fn with_effect_rate(mut self, effect_rate: DesireEffectRate) -> Self {
+        self.effect_rate = effect_rate;
+        self.scale_effects_to_amount();
         self
+    }
+
+    /// # With Amount
+    ///
+    /// Sets the satisfaction target through [`Self::set_amount`].
+    pub fn with_amount(mut self, amount: f64) -> Self {
+        self.set_amount(amount);
+        self
+    }
+
+    /// # Set Amount
+    ///
+    /// Sets `amount` and rescales `effects` to that amount.
+    ///
+    /// `amount` is the satisfaction needed to fully meet this desire. It must
+    /// be `>= 1.0`. A higher amount yields a higher effect. Scalar, decay,
+    /// and the bucket stay.
+    pub fn set_amount(&mut self, amount: f64) {
+        debug_assert!(amount >= 1.0, "Amount must be 1.0 or greater.");
+        self.amount = amount;
+        self.scale_effects_to_amount();
+    }
+
+    /// # Scale Effects To Amount
+    ///
+    /// Rewrites `effects` from `base_effects` by [`DesireEffectRate::calculate`]
+    /// of the current `amount`.
+    fn scale_effects_to_amount(&mut self) {
+        let scale = self.effect_rate.calculate(self.amount);
+        self.effects = self
+            .base_effects
+            .iter()
+            .map(|effect| effect.scale_by(scale))
+            .collect();
     }
 
     /// Sets how the desire amount scales with the household/pop.
@@ -303,8 +361,8 @@ impl DemoDesire {
     /// Creates a pop-level `Desire` from this demographic desire.
     /// 
     /// Copies bucket, scalar, and decay. Satisfaction starts at 0.0 and
-    /// category is left empty. `source` is stored with this demo desire's `id`
-    /// filled in (second field of `DesireSource`) so lookups can resolve it later.
+    /// category is left empty. `source` is stored on the desire, and
+    /// `demo_desire_id` is this demographic desire's `id`.
     /// 
     /// The target `amount` is this desire's base amount multiplied by the pop via
     /// `Pop::get_scaling_factor` and `self.scalar`.
@@ -312,10 +370,11 @@ impl DemoDesire {
     /// Additive effects (player resources, bonus goods) are multiplied by that
     /// same scale. Birth, mortality, sentiment, and satisfaction arms are
     /// copied unchanged.
-    pub fn create_desire(&self, pop: &Pop, source: DesireSource) -> Desire {
+    pub fn create_desire(&self, pop: &Pop, source: DemographicSource) -> Desire {
         let scale = pop.get_scaling_factor(self.scalar);
         Desire {
-            source: source.with_demo_desire_id(self.id),
+            source,
+            demo_desire_id: self.id,
             priority: self.priority,
             target: self.bucket.clone(),
             amount: self.amount * scale,
@@ -398,9 +457,11 @@ impl DesireEffectRate {
 /// A Desire is things or groups of things that are desired by a pop.
 #[derive(Debug, Clone)]
 pub struct Desire {
-    /// Where this desire comes from, including the source demographic id and the
-    /// linked `DemoDesire.id` (see `DesireSource`).
-    pub source: DesireSource,
+    /// The demographic this desire comes from.
+    pub source: DemographicSource,
+
+    /// Id of the `DemoDesire` this was created from.
+    pub demo_desire_id: usize,
 
     /// Ordering priority within a tier. Lower values come first when sorting.
     /// 
@@ -409,7 +470,7 @@ pub struct Desire {
     /// 2. After the tier is sorted, rewritten to the desire's index in that tier.
     /// 
     /// Once baked to index, later re-sorts can use `priority` alone without re-reading
-    /// `DesireSource`.
+    /// the source or [`Self::demo_desire_id`].
     pub priority: isize,
 
     /// The goods beings desired. If of length 1, then it's a specific good,
@@ -474,7 +535,7 @@ impl Desire {
     pub fn cmp_order(&self, other: &Self) -> std::cmp::Ordering {
         self.priority.cmp(&other.priority)
             .then_with(|| self.source.order_rank().cmp(&other.source.order_rank()))
-            .then_with(|| self.source.demo_desire_id().cmp(&other.source.demo_desire_id()))
+            .then_with(|| self.demo_desire_id.cmp(&other.demo_desire_id))
     }
 
     /// # Ordered Targets
@@ -579,84 +640,16 @@ pub enum DesireTargetType {
     Use,
 }
 
-/// # Desire Source
-/// 
-/// Where is the desire's definition derived from.
-/// 
-/// Each variant is `(source_id, demo_desire_id)`:
-/// - `source_id`: Species / Culture / Class / Religion id
-/// - `demo_desire_id`: id of the `DemoDesire` within that demographic
-/// 
-/// For platonic / user lists that only care about the determinant, `demo_desire_id`
-/// may be `0`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DesireSource {
-    /// Desire is sourced from the pop's biological needs. `(species_id, demo_desire_id)`
-    Species(usize, usize),
-    /// Desire is sourced from a Culture. `(culture_id, demo_desire_id)`
-    Culture(usize, usize),
-    /// Desire is sourced from a class. `(class_id, demo_desire_id)`
-    /// 
-    /// TODO: Class demographics / desires are not implemented yet.
-    Class(usize, usize),
-    /// Desire is sourced from a religion. `(religion_id, demo_desire_id)`
-    Religion(usize, usize),
-}
-
-impl DesireSource {
-    /// # Desire Source ID
-    /// 
-    /// Gets the demographic source id (species/culture/class/religion).
-    pub fn desire_source_id(&self) -> &usize {
-        match self {
-            DesireSource::Species(id, _) |
-            DesireSource::Culture(id, _) |
-            DesireSource::Class(id, _) |
-            DesireSource::Religion(id, _) => id,
-        }
-    }
-
-    /// Gets the linked `DemoDesire.id`.
-    pub fn demo_desire_id(&self) -> &usize {
-        match self {
-            DesireSource::Species(_, id) |
-            DesireSource::Culture(_, id) |
-            DesireSource::Class(_, id) |
-            DesireSource::Religion(_, id) => id,
-        }
-    }
-
-    /// Returns a copy of this source with the demo desire id set.
-    pub fn with_demo_desire_id(self, demo_desire_id: usize) -> Self {
-        match self {
-            DesireSource::Species(source_id, _) => DesireSource::Species(source_id, demo_desire_id),
-            DesireSource::Culture(source_id, _) => DesireSource::Culture(source_id, demo_desire_id),
-            DesireSource::Class(source_id, _) => DesireSource::Class(source_id, demo_desire_id),
-            DesireSource::Religion(source_id, _) => DesireSource::Religion(source_id, demo_desire_id),
-        }
-    }
-
-    /// # Order Rank
-    /// 
-    /// Sort key for desire ordering: Species → Culture → Class → Religion.
-    pub fn order_rank(&self) -> u8 {
-        match self {
-            DesireSource::Species(_, _) => 0,
-            DesireSource::Culture(_, _) => 1,
-            DesireSource::Class(_, _) => 2,
-            DesireSource::Religion(_, _) => 3,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Desire, DesireEffect, DesireSource};
+    use super::{DemoDesire, Desire, DesireEffect, DesireEffectRate, PlatonicDesire};
+    use crate::game::demographic_source::DemographicSource;
     use crate::game::scalingfactor::ScalingFactor;
 
     fn desire(amount: f64, satisfaction: f64, effect: Vec<DesireEffect>) -> Desire {
         Desire {
-            source: DesireSource::Species(0, 1),
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
             priority: 0,
             target: vec![],
             amount,
@@ -727,5 +720,44 @@ mod tests {
         );
         // 6 * 0.5 + -(4 * 0.5) = 1
         assert_eq!(mixed.get_bonus_satisfaction(), 1.0);
+    }
+
+    #[test]
+    fn set_amount_rescales_effects_from_the_platonic_magnitudes() {
+        let platonic = PlatonicDesire::new(1)
+            .with_tier(1)
+            .with_effect_rate(DesireEffectRate::linear(1.0))
+            .with_effect(DesireEffect::Culture(2.0, true));
+        let mut demo = platonic.derive_demographic_desire(4, 1, 1.0, vec![], 1);
+
+        assert_eq!(demo.effects, vec![DesireEffect::Culture(2.0, true)]);
+
+        demo.set_amount(3.0);
+        assert_eq!(demo.amount, 3.0);
+        assert_eq!(demo.effects, vec![DesireEffect::Culture(6.0, true)]);
+
+        demo.set_amount(5.0);
+        assert_eq!(demo.effects, vec![DesireEffect::Culture(10.0, true)]);
+    }
+
+    #[test]
+    fn set_amount_follows_the_effect_rate() {
+        let platonic = PlatonicDesire::new(1)
+            .with_tier(1)
+            .with_effect_rate(DesireEffectRate::SquareRoot)
+            .with_effect(DesireEffect::Culture(4.0, true));
+        let demo = platonic.derive_demographic_desire(4, 1, 4.0, vec![], 1);
+
+        assert_eq!(demo.amount, 4.0);
+        assert_eq!(demo.effects, vec![DesireEffect::Culture(8.0, true)]);
+    }
+
+    #[test]
+    fn with_amount_rescales_a_hand_built_desire() {
+        let demo = DemoDesire::new(1)
+            .with_effect(DesireEffect::Culture(2.0, true))
+            .with_amount(3.0);
+
+        assert_eq!(demo.effects, vec![DesireEffect::Culture(6.0, true)]);
     }
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::game::{
-    config::{ConfigLoadError, GameConfig}, craft::{Craft, CulturalCraft}, culture::Culture, desire::{DemoDesire, Desire, DesireSource}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
+    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
 };
 
 /// TOML world-data file of goods, processes, and crafts (factuals).
@@ -35,7 +35,7 @@ struct CraftFile {
 
 /// # Default Complexity Modifier
 ///
-/// A craft or overlay that omits `complexity_modifier` loads as 1.0.
+/// A craft that omits `complexity_modifier` loads as 1.0.
 fn default_complexity_modifier() -> f64 {
     1.0
 }
@@ -270,6 +270,51 @@ fn check_complexity_modifier(label: &str, modifier: f64) -> Result<(), FactualsL
     }
 }
 
+/// # Reject Added And Removed
+///
+/// `label` names the row. `add` and `remove` are its process ids.
+///
+/// An id in both lists is invalid. Returns the first such id.
+fn reject_added_and_removed(
+    label: &str,
+    add: &[usize],
+    remove: &[usize],
+) -> Result<(), FactualsLoadError> {
+    for id in add {
+        if remove.contains(id) {
+            return Err(FactualsLoadError::InvalidCraft(format!(
+                "{label} adds and removes process {id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// # Duplicate Craft
+///
+/// The error for craft `id` already stored at `origin`.
+///
+/// An open craft is [`FactualsLoadError::DuplicateCraft`]. Culture and
+/// religion use their duplicate errors. Species and class name the
+/// demographic in [`FactualsLoadError::InvalidCraft`].
+fn duplicate_craft(id: usize, origin: Option<DemographicSource>) -> FactualsLoadError {
+    match origin {
+        None => FactualsLoadError::DuplicateCraft(id),
+        Some(DemographicSource::Culture(culture)) => {
+            FactualsLoadError::DuplicateCultureCraft { culture, craft: id }
+        }
+        Some(DemographicSource::Religion(religion)) => {
+            FactualsLoadError::DuplicateReligionCraft { religion, craft: id }
+        }
+        Some(DemographicSource::Species(species)) => FactualsLoadError::InvalidCraft(format!(
+            "species {species} already has craft {id}"
+        )),
+        Some(DemographicSource::Class(class)) => FactualsLoadError::InvalidCraft(format!(
+            "class {class} already has craft {id}"
+        )),
+    }
+}
+
 fn check_process_amount(process: usize, kind: &str, amount: f64) -> Result<(), FactualsLoadError> {
     if amount > 0.0 && amount.is_finite() {
         Ok(())
@@ -344,8 +389,11 @@ impl From<ProcessEffectFile> for ProcessEffect {
 pub struct Factuals {
     pub goods: HashMap<usize, Good>,
     pub processes: HashMap<usize, Process>,
-    /// Baseline crafts, keyed by id.
-    pub crafts: HashMap<usize, Craft>,
+    /// Crafts keyed by craft id and [`Craft::origin`].
+    ///
+    /// Goods and processes stay as loaded. Crafts may be added or removed
+    /// during play. Pop jobs are not retargeted here.
+    pub crafts: HashMap<(usize, Option<DemographicSource>), Craft>,
     pub species: HashMap<usize, Species>,
     pub cultures: HashMap<usize, Culture>,
     pub religion: HashMap<usize, Religion>,
@@ -369,13 +417,13 @@ impl Factuals {
         }
     }
 
-    /// Loads world data from `path`.
+    /// # Load From Path
     ///
-    /// A directory loads `goods.toml`, `processes.toml` if present,
-    /// `crafts.toml` if present, and `config.toml` if present. A file is
-    /// treated as a single TOML document (goods, processes, and/or crafts).
-    /// A culture or religion craft in that file creates the holder when that
-    /// id is not already loaded. Species stay empty.
+    /// `path` is a world-data file or directory.
+    ///
+    /// A directory is loaded by [`Self::load_from_dir`]. A file is read and
+    /// loaded by [`Self::load_from_toml`]. Returns those [`Factuals`], or the
+    /// first error. Species stay empty.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, FactualsLoadError> {
         let path = path.as_ref();
         if path.is_dir() {
@@ -386,7 +434,14 @@ impl Factuals {
         }
     }
 
-    /// Loads `goods.toml` plus optional `processes.toml` from a world-data folder.
+    /// # Load From Dir
+    ///
+    /// `dir` is a world-data folder.
+    ///
+    /// Reads `goods.toml`, then `processes.toml` when that file is present,
+    /// then `crafts.toml` when present, then `config.toml` when present.
+    /// Each table file is merged by [`Self::insert_world_file`]. `config.toml`
+    /// replaces [`Self::config`]. Returns the [`Factuals`], or the first error.
     fn load_from_dir(dir: &Path) -> Result<Self, FactualsLoadError> {
         let goods_path = dir.join("goods.toml");
         let text = std::fs::read_to_string(&goods_path).map_err(FactualsLoadError::Io)?;
@@ -409,13 +464,25 @@ impl Factuals {
         Ok(factuals)
     }
 
-    /// Loads goods and processes from TOML text into an empty [`Factuals`].
+    /// # Load From Toml
+    ///
+    /// `text` is one TOML document.
+    ///
+    /// Starts from [`Self::new`] and merges that document through
+    /// [`Self::insert_world_file`]. Returns the [`Factuals`], or the first error.
     pub fn load_from_toml(text: &str) -> Result<Self, FactualsLoadError> {
         let mut factuals = Factuals::new();
         factuals.insert_world_file(text)?;
         Ok(factuals)
     }
 
+    /// # Insert World File
+    ///
+    /// `text` is one TOML document merged into these factuals.
+    ///
+    /// Loads goods, then processes, then open crafts, then culture crafts,
+    /// then religion crafts. A culture or religion row is stored by
+    /// [`Self::insert_attached_craft`]. Returns the first error.
     fn insert_world_file(&mut self, text: &str) -> Result<(), FactualsLoadError> {
         let file: WorldFile = toml::from_str(text).map_err(FactualsLoadError::Toml)?;
         for good in file.goods {
@@ -439,88 +506,161 @@ impl Factuals {
         Ok(())
     }
 
+    /// # Insert Craft File
+    ///
+    /// Stores one open craft from world data.
+    ///
+    /// `file` is the row. Craft id `0` is rejected. A craft id already stored
+    /// as open is a duplicate. Each process id is kept once, and only when
+    /// [`Self::get_process`] already has that process. A rejected row is not
+    /// stored.
     fn insert_craft_file(&mut self, file: CraftFile) -> Result<(), FactualsLoadError> {
         if file.id == 0 {
             return Err(FactualsLoadError::InvalidCraft(
                 "craft id 0 is no craft".into(),
             ));
         }
-        if self.crafts.contains_key(&file.id) {
+        if self.get_craft(file.id).is_some() {
             return Err(FactualsLoadError::DuplicateCraft(file.id));
         }
+        let label = format!("craft {}", file.id);
+        self.require_craft_processes(&label, &file.processes)?;
+        check_complexity_modifier(&label, file.complexity_modifier)?;
+        self.add_craft(Craft {
+            id: file.id,
+            name: file.name,
+            origin: None,
+            processes: file.processes,
+            remove: Vec::new(),
+            complexity_modifier: file.complexity_modifier,
+        })
+    }
+
+    /// # Insert Culture Craft
+    ///
+    /// `file` is one culture craft row.
+    ///
+    /// Storage is [`Self::insert_attached_craft`] for that culture. Returns
+    /// that result.
+    fn insert_culture_craft(&mut self, file: CultureCraftFile) -> Result<(), FactualsLoadError> {
+        self.insert_attached_craft(
+            DemographicSource::Culture(file.culture),
+            file.name,
+            file.craft,
+            file.add,
+            file.remove,
+            file.complexity_modifier,
+        )
+    }
+
+    /// # Insert Religion Craft
+    ///
+    /// `file` is one religion craft row.
+    ///
+    /// Storage is [`Self::insert_attached_craft`] for that religion. Returns
+    /// that result.
+    fn insert_religion_craft(&mut self, file: ReligionCraftFile) -> Result<(), FactualsLoadError> {
+        self.insert_attached_craft(
+            DemographicSource::Religion(file.religion),
+            file.name,
+            file.craft,
+            file.add,
+            file.remove,
+            file.complexity_modifier,
+        )
+    }
+
+    /// # Insert Attached Craft
+    ///
+    /// Stores one demographic craft from world data.
+    ///
+    /// `origin` is the demographic. `holder_name` names a culture or religion
+    /// that is not loaded yet. `craft_id` is the open craft. `add` and
+    /// `remove` are process ids. `modifier` is stored on the attached craft.
+    ///
+    /// A non-finite modifier is rejected before a holder is created. Origin
+    /// id `0` is rejected. The open craft must already be stored. Add and
+    /// remove ids must be loaded and unique, and an id cannot be in both.
+    /// The holder is created after those checks. The stored craft's
+    /// `processes` are `add`.
+    fn insert_attached_craft(
+        &mut self,
+        origin: DemographicSource,
+        holder_name: String,
+        craft_id: usize,
+        add: Vec<usize>,
+        remove: Vec<usize>,
+        modifier: f64,
+    ) -> Result<(), FactualsLoadError> {
+        let kind = match origin {
+            DemographicSource::Culture(_) => "culture",
+            DemographicSource::Religion(_) => "religion",
+            DemographicSource::Species(_) => "species",
+            DemographicSource::Class(_) => "class",
+        };
+        let label = format!("{kind} {} craft {craft_id}", origin.id());
+        check_complexity_modifier(&label, modifier)?;
+        if origin.id() == 0 {
+            return Err(FactualsLoadError::InvalidCraft(format!(
+                "{kind} 0 is no {kind}"
+            )));
+        }
+        let Some(open) = self.get_craft(craft_id) else {
+            return Err(FactualsLoadError::InvalidCraft(format!(
+                "{label} has no open craft"
+            )));
+        };
+        let name = open.name.clone();
+        self.require_craft_processes(&label, &add)?;
+        self.require_craft_processes(&label, &remove)?;
+        reject_added_and_removed(&label, &add, &remove)?;
+        match origin {
+            DemographicSource::Culture(id) => {
+                self.cultures
+                    .entry(id)
+                    .or_insert_with(|| Culture::new(id, holder_name));
+            }
+            DemographicSource::Religion(id) => {
+                self.religion
+                    .entry(id)
+                    .or_insert_with(|| Religion::new(id, holder_name));
+            }
+            DemographicSource::Species(_) | DemographicSource::Class(_) => {}
+        }
+        self.add_craft(Craft {
+            id: craft_id,
+            name,
+            origin: Some(origin),
+            processes: add,
+            remove,
+            complexity_modifier: modifier,
+        })
+    }
+
+    /// # Require Craft Processes
+    ///
+    /// `label` names the row. `ids` are the process ids on that row.
+    ///
+    /// A repeated id is invalid. An id [`Self::get_process`] does not return
+    /// is invalid. Returns the first failure.
+    fn require_craft_processes(
+        &self,
+        label: &str,
+        ids: &[usize],
+    ) -> Result<(), FactualsLoadError> {
         let mut seen = HashSet::new();
-        for process in &file.processes {
+        for process in ids {
             if !seen.insert(*process) {
                 return Err(FactualsLoadError::InvalidCraft(format!(
-                    "craft {} repeats process {process}",
-                    file.id
+                    "{label} repeats process {process}"
+                )));
+            }
+            if self.get_process(*process).is_none() {
+                return Err(FactualsLoadError::InvalidCraft(format!(
+                    "{label} process {process} is not loaded"
                 )));
             }
         }
-        check_complexity_modifier(&format!("craft {}", file.id), file.complexity_modifier)?;
-        self.crafts.insert(
-            file.id,
-            Craft {
-                id: file.id,
-                name: file.name,
-                processes: file.processes,
-                complexity_modifier: file.complexity_modifier,
-            },
-        );
-        Ok(())
-    }
-
-    fn insert_culture_craft(&mut self, file: CultureCraftFile) -> Result<(), FactualsLoadError> {
-        check_complexity_modifier(
-            &format!("culture {} craft {}", file.culture, file.craft),
-            file.complexity_modifier,
-        )?;
-        let culture = self
-            .cultures
-            .entry(file.culture)
-            .or_insert_with(|| Culture::new(file.culture, file.name));
-        if culture.crafts.contains_key(&file.craft) {
-            return Err(FactualsLoadError::DuplicateCultureCraft {
-                culture: file.culture,
-                craft: file.craft,
-            });
-        }
-        culture.crafts.insert(
-            file.craft,
-            CulturalCraft {
-                craft: file.craft,
-                add: file.add,
-                remove: file.remove,
-                complexity_modifier: file.complexity_modifier,
-            },
-        );
-        Ok(())
-    }
-
-    fn insert_religion_craft(&mut self, file: ReligionCraftFile) -> Result<(), FactualsLoadError> {
-        check_complexity_modifier(
-            &format!("religion {} craft {}", file.religion, file.craft),
-            file.complexity_modifier,
-        )?;
-        let religion = self
-            .religion
-            .entry(file.religion)
-            .or_insert_with(|| Religion::new(file.religion, file.name));
-        if religion.crafts.contains_key(&file.craft) {
-            return Err(FactualsLoadError::DuplicateReligionCraft {
-                religion: file.religion,
-                craft: file.craft,
-            });
-        }
-        religion.crafts.insert(
-            file.craft,
-            CulturalCraft {
-                craft: file.craft,
-                add: file.add,
-                remove: file.remove,
-                complexity_modifier: file.complexity_modifier,
-            },
-        );
         Ok(())
     }
 
@@ -573,17 +713,45 @@ impl Factuals {
         self
     }
 
-    /// Adds a craft; panics if its id is `0` or already present.
+    /// # With Craft
+    ///
+    /// Adds `craft` and returns these factuals.
+    ///
+    /// Panics when [`Self::add_craft`] rejects the craft.
     pub fn with_craft(mut self, craft: Craft) -> Self {
-        let id = craft.id;
-        if id == 0 {
-            panic!("Craft id 0 is no craft.");
+        if let Err(err) = self.add_craft(craft) {
+            panic!("{err}");
         }
-        if self.crafts.contains_key(&id) {
-            panic!("Craft ID {id} already exists in factuals.");
-        }
-        self.crafts.insert(id, craft);
         self
+    }
+
+    /// # Add Craft
+    ///
+    /// Stores `craft` under its id and origin.
+    ///
+    /// Id `0` is invalid. A craft already stored for that id and origin is a
+    /// duplicate. Process ids are not checked. A rejected craft is not stored.
+    pub fn add_craft(&mut self, craft: Craft) -> Result<(), FactualsLoadError> {
+        if craft.id == 0 {
+            return Err(FactualsLoadError::InvalidCraft(
+                "craft id 0 is no craft".into(),
+            ));
+        }
+        let key = (craft.id, craft.origin);
+        if self.crafts.contains_key(&key) {
+            return Err(duplicate_craft(craft.id, craft.origin));
+        }
+        self.crafts.insert(key, craft);
+        Ok(())
+    }
+
+    /// # Remove Craft
+    ///
+    /// Removes the craft stored under `id` and `origin`.
+    ///
+    /// Returns that craft when one was stored.
+    pub fn remove_craft(&mut self, id: usize, origin: Option<DemographicSource>) -> Option<Craft> {
+        self.crafts.remove(&(id, origin))
     }
 
     /// Adds a religion; panics if its ID is already present.
@@ -608,39 +776,46 @@ impl Factuals {
 
     /// # Get Craft
     ///
-    /// The base craft stored under `id`.
+    /// The open craft stored under `id`.
     ///
-    /// Returns `None` when the world has no craft with that id.
+    /// Returns `None` when that open craft is not stored.
     pub fn get_craft(&self, id: usize) -> Option<&Craft> {
-        self.crafts.get(&id)
+        self.craft(id, None)
+    }
+
+    /// # Craft
+    ///
+    /// The craft stored under `id` and `origin`.
+    ///
+    /// Returns `None` when that pair is not stored.
+    pub fn craft(&self, id: usize, origin: Option<DemographicSource>) -> Option<&Craft> {
+        self.crafts.get(&(id, origin))
     }
 
     /// # Effective Craft
     ///
-    /// The base craft after `culture` and then `religion`.
+    /// The open craft after the culture attachment and then the religion attachment.
     ///
-    /// Starts from the stored craft. Applies that culture's overlay, then that
-    /// religion's. Craft id `0`, or a missing base craft, returns `None`.
-    /// Culture or religion id `0`, a missing holder, or a missing overlay
-    /// skips that part.
+    /// Starts from the open craft. Each attachment replaces the process list
+    /// with [`Craft::apply_to`] and multiplies [`Craft::complexity_modifier`].
+    /// Craft id `0`, or a missing open craft, returns `None`. Culture or
+    /// religion id `0`, or a missing attachment, skips that part.
     pub fn effective_craft(&self, craft: usize, culture: usize, religion: usize) -> Option<Craft> {
         if craft == 0 {
             return None;
         }
         let mut resolved = self.get_craft(craft)?.clone();
         if culture != 0 {
-            if let Some(overlay) = self.cultures.get(&culture).and_then(|row| row.get_craft(craft))
-            {
-                resolved = resolved.with_overlay(overlay);
+            if let Some(attached) = self.craft(craft, Some(DemographicSource::Culture(culture))) {
+                resolved.processes = attached.apply_to(&resolved.processes);
+                resolved.complexity_modifier *= attached.complexity_modifier;
             }
         }
         if religion != 0 {
-            if let Some(overlay) = self
-                .religion
-                .get(&religion)
-                .and_then(|row| row.get_craft(craft))
+            if let Some(attached) = self.craft(craft, Some(DemographicSource::Religion(religion)))
             {
-                resolved = resolved.with_overlay(overlay);
+                resolved.processes = attached.apply_to(&resolved.processes);
+                resolved.complexity_modifier *= attached.complexity_modifier;
             }
         }
         Some(resolved)
@@ -694,20 +869,27 @@ impl Factuals {
 
     /// # Source Demo Desire
     ///
-    /// Resolves the demographic desire behind a pop `Desire` via `desire.source`
-    /// (`source_id`, `demo_desire_id`). Class is not implemented yet.
+    /// Resolves the demographic desire behind a pop `Desire` via
+    /// [`Desire::source`] and [`Desire::demo_desire_id`].
+    ///
+    /// Returns `None` when that holder or that desire is not stored.
+    /// Class is not implemented yet.
     pub fn source_demo_desire(&self, desire: &Desire) -> Option<&DemoDesire> {
+        let demo_id = desire.demo_desire_id;
         match desire.source {
-            DesireSource::Species(source_id, demo_id) => {
-                self.find_species(source_id).find_desire(demo_id)
-            }
-            DesireSource::Culture(source_id, demo_id) => {
-                self.find_culture(source_id).find_desire(demo_id)
-            }
-            DesireSource::Religion(source_id, demo_id) => {
-                self.find_religion(source_id).find_desire(demo_id)
-            }
-            DesireSource::Class(source_id, _demo_id) => {
+            DemographicSource::Species(source_id) => self
+                .species
+                .get(&source_id)
+                .and_then(|species| species.find_desire(demo_id)),
+            DemographicSource::Culture(source_id) => self
+                .cultures
+                .get(&source_id)
+                .and_then(|culture| culture.find_desire(demo_id)),
+            DemographicSource::Religion(source_id) => self
+                .religion
+                .get(&source_id)
+                .and_then(|religion| religion.find_desire(demo_id)),
+            DemographicSource::Class(source_id) => {
                 todo!("Class desires are not supported yet (class id {source_id}).");
                 #[allow(unreachable_code)]
                 None
@@ -796,9 +978,10 @@ impl Factuals {
 #[cfg(test)]
 mod factuals_should {
     use super::*;
-    use super::{CraftFile, CultureCraftFile};
+    use super::{CraftFile, CultureCraftFile, ReligionCraftFile};
     use crate::game::config::GameConfig;
-    use crate::game::craft::{Craft, CulturalCraft};
+    use crate::game::craft::Craft;
+    use crate::game::demographic_source::DemographicSource;
     use crate::game::effects::ProcessEffect;
     use crate::game::good::{GoodTag, TIME};
     use crate::game::process::InputType;
@@ -874,6 +1057,22 @@ tags = ["untradeable", { transport = 2.0 }]
     fn load_from_toml_reads_crafts_and_overlays() {
         let factuals = Factuals::load_from_toml(
             r#"
+[[processes]]
+id = 2
+name = "mill"
+
+[[processes]]
+id = 3
+name = "bake"
+
+[[processes]]
+id = 29
+name = "farm"
+
+[[processes]]
+id = 30
+name = "water"
+
 [[crafts]]
 id = 1
 name = "subsistence"
@@ -914,17 +1113,17 @@ add = [30, 2]
                     .with_process(2)
                     .with_complexity_modifier(0.4),
             )
-            .with_culture(
-                Culture::new(2, "welsh").with_craft(
-                    CulturalCraft::new(1)
-                        .with_remove(2)
-                        .with_add(3)
-                        .with_complexity_modifier(0.5),
-                ),
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Culture(2)))
+                    .with_remove(2)
+                    .with_process(3)
+                    .with_complexity_modifier(0.5),
             )
-            .with_religion(
-                Religion::new(3, "old faith")
-                    .with_craft(CulturalCraft::new(1).with_complexity_modifier(0.5)),
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Religion(3)))
+                    .with_complexity_modifier(0.5),
             );
 
         let craft = factuals.effective_craft(1, 2, 3).expect("craft");
@@ -939,6 +1138,18 @@ add = [30, 2]
     fn load_from_toml_reads_craft_complexity_modifiers() {
         let factuals = Factuals::load_from_toml(
             r#"
+[[processes]]
+id = 1
+name = "mill"
+
+[[processes]]
+id = 29
+name = "farm"
+
+[[processes]]
+id = 30
+name = "water"
+
 [[crafts]]
 id = 1
 name = "subsistence"
@@ -972,14 +1183,18 @@ complexity_modifier = 0.5
         assert!((factuals.get_craft(1).expect("subsistence").complexity_modifier - 0.4).abs() < 1e-12);
         assert!((factuals.get_craft(2).expect("plain").complexity_modifier - 1.0).abs() < 1e-12);
         assert!(
-            (factuals.find_culture(4).get_craft(1).expect("welsh").complexity_modifier - 0.5).abs()
+            (factuals
+                .craft(1, Some(DemographicSource::Culture(4)))
+                .expect("welsh")
+                .complexity_modifier
+                - 0.5)
+                .abs()
                 < 1e-12
         );
         assert!(
             (factuals
-                .find_culture(4)
-                .get_craft(2)
-                .expect("plain overlay")
+                .craft(2, Some(DemographicSource::Culture(4)))
+                .expect("plain attachment")
                 .complexity_modifier
                 - 1.0)
                 .abs()
@@ -987,8 +1202,7 @@ complexity_modifier = 0.5
         );
         assert!(
             (factuals
-                .find_religion(5)
-                .get_craft(1)
+                .craft(1, Some(DemographicSource::Religion(5)))
                 .expect("old faith")
                 .complexity_modifier
                 - 0.5)
@@ -1041,6 +1255,10 @@ name = "none"
 
         let repeated = Factuals::load_from_toml(
             r#"
+[[processes]]
+id = 29
+name = "farm"
+
 [[crafts]]
 id = 1
 name = "subsistence"
@@ -1061,6 +1279,114 @@ name = "again"
 "#,
         );
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_craft_process_that_is_not_loaded() {
+        let missing = Factuals::load_from_toml(
+            r#"
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [32]
+"#,
+        );
+        let msg = missing.expect_err("missing process").to_string();
+        assert!(msg.contains("craft 1"), "{msg}");
+        assert!(msg.contains("32"), "{msg}");
+
+        let loaded = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 32
+name = "known"
+
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [32]
+"#,
+        )
+        .expect("known process");
+        assert_eq!(loaded.get_craft(1).expect("craft").processes, vec![32]);
+    }
+
+    #[test]
+    fn load_rejects_unknown_or_repeated_attached_processes() {
+        let mut factuals = Factuals::load_from_toml(
+            r#"
+[[processes]]
+id = 3
+name = "bake"
+
+[[processes]]
+id = 29
+name = "farm"
+
+[[crafts]]
+id = 1
+name = "subsistence"
+processes = [29]
+"#,
+        )
+        .expect("base");
+
+        let unknown_add = factuals
+            .insert_culture_craft(CultureCraftFile {
+                culture: 4,
+                name: "welsh".into(),
+                craft: 1,
+                add: vec![32],
+                remove: vec![],
+                complexity_modifier: 1.0,
+            })
+            .expect_err("unknown add");
+        let msg = unknown_add.to_string();
+        assert!(msg.contains("craft 1"), "{msg}");
+        assert!(msg.contains("32"), "{msg}");
+        assert!(factuals.cultures.get(&4).is_none());
+        assert!(factuals.craft(1, Some(DemographicSource::Culture(4))).is_none());
+
+        let repeated = factuals
+            .insert_culture_craft(CultureCraftFile {
+                culture: 4,
+                name: "welsh".into(),
+                craft: 1,
+                add: vec![3, 3],
+                remove: vec![],
+                complexity_modifier: 1.0,
+            })
+            .expect_err("repeated add");
+        assert!(repeated.to_string().contains("repeats process 3"));
+        assert!(factuals.cultures.get(&4).is_none());
+
+        let unknown_remove = factuals
+            .insert_religion_craft(ReligionCraftFile {
+                religion: 5,
+                name: "old faith".into(),
+                craft: 1,
+                add: vec![],
+                remove: vec![39],
+                complexity_modifier: 1.0,
+            })
+            .expect_err("unknown remove");
+        let msg = unknown_remove.to_string();
+        assert!(msg.contains("39"), "{msg}");
+        assert!(factuals.religion.get(&5).is_none());
+
+        let both = factuals
+            .insert_culture_craft(CultureCraftFile {
+                culture: 4,
+                name: "welsh".into(),
+                craft: 1,
+                add: vec![3],
+                remove: vec![3],
+                complexity_modifier: 1.0,
+            })
+            .expect_err("add and remove");
+        assert!(both.to_string().contains("adds and removes process 3"));
+        assert!(factuals.cultures.get(&4).is_none());
+        assert_eq!(factuals.get_craft(1).expect("open").processes, vec![29]);
     }
 
     #[test]

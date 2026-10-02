@@ -19,7 +19,7 @@ becomes a demographic desire and then a pop desire.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Not written. Intended order is tier, then that tier's savings, then the next tier. Luxury is level, savings, next level |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, `match_deals`, consume, decay, actor books and planning, then the night card. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
 | `Pop::plan` | Rewrites every job line's target from desires, stock, and today's card. `Firm::plan` is empty |
 | Class desires | Unimplemented |
@@ -74,6 +74,12 @@ Running it on goods `satisfy` already counted records the level twice.
 - `DemoDesire::create_desire` is the demo-to-pop path. It scales `amount` and
   additive effects. Birth, mortality, sentiment, and satisfaction arms stay
   at demo values.
+- `Pop::rescale_desires` runs in `market_day` after goods decay and before
+  planning. It rewrites amount, additive effects, and recorded satisfaction
+  from the new size. `update_desires` does not. A desire with no stored
+  demographic source is left alone.
+- `PlayState::phase_pop_growth` only grows. A turn that also runs
+  `market_day` grows those pops twice.
 
 ## Cottage work
 
@@ -85,9 +91,9 @@ Craft `0` is no baseline. Lines still run. An empty line list skips plan,
 reserve, produce, and job buys. Two pops of the same craft keep separate
 lines, targets, and stock.
 
-`data/world/crafts.toml` is the base list. A culture overlay, then a
-religion overlay, drops and appends process ids and multiplies
-`complexity_modifier`. An omitted modifier is `1.0`. Morning `apply_craft`
+`data/world/crafts.toml` is the open list (`origin` none). A culture-origin
+craft, then a religion-origin craft, drops and appends process ids and
+multiplies `complexity_modifier`. An omitted modifier is `1.0`. Morning `apply_craft`
 adds only processes the job does not already run, as resting lines
 (`Some(0.0)`). A line already present keeps its target, so a process added
 that morning produces on a later day, after the night's plan.
@@ -99,28 +105,35 @@ Optional inputs are drawn when the line lists them. A missing required
 factor shops one unit and leaves the other inputs free.
 
 Produce runs before exchange. Inputs destroyed that morning, including
-Time, are gone before freight. New output lands in `quantity` and
-`process_output`. Output that still feeds an open desire stays off the
-sell book that day. Consume runs after exchange, so the tester's extra
-bread is offered at the next day's exchange.
+Time, are gone before freight. New output lands in `quantity`, `fresh`,
+and `produced`. If a lower tier is still unsatisfied, the pop tries to
+reserve, buy, and produce that tier's goods, and those goods stay off the
+sell book. Higher-tier goods are open for use and exchange. Consume runs
+after exchange, so the tester's extra bread is offered at the next day's
+exchange.
 
 `Actors::start_day` grants good 0 by `ScalingFactor::Labor(1.0)`. That
 call sits in the tester, before `market_day`. The library day does not
 grant Time.
 
-`Pop::plan` runs after decay and calls `Job::plan`, which writes `Some` on
-every line. For each desire, the highest-efficiency target is the good to
-make. Units wanted are `amount / efficiency`, one tier, summed when several
+`Pop::plan` runs after `rescale_desires`, so it uses the new amounts, and
+calls `Job::plan`, which writes `Some` on every line. For each desire, the
+highest-efficiency target is the good to make. Units wanted are
+`amount / efficiency`, one tier, summed when several
 desires share that good. The gap is wanted minus `quantity`. Iterations are
 the largest `gap / output.amount`. With no gap, the target is `1` when any
-output has a positive holding value, and `0` when none does. The module
-note that sums complexity squared times iterations is not what this plan
-computes.
+output has a positive holding value, and `0` when none does.
 
-`Pop::complexity_cost` is `(complexity_modifier + craft_distance)`, capped
-at `1.0`. The weight is `pop.craft_distance` in config (default `0.1`):
-half for a missing baseline process, full for an extra process. No base
-craft returns `1.0`. The day does not scale iterations by that cost.
+`Job::complexity_cost` is the modifier `(complexity_modifier +
+craft_distance)`, capped at `1.0`. Each process id counts once. The
+weight is `pop.craft_distance` in config (default `0.1`): half for a
+missing baseline process, full for an extra process. No base craft makes
+`Pop::complexity_cost` return `1.0`.
+
+`Job::plan` then stores `plan_cost`. Each positive target adds
+`modifier * (complexity^2 - overlap) * iterations`. Overlap is the
+fraction of that line's input and output goods that another line also
+uses. Iterations stay on the desire gap.
 
 Job buys are the shopping list, floored to a whole unit, added onto an
 open desire buy for the same good. A purchase shrinks that list. The next
@@ -230,13 +243,14 @@ from the card is inserted at AMV `1` and salability `0.1`.
 - The tape is cleared. Production and consumption are zeroed. Stock stays.
 
 Actor `record_keeping` and `plan` read a snapshot taken after decay and
-before that night write, so they still see today's card. Exchange priced
-itself from the snapshot at the start of `match_deals`. Firm record keeping
-clears that firm's production counters. `Pop::plan` rewrites job targets
-from that snapshot. `Firm::reserve_for_day`, `Firm::produce`, and
-`Firm::plan` are empty.
+`rescale_desires`, and before that night write, so they still see today's
+card. Exchange priced itself from the snapshot at the start of
+`match_deals`. Firm record keeping clears that firm's production counters.
+`Pop::plan` rewrites job targets from that snapshot. `Firm::reserve_for_day`,
+`Firm::produce`, and `Firm::plan` are empty.
 
-PlayState's phase methods are still stubs. Institution decay and institution
+`PlayState::phase_pop_growth` only grows and does not rescale.
+`phase_pop_consumption` is still `todo`. Institution decay and institution
 record keeping still panic and are not called.
 
 **Code:** `src/game/pop.rs` (`propose`, `evaluate`, `apply_craft`, `plan`),

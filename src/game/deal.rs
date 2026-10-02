@@ -125,6 +125,7 @@ pub trait DealMaker {
     ///
     /// `good` is the good id. Returns `0` when this actor has no fresh pile.
     /// Pops report [`crate::game::pop_property::PopPRow::fresh_share`].
+    /// Firms report [`crate::game::firm::FirmPRow::fresh_share`].
     fn fresh_share(&self, good: usize) -> f64 {
         let _ = (self, good);
         0.0

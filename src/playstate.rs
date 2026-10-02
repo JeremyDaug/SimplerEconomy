@@ -105,6 +105,10 @@ impl PlayState {
     /// If rate resolution ever dominates at huge pop counts, day-fill a cache of
     /// unique demographic keys on factuals before this phase (see
     /// `Factuals::get_demographic_rates`); keep growth as a read of that table.
+    ///
+    /// [`Market::market_day`](crate::game::market::Market::market_day) grows its
+    /// members after consume, decays, then rescales desires before planning.
+    /// This phase only grows. A turn that calls both grows those pops twice.
     fn phase_pop_growth(&mut self) {
         let factuals = &self.factuals;
         self.actors.pops.par_iter_mut().for_each(|(_, pop)| {

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::{
-    actor::Actor, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, desire::{Desire, DesireSource, DesireTargetType}, effects::ProcessEffect, factuals::{self, Factuals}, good::GoodTag, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment,
+    actor::Actor, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -147,11 +147,12 @@ impl Pop {
     ///
     /// Does not shop, and does not rewrite satisfaction. Culture and religion id
     /// `0` are skipped. Class desires are not supported yet.
+    /// Day-end size matching is [`Self::rescale_desires`].
     pub fn update_desires(&mut self, factuals: &Factuals) {
         let mut existing = HashSet::new();
         for tier in &self.desires {
             for desire in tier {
-                existing.insert(desire.source);
+                existing.insert((desire.source, desire.demo_desire_id));
             }
         }
         self.add_missing_demographic_desires(factuals, &existing);
@@ -160,12 +161,12 @@ impl Pop {
     fn add_missing_demographic_desires(
         &mut self,
         factuals: &Factuals,
-        existing: &HashSet<DesireSource>,
+        existing: &HashSet<(DemographicSource, usize)>,
     ) {
         if let Some(species) = factuals.species.get(&self.demographics.species) {
             for demo in species.desires.values() {
-                let source = DesireSource::Species(species.id, demo.id);
-                if !existing.contains(&source) {
+                let source = DemographicSource::Species(species.id);
+                if !existing.contains(&(source, demo.id)) {
                     let tier = demo.tier;
                     let desire = demo.create_desire(self, source);
                     debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
@@ -177,8 +178,8 @@ impl Pop {
         if self.demographics.culture != 0 {
             if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
                 for demo in culture.desires.values() {
-                    let source = DesireSource::Culture(culture.id, demo.id);
-                    if !existing.contains(&source) {
+                    let source = DemographicSource::Culture(culture.id);
+                    if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
                         let desire = demo.create_desire(self, source);
                         debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
@@ -191,8 +192,8 @@ impl Pop {
         if self.demographics.religion != 0 {
             if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
                 for demo in religion.desires.values() {
-                    let source = DesireSource::Religion(religion.id, demo.id);
-                    if !existing.contains(&source) {
+                    let source = DemographicSource::Religion(religion.id);
+                    if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
                         let desire = demo.create_desire(self, source);
                         debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
@@ -207,9 +208,9 @@ impl Pop {
     ///
     /// Gives this pop's job the processes of its craft that it does not already run.
     ///
-    /// `factuals` supplies the base craft and this pop's culture and religion
-    /// overlays. A line already on the job is left alone. Craft `0`, or a craft
-    /// the world does not have, adds nothing.
+    /// `factuals` supplies this job's effective craft. A line already on the
+    /// job is left alone. Craft `0`, or a craft the world does not have, adds
+    /// nothing.
     pub fn apply_craft(&mut self, factuals: &Factuals) {
         let processes = factuals.craft_processes(
             self.job.craft,
@@ -634,7 +635,8 @@ impl Pop {
     /// effects, then [`Household::update`](crate::game::household::Household::update).
     ///
     /// Pops with household `count < 1` are left alone. Desire satisfaction does
-    /// not change the rates.
+    /// not change the rates. [`Self::rescale_desires`] matches desires to the
+    /// size this returns.
     pub fn growth_phase(&mut self, factuals: &Factuals) {
         if self.demographics.household.count < 1.0 {
             return;
@@ -642,6 +644,44 @@ impl Pop {
         let mut rates = factuals.get_demographic_rates(self.demographics);
         rates = rates.add(&self.take_stored_growth_mods());
         self.demographics.household.update(&rates);
+    }
+
+    /// # Rescale Desires
+    ///
+    /// Matches each linked desire to this pop's current size.
+    ///
+    /// `factuals` supplies the demographic desire. Amount becomes that demo's
+    /// amount times [`Self::get_scaling_factor`] of the desire's scalar.
+    /// Additive effects take that same pop scale. Birth, mortality, sentiment,
+    /// and satisfaction arms stay at the demographic values. Satisfaction
+    /// already recorded is multiplied by `new_amount / old_amount`, so the
+    /// fraction met stays. A desire with no stored demographic source is left
+    /// alone. A zero old amount leaves satisfaction unchanged.
+    pub fn rescale_desires(&mut self, factuals: &Factuals) {
+        let scales: Vec<f64> = self
+            .desires
+            .iter()
+            .flat_map(|tier| {
+                tier.iter()
+                    .map(|desire| self.get_scaling_factor(desire.scalar))
+            })
+            .collect();
+        let mut index = 0;
+        for tier in &mut self.desires {
+            for desire in tier.iter_mut() {
+                let pop_scale = scales[index];
+                index += 1;
+                let Some(demo) = factuals.source_demo_desire(desire) else {
+                    continue;
+                };
+                let old_amount = desire.amount;
+                desire.amount = demo.amount * pop_scale;
+                desire.effect = demo.scaled_effects(pop_scale);
+                if old_amount > 0.0 {
+                    desire.satisfaction *= desire.amount / old_amount;
+                }
+            }
+        }
     }
 
     /// Drains birth and mortality arms from `stored_effects`. Other arms stay.
@@ -670,8 +710,8 @@ impl Pop {
     /// Clears yesterday's satisfaction and same-day reserves.
     ///
     /// Each desire's satisfaction is set to 0. The satisfy bookmark is
-    /// dropped. `reserved` and `process_output` on every property row are
-    /// set to 0. Quantity, consumed, and used stay for today's walk and
+    /// dropped. `reserved`, `fresh`, and `produced` on every property row
+    /// are set to 0. Quantity, consumed, and used stay for today's walk and
     /// for decay. The job drops its claimed-input list and its shopping
     /// list. Line targets stay, so last night's plan is what this morning runs.
     pub fn reset_day(&mut self) {
@@ -683,7 +723,8 @@ impl Pop {
         }
         for row in self.property.values_mut() {
             row.reserved = 0.0;
-            row.process_output = 0.0;
+            row.fresh = 0.0;
+            row.produced = 0.0;
         }
         self.job.reset_day();
     }
@@ -700,11 +741,13 @@ impl Pop {
     /// Units wanted are `amount / efficiency`, one full tier, summed when
     /// several desires share that good. Satisfaction is ignored because this
     /// runs after consumption and before the morning reset. Stock on hand is
-    /// `quantity`. The job writes each line's target.
+    /// `quantity`. The job writes each line's target, then the complexity
+    /// cost of those targets. The modifier is [`Self::complexity_cost`].
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
         let wanted = self.output_wanted();
         let on_hand = self.quantities_on_hand();
-        self.job.plan(&wanted, &on_hand, factuals, history);
+        let modifier = self.complexity_cost(factuals);
+        self.job.plan(&wanted, &on_hand, factuals, history, modifier);
     }
 
     /// # Output Wanted
@@ -774,7 +817,7 @@ impl Pop {
     ///
     /// 1. Return `used` to `quantity`.
     /// 2. Decay the aging part of `quantity` by the good's rate.
-    ///    [`PopPRow::process_output`] was made today and is left in place.
+    ///    [`PopPRow::fresh`] is left in place.
     ///    [`GoodTag::Exposure`] skips this while owned.
     /// 3. Destroy `consumed` outright and credit byproducts.
     /// 4. Pay [`PopEffect::BonusGood`] from `stored_effects` and drop those arms.
@@ -795,8 +838,8 @@ impl Pop {
             let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
-            // Fresh output stays whole. Only the older pile rots.
-            let fresh = row.process_output.max(0.0).min(row.quantity.max(0.0));
+            // The fresh portion stays whole. Only the older pile rots.
+            let fresh = row.fresh.max(0.0).min(row.quantity.max(0.0));
             let aging = (row.quantity - fresh).max(0.0);
             let mut lost = 0.0;
             if !exposure && good.decay_rate > 0.0 && aging > 0.0 {
@@ -1113,17 +1156,17 @@ impl Pop {
         row.quantity = (row.quantity + delta).max(0.0);
     }
 
-    /// # Move Process Output
+    /// # Move Fresh
     ///
-    /// Adds `delta` to `process_output` for `good`.
+    /// Adds `delta` to `fresh` for `good`.
     ///
     /// Creates the row when it is missing. The result is clamped at `0`.
-    fn move_process_output(&mut self, good: usize, delta: f64) {
+    fn move_fresh(&mut self, good: usize, delta: f64) {
         if delta == 0.0 {
             return;
         }
         let row = self.property.entry(good).or_insert_with(|| PopPRow::new(0.0));
-        row.process_output = (row.process_output + delta).max(0.0);
+        row.fresh = (row.fresh + delta).max(0.0);
     }
 
     /// Buy transport the seller is offering when that lowers the unpaid freight.
@@ -1513,9 +1556,9 @@ impl DealMaker for Pop {
         for (&good, &qty) in &proposal.goods {
             let delta = sign * qty;
             let fresh_units = delta * proposal.fresh_share(good);
-            // Aged and fresh both sit in quantity. process_output marks the fresh share.
+            // Aged and fresh both sit in quantity. fresh marks the spared share.
             self.move_good(good, delta);
-            self.move_process_output(good, fresh_units);
+            self.move_fresh(good, fresh_units);
             // Goods just received count against the job's shopping list.
             if sign > 0.0 && qty > 0.0 {
                 self.job.note_purchase(good, qty);
@@ -1584,19 +1627,19 @@ mod pop {
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
     use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal};
-    use crate::game::desire::{Desire, DesireEffect, DesireSource, DesireTarget, DesireTargetType};
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::{DemoDesire, Desire, DesireEffect, DesireTarget, DesireTargetType};
+    use crate::game::scalingfactor::ScalingFactor;
+    use crate::game::species::Species;
     use crate::game::effects::PopEffect;
-    use crate::game::craft::{Craft, CulturalCraft};
-    use crate::game::culture::Culture;
+    use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
-    use crate::game::religion::Religion;
     use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::good::{Good, GoodTag};
     use crate::game::household::Household;
     use crate::game::job::{Job, JobLine};
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::process::{InputType, Process, ProcessEffect, ProcessInput, ProcessOutput};
-    use crate::game::scalingfactor::ScalingFactor;
     use crate::game::sentiment::Sentiment;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
@@ -1681,10 +1724,10 @@ mod pop {
     }
 
     #[test]
-    fn decay_spares_todays_process_output() {
+    fn decay_spares_todays_fresh() {
         let mut pop = make_pop();
         let mut row = PopPRow::new(10.0);
-        row.process_output = 4.0;
+        row.fresh = 4.0;
         pop.property.insert(1, row);
         let factuals = Factuals::new().with_good(make_good(1, "bread", 0.5));
 
@@ -1809,7 +1852,8 @@ mod pop {
 
         assert_eq!(pop.stored_effects, vec![PopEffect::Culture(2.0)]);
         assert_eq!(pop.property[&2].quantity, 1.0);
-        assert_eq!(pop.property[&2].process_output, 1.0);
+        assert_eq!(pop.property[&2].fresh, 1.0);
+        assert_eq!(pop.property[&2].produced, 1.0);
     }
 
     #[test]
@@ -1825,10 +1869,10 @@ mod pop {
 
         assert!((pop.complexity_cost(&base) - 0.4).abs() < 1e-12);
 
-        let mut cultured = base.with_culture(
-            Culture::new(2, "welsh").with_craft(
-                CulturalCraft::new(1).with_complexity_modifier(0.5),
-            ),
+        let mut cultured = base.with_craft(
+            Craft::new(1, "subsistence")
+                .with_origin(Some(DemographicSource::Culture(2)))
+                .with_complexity_modifier(0.5),
         );
         assert!((pop.complexity_cost(&cultured) - 0.2).abs() < 1e-12);
 
@@ -1878,11 +1922,16 @@ mod pop {
             .with_good(make_good(2, "bread", 0.0))
             .with_process(bake())
             .with_craft(Craft::new(1, "subsistence").with_process(7).with_process(8))
-            .with_culture(
-                Culture::new(2, "welsh").with_craft(CulturalCraft::new(1).with_remove(8).with_add(9)),
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Culture(2)))
+                    .with_remove(8)
+                    .with_process(9),
             )
-            .with_religion(
-                Religion::new(3, "old faith").with_craft(CulturalCraft::new(1).with_add(8)),
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Religion(3)))
+                    .with_process(8),
             );
         let mut market = Market::new(1);
         market.pops.insert(pop.id);
@@ -1903,7 +1952,8 @@ mod pop {
         let pop = actors.pop(1);
         assert_eq!(pop.property[&1].quantity, 0.0);
         assert_eq!(pop.property[&2].quantity, 0.0);
-        assert_eq!(pop.property[&2].process_output, 4.0);
+        assert_eq!(pop.property[&2].fresh, 4.0);
+        assert_eq!(pop.property[&2].produced, 4.0);
         assert_eq!(pop.desires[0][0].satisfaction, 4.0);
     }
 
@@ -1915,7 +1965,8 @@ mod pop {
 
     fn desire(id: usize, targets: Vec<DesireTarget>, amount: f64) -> Desire {
         Desire {
-            source: DesireSource::Species(0, id),
+            source: DemographicSource::Species(0),
+            demo_desire_id: id,
             priority: 0,
             target: targets,
             amount,
@@ -1951,7 +2002,7 @@ mod pop {
 
         let blocked = do_satisfy(&mut pop).expect("second basic desire is short");
 
-        assert_eq!(*blocked.source.demo_desire_id(), 2);
+        assert_eq!(blocked.demo_desire_id, 2);
         assert!((blocked.satisfaction - 3.0).abs() < 1e-9);
         assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
         assert!((pop.desires[0][1].satisfaction - 3.0).abs() < 1e-9);
@@ -2030,7 +2081,7 @@ mod pop {
 
         let blocked = do_satisfy(&mut pop).expect("second luxury level runs out");
 
-        assert_eq!(*blocked.source.demo_desire_id(), 1);
+        assert_eq!(blocked.demo_desire_id, 1);
         assert!((pop.desires[2][0].satisfaction - 15.0).abs() < 1e-9);
         assert!((pop.desires[2][1].satisfaction - 10.0).abs() < 1e-9);
         assert!((pop.property[&1].reserved - 15.0).abs() < 1e-9);
@@ -2104,7 +2155,7 @@ mod pop {
         ));
 
         let blocked = do_satisfy(&mut pop).expect("second desire is short");
-        assert_eq!(*blocked.source.demo_desire_id(), 2);
+        assert_eq!(blocked.demo_desire_id, 2);
 
         pop.property.get_mut(&1).unwrap().quantity += 50.0;
         pop.property.get_mut(&2).unwrap().quantity += 6.0;
@@ -2432,13 +2483,15 @@ mod pop {
         let mut seller = make_pop();
         seller.id = 2;
         let mut bread = PopPRow::new(10.0);
-        bread.process_output = 3.0;
+        bread.fresh = 3.0;
+        bread.produced = 3.0;
         seller.property.insert(2, bread);
 
         let mut buyer = make_pop();
         buyer.id = 1;
         let mut coin = PopPRow::new(10.0);
-        coin.process_output = 5.0;
+        coin.fresh = 5.0;
+        coin.produced = 5.0;
         buyer.property.insert(9, coin);
 
         let mut actors = Actors::new();
@@ -2464,26 +2517,30 @@ mod pop {
         let buyer = &actors.pops[&1];
         let seller = &actors.pops[&2];
         assert!((buyer.property[&2].quantity - 4.0).abs() < 1e-12);
-        assert!((buyer.property[&2].process_output - 1.2).abs() < 1e-12);
+        assert!((buyer.property[&2].fresh - 1.2).abs() < 1e-12);
+        assert_eq!(buyer.property[&2].produced, 0.0);
         assert!((seller.property[&2].quantity - 6.0).abs() < 1e-12);
-        assert!((seller.property[&2].process_output - 1.8).abs() < 1e-12);
+        assert!((seller.property[&2].fresh - 1.8).abs() < 1e-12);
+        assert_eq!(seller.property[&2].produced, 3.0);
         assert!((buyer.property[&9].quantity - 1.0).abs() < 1e-12);
-        assert!((buyer.property[&9].process_output - 0.5).abs() < 1e-12);
+        assert!((buyer.property[&9].fresh - 0.5).abs() < 1e-12);
+        assert_eq!(buyer.property[&9].produced, 5.0);
         assert!((seller.property[&9].quantity - 9.0).abs() < 1e-12);
-        assert!((seller.property[&9].process_output - 4.5).abs() < 1e-12);
+        assert!((seller.property[&9].fresh - 4.5).abs() < 1e-12);
+        assert_eq!(seller.property[&9].produced, 0.0);
     }
 
     #[test]
-    fn fresh_share_caps_when_process_output_exceeds_quantity() {
+    fn fresh_share_caps_when_fresh_exceeds_quantity() {
         let mut row = PopPRow::new(10.0);
-        row.process_output = 15.0;
+        row.fresh = 15.0;
         assert!((row.fresh_share() - 1.0).abs() < 1e-12);
 
-        row.process_output = 0.0;
+        row.fresh = 0.0;
         assert_eq!(row.fresh_share(), 0.0);
 
         let mut empty = PopPRow::new(0.0);
-        empty.process_output = 4.0;
+        empty.fresh = 4.0;
         assert_eq!(empty.fresh_share(), 0.0);
     }
 
@@ -2897,5 +2954,74 @@ mod pop {
             .any(|meeting| meeting.outcome == MeetingOutcome::Accepted));
         assert!((actors.pop(1).property[&2].quantity).abs() < 1e-9);
         assert!((actors.pop(2).property[&2].quantity - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rescale_desires_matches_the_new_household_and_keeps_the_met_fraction() {
+        let demo = DemoDesire::new(1)
+            .with_tier(0)
+            .with_scalar(ScalingFactor::Household(1.0))
+            .with_amount(2.0)
+            .with_effect(DesireEffect::Culture(3.0, true))
+            .with_effect(DesireEffect::Birthrate(0.2, true));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_desire(demo));
+        let mut pop = make_pop();
+        let linked = factuals.species[&0]
+            .find_desire(1)
+            .unwrap()
+            .create_desire(&pop, DemographicSource::Species(0));
+        pop.desires[0].push(linked);
+        pop.desires[0][0].satisfaction = 1.0;
+        pop.desires[1].push(desire(
+            9,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            5.0,
+        ));
+        pop.desires[1][0].satisfaction = 1.0;
+        pop.demographics.household.count = 4.0;
+
+        pop.rescale_desires(&factuals);
+
+        assert!((pop.desires[0][0].amount - 8.0).abs() < 1e-12);
+        assert!((pop.desires[0][0].satisfaction - 4.0).abs() < 1e-12);
+        assert_eq!(
+            pop.desires[0][0].effect,
+            vec![
+                DesireEffect::Culture(24.0, true),
+                DesireEffect::Birthrate(0.4, true),
+            ]
+        );
+        assert_eq!(pop.desires[1][0].amount, 5.0);
+        assert_eq!(pop.desires[1][0].satisfaction, 1.0);
+    }
+
+    #[test]
+    fn market_day_rescales_satisfaction_after_growth() {
+        let demo = DemoDesire::new(1)
+            .with_tier(0)
+            .with_scalar(ScalingFactor::Household(1.0))
+            .with_amount(2.0);
+        let factuals = Factuals::new()
+            .with_species(Species::new(0, "human").with_desire(demo))
+            .with_good(make_good(2, "bread", 0.0));
+        let mut pop = make_pop();
+        pop.property.insert(2, PopPRow::new(2.0));
+        let linked = factuals.species[&0]
+            .find_desire(1)
+            .unwrap()
+            .create_desire(&pop, DemographicSource::Species(0));
+        pop.desires[0].push(linked);
+        pop.desires[0][0].amount = 99.0;
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        let pop = actors.pop(1);
+        let count = pop.demographics.household.count;
+        assert!((pop.desires[0][0].amount - 2.0 * count).abs() < 1e-9);
     }
 }

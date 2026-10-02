@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    craft::CulturalCraft, desire::DemoDesire, effects::DemographicEffect,
-    household::DemographicRates,
+    desire::DemoDesire, effects::DemographicEffect, household::DemographicRates,
 };
 
 /// # Religion
@@ -37,8 +36,6 @@ pub struct Religion {
     /// Added to the species work-time fraction. `0` leaves that value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
-    /// Overlays on baseline crafts, keyed by the base craft id.
-    pub crafts: HashMap<usize, CulturalCraft>,
     /// When true, pops should refresh effective demographic rates this turn.
     ///
     /// TODO: Smoother multi-turn application of large rate swings if needed.
@@ -59,7 +56,6 @@ impl Religion {
             religion_effects: vec![],
             religion_demo_eff: DemographicRates::zero(),
             work_time_fraction: 0.0,
-            crafts: HashMap::new(),
             household_changed: false,
         }
     }
@@ -97,25 +93,5 @@ impl Religion {
     /// Finds a demo desire by id.
     pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
         self.desires.get(&desire_id)
-    }
-
-    /// # With Craft
-    ///
-    /// Adds an overlay keyed by its base craft id.
-    ///
-    /// Panics if this religion already has an overlay for that craft.
-    pub fn with_craft(mut self, craft: CulturalCraft) -> Self {
-        let id = craft.craft;
-        if self.crafts.insert(id, craft).is_some() {
-            panic!("Cultural craft {id} already exists on religion {}.", self.id);
-        }
-        self
-    }
-
-    /// # Get Craft
-    ///
-    /// The overlay for base craft `craft`, if this religion has one.
-    pub fn get_craft(&self, craft: usize) -> Option<&CulturalCraft> {
-        self.crafts.get(&craft)
     }
 }
