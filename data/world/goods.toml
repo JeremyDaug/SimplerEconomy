@@ -20,7 +20,7 @@ name = "time"
 mass = 0.0
 volume = 0.0
 decay_rate = 1.0
-tags = ["untradeable", { transport = 1.0 }]
+tags = [{ transport = 1.0 }]
 
 [[goods]]
 id = 1

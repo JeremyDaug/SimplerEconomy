@@ -11,6 +11,7 @@
 
 [[market]]
 good = "time"
+amv = 4
 
 [[market]]
 good = "grain"
@@ -22,9 +23,11 @@ amv = 4
 
 [[market]]
 good = "bread"
+amv = 4
 
 [[market]]
 good = "gold_token"
+amv = 4
 
 [[pops]]
 id = 1

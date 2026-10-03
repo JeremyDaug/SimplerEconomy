@@ -17,7 +17,10 @@ pub const AMV_EPSILON: f64 = 1e-9;
 /// Salability of a good with no recorded value yet.
 pub const SALABILITY_DEFAULT: f64 = 0.1;
 
-/// Salability clamp. `0..=1` is illiquid to par. Above 1 is at-par and currency.
+/// Lowest stored salability. A good may be nearly illiquid. It is not stored as 0.
+pub const SALABILITY_MIN: f64 = 0.0001;
+
+/// Highest stored salability. Up to 1 is illiquid to par. Above 1 is at-par and currency.
 pub const SALABILITY_MAX: f64 = 2.0;
 
 /// Floor and ceiling of the factor that scales a positive AMV.
@@ -26,13 +29,23 @@ pub const SALABILITY_MAX: f64 = 2.0;
 /// does not raise the factor past 1; that excess is [`monetary_rating`].
 pub const AMV_SCALE_MIN: f64 = 0.05;
 
-/// Largest one-night AMV move from unmet buys versus unsold offers, as a
-/// fraction of the current absolute AMV.
-const AMV_STEP_CAP: f64 = 0.25;
+/// Fraction of the gap between morning holding and the day's print closed in one night.
+const AMV_PRINT_STEP: f64 = 0.1;
 
-/// Largest one-night AMV move from production minus consumption, as a
-/// fraction of the current absolute AMV.
+/// Largest one-night holding move from the print and the unsold ease, as a share of the payment scale.
+const AMV_STEP_CAP: f64 = 0.1;
+
+/// Flat share of the payment scale subtracted when a good was offered and nothing sold.
+const AMV_EXCESS_NUDGE: f64 = 0.05;
+
+/// Largest one-night production-flow fraction.
 const AMV_FLOW_CAP: f64 = 0.05;
+
+/// Physical rot is divided by this before it cuts absolute AMV.
+const AMV_ROT_DIVISOR: f64 = 4.0;
+
+/// Largest share of absolute AMV that one night of rot may remove.
+const AMV_ROT_CAP: f64 = 0.95;
 
 /// Salability gained on a night the good was taken in payment and its AMV
 /// did not fall.
@@ -88,27 +101,35 @@ impl Market {
         self
     }
 
-    /// End-of-day market bookkeeping.
+    /// # Record Keeping
     ///
     /// Writes tomorrow's AMV and salability from each good's day record, then
-    /// clears the exchange and flow counters. [`MarketGood::decayed`] and
-    /// `volume` stay until the next morning's reset. Stock is left as it
-    /// stands. `factuals` is unused: rot is added through [`Self::note_decay`]
-    /// before this runs.
+    /// clears the exchange and flow counters and restates the card in the
+    /// unit good ([`Self::peg_unit`]). [`MarketGood::decayed`] and `volume`
+    /// stay until the next morning's reset. Stock is left as it stands.
+    /// The print move is [`print_push`], applied in holding space.
+    /// Production flow is a share of [`Self::payment_scale`]. `factuals`
+    /// is unused: rot is added through [`Self::note_decay`] before this runs.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = factuals;
+        let history = self.history();
+        let scale = self.payment_scale();
+        let mut paid = Vec::new();
         let mut ids: Vec<usize> = self.goods.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
             let good = self.goods.get_mut(&id).expect("id was just copied from goods");
             let old = good.amv;
-            let denom = good.sought_unmet + good.offered_unsold + good.traded + 1.0;
-            let pressure = (good.sought_unmet - good.offered_unsold) / denom;
-            let step = pressure.clamp(-AMV_STEP_CAP, AMV_STEP_CAP);
+            // Print gap, and the ease when nothing sold.
+            let push = print_push(id, good, &history, scale);
+            // Production flow. Consumption against production.
             let flow_denom = good.stock + good.production + good.consumption + 1.0;
             let flow = ((good.consumption - good.production) / flow_denom)
                 .clamp(-AMV_FLOW_CAP, AMV_FLOW_CAP);
-            let mut next = old + old.abs().max(AMV_EPSILON) * (step + flow);
+            // Holding move, then flow, as a share of the payment scale.
+            let mut next = amv_from_holding_move(old, good.salability, push);
+            next += scale * flow;
+            // Rot, taken off the price those terms just set.
             let decayed = good.decayed;
             let decay_base = if good.volume > 0.0 {
                 good.volume
@@ -116,21 +137,45 @@ impl Market {
                 good.stock
             };
             if decay_base > 0.0 && decayed > 0.0 {
-                let fraction = (decayed / decay_base).clamp(0.0, 1.0);
+                let fraction = (decayed / decay_base / AMV_ROT_DIVISOR).clamp(0.0, AMV_ROT_CAP);
                 next -= next.abs() * fraction;
             }
-            let paid = good.paid;
-            let informed = good.traded + good.paid + good.offered_unsold > 0.0;
+            // Store the new AMV.
             good.set_amv(next);
+            // Salability. A fall lowers it. Payment without a fall raises it.
+            let paid_units = good.paid;
+            let informed = good.traded + good.paid + good.offered_unsold > 0.0;
             let fell = good.amv < old;
             if fell && old.abs() >= AMV_EPSILON {
                 let drop = ((old - good.amv) / old.abs()).min(SALABILITY_LOSS_CAP);
                 good.set_salability(good.salability - drop);
-            } else if informed && paid > 0.0 {
+            } else if informed && paid_units > 0.0 {
                 good.set_salability(good.salability + SALABILITY_UP_STEP);
             }
+            if paid_units > 0.0 {
+                paid.push((id, paid_units));
+            }
+            // Clear today's exchange and flow.
             good.clear_exchange();
         }
+        // Restate every AMV in the unit good.
+        self.peg_unit(&paid, &history);
+    }
+
+    /// # Note Supply
+    ///
+    /// Adds `amount` to `good`'s production.
+    ///
+    /// `amount` is units made today. Zero does nothing. The good is inserted
+    /// on the default card when it is missing.
+    pub fn note_supply(&mut self, good: usize, amount: f64) {
+        debug_assert!(amount.is_finite(), "supply must be finite");
+        debug_assert!(amount >= 0.0, "supply must be >= 0");
+        if amount == 0.0 {
+            return;
+        }
+        let row = self.goods.entry(good).or_insert_with(MarketGood::new);
+        row.production += amount;
     }
 
     /// Add rot observed today for `good`. `decayed` is units lost. `volume`
@@ -148,6 +193,122 @@ impl Market {
         todo!("Market sum migratory pressure (positive / negative / net, migrant pool)")
     }
 
+    /// # Payment Scale
+    ///
+    /// Per-unit holding value of the goods taken in payment today.
+    ///
+    /// A good counts when `paid` is positive and [`MarketHistory::holding_per_unit`]
+    /// is positive. The result is the paid-unit weighted average of those
+    /// values. A night with no such payment returns 1.
+    fn payment_scale(&self) -> f64 {
+        let history = self.history();
+        let mut value = 0.0;
+        let mut units = 0.0;
+        for (&id, good) in &self.goods {
+            if good.paid <= 0.0 {
+                continue;
+            }
+            let holding = history.holding_per_unit(id);
+            if holding <= 0.0 {
+                continue;
+            }
+            value += holding * good.paid;
+            units += good.paid;
+        }
+        if units > 0.0 {
+            value / units
+        } else {
+            1.0
+        }
+    }
+
+    /// # Peg Unit
+    ///
+    /// Divides every stored AMV by [`Self::unit_good`]'s AMV.
+    ///
+    /// `paid` and `history` are passed through to that choice. The unit lands
+    /// on 1. Every other AMV, including a negative one, is divided by that
+    /// same price. Salability is unchanged. No positive AMV leaves the card
+    /// as written.
+    fn peg_unit(&mut self, paid: &[(usize, f64)], history: &MarketHistory) {
+        let Some(unit) = self.unit_good(paid, history) else {
+            return;
+        };
+        let divisor = self.goods[&unit].amv;
+        let mut ids: Vec<usize> = self.goods.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let good = self.goods.get_mut(&id).expect("id was just copied from goods");
+            good.set_amv(good.amv / divisor);
+        }
+    }
+
+    /// # Unit Good
+    ///
+    /// The good [`Self::peg_unit`] restates at 1.
+    ///
+    /// `paid` is `(good id, units paid)` from before the tape clear.
+    /// `history` is the card from before this night's AMV write. A good with
+    /// a negative or zero AMV cannot be the unit. Payment value is units paid
+    /// times [`MarketHistory::holding_per_unit`] on `history`. Ranking is
+    /// [`Self::outranks_as_unit`]. Returns `None` when no AMV is positive.
+    fn unit_good(&self, paid: &[(usize, f64)], history: &MarketHistory) -> Option<usize> {
+        let mut paid_value: HashMap<usize, f64> = HashMap::new();
+        for &(id, units) in paid {
+            if units <= 0.0 {
+                continue;
+            }
+            let holding = history.holding_per_unit(id);
+            if holding <= 0.0 {
+                continue;
+            }
+            paid_value.insert(id, holding * units);
+        }
+        let mut best: Option<usize> = None;
+        for (&id, good) in &self.goods {
+            if good.amv <= 0.0 {
+                continue;
+            }
+            let replace = match best {
+                None => true,
+                Some(best_id) => self.outranks_as_unit(id, best_id, &paid_value),
+            };
+            if replace {
+                best = Some(id);
+            }
+        }
+        best
+    }
+
+    /// # Outranks As Unit
+    ///
+    /// Whether `id` wins over `other` inside [`Self::unit_good`].
+    ///
+    /// Higher salability wins. Equal salability goes to the larger
+    /// `paid_value`. A remaining tie goes to the lower id.
+    fn outranks_as_unit(
+        &self,
+        id: usize,
+        other: usize,
+        paid_value: &HashMap<usize, f64>,
+    ) -> bool {
+        let salability = self.goods[&id].salability;
+        let other_salability = self.goods[&other].salability;
+        match salability.partial_cmp(&other_salability) {
+            Some(std::cmp::Ordering::Greater) => true,
+            Some(std::cmp::Ordering::Equal) => {
+                let value = paid_value.get(&id).copied().unwrap_or(0.0);
+                let other_value = paid_value.get(&other).copied().unwrap_or(0.0);
+                match value.partial_cmp(&other_value) {
+                    Some(std::cmp::Ordering::Greater) => true,
+                    Some(std::cmp::Ordering::Equal) => id < other,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Snapshot of stored AMV and salability.
     pub fn history(&self) -> MarketHistory {
         let mut history = MarketHistory::new();
@@ -163,7 +324,7 @@ impl Market {
     ///
     /// One day for the actors registered on this market.
     ///
-    /// Clears yesterday's day-records and each member's
+    /// Clears yesterday's exchange tape and rot, and each member's
     /// [`crate::game::deal::DealMaker::reset_day`],
     /// then reserve, produce, [`Self::match_deals`], consume, pop growth,
     /// decay, [`crate::game::pop::Pop::rescale_desires`], then actor
@@ -185,7 +346,7 @@ impl Market {
         factuals: &Factuals,
         rng: &mut impl rand::RngCore,
     ) -> Vec<Meeting> {
-        // Cleanup Phase. Drop yesterday before this day records anything.
+        // Cleanup Phase. Drop yesterday's tape and rot. Production already recorded stays.
         self.reset_day(actors);
         let members = self.members();
         // Day start reservations
@@ -234,8 +395,10 @@ impl Market {
     ///
     /// Clears this market's day tape and each member's yesterday.
     ///
-    /// `actors` supplies the members. AMV, salability, and stock stay.
-    /// Pop satisfaction and reserves go to zero. Firms run
+    /// `actors` supplies the members. AMV, salability, stock, and production
+    /// stay. Production stays so [`crate::game::actors::Actors::start_day`],
+    /// which runs before this, still counts at the night write. Pop
+    /// satisfaction and reserves go to zero. Firms run
     /// [`crate::game::firm::Firm::reset_day`]. Institutions keep the empty
     /// [`crate::game::deal::DealMaker::reset_day`] default.
     fn reset_day(&mut self, actors: &mut Actors) {
@@ -317,9 +480,10 @@ impl Market {
         meetings
     }
 
-    /// Record units traded and what was still on the book when matching stopped.
+    /// Record units traded, payment, the print, and what was still on the book.
     ///
     /// Does not write AMV or salability. Those move in [`Self::record_keeping`].
+    /// The print itself is [`Self::note_prints`].
     fn record_match_tape(
         &mut self,
         actors: &Actors,
@@ -328,6 +492,7 @@ impl Market {
         deals: &[ProposedDeal],
     ) {
         for deal in deals {
+            self.note_prints(history, deal);
             for (&good, &qty) in &deal.goods {
                 if qty == 0.0 {
                     continue;
@@ -367,6 +532,40 @@ impl Market {
                 .entry(good)
                 .or_insert_with(MarketGood::new)
                 .offered_unsold += qty;
+        }
+    }
+
+    /// # Note Prints
+    ///
+    /// Adds this deal's paid holding onto the goods the buyer received.
+    ///
+    /// `history` is the morning card. Payment holding is the morning holding
+    /// value of every good the buyer gave. That sum is split across received
+    /// lines whose morning holding is positive, in proportion to holding
+    /// times units. Each line adds its share to [`MarketGood::print_holding`]
+    /// and its units to [`MarketGood::print_units`]. A deal with no such
+    /// line records nothing.
+    fn note_prints(&mut self, history: &MarketHistory, deal: &ProposedDeal) {
+        let mut payment = 0.0;
+        let mut received = Vec::new();
+        for (&good, &qty) in &deal.goods {
+            if qty < 0.0 {
+                payment += history.holding_per_unit(good) * -qty;
+            } else if qty > 0.0 {
+                let holding = history.holding_per_unit(good);
+                if holding > 0.0 {
+                    received.push((good, qty, holding * qty));
+                }
+            }
+        }
+        let weight: f64 = received.iter().map(|(_, _, line)| *line).sum();
+        if weight <= 0.0 {
+            return;
+        }
+        for (good, qty, line) in received {
+            let row = self.goods.entry(good).or_insert_with(MarketGood::new);
+            row.print_holding += payment * (line / weight);
+            row.print_units += qty;
         }
     }
 
@@ -577,6 +776,50 @@ impl MarketLookups {
     }
 }
 
+/// # Print Push
+///
+/// Holding-space move from today's print and from an unsold offer.
+///
+/// `id` is the good. `history` is the pre-write card. `scale` is
+/// [`Market::payment_scale`]. When `print_units` is positive, the move is
+/// [`AMV_PRINT_STEP`] times the gap from morning holding to
+/// `print_holding / print_units`. When the good was offered and `traded`
+/// is 0, [`AMV_EXCESS_NUDGE`] times `scale` is subtracted. The sum is
+/// clamped to ±[`AMV_STEP_CAP`] times `scale`.
+fn print_push(id: usize, good: &MarketGood, history: &MarketHistory, scale: f64) -> f64 {
+    let mut push = 0.0;
+    if good.print_units > 0.0 {
+        let target = good.print_holding / good.print_units;
+        push += (target - history.holding_per_unit(id)) * AMV_PRINT_STEP;
+    }
+    if good.offered_unsold > 0.0 && good.traded == 0.0 {
+        push -= scale * AMV_EXCESS_NUDGE;
+    }
+    let limit = scale * AMV_STEP_CAP;
+    push.clamp(-limit, limit)
+}
+
+/// # AMV From Holding Move
+///
+/// AMV after `move_holding` is added to `old`'s holding value.
+///
+/// Positive holding is `old` times [`amv_scale`] of `salability`. A
+/// non-positive `old` is already its holding value. A positive result is
+/// divided by that same scale. A non-positive result is the holding value.
+fn amv_from_holding_move(old: f64, salability: f64, move_holding: f64) -> f64 {
+    let holding = if old > 0.0 {
+        old * amv_scale(salability)
+    } else {
+        old
+    };
+    let next = holding + move_holding;
+    if next > 0.0 {
+        next / amv_scale(salability)
+    } else {
+        next
+    }
+}
+
 /// If `new` is inside the AMV dead zone, land [`AMV_EPSILON`] on the other
 /// side of 0 from `old`. Otherwise return `new`.
 fn bounce_away_from_zero(old: f64, new: f64) -> f64 {
@@ -598,18 +841,22 @@ pub struct MarketGood {
     pub amv: f64,
     /// How readily the good trades. `0..=1` scales a positive AMV down to par.
     /// Above 1 keeps full AMV credit; the excess is monetary rating.
-    /// Clamped to `0.0..=`[`SALABILITY_MAX`].
+    /// Clamped to [`SALABILITY_MIN`]..=[`SALABILITY_MAX`].
     pub salability: f64,
     /// Units made today.
     pub production: f64,
     /// Units consumed today.
     pub consumption: f64,
-    /// Units already in the market from yesterday.
+    /// Units that survived from yesterday.
     pub stock: f64,
     /// Units that changed hands in accepted deals today.
     pub traded: f64,
     /// Units that changed hands as payment today.
     pub paid: f64,
+    /// Holding value attributed to this good by accepted deals today.
+    pub print_holding: f64,
+    /// Units of this good the buyer received in those deals.
+    pub print_units: f64,
     /// Buy-order units still open when matching stopped.
     pub sought_unmet: f64,
     /// Sell-order units still open when matching stopped.
@@ -630,6 +877,8 @@ impl Default for MarketGood {
             stock: 0.0,
             traded: 0.0,
             paid: 0.0,
+            print_holding: 0.0,
+            print_units: 0.0,
             sought_unmet: 0.0,
             offered_unsold: 0.0,
             decayed: 0.0,
@@ -654,10 +903,14 @@ impl MarketGood {
         self
     }
 
-    /// Sets salability, clamped to `0.0..=`[`SALABILITY_MAX`].
+    /// # Set Salability
+    ///
+    /// Stores `salability`, clamped to [`SALABILITY_MIN`]..=[`SALABILITY_MAX`].
+    ///
+    /// `salability` must be finite.
     pub fn set_salability(&mut self, salability: f64) {
         debug_assert!(salability.is_finite(), "salability must be finite");
-        self.salability = salability.clamp(0.0, SALABILITY_MAX);
+        self.salability = salability.clamp(SALABILITY_MIN, SALABILITY_MAX);
     }
 
     pub fn with_salability(mut self, salability: f64) -> Self {
@@ -682,7 +935,7 @@ impl MarketGood {
 
     /// # Clear Exchange
     ///
-    /// Zeros today's exchange and production flow.
+    /// Zeros today's exchange, print, and production flow.
     ///
     /// Leaves AMV, salability, stock, and rot (`decayed`, `volume`).
     fn clear_exchange(&mut self) {
@@ -690,18 +943,26 @@ impl MarketGood {
         self.consumption = 0.0;
         self.traded = 0.0;
         self.paid = 0.0;
+        self.print_holding = 0.0;
+        self.print_units = 0.0;
         self.sought_unmet = 0.0;
         self.offered_unsold = 0.0;
     }
 
     /// # Clear Day
     ///
-    /// Zeros today's flows, including rot.
+    /// Zeros today's exchange tape, print, and rot.
     ///
-    /// Leaves AMV, salability, and stock. The morning reset uses this so
-    /// yesterday's rot does not feed the next night.
+    /// Leaves AMV, salability, stock, and production. The morning reset uses
+    /// this so yesterday's rot does not feed the next night.
     fn clear_day(&mut self) {
-        self.clear_exchange();
+        self.consumption = 0.0;
+        self.traded = 0.0;
+        self.paid = 0.0;
+        self.print_holding = 0.0;
+        self.print_units = 0.0;
+        self.sought_unmet = 0.0;
+        self.offered_unsold = 0.0;
         self.decayed = 0.0;
         self.volume = 0.0;
     }
@@ -709,10 +970,16 @@ impl MarketGood {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{
         amv_scale, monetary_rating, Market, MarketGood, MarketHistory,
-        SALABILITY_DEFAULT,
+        SALABILITY_DEFAULT, SALABILITY_MAX, SALABILITY_MIN,
     };
+    use crate::game::actor::Actor;
+    use crate::game::actors::Actors;
+    use crate::game::deal::ProposedDeal;
+    use crate::game::factuals::Factuals;
 
     #[test]
     fn amv_scale_clamps_and_monetary_rating_starts_at_par() {
@@ -722,6 +989,17 @@ mod tests {
         assert!((monetary_rating(1.5) - 0.5).abs() < 1e-12);
         assert_eq!(monetary_rating(0.1), 0.0);
         assert!((SALABILITY_DEFAULT - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn set_salability_stops_at_the_floor_and_the_cap() {
+        let mut good = MarketGood::new();
+        good.set_salability(0.0);
+        assert!((good.salability - SALABILITY_MIN).abs() < 1e-12);
+        good.set_salability(0.0002);
+        assert!((good.salability - 0.0002).abs() < 1e-12);
+        good.set_salability(9.0);
+        assert!((good.salability - SALABILITY_MAX).abs() < 1e-12);
     }
 
     #[test]
@@ -737,20 +1015,24 @@ mod tests {
         assert!((history.holding_per_unit(1) - -2.0).abs() < 1e-12);
     }
 
+    /// Good 0 is already the unit, so the unsold good's step stays on the card.
     #[test]
     fn record_keeping_lowers_an_unsold_good_and_clears_the_tape() {
         let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
         let mut good = MarketGood::new().with_amv(2.0).with_salability(1.0);
         good.offered_unsold = 10.0;
         market.goods.insert(1, good);
         let before = market.history();
         market.record_keeping(&crate::game::factuals::Factuals::new());
         assert!((before.price(1) - 2.0).abs() < 1e-12);
-        assert!((market.goods[&1].amv - 1.5).abs() < 1e-9);
-        assert!((market.goods[&1].salability - 0.8).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 1.95).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 0.975).abs() < 1e-9);
         assert_eq!(market.goods[&1].offered_unsold, 0.0);
+        assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
     }
 
+    /// Payment without a fall raises salability. That good is then the unit.
     #[test]
     fn record_keeping_raises_salability_when_payment_does_not_drop_amv() {
         let mut market = Market::new(1);
@@ -759,32 +1041,290 @@ mod tests {
         good.paid = 4.0;
         market.goods.insert(1, good);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
         assert!((market.goods[&1].salability - 0.55).abs() < 1e-9);
     }
 
+    /// Half the pile rots, so the price loses an eighth.
     #[test]
-    fn record_keeping_cuts_amv_by_the_share_that_rotted() {
+    fn record_keeping_cuts_amv_by_a_quarter_of_the_rot_share() {
         let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
         market.goods.insert(1, MarketGood::new().with_amv(2.0).with_salability(1.5));
         market.note_decay(1, 5.0, 10.0);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
-        assert!((market.goods[&1].salability - 1.3).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 1.75).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.375).abs() < 1e-9);
         assert!((market.goods[&1].decayed - 5.0).abs() < 1e-9);
         assert!((market.goods[&1].volume - 10.0).abs() < 1e-9);
+    }
+
+    /// A pile that rots completely loses a quarter of the price.
+    #[test]
+    fn record_keeping_takes_a_quarter_of_a_total_rot() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market.goods.insert(1, MarketGood::new().with_amv(2.0).with_salability(1.5));
+        market.note_decay(1, 10.0, 10.0);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - 1.5).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.3).abs() < 1e-9);
+    }
+
+    /// A quartered rot share above 95% still leaves 5% of the price.
+    #[test]
+    fn record_keeping_caps_total_rot_at_ninety_five_percent() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market.goods.insert(1, MarketGood::new().with_amv(2.0).with_salability(1.5));
+        market.note_decay(1, 40.0, 10.0);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - 0.1).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.3).abs() < 1e-9);
+        assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn record_keeping_production_lowers_amv_and_salability_with_it() {
         let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
         let mut good = MarketGood::new().with_amv(2.0).with_salability(1.5);
         good.production = 10.0;
         market.goods.insert(1, good);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        // flow cap 0.05 of |amv|: 2 - 0.1 = 1.9. That loss also ticks salability.
-        assert!((market.goods[&1].amv - 1.9).abs() < 1e-9);
-        assert!((market.goods[&1].salability - 1.45).abs() < 1e-9);
+        // Nothing was paid, so the scale is 1. Flow cap 0.05 of that scale.
+        assert!((market.goods[&1].amv - 1.95).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.475).abs() < 1e-9);
         assert_eq!(market.goods[&1].production, 0.0);
+    }
+
+    /// Production written before the day is still the night's flow.
+    ///
+    /// The morning clear drops rot and the exchange tape. It leaves
+    /// production, and the night write then zeros it.
+    #[test]
+    fn market_day_keeps_production_recorded_before_the_reset() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        let mut good = MarketGood::new().with_amv(2.0).with_salability(1.5);
+        good.production = 10.0;
+        good.traded = 4.0;
+        good.decayed = 3.0;
+        market.goods.insert(1, good);
+        let mut actors = crate::game::actors::Actors::new();
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(
+            &mut actors,
+            &crate::game::factuals::Factuals::new(),
+            &mut rng,
+        );
+
+        assert!((market.goods[&1].amv - 1.95).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.475).abs() < 1e-9);
+        assert_eq!(market.goods[&1].production, 0.0);
+        assert_eq!(market.goods[&1].decayed, 0.0);
+        assert_eq!(market.goods[&1].traded, 0.0);
+    }
+
+    /// Unmet buys do not move AMV. Salability still picks the unit.
+    ///
+    /// The coin was paid, so its salability rises, and a negative-AMV payment
+    /// cannot be the unit. The unpaid good at the salability cap is restated
+    /// at 1. Sought goods keep the ratio they had to that good's AMV.
+    #[test]
+    fn record_keeping_leaves_unmet_buys_unmoved() {
+        let mut market = Market::new(1);
+        let mut dear = MarketGood::new().with_amv(32.0).with_salability(1.0);
+        dear.sought_unmet = 10.0;
+        let mut cheap = MarketGood::new().with_amv(0.2).with_salability(1.0);
+        cheap.sought_unmet = 10.0;
+        let mut coin = MarketGood::new().with_amv(4.0).with_salability(1.0);
+        coin.paid = 3.0;
+        let mut debt = MarketGood::new().with_amv(-2.0).with_salability(1.0);
+        debt.paid = 100.0;
+        let jewel = MarketGood::new().with_amv(8.0).with_salability(SALABILITY_MAX);
+        market.goods.insert(1, dear);
+        market.goods.insert(2, cheap);
+        market.goods.insert(3, jewel);
+        market.goods.insert(9, coin);
+        market.goods.insert(8, debt);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - 4.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 0.025).abs() < 1e-9);
+        assert!((market.goods[&3].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&9].amv - 0.5).abs() < 1e-9);
+        assert!((market.goods[&8].amv - -0.25).abs() < 1e-9);
+    }
+
+    /// A print at the morning holding leaves the price where it is.
+    #[test]
+    fn record_keeping_leaves_a_par_print_unmoved() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        let mut bread = MarketGood::new().with_amv(1.0).with_salability(1.0);
+        bread.traded = 4.0;
+        bread.print_units = 4.0;
+        bread.print_holding = 4.0;
+        market.goods.insert(2, bread);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].salability - 1.0).abs() < 1e-9);
+        assert_eq!(market.goods[&2].print_units, 0.0);
+    }
+
+    /// The night closes a tenth of the gap when that is inside the cap.
+    #[test]
+    fn record_keeping_closes_a_tenth_of_the_print_gap() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        let mut bread = MarketGood::new().with_amv(1.0).with_salability(1.0);
+        bread.traded = 4.0;
+        bread.print_units = 4.0;
+        bread.print_holding = 6.0;
+        market.goods.insert(2, bread);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&2].amv - 1.05).abs() < 1e-9);
+    }
+
+    /// A low salability stores the same holding move as a larger AMV step.
+    #[test]
+    fn record_keeping_applies_the_print_in_holding_space() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        let mut bread = MarketGood::new().with_amv(2.0).with_salability(0.5);
+        bread.traded = 1.0;
+        bread.print_units = 1.0;
+        bread.print_holding = 2.0;
+        market.goods.insert(2, bread);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&2].amv - 2.2).abs() < 1e-9);
+        assert!((market.goods[&2].salability - 0.5).abs() < 1e-9);
+    }
+
+    /// The print step cannot exceed a tenth of the payment scale.
+    ///
+    /// The coin's holding value is 4, so the cap is 0.4. The coin is then
+    /// the unit, and the bread step is restated in that coin.
+    #[test]
+    fn record_keeping_caps_the_print_step_at_the_payment_scale() {
+        let mut market = Market::new(1);
+        let mut bread = MarketGood::new().with_amv(1.0).with_salability(1.0);
+        bread.traded = 1.0;
+        bread.print_units = 1.0;
+        bread.print_holding = 100.0;
+        let mut coin = MarketGood::new().with_amv(4.0).with_salability(1.0);
+        coin.paid = 3.0;
+        market.goods.insert(2, bread);
+        market.goods.insert(9, coin);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&2].amv - 0.35).abs() < 1e-9);
+        assert!((market.goods[&9].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&9].salability - 1.05).abs() < 1e-9);
+    }
+
+    /// Payment holding is split by morning holding. A negative price is left out.
+    #[test]
+    fn note_prints_splits_payment_by_morning_holding() {
+        let mut market = Market::new(1);
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(8, MarketGood::new().with_amv(-2.0).with_salability(1.0));
+        let history = market.history();
+        let deal = ProposedDeal {
+            buyer: Actor::Pop(1),
+            seller: Actor::Pop(2),
+            match_good: 2,
+            goods: HashMap::from([(2, 4.0), (1, 1.0), (8, 1.0), (9, -6.0)]),
+            fresh: HashMap::new(),
+            freight: 0.0,
+        };
+        market.record_match_tape(&Actors::new(), &Factuals::new(), &history, &[deal]);
+        assert!((market.goods[&2].print_holding - 4.0).abs() < 1e-9);
+        assert!((market.goods[&2].print_units - 4.0).abs() < 1e-9);
+        assert!((market.goods[&1].print_holding - 2.0).abs() < 1e-9);
+        assert!((market.goods[&1].print_units - 1.0).abs() < 1e-9);
+        assert_eq!(market.goods[&8].print_units, 0.0);
+        assert!((market.goods[&9].paid - 6.0).abs() < 1e-9);
+        assert!((market.goods[&2].traded - 4.0).abs() < 1e-9);
+    }
+
+    /// Nothing was paid, so the highest salability is restated at 1.
+    #[test]
+    fn record_keeping_pegs_the_highest_salability_when_nothing_was_paid() {
+        let mut market = Market::new(1);
+        let mut grain = MarketGood::new().with_amv(2.0).with_salability(1.0);
+        grain.offered_unsold = 10.0;
+        market.goods.insert(1, grain);
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(4.0).with_salability(1.5));
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].salability - 1.5).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 0.4875).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 0.975).abs() < 1e-9);
+    }
+
+    /// Equal salability and no payment goes to the lower id.
+    #[test]
+    fn record_keeping_breaks_an_unpaid_tie_toward_the_lower_id() {
+        let mut market = Market::new(1);
+        market
+            .goods
+            .insert(5, MarketGood::new().with_amv(8.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(4.0).with_salability(1.0));
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&5].amv - 2.0).abs() < 1e-9);
+    }
+
+    /// Equal salability goes to the good that was paid for more.
+    ///
+    /// Both are paid and neither price falls, so both salabilities rise by
+    /// the same step and stay tied. The higher id carries the larger
+    /// payment value and is restated at 1.
+    #[test]
+    fn record_keeping_breaks_a_salability_tie_toward_the_paid_value() {
+        let mut market = Market::new(1);
+        let mut small = MarketGood::new().with_amv(4.0).with_salability(1.0);
+        small.paid = 1.0;
+        let mut large = MarketGood::new().with_amv(8.0).with_salability(1.0);
+        large.paid = 3.0;
+        market.goods.insert(2, small);
+        market.goods.insert(5, large);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&5].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 0.5).abs() < 1e-9);
+        assert!((market.goods[&5].salability - 1.05).abs() < 1e-9);
+        assert!((market.goods[&2].salability - 1.05).abs() < 1e-9);
+    }
+
+    /// # Insert Salability Anchor
+    ///
+    /// Inserts good 0 at AMV 1 and [`SALABILITY_MAX`].
+    ///
+    /// The other good then keeps the AMV this night's step wrote.
+    fn insert_salability_anchor(market: &mut Market) {
+        market.goods.insert(
+            0,
+            MarketGood::new()
+                .with_amv(1.0)
+                .with_salability(SALABILITY_MAX),
+        );
     }
 }

@@ -131,16 +131,25 @@ impl Pop {
     }
 
     /// # Start Day
-    /// 
+    ///
     /// Adds the day's generated goods, each scaled by the scaling factor given.
-    pub fn start_day(&mut self, new_goods: &[(usize, ScalingFactor)]) {
+    ///
+    /// `new_goods` is pairs of good id and scaling factor. Each amount is this
+    /// pop's factor for that scaling, added to `quantity`. A missing row is
+    /// created.
+    ///
+    /// Returns each good id and the amount added, in the same order.
+    pub fn start_day(&mut self, new_goods: &[(usize, ScalingFactor)]) -> Vec<(usize, f64)> {
+        let mut added = Vec::with_capacity(new_goods.len());
         for (good_id, scaling) in new_goods {
             let amount = self.get_scaling_factor(*scaling);
             self.property
                 .entry(*good_id)
                 .and_modify(|row| row.quantity += amount)
                 .or_insert(PopPRow::new(amount));
+            added.push((*good_id, amount));
         }
+        added
     }
 
     /// Adds species, culture, and religion desires that this pop does not already have.
@@ -2852,6 +2861,7 @@ mod pop {
     ///
     /// The morning reset clears that satisfaction and reserve, and drops the
     /// old tape, so the night does not treat yesterday's payment as today's.
+    /// The only good is restated at 1.
     #[test]
     fn market_day_clears_yesterdays_satisfaction_reserve_and_tape() {
         let mut pop = make_pop();
@@ -2885,7 +2895,7 @@ mod pop {
         assert!((pop.property[&1].quantity - 8.0).abs() < 1e-9);
         assert_eq!(market.goods[&1].decayed, 0.0);
         assert!((market.goods[&1].salability - 0.5).abs() < 1e-9);
-        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
     }
 
     /// Good 1 rots completely. The pop has no desire for it, so the loss

@@ -4,6 +4,7 @@ use rayon::prelude::*;
 
 use crate::game::actor::Actor;
 use crate::game::deal::DealMaker;
+use crate::game::market::Market;
 use crate::game::scalingfactor::ScalingFactor;
 use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, pop::Pop};
 
@@ -145,19 +146,98 @@ impl Actors {
     }
     
     /// # Day Start
-    /// 
-    /// Calls the day_start function on actors as needed. 
-    /// 
-    /// Currently, the day start only adds time to pops based on their labor efficiency.
-    /// 
-    /// Later, this may be expanded to include other daily initialization logic, which 
-    /// would more than likely tied to game rules or special effects tied to markets,
-    /// players, demographics, or environment.
-    pub fn start_day(&mut self) {
-        // add time to pops.
+    ///
+    /// Gives each pop its morning goods and records them on that pop's market.
+    ///
+    /// `markets` is every market, keyed by id. Each pop gains good 0 equal to
+    /// its labor. A positive amount is recorded with [`Market::note_supply`].
+    /// A pop listed on no market still receives the goods.
+    pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>) {
+        let homes = pop_markets(markets);
         let time_gen = [(0, ScalingFactor::Labor(1.0))];
-        for (_, pop) in self.pops.iter_mut() {
-            pop.start_day(&time_gen);
+        for (pop_id, pop) in self.pops.iter_mut() {
+            let added = pop.start_day(&time_gen);
+            let Some(&market_id) = homes.get(pop_id) else {
+                continue;
+            };
+            let market = markets.get_mut(&market_id).unwrap_or_else(|| {
+                panic!("market {market_id} is not in the day-start set")
+            });
+            for (good_id, amount) in added {
+                if amount > 0.0 {
+                    market.note_supply(good_id, amount);
+                }
+            }
         }
+    }
+}
+
+/// # Pop Markets
+///
+/// Maps each pop id to the market that lists it.
+///
+/// `markets` is the set passed to [`Actors::start_day`]. A pop listed in
+/// several markets maps to the lowest market id. A pop listed in none is
+/// absent.
+fn pop_markets(markets: &HashMap<usize, Market>) -> HashMap<usize, usize> {
+    let mut homes = HashMap::new();
+    let mut ids: Vec<usize> = markets.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        for &pop_id in &markets[&id].pops {
+            homes.entry(pop_id).or_insert(id);
+        }
+    }
+    homes
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::Actors;
+    use crate::game::market::{Market, MarketGood};
+    use crate::game::pop::Pop;
+
+    fn pop_with_adults(id: usize, adults: f64) -> Pop {
+        let mut pop = Pop::new(id);
+        pop.demographics.household.adult = adults;
+        pop.demographics.household.elder = 0.0;
+        pop.demographics.household.child = 0.0;
+        pop
+    }
+
+    #[test]
+    fn start_day_records_time_on_the_pops_market() {
+        let mut actors = Actors::new();
+        actors.pops.insert(1, pop_with_adults(1, 4.0));
+        actors.pops.insert(2, pop_with_adults(2, 2.0));
+        actors.pops.insert(3, pop_with_adults(3, 1.0));
+        actors.pops.insert(4, pop_with_adults(4, 3.0));
+
+        let mut west = Market::new(7);
+        west.pops.insert(1);
+        west.pops.insert(2);
+        let mut time = MarketGood::new();
+        time.stock = 3.0;
+        west.goods.insert(0, time);
+        let mut east = Market::new(8);
+        east.pops.insert(3);
+        let mut markets = HashMap::new();
+        markets.insert(west.id, west);
+        markets.insert(east.id, east);
+
+        actors.start_day(&mut markets);
+
+        let west_time = &markets[&7].goods[&0];
+        assert!((west_time.production - 6.0).abs() < 1e-12);
+        assert!((west_time.stock - 3.0).abs() < 1e-12);
+        let east_time = &markets[&8].goods[&0];
+        assert!((east_time.production - 1.0).abs() < 1e-12);
+        assert_eq!(east_time.stock, 0.0);
+        assert!((actors.pop(1).property[&0].quantity - 4.0).abs() < 1e-12);
+        assert!((actors.pop(4).property[&0].quantity - 3.0).abs() < 1e-12);
+        assert!(!markets[&7].goods.contains_key(&1));
+        assert!(!markets[&8].pops.contains(&4));
     }
 }

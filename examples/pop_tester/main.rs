@@ -12,6 +12,7 @@
 
 mod load;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rand::rngs::StdRng;
@@ -40,7 +41,10 @@ fn main() {
         eprintln!("{err}");
         std::process::exit(1);
     });
-    let mut market = scenario.market;
+    let mut ids: Vec<usize> = scenario.market.pops.iter().copied().collect();
+    ids.sort_unstable();
+    let market_id = scenario.market.id;
+    let mut markets = HashMap::from([(market_id, scenario.market)]);
     let mut actors = scenario.actors;
 
     let mut rng = StdRng::seed_from_u64(1);
@@ -50,15 +54,16 @@ fn main() {
     println!("days: {days}");
     println!();
 
-    let mut ids: Vec<usize> = market.pops.iter().copied().collect();
-    ids.sort_unstable();
     for day in 1..=days {
         println!("=== day {day} ===");
-        actors.start_day();
+        actors.start_day(&mut markets);
+        let market = markets
+            .get_mut(&market_id)
+            .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
         let meetings = market.market_day(&mut actors, &factuals, &mut rng);
         print_exchanges(&factuals, &meetings);
         print_pops(&factuals, &mut actors, &ids);
-        print_market_board(&factuals, &market);
+        print_market_board(&factuals, market);
     }
 }
 

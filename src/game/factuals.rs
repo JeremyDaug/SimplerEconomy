@@ -1042,7 +1042,6 @@ tags = ["untradeable", { transport = 2.0 }]
         assert_eq!(factuals.find_good(0).name, "time");
         assert!((factuals.find_good(0).decay_rate - 1.0).abs() < 1e-12);
         assert!((factuals.find_good(0).transport_efficiency() - 1.0).abs() < 1e-12);
-        assert!(!factuals.find_good(0).is_buyable());
         assert_eq!(factuals.find_good(1).name, "grain");
         assert!((factuals.find_good(1).decay_rate - 0.12).abs() < 1e-12);
         assert!((factuals.find_good(1).mass - 1.0).abs() < 1e-12);

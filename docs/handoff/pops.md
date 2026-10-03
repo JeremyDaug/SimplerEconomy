@@ -112,9 +112,11 @@ sell book. Higher-tier goods are open for use and exchange. Consume runs
 after exchange, so the tester's extra bread is offered at the next day's
 exchange.
 
-`Actors::start_day` grants good 0 by `ScalingFactor::Labor(1.0)`. That
-call sits in the tester, before `market_day`. The library day does not
-grant Time.
+`Actors::start_day` takes the markets and grants good 0 by
+`ScalingFactor::Labor(1.0)`. A positive grant is added to that good's
+production on the pop's market. The call sits in the tester,
+before `market_day`. The morning reset leaves that production in place.
+The library day does not grant Time.
 
 `Pop::plan` runs after `rescale_desires`, so it uses the new amounts, and
 calls `Job::plan`, which writes `Some` on every line. For each desire, the
@@ -221,26 +223,39 @@ positive AMV. `monetary_rating` is `max(salability - 1, 0)`. It orders
 payment. It does not change evaluate.
 
 The day's exchange and rot sit on `MarketGood` with the card: `traded`,
-`paid`, `sought_unmet`, `offered_unsold`, `decayed`, and `volume`. History
-still copies only AMV, salability, and friction. `match_deals` adds `traded`
-and `paid`, then sets `sought_unmet` and `offered_unsold` from the book it
-left behind. After consumption, `market_day` calls
+`paid`, `print_holding`, `print_units`, `sought_unmet`, `offered_unsold`,
+`decayed`, and `volume`. History still copies only AMV, salability, and
+friction. `match_deals` adds `traded` and `paid`, records the print, then
+sets `sought_unmet` and `offered_unsold` from the book it left behind.
+After consumption, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
 from the card is inserted at AMV `1` and salability `0.1`.
 
 `Market::record_keeping` is the night write:
 
-- Trade pressure `(sought - unsold) / (sought + unsold + traded + 1)`, capped
-  at a quarter of the absolute AMV.
-- Production flow `(consumption - production) / (stock + production +
-  consumption + 1)`, capped at `0.05` of the absolute AMV.
+- Accepted deals record a print from the morning card. Payment holding is
+  split across received goods with positive holding, by holding times units.
+  The night closes a tenth of the gap between morning holding and
+  `print_holding / print_units`. A good that was offered and did not trade
+  also falls by `0.05` of the payment scale. Those two together are clamped
+  to `±0.1` of that scale, applied in holding space, then written back to
+  AMV. Unmet buys do not move AMV. Production flow is
+  `(consumption - production) / (stock + production + consumption + 1)`,
+  capped at `0.05`, taken off the payment scale: the paid-unit weighted
+  holding value of goods that were paid and have positive holding value, or
+  `1` when none were.
 - Rot, when `decayed` and a base are present: base is `volume`, or `stock`
   when volume is 0. AMV falls by `fraction * |AMV|`, fraction
-  `decayed / base` clamped to `0..=1`.
+  `(decayed / base) / 4` clamped to `0..=0.95`.
 - If AMV fell, salability falls by that loss over the old absolute AMV,
   capped at `0.2`. A night that took the good in payment and did not lose
   AMV raises salability by `0.05`.
 - The tape is cleared. Production and consumption are zeroed. Stock stays.
+- The card is then restated in one unit. That good is the positive-AMV row
+  with the highest salability. Equal salability goes to the largest payment
+  value (units paid times its pre-write holding value), then the lower id.
+  Every AMV is divided by the unit's AMV, so the unit is 1. A negative AMV
+  is divided by the same price. Salability is not written again.
 
 Actor `record_keeping` and `plan` read a snapshot taken after decay and
 `rescale_desires`, and before that night write, so they still see today's
