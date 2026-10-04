@@ -103,13 +103,9 @@ impl PopPRow {
 
     /// # Spend Aged First
     ///
-    /// Reduces `fresh` only after `units` has used the aged stock.
+    /// Consumes our goods, spending old before fresh.
     ///
-    /// Own consumption prefers non-fresh goods. Aged stock is
-    /// `quantity - fresh`, clamped at 0. `units` is about to leave
-    /// `quantity`, so this runs before `quantity` changes. Fresh falls by
-    /// the overflow past that aged amount, never below 0. A non-positive
-    /// `units` does nothing. `produced` is left alone.
+    /// Negative units are ignored, and overdrawing stops at 0.0.
     pub fn spend_aged_first(&mut self, units: f64) {
         if units <= 0.0 {
             return;
