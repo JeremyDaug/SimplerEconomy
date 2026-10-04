@@ -1370,9 +1370,7 @@ impl Pop {
 
     /// Spend transport the buyer holds after the basket has moved.
     ///
-    /// Units spent are recorded as consumed. Aged units go first: `fresh`
-    /// drops only by what the spend cannot cover from `quantity - fresh`
-    /// (clamped at 0), read before `quantity` drops. `produced` stays.
+    /// Units spent are recorded as consumed.
     fn pay_freight(&mut self, amount: f64, factuals: &Factuals) {
         let mut ids: Vec<usize> = self.property.keys().copied().collect();
         ids.sort_unstable();
