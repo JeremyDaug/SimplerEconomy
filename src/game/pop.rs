@@ -1369,6 +1369,9 @@ impl Pop {
     }
 
     /// Spend transport the buyer holds after the basket has moved.
+    ///
+    /// Units spent are recorded as consumed. The same fraction of `fresh`
+    /// leaves with them, read before `quantity` drops. `produced` stays.
     fn pay_freight(&mut self, amount: f64, factuals: &Factuals) {
         let mut ids: Vec<usize> = self.property.keys().copied().collect();
         ids.sort_unstable();
@@ -1389,6 +1392,9 @@ impl Pop {
                 continue;
             }
             let take = (left / efficiency).min(free);
+            if let Some(row) = self.property.get_mut(&id) {
+                row.release_fresh(take);
+            }
             self.move_good(id, -take);
             if let Some(row) = self.property.get_mut(&id) {
                 row.consumed += take;
@@ -2537,6 +2543,39 @@ mod pop {
         assert!((seller.property[&9].quantity - 9.0).abs() < 1e-12);
         assert!((seller.property[&9].fresh - 4.5).abs() < 1e-12);
         assert_eq!(seller.property[&9].produced, 0.0);
+    }
+
+    /// Freight is not a goods line. It still takes the fresh share of the
+    /// units it spends, so the aged remainder can rot that night.
+    ///
+    /// 10 on hand, 4 fresh. Spending 4 leaves 2.4 fresh. Decay at half the
+    /// rate then takes 1.8 off the 3.6 aged units. Produced stays.
+    #[test]
+    fn freight_releases_the_fresh_share_before_decay() {
+        let mut buyer = make_pop();
+        let mut time = PopPRow::new(10.0);
+        time.fresh = 4.0;
+        time.produced = 4.0;
+        buyer.property.insert(0, time);
+        let mut deal = proposal(2, HashMap::new());
+        deal.freight = 4.0;
+        let mut time_good = make_good(0, "time", 0.5);
+        time_good.set_transport_efficiency(1.0);
+        let factuals = Factuals::new().with_good(time_good);
+
+        buyer.finalize(&deal, &factuals);
+
+        assert!((buyer.property[&0].quantity - 6.0).abs() < 1e-12);
+        assert!((buyer.property[&0].consumed - 4.0).abs() < 1e-12);
+        assert!((buyer.property[&0].fresh - 2.4).abs() < 1e-12);
+        assert_eq!(buyer.property[&0].produced, 4.0);
+
+        let rot = buyer.decay_goods(&factuals);
+
+        assert!((buyer.property[&0].quantity - 4.2).abs() < 1e-9);
+        assert!((buyer.property[&0].fresh - 2.4).abs() < 1e-9);
+        assert!((rot[&0].0 - 1.8).abs() < 1e-9);
+        assert!((rot[&0].1 - 10.0).abs() < 1e-9);
     }
 
     #[test]

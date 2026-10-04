@@ -100,6 +100,22 @@ impl PopPRow {
         }
         self.fresh.max(0.0).min(quantity) / quantity
     }
+
+    /// # Release Fresh
+    ///
+    /// Drops the fresh portion of `units` that are about to leave `quantity`.
+    ///
+    /// `units` is the amount removed. The share is [`Self::fresh_share`] on
+    /// the row as it stands, so this runs before `quantity` changes. The
+    /// result is clamped at 0. A non-positive `units` does nothing.
+    /// `produced` is left alone.
+    pub fn release_fresh(&mut self, units: f64) {
+        if units <= 0.0 {
+            return;
+        }
+        let share = self.fresh_share();
+        self.fresh = (self.fresh - units * share).max(0.0);
+    }
 }
 
 /// Day-end records for a pop.
