@@ -101,20 +101,22 @@ impl PopPRow {
         self.fresh.max(0.0).min(quantity) / quantity
     }
 
-    /// # Release Fresh
+    /// # Spend Aged First
     ///
-    /// Drops the fresh portion of `units` that are about to leave `quantity`.
+    /// Reduces `fresh` only after `units` has used the aged stock.
     ///
-    /// `units` is the amount removed. The share is [`Self::fresh_share`] on
-    /// the row as it stands, so this runs before `quantity` changes. The
-    /// result is clamped at 0. A non-positive `units` does nothing.
-    /// `produced` is left alone.
-    pub fn release_fresh(&mut self, units: f64) {
+    /// Own consumption prefers non-fresh goods. Aged stock is
+    /// `quantity - fresh`, clamped at 0. `units` is about to leave
+    /// `quantity`, so this runs before `quantity` changes. Fresh falls by
+    /// the overflow past that aged amount, never below 0. A non-positive
+    /// `units` does nothing. `produced` is left alone.
+    pub fn spend_aged_first(&mut self, units: f64) {
         if units <= 0.0 {
             return;
         }
-        let share = self.fresh_share();
-        self.fresh = (self.fresh - units * share).max(0.0);
+        let aged = (self.quantity - self.fresh).max(0.0);
+        let from_fresh = (units - aged).max(0.0);
+        self.fresh = (self.fresh - from_fresh).max(0.0);
     }
 }
 
