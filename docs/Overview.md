@@ -22,11 +22,19 @@ Headless interregional and international trade. Market regions are the highest l
 
 ## Versions
 
-Version cuts are not chosen yet. When a cut is decided, write it in this section: what the player can see, what the simulation must already do, and what stays out.
+- Version 0.1.0 - Pop Tester Alpha, current phase. Focusing work on pops, jobs, goods, processes, and the market. Currently partially complete. Money, skills, and time as market status belong here if they can be tested with pops and jobs. Money may slip later. The emergent selection that picks a money good should be tested early anyway. The day stays on the tester and `Market::market_day`. `PlayState` is not in this cut. This cut ends when there is no more work that can be done with only pops and jobs.
+- Version 0.2.0 - Firm Tester Alpha. Focusing on Firms, their logic and reasoning, and their trade. Includes enough wages, owners, and firm strategy to scaffold and test, not the full strategy set. First parts of decentralized innovation live here. Sentiment, migration, and contracts may start, but stay secondary. No `PlayState`.
+- Version 0.3.0 - Full Market Alpha. Add in environmental effects, plots/land, terrain, test dynamic friction, and start adding in institutions and a player/state (AI). Class starts here. Tech finishes here, with states and institutions. Sentiment, migration, and contracts become meaningful. Migration is not finished. `PlayState` starts here, one market. Save and load of a game starts. The state AI manages the internal market and modifies institutions. A tile is made of plots. A plot is subdivided into units of land. Dynamic friction is a market-size scalar on bulk transport cost. Finer plot and friction detail may change when this cut is tested.
+- Version 0.4.0 - Multi-Market Alpha. Markets should be mostly complete at this point, so multiple markets are now the target. This should also be where inter-market firms, institutions, and states are tested as well as trade, travel, and units on the map. Units stay thin. Migration finishes. Save and load finishes.
+- Version 0.5.0 - Bevy Alpha and Human-Players. This will be the first 'playable' state. The previous ones are more of testers to ensure everything works out. At this point, we start focusing on graphics and UI, focusing on minimal playability. This cut may move back. Any steps added before it are functional testers and play interfaces, not a feature dump. Those steps are not named yet.
+- Version 0.9.0 - Beta Stage. All basic visuals complete and the game is 'playable' but not 'complete'. Goals are Refining Visuals and UI (including replacing any AI art with either procedural art or work from a commissioned artist), creating and balancing the initial factuals. Refining the features of Institutions, Cultures, etc.
+- Version 1.0.0 - Release!! Most balancing done, everything needed to be 'public ready' and the game is 'done'. Some balancing and bugfixing will certainly be needed, but the game is effectively "Done".
 
 ## Later
 
-These are intended features. The types are empty shells. They stay in the tree until a later pass fills them in.
+These types stay empty until the cut that owns them. Do not fill them early.
 
-- Units (`src/game/unit.rs`). Map actors, including military. Behavior is not specified yet.
-- Tech tree (`src/game/techtree.rs`, nodes in `src/game/tech.rs`). How the tree sits beside decentralized innovation is not specified yet. It is not a stockpile of beakers.
+- Units (`src/game/unit.rs`). Owned by 0.4. Map actors, including military. Thin until a client can show them. Behavior is not specified yet.
+- Tech tree (`src/game/techtree.rs`, nodes in `src/game/tech.rs`). First parts in 0.2, on firms. Finished in 0.3, with states and institutions. It is not a stockpile of beakers.
+
+Buildings and upkeep are goods, not a separate system. They are not a later milestone. They arrive with whatever cut needs them.

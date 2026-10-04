@@ -8,7 +8,9 @@ The market is the keystone. Goods are concrete. Money, time, land, and skills ar
 
 Do not open the Obsidian vault, and do not mine other git branches, unless the user names a specific note or target.
 
-Version cuts are not written yet. Do not invent a milestone and start building it. Record a cut in `docs/Overview.md` only after the user chooses it.
+Version cuts are in `docs/Overview.md` under Versions. Working placement notes are in `TODO.md`. Do not invent a milestone. Record a new cut in `docs/Overview.md` only after the user chooses it. Do not start a later cut's work in the current tester.
+
+Pop and firm testers do not use `PlayState`. `PlayState` starts in the Full Market cut (0.3.0).
 
 ## This tree
 
@@ -18,7 +20,11 @@ World factuals live in `data/world`. `examples/rates_tester.rs` probes household
 
 Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` lives on species (base), culture, and religion (addends), stacked by `Factuals::work_time_fraction`.
 
-`Unit` and `TechTree` are later features. Leave them empty until asked. Do not turn `Technology` into a beaker pile.
+`Unit` is a 0.4 type. Leave it empty until that cut. It stays thin until a client can show it.
+
+`TechTree` starts in 0.2 and finishes in 0.3, with states and institutions. Leave it empty until 0.2. Do not turn `Technology` into a beaker pile.
+
+Buildings and upkeep are goods, not a separate system. They are not a milestone.
 
 Whole goods use `trunc` or `floor` at the call. `whole_units_up` rounds a wage basket away from zero.
 
