@@ -1369,6 +1369,8 @@ impl Pop {
     }
 
     /// Spend transport the buyer holds after the basket has moved.
+    ///
+    /// Units spent are recorded as consumed.
     fn pay_freight(&mut self, amount: f64, factuals: &Factuals) {
         let mut ids: Vec<usize> = self.property.keys().copied().collect();
         ids.sort_unstable();
@@ -1377,9 +1379,7 @@ impl Pop {
             if left <= 0.0 {
                 break;
             }
-            let Some(good) = factuals.goods.get(&id) else {
-                continue;
-            };
+            let good = factuals.find_good(id);
             let efficiency = good.transport_efficiency();
             if efficiency <= 0.0 {
                 continue;
@@ -1389,10 +1389,15 @@ impl Pop {
                 continue;
             }
             let take = (left / efficiency).min(free);
+            self.property
+                .get_mut(&id)
+                .expect("free stock vanished before it could be spent")
+                .spend_aged_first(take);
             self.move_good(id, -take);
-            if let Some(row) = self.property.get_mut(&id) {
-                row.consumed += take;
-            }
+            self.property
+                .get_mut(&id)
+                .expect("free stock vanished before it could be spent")
+                .consumed += take;
             left -= take * efficiency;
         }
     }
@@ -2537,6 +2542,56 @@ mod pop {
         assert!((seller.property[&9].quantity - 9.0).abs() < 1e-12);
         assert!((seller.property[&9].fresh - 4.5).abs() < 1e-12);
         assert_eq!(seller.property[&9].produced, 0.0);
+    }
+
+    /// Freight is own consumption, not a transfer. Aged stock is spent
+    /// before fresh, and the aged remainder can still rot that night.
+    ///
+    /// 10 on hand, 4 fresh. Spending 4 leaves fresh at 4; all 4 came from
+    /// the 6 aged. Decay at half the rate then takes 1 off the 2 aged units
+    /// left. Spending 8 instead leaves fresh at 2. Produced stays.
+    #[test]
+    fn freight_spends_aged_stock_before_fresh() {
+        let mut time_good = make_good(0, "time", 0.5);
+        time_good.set_transport_efficiency(1.0);
+        let factuals = Factuals::new().with_good(time_good);
+
+        let mut buyer = make_pop();
+        let mut time = PopPRow::new(10.0);
+        time.fresh = 4.0;
+        time.produced = 4.0;
+        buyer.property.insert(0, time);
+        let mut deal = proposal(2, HashMap::new());
+        deal.freight = 4.0;
+
+        buyer.finalize(&deal, &factuals);
+
+        assert!((buyer.property[&0].quantity - 6.0).abs() < 1e-12);
+        assert!((buyer.property[&0].consumed - 4.0).abs() < 1e-12);
+        assert!((buyer.property[&0].fresh - 4.0).abs() < 1e-12);
+        assert_eq!(buyer.property[&0].produced, 4.0);
+
+        let rot = buyer.decay_goods(&factuals);
+
+        assert!((buyer.property[&0].quantity - 5.0).abs() < 1e-9);
+        assert!((buyer.property[&0].fresh - 4.0).abs() < 1e-9);
+        assert!((rot[&0].0 - 1.0).abs() < 1e-9);
+        assert!((rot[&0].1 - 10.0).abs() < 1e-9);
+
+        let mut heavy = make_pop();
+        let mut time = PopPRow::new(10.0);
+        time.fresh = 4.0;
+        time.produced = 4.0;
+        heavy.property.insert(0, time);
+        let mut deal = proposal(2, HashMap::new());
+        deal.freight = 8.0;
+
+        heavy.finalize(&deal, &factuals);
+
+        assert!((heavy.property[&0].quantity - 2.0).abs() < 1e-12);
+        assert!((heavy.property[&0].consumed - 8.0).abs() < 1e-12);
+        assert!((heavy.property[&0].fresh - 2.0).abs() < 1e-12);
+        assert_eq!(heavy.property[&0].produced, 4.0);
     }
 
     #[test]

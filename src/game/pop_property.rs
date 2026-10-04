@@ -100,6 +100,20 @@ impl PopPRow {
         }
         self.fresh.max(0.0).min(quantity) / quantity
     }
+
+    /// # Spend Aged First
+    ///
+    /// Consumes our goods, spending old before fresh.
+    ///
+    /// Negative units are ignored, and overdrawing stops at 0.0.
+    pub fn spend_aged_first(&mut self, units: f64) {
+        if units <= 0.0 {
+            return;
+        }
+        let aged = (self.quantity - self.fresh).max(0.0);
+        let from_fresh = (units - aged).max(0.0);
+        self.fresh = (self.fresh - from_fresh).max(0.0);
+    }
 }
 
 /// Day-end records for a pop.
