@@ -415,8 +415,7 @@ impl Pop {
     ///
     /// A resumed target is finished first. Further targets are picked at random
     /// from the bucket. A target that cannot be taken in full stops the desire,
-    /// after reserving whatever of that target is free. A target whose cap share
-    /// was taken in full is not picked again in this call, so its cap holds.
+    /// after reserving whatever of that target is free.
     fn satisfy_one_desire(
         &mut self,
         desire: &mut Desire,
