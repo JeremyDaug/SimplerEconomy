@@ -433,15 +433,20 @@ impl Pop {
         if remaining <= 1e-9 {
             return SatisfyProgress::Done;
         }
+        // Targets whose cap share this call already took in full.
+        let mut filled = vec![false; desire.target.len()];
         if let Some(start) = target_start_satisfaction {
             if let Some(blocked) = self.fill_target(desire, target_index, Some(start), &mut remaining)
             {
                 return blocked;
             }
+            if let Some(done) = filled.get_mut(target_index) {
+                *done = true;
+            }
         }
         while remaining > 1e-9 {
             let open: Vec<usize> = (0..desire.target.len())
-                .filter(|&index| target_cap_left(desire, index, None) > 1e-9)
+                .filter(|&index| !filled[index] && target_cap_left(desire, index, None) > 1e-9)
                 .collect();
             if open.is_empty() {
                 return SatisfyProgress::Blocked {
@@ -453,6 +458,7 @@ impl Pop {
             if let Some(blocked) = self.fill_target(desire, index, None, &mut remaining) {
                 return blocked;
             }
+            filled[index] = true;
         }
         if desire.tiers_satisfied() + 1e-9 >= iter_target {
             SatisfyProgress::Done
@@ -2075,6 +2081,46 @@ mod pop {
         assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
         let reserved = pop.property[&1].reserved + pop.property[&2].reserved;
         assert!((reserved - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn satisfy_does_not_refill_a_capped_target() {
+        // Seeds cover both pick orders, so a capped target picked first is
+        // never picked again past its cap.
+        for seed in 0..20 {
+            let mut pop = make_pop();
+            pop.property.insert(1, PopPRow::new(100.0));
+            pop.property.insert(2, PopPRow::new(100.0));
+            pop.desires[0].push(desire(
+                1,
+                vec![
+                    DesireTarget::new(1, DesireTargetType::Use, 1.0).with_cap(0.5),
+                    DesireTarget::new(2, DesireTargetType::Consume, 1.0).with_cap(0.5),
+                ],
+                10.0,
+            ));
+
+            let mut rng = StdRng::seed_from_u64(seed);
+            assert!(pop.satisfy(&mut rng).is_none());
+            assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
+            assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+            assert!((pop.property[&2].reserved - 5.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn satisfy_stops_when_every_cap_is_spent() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(100.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5)],
+            10.0,
+        ));
+
+        let blocked = do_satisfy(&mut pop).expect("one capped target cannot fill the level");
+        assert!((blocked.satisfaction - 5.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
     }
 
     #[test]
