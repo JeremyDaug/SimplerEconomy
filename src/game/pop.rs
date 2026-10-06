@@ -530,7 +530,8 @@ impl Pop {
     /// - Basic (0) and Common (1) tiers are processed **once each**, in list order,
     ///   filling to the best of the pop's ability before moving to the next tier.
     /// - Luxury (2) desires are **repeatedly cycled** and overfilled as much as possible
-    ///   until no further progress can be made with remaining goods.
+    ///   until no further progress can be made with remaining goods. A desire that
+    ///   misses the current level is benched and keeps its place in the tier.
     ///
     /// For desires with a bucket of goods, higher-efficiency goods are preferred.
     ///
@@ -553,31 +554,22 @@ impl Pop {
 
         // Last is Luxury Needs, do until we produce no more satisfaction.
         let mut iter_target = 1.0;
-        working_desires = self.desires.remove(2); // pop off
-        let mut ordered_desires = vec![];
-        loop {// loop over desires
-            // satisfy the current working desires
-            self.consume_tier(&mut working_desires);
-            // remove any desires not fully satisfied.
-            let mut idx = 0;
-            loop {
-                if idx >= working_desires.len() { break; } // break out if we walk off the end.
-                if working_desires[idx].tiers_satisfied() < iter_target {
-                    // if not satisfied to our target, move to ordered_desires
-                    ordered_desires.push(working_desires.remove(idx));
-                } else {
-                    // otherwise, increment idx by one and go on
-                    idx += 1;
+        let mut luxury = std::mem::take(&mut self.desires[2]);
+        // Desires still filling. One that misses `iter_target` is benched in place.
+        let mut filling = vec![true; luxury.len()];
+        while filling.iter().any(|&open| open) {
+            for (desire, open) in luxury.iter_mut().zip(filling.iter_mut()) {
+                if !*open {
+                    continue;
+                }
+                self.consume_one_desire(desire);
+                if desire.tiers_satisfied() < iter_target {
+                    *open = false;
                 }
             }
-            // if nothing to go onto next time, break out.
-            if working_desires.is_empty() {
-                break;
-            } else { iter_target += 1.0; } // otherwise increment target and go again.
-        } 
-        // Restoring original tier order: priority is index for the pop and is set in update_desires.
-        ordered_desires.sort_by_key(|d| d.priority);
-        self.desires.insert(2, ordered_desires); // put back
+            iter_target += 1.0;
+        }
+        self.desires[2] = luxury; // put back
     }
 
     /// # Consume Tier
@@ -1996,6 +1988,30 @@ mod pop {
             scalar: ScalingFactor::Fixed(1.0),
             decay: 0.0,
         }
+    }
+
+    #[test]
+    fn consume_keeps_luxury_list_order() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(3.0));
+        pop.property.insert(2, PopPRow::new(1.0));
+        pop.desires[2].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        pop.desires[2].push(desire(
+            2,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+
+        pop.consume();
+
+        let ids: Vec<usize> = pop.desires[2].iter().map(|d| d.demo_desire_id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        assert!((pop.desires[2][0].satisfaction - 3.0).abs() < 1e-9);
+        assert!((pop.desires[2][1].satisfaction - 1.0).abs() < 1e-9);
     }
 
     #[test]
