@@ -25,7 +25,7 @@ Still open, and still pop or job work:
 
 Not this cut:
 
-- Class desires. The market is too small for stratification. That is 0.3.
+- Stratum desires. The market is too small for stratification. That is 0.3. The stratum type is already in the tree.
 - `PlayState::advance_turn` and the phase stubs.
 - A required `init` loader. Load simulation data as a tester needs it. `examples/pop_tester/load.rs` already does that. Game save and load is 0.3, finished in 0.4.
 
@@ -59,7 +59,7 @@ Dynamic friction, as chosen: a market-size scalar multiplies bulk transport cost
 - [ ] Environment refresh and random effects.
 - [ ] Plots on tiles, and land units on plots. The terrain enum is not that model.
 - [ ] The market-size scalar on bulk transport cost.
-- [ ] Class, including class desires. Not before this cut.
+- [ ] Stratum desires and stratification. The type is already in the tree. Not before this cut.
 - [ ] Tech finished here, once states and institutions can direct it. Still not a beaker pile.
 - [ ] Sentiment, migration, and contracts become meaningful. Migration is still not finished.
 - [ ] Institution day that does not panic. The AI modifies institutions. It does not need the full mandate tree on day one.

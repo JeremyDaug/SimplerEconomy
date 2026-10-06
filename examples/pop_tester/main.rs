@@ -1,8 +1,9 @@
 //! A few pops, one market, a few days.
 //!
-//! Loads world data and `data/pop_tester/scenario.toml`, then runs
-//! [`Market::market_day`]. The scenario file sets the opening board, each
-//! pop's craft, and that morning's work. This file does not decide prices,
+//! Loads world data and `data/pop_tester/`, then runs
+//! [`Market::market_day`]. The scenario folder sets the opening board, each
+//! pop's craft and stock, and that morning's work. Desires come from the
+//! species, culture, and religion files. This file does not decide prices,
 //! baskets, or accept/reject.
 //!
 //! ```text
@@ -32,12 +33,12 @@ fn main() {
         .unwrap_or(3);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
     let world = root.join("world");
-    let scenario_path = root.join("pop_tester").join("scenario.toml");
-    let factuals = Factuals::load_from_path(&world).unwrap_or_else(|err| {
+    let scenario_dir = root.join("pop_tester");
+    let mut factuals = Factuals::load_from_path(&world).unwrap_or_else(|err| {
         eprintln!("load {}: {err}", world.display());
         std::process::exit(1);
     });
-    let scenario = load::load_scenario(&scenario_path, &factuals).unwrap_or_else(|err| {
+    let scenario = load::load_scenario(&scenario_dir, &mut factuals).unwrap_or_else(|err| {
         eprintln!("{err}");
         std::process::exit(1);
     });
@@ -50,7 +51,7 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(1);
     println!("pop tester");
     println!("world: {}", world.display());
-    println!("scenario: {}", scenario_path.display());
+    println!("scenario: {}", scenario_dir.display());
     println!("days: {days}");
     println!();
 

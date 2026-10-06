@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::{
-    actor::Actor, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::GoodTag, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment,
+    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::{GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -22,7 +22,7 @@ pub struct Pop {
     /// Desires grouped by tier: 0 basic, 1 common, 2 luxury.
     pub desires: Vec<Vec<Desire>>,
 
-    /// Species, culture, class id, and religion for this slice.
+    /// Species, culture, stratum, and religion for this slice.
     pub demographics: DemoRow,
 
     /// Same-day effects waiting for growth or decay.
@@ -36,6 +36,12 @@ pub struct Pop {
 
     /// Where [`Pop::satisfy`] stopped. [`Pop::satisfy_continue`] walks from here.
     satisfy_cursor: Option<SatisfyCursor>,
+
+    /// Desire source, id, and amount bits at the last [`Self::plan`].
+    ///
+    /// A difference is a new or removed desire, or a growth change of an
+    /// amount. That night snaps cover. An empty stamp is no plan yet.
+    planned_desires: Vec<(DemographicSource, usize, u64)>,
 }
 
 /// How far holding-value cost may run past face credit when satisfaction rose.
@@ -95,13 +101,14 @@ impl Pop {
                 household: Household::new(),
                 species: 0,
                 culture: 0,
-                class: 0,
+                stratum: 0,
                 religion: 0,
             },
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
             satisfy_cursor: None,
+            planned_desires: Vec::new(),
         }
     }
 
@@ -152,11 +159,13 @@ impl Pop {
         added
     }
 
-    /// Adds species, culture, and religion desires that this pop does not already have.
+    /// # Update Desires
     ///
-    /// Does not shop, and does not rewrite satisfaction. Culture and religion id
-    /// `0` are skipped. Class desires are not supported yet.
-    /// Day-end size matching is [`Self::rescale_desires`].
+    /// Adds species, culture, stratum, and religion desires this pop does not already have.
+    ///
+    /// `factuals` supplies those demographics. Does not shop, and does not
+    /// rewrite satisfaction. Culture, stratum, and religion id `0` are
+    /// skipped. Day-end size matching is [`Self::rescale_desires`].
     pub fn update_desires(&mut self, factuals: &Factuals) {
         let mut existing = HashSet::new();
         for tier in &self.desires {
@@ -188,6 +197,20 @@ impl Pop {
             if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
                 for demo in culture.desires.values() {
                     let source = DemographicSource::Culture(culture.id);
+                    if !existing.contains(&(source, demo.id)) {
+                        let tier = demo.tier;
+                        let desire = demo.create_desire(self, source);
+                        debug_assert!(tier < self.desires.len(), "Desire tier out of range.");
+                        self.desires[tier].push(desire);
+                    }
+                }
+            }
+        }
+
+        if self.demographics.stratum != 0 {
+            if let Some(stratum) = factuals.get_stratum(self.demographics.stratum) {
+                for demo in stratum.desires.values() {
+                    let source = DemographicSource::Stratum(stratum.id);
                     if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
                         let desire = demo.create_desire(self, source);
@@ -717,9 +740,9 @@ impl Pop {
     /// Clears yesterday's satisfaction and same-day reserves.
     ///
     /// Each desire's satisfaction is set to 0. The satisfy bookmark is
-    /// dropped. `reserved`, `fresh`, and `produced` on every property row
-    /// are set to 0. Quantity, consumed, and used stay for today's walk and
-    /// for decay. The job drops its claimed-input list and its shopping
+    /// dropped. `reserved`, `fresh`, `produced`, and `lost` on every property
+    /// row are set to 0. Quantity, consumed, and used stay for today's walk
+    /// and for decay. The job drops its claimed-input list and its shopping
     /// list. Line targets stay, so last night's plan is what this morning runs.
     pub fn reset_day(&mut self) {
         self.satisfy_cursor = None;
@@ -732,6 +755,7 @@ impl Pop {
             row.reserved = 0.0;
             row.fresh = 0.0;
             row.produced = 0.0;
+            row.lost = 0.0;
         }
         self.job.reset_day();
     }
@@ -744,62 +768,160 @@ impl Pop {
     /// Sets the job's targets for the next morning.
     ///
     /// `factuals` supplies processes. `history` is yesterday's market board.
-    /// For each desire, the highest-efficiency target is the good to make.
-    /// Units wanted are `amount / efficiency`, one full tier, summed when
-    /// several desires share that good. Satisfaction is ignored because this
-    /// runs after consumption and before the morning reset. Stock on hand is
-    /// `quantity`. The job writes each line's target, then the complexity
-    /// cost of those targets. The modifier is [`Self::complexity_cost`].
+    /// [`Self::cover_gaps`] is the units still short. [`Self::planning_property`]
+    /// is the stock the job spends, `produced` and `lost` included. The
+    /// modifier is [`Self::complexity_cost`]. [`Self::desire_stamp`] differs
+    /// from the last plan when the household grew into an amount or a desire
+    /// was added or removed, and that night snaps the cover.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
-        let wanted = self.output_wanted();
-        let on_hand = self.quantities_on_hand();
+        let cover = self.cover_gaps(factuals);
         let modifier = self.complexity_cost(factuals);
-        self.job.plan(&wanted, &on_hand, factuals, history, modifier);
+        let property = self.planning_property();
+        let stamp = self.desire_stamp();
+        let snap_cover = stamp != self.planned_desires;
+        self.planned_desires = stamp;
+        self.job.plan(&cover, &property, factuals, history, modifier, snap_cover);
     }
 
-    /// # Output Wanted
+    /// # Desire Stamp
     ///
-    /// Units of each good that would fill one tier of the desires it best serves.
+    /// Source, id, and amount bits of every desire, in tier order.
     ///
-    /// Each desire contributes its highest-efficiency target with a positive
-    /// efficiency. A tie keeps the later target. The units are
-    /// `amount / efficiency`. Desires with no such target add nothing.
-    fn output_wanted(&self) -> HashMap<usize, f64> {
-        let mut wanted = HashMap::new();
+    /// Used by [`Self::plan`] to see growth and added or removed desires.
+    /// The amount is [`f64::to_bits`], so an unchanged amount compares equal.
+    fn desire_stamp(&self) -> Vec<(DemographicSource, usize, u64)> {
+        let mut stamp = Vec::new();
         for tier in &self.desires {
+            for desire in tier {
+                stamp.push((desire.source, desire.demo_desire_id, desire.amount.to_bits()));
+            }
+        }
+        stamp
+    }
+
+    /// # Planning Property
+    ///
+    /// Stock the night plan may spend the next morning.
+    ///
+    /// Copies the property rows. Adds this pop's morning time grant on
+    /// [`TIME`]: [`Self::get_scaling_factor`] of [`ScalingFactor::Labor`] at
+    /// [`TIME_PER_LABOR`], the amount [`crate::game::actors::Actors::start_day`]
+    /// adds before produce. Time still in `quantity` stays, and the grant is
+    /// added on top. `produced` and `lost` are unchanged.
+    fn planning_property(&self) -> HashMap<usize, PopPRow> {
+        let mut property = self.property.clone();
+        let time = self.get_scaling_factor(ScalingFactor::Labor(TIME_PER_LABOR));
+        if time > 0.0 {
+            property
+                .entry(TIME)
+                .and_modify(|row| row.quantity += time)
+                .or_insert(PopPRow::new(time));
+        }
+        property
+    }
+
+    /// # Cover Gaps
+    ///
+    /// Units still short for the first desire tier that stock cannot fill.
+    ///
+    /// `factuals` supplies process outputs. Satisfaction is not read. This
+    /// runs after consumption and before the morning reset, so stock is
+    /// `quantity`. One level of a desire is `amount / efficiency` of a
+    /// single target. Goods are not mixed. [`Self::best_target`] picks the
+    /// target. The walk stops at the first tier with a short desire and
+    /// finishes that tier. A later desire in it that stock can still cover
+    /// is spent.
+    ///
+    /// Each short desire adds the highest-efficiency target some line
+    /// outputs. A desire no line can make adds nothing. Units of one good
+    /// are summed, then the remaining stock of that good is subtracted once.
+    /// [`Job::plan`] adds one output unit above that gap.
+    ///
+    /// Returns the gap per good. An empty map means every tier is covered,
+    /// or no short desire is producible.
+    fn cover_gaps(&self, factuals: &Factuals) -> HashMap<usize, f64> {
+        let mut producible = HashSet::new();
+        for line in &self.job.lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.amount > 0.0 {
+                    producible.insert(output.good);
+                }
+            }
+        }
+
+        // Planning copy. Covered desires spend it. Short desires do not.
+        let mut stock: HashMap<usize, f64> = self
+            .property
+            .iter()
+            .filter(|(_, row)| row.quantity > 0.0)
+            .map(|(&good, row)| (good, row.quantity))
+            .collect();
+
+        for tier in &self.desires {
+            let mut short = false;
+            let mut gross: HashMap<usize, f64> = HashMap::new();
             for desire in tier {
                 if desire.amount <= 0.0 {
                     continue;
                 }
-                let Some(target) = desire
-                    .target
-                    .iter()
-                    .filter(|target| target.efficiency > 0.0)
-                    .max_by(|a, b| {
-                        a.efficiency
-                            .partial_cmp(&b.efficiency)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
+                let covered = Self::best_target(&desire.target, |target| {
+                    let units = desire.amount / target.efficiency;
+                    stock.get(&target.good).copied().unwrap_or(0.0) >= units
+                });
+                if let Some(target) = covered {
+                    let units = desire.amount / target.efficiency;
+                    let left = stock.get(&target.good).copied().unwrap_or(0.0) - units;
+                    if left > 0.0 {
+                        stock.insert(target.good, left);
+                    } else {
+                        stock.remove(&target.good);
+                    }
+                    continue;
+                }
+                short = true;
+                let Some(target) =
+                    Self::best_target(&desire.target, |target| producible.contains(&target.good))
                 else {
                     continue;
                 };
-                *wanted.entry(target.good).or_insert(0.0) += desire.amount / target.efficiency;
+                *gross.entry(target.good).or_insert(0.0) += desire.amount / target.efficiency;
             }
+            if !short {
+                continue;
+            }
+            let mut gaps = HashMap::new();
+            for (good, units) in gross {
+                let gap = units - stock.get(&good).copied().unwrap_or(0.0);
+                if gap > 0.0 {
+                    gaps.insert(good, gap);
+                }
+            }
+            return gaps;
         }
-        wanted
+        HashMap::new()
     }
 
-    /// # Quantities On Hand
+    /// # Best Target
     ///
-    /// `quantity` of each good the pop holds, skipping empty rows.
+    /// The highest-efficiency target in `targets` that `keep` accepts.
     ///
-    /// Reserve is included. The plan compares this with [`Pop::output_wanted`].
-    fn quantities_on_hand(&self) -> HashMap<usize, f64> {
-        self.property
+    /// A target with efficiency at or below zero is skipped. A tie keeps
+    /// the later target. Returns that target, or `None` when none are kept.
+    fn best_target<'a>(
+        targets: &'a [DesireTarget],
+        keep: impl Fn(&DesireTarget) -> bool,
+    ) -> Option<&'a DesireTarget> {
+        targets
             .iter()
-            .filter(|(_, row)| row.quantity > 0.0)
-            .map(|(&good, row)| (good, row.quantity))
-            .collect()
+            .filter(|target| target.efficiency > 0.0 && keep(target))
+            .max_by(|a, b| {
+                a.efficiency
+                    .partial_cmp(&b.efficiency)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     }
 
     /// # Store Process Effect
@@ -831,7 +953,8 @@ impl Pop {
     ///
     /// Returns `(decayed, volume)` per good. Volume is on-hand after `used`
     /// returns, plus `consumed`, including fresh output. Eaten stock and
-    /// fresh output are not counted as rot.
+    /// fresh output are not counted as rot. The rot is stored on
+    /// [`PopPRow::lost`].
     pub fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
         let mut gains: HashMap<usize, f64> = HashMap::new();
         let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
@@ -858,6 +981,7 @@ impl Pop {
                     }
                 }
             }
+            row.lost = lost;
             if volume > 0.0 || lost > 0.0 {
                 let entry = rot.entry(good_id).or_insert((0.0, 0.0));
                 entry.0 += lost;
@@ -1642,12 +1766,15 @@ mod pop {
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{DemoDesire, Desire, DesireEffect, DesireTarget, DesireTargetType};
     use crate::game::scalingfactor::ScalingFactor;
+    use crate::game::culture::Culture;
     use crate::game::species::Species;
+    use crate::game::stratum::Stratum;
     use crate::game::effects::PopEffect;
     use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
     use crate::game::market::{Market, MarketGood, MarketHistory};
-    use crate::game::good::{Good, GoodTag};
+    use crate::game::config::TIME_PER_LABOR;
+    use crate::game::good::{Good, GoodTag, TIME};
     use crate::game::household::Household;
     use crate::game::job::{Job, JobLine};
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
@@ -1692,14 +1819,32 @@ mod pop {
                 household: Household::new(),
                 species: 0,
                 culture: 0,
-                class: 0,
+                stratum: 0,
                 religion: 0,
             },
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
             satisfy_cursor: None,
+            planned_desires: Vec::new(),
         }
+    }
+
+    #[test]
+    fn update_desires_copies_a_stratum_desire() {
+        let mut pop = make_pop();
+        pop.demographics.culture = 1;
+        pop.demographics.stratum = 2;
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "farmers"))
+            .with_stratum(Stratum::new(2, "tenants", 1).with_desire(DemoDesire::new(4).with_tier(0)));
+
+        pop.update_desires(&factuals);
+
+        assert_eq!(pop.desires[0].len(), 1);
+        assert_eq!(pop.desires[0][0].source, DemographicSource::Stratum(2));
+        assert_eq!(pop.desires[0][0].demo_desire_id, 4);
+        assert!(factuals.find_culture(1).strata.contains(&2));
     }
 
     fn make_good(id: usize, name: &str, decay_rate: f64) -> Good {
@@ -1752,6 +1897,27 @@ mod pop {
     }
 
     #[test]
+    fn decay_records_lost_and_reset_clears_it() {
+        let mut pop = make_pop();
+        let mut row = PopPRow::new(10.0);
+        row.fresh = 4.0;
+        row.consumed = 4.0;
+        pop.property.insert(1, row);
+        let factuals = Factuals::new().with_good(make_good(1, "bread", 0.5));
+
+        let rot = pop.decay_goods(&factuals);
+
+        // 6 aging units rot. The eaten 4 are destroyed and are not lost.
+        assert_eq!(pop.property[&1].lost, 3.0);
+        assert_eq!(rot[&1].0, 3.0);
+        assert_eq!(pop.property[&1].consumed, 0.0);
+
+        pop.reset_day();
+
+        assert_eq!(pop.property[&1].lost, 0.0);
+    }
+
+    #[test]
     fn job_reserve_keeps_the_input_off_sell_orders() {
         let mut pop = make_pop();
         pop.job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![])]);
@@ -1778,7 +1944,7 @@ mod pop {
 
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].target, 1);
-        assert_eq!(orders[0].target_amount, 3.0);
+        assert_eq!(orders[0].target_amount, 4.0);
     }
 
     #[test]
@@ -1846,9 +2012,179 @@ mod pop {
 
         pop.plan(&factuals, &history);
 
-        // 4 bread wanted, 1 on hand. Grain is not the best target, and its price is 0.
-        assert_eq!(pop.job.lines[0].target, Some(3.0));
+        // 4 bread wanted, 1 on hand, plus one unit. Grain is not the best target, and its price is 0.
+        assert_eq!(pop.job.lines[0].target, Some(4.0));
         assert_eq!(pop.job.lines[1].target, Some(0.0));
+    }
+
+    #[test]
+    fn plan_covers_the_short_common_tier_when_basic_is_stocked() {
+        let mut pop = make_pop();
+        pop.job = Job::new(
+            1,
+            vec![JobLine::new(7, None, vec![]), JobLine::new(9, None, vec![])],
+        );
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[1].push(desire(
+            2,
+            vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
+            2.0,
+        ));
+        pop.property.insert(2, PopPRow::new(4.0));
+        let factuals = Factuals::new()
+            .with_process(bake())
+            .with_process(Process::new(9, "weave", 0).with_output(ProcessOutput::new(4, 1.0, true)));
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+        history.prices.insert(4, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        // Basic bread is on hand, and bread is not worth holding, so that line
+        // keeps a zero target and moves behind the cloth line.
+        assert_eq!(pop.job.lines[0].process, 9);
+        assert_eq!(pop.job.lines[0].target, Some(3.0));
+        assert_eq!(pop.job.lines[1].process, 7);
+        assert_eq!(pop.job.lines[1].target, Some(0.0));
+    }
+
+    #[test]
+    fn plan_makes_the_producible_target_when_the_best_is_not() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(9, None, vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 0.5),
+            ],
+            4.0,
+        ));
+        let factuals = Factuals::new()
+            .with_process(Process::new(9, "thresh", 0).with_output(ProcessOutput::new(1, 1.0, true)));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        // Bread would take 4. The job makes grain, and grain covers the meal at half efficiency, plus one grain.
+        assert_eq!(pop.job.lines[0].target, Some(9.0));
+    }
+
+    #[test]
+    fn plan_does_not_cover_luxury_while_basic_is_short() {
+        let mut pop = make_pop();
+        pop.job = Job::new(
+            1,
+            vec![JobLine::new(7, None, vec![]), JobLine::new(9, None, vec![])],
+        );
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[2].push(desire(
+            2,
+            vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
+            3.0,
+        ));
+        let factuals = Factuals::new()
+            .with_process(bake())
+            .with_process(Process::new(9, "cut gem", 0).with_output(ProcessOutput::new(4, 1.0, true)));
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+        history.prices.insert(4, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        assert_eq!(pop.job.lines[0].target, Some(5.0));
+        assert_eq!(pop.job.lines[1].target, Some(0.0));
+    }
+
+    #[test]
+    fn plan_subtracts_shared_stock_once() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(7, None, vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(2, PopPRow::new(1.0));
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        // Eight bread across the two desires, one loaf already on hand, plus one unit.
+        assert_eq!(pop.job.lines[0].target, Some(8.0));
+    }
+
+    #[test]
+    fn plan_spends_the_next_mornings_time_on_top_of_time_still_held() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 1.0;
+        pop.demographics.household.adult = 1.0;
+        pop.demographics.household.elder = 0.0;
+        pop.demographics.household.child = 0.0;
+        pop.property.insert(TIME, PopPRow::new(10.0));
+        pop.job = Job::new(1, vec![JobLine::new(1, Some(100.0), vec![])]);
+        let factuals = Factuals::new().with_process(
+            Process::new(1, "make grain", 0)
+                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(1, 6.0, true)),
+        );
+        let mut history = MarketHistory::new();
+        history.prices.insert(TIME, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        // One adult's grant plus the 10 still held would fund (64 + 10) / 0.5 runs.
+        // The line is at 100, so this night steps a quarter of the way up, not onto that budget.
+        assert_eq!(pop.job.lines[0].target, Some(125.0));
+    }
+
+    #[test]
+    fn plan_snaps_a_new_desire_and_steps_when_only_stock_changes() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+
+        pop.plan(&factuals, &history);
+
+        // The desire is new, so the cover of 5 is written whole: 4 short plus one unit.
+        // Bread is not worth holding, so the opening run stays above that cover.
+        assert_eq!(pop.job.lines[0].target, Some(6.0));
+
+        pop.property.insert(2, PopPRow::new(4.0));
+        pop.plan(&factuals, &history);
+
+        // The desire is unchanged. Stock covers it, and the line still does not pay, so 6 stays.
+        assert_eq!(pop.job.lines[0].target, Some(6.0));
+
+        pop.desires[0][0].amount = 8.0;
+        pop.property.clear();
+        pop.plan(&factuals, &history);
+
+        // The amount changed, so the cover snaps to 9 and the one run above the old cover stays.
+        assert_eq!(pop.job.lines[0].target, Some(10.0));
     }
 
     #[test]
@@ -1955,8 +2291,9 @@ mod pop {
 
         let pop = actors.pop(1);
         let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
-        assert_eq!(processes, vec![4, 7, 9, 8]);
-        assert_eq!(pop.job.lines[1].target, Some(4.0));
+        assert_eq!(processes, vec![7, 4, 9, 8]);
+        // Four bread short, plus one unit. No bread is on hand.
+        assert_eq!(pop.job.lines[0].target, Some(5.0));
         assert_eq!(pop.property.get(&2).map(|row| row.quantity).unwrap_or(0.0), 0.0);
 
         market.market_day(&mut actors, &factuals, &mut rng);

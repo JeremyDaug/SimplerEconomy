@@ -1,0 +1,314 @@
+# Pops for examples/pop_tester. Crafts, processes, and goods are world names.
+# Desires come from species.toml, cultures.toml, strata.toml, and religions.toml.
+# A line target is that process's iterations for the first morning.
+# Later nights step those targets. They do not jump to a new quota.
+#
+# Output made in the morning still feeds an open desire, so the extra is
+# sold the next day. Farming, watering, and baking use the subsistence
+# variant of that craft. The other pops use the base subsistence craft.
+# Their extra process is on the job: make wood, make beer, make
+# wood_tools, make cabins, make gold, or make jewelry. Digging gold and
+# making jewelry are separate pops. Gold is not a desire. The jeweler
+# starts with 4 gold so the first morning can run. Each pop wants 25 of
+# its basic desire.
+# Opening targets are the line targets in this file. Later nights step
+# from there.
+# Each pop is 5 households of 2 adults, 2.5 children, and 0.5 elders.
+
+[[pops]]
+id = 1
+craft = "subsistence farming"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 0
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make grain"
+target = 10
+
+[[pops]]
+id = 2
+craft = "subsistence watering"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 0
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make water"
+target = 10
+
+[[pops]]
+id = 3
+craft = "subsistence baking"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "grain"
+quantity = 4
+
+[[pops.stock]]
+good = "water"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 15
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make bread"
+target = 4.166666666666667
+
+[[pops]]
+id = 4
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 0
+
+[[pops.lines]]
+process = "make wood"
+target = 10
+
+[[pops]]
+id = 5
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "grain"
+quantity = 4
+
+[[pops.stock]]
+good = "water"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 15
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make beer"
+target = 5
+
+[[pops]]
+id = 6
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "wood"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 20
+
+[[pops.lines]]
+process = "make wood_tools"
+target = 5
+
+[[pops]]
+id = 7
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "wood"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 20
+
+[[pops.lines]]
+process = "make cabins"
+target = 5
+
+[[pops]]
+id = 8
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make gold"
+target = 5
+
+[[pops]]
+id = 9
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "gold"
+quantity = 20
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make jewelry"
+target = 20

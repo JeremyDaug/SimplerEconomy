@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::game::actor::Actor;
+use crate::game::config::TIME_PER_LABOR;
 use crate::game::deal::DealMaker;
 use crate::game::market::Market;
 use crate::game::scalingfactor::ScalingFactor;
@@ -149,12 +150,13 @@ impl Actors {
     ///
     /// Gives each pop its morning goods and records them on that pop's market.
     ///
-    /// `markets` is every market, keyed by id. Each pop gains good 0 equal to
-    /// its labor. A positive amount is recorded with [`Market::note_supply`].
-    /// A pop listed on no market still receives the goods.
+    /// `markets` is every market, keyed by id. Each pop gains good 0 at
+    /// [`TIME_PER_LABOR`] per unit of household labor. A positive amount is
+    /// recorded with [`Market::note_supply`]. A pop listed on no market still
+    /// receives the goods.
     pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>) {
         let homes = pop_markets(markets);
-        let time_gen = [(0, ScalingFactor::Labor(1.0))];
+        let time_gen = [(0, ScalingFactor::Labor(TIME_PER_LABOR))];
         for (pop_id, pop) in self.pops.iter_mut() {
             let added = pop.start_day(&time_gen);
             let Some(&market_id) = homes.get(pop_id) else {
@@ -196,6 +198,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::Actors;
+    use crate::game::config::TIME_PER_LABOR;
     use crate::game::market::{Market, MarketGood};
     use crate::game::pop::Pop;
 
@@ -230,13 +233,13 @@ mod tests {
         actors.start_day(&mut markets);
 
         let west_time = &markets[&7].goods[&0];
-        assert!((west_time.production - 6.0).abs() < 1e-12);
+        assert!((west_time.production - 6.0 * TIME_PER_LABOR).abs() < 1e-12);
         assert!((west_time.stock - 3.0).abs() < 1e-12);
         let east_time = &markets[&8].goods[&0];
-        assert!((east_time.production - 1.0).abs() < 1e-12);
+        assert!((east_time.production - TIME_PER_LABOR).abs() < 1e-12);
         assert_eq!(east_time.stock, 0.0);
-        assert!((actors.pop(1).property[&0].quantity - 4.0).abs() < 1e-12);
-        assert!((actors.pop(4).property[&0].quantity - 3.0).abs() < 1e-12);
+        assert!((actors.pop(1).property[&0].quantity - 4.0 * TIME_PER_LABOR).abs() < 1e-12);
+        assert!((actors.pop(4).property[&0].quantity - 3.0 * TIME_PER_LABOR).abs() < 1e-12);
         assert!(!markets[&7].goods.contains_key(&1));
         assert!(!markets[&8].pops.contains(&4));
     }

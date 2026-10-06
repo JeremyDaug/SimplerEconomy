@@ -33,26 +33,26 @@ pub const AMV_SCALE_MIN: f64 = 0.05;
 const AMV_PRINT_STEP: f64 = 0.1;
 
 /// Largest one-night holding move from the print and the unsold ease, as a share of the payment scale.
-const AMV_STEP_CAP: f64 = 0.1;
+const AMV_STEP_CAP: f64 = 0.05;
 
 /// Flat share of the payment scale subtracted when a good was offered and nothing sold.
-const AMV_EXCESS_NUDGE: f64 = 0.05;
+const AMV_EXCESS_NUDGE: f64 = 0.01;
 
 /// Largest one-night production-flow fraction.
-const AMV_FLOW_CAP: f64 = 0.05;
+const AMV_FLOW_CAP: f64 = 0.01;
 
 /// Physical rot is divided by this before it cuts absolute AMV.
 const AMV_ROT_DIVISOR: f64 = 4.0;
 
 /// Largest share of absolute AMV that one night of rot may remove.
-const AMV_ROT_CAP: f64 = 0.95;
+const AMV_ROT_CAP: f64 = 1.0;
 
 /// Salability gained on a night the good was taken in payment and its AMV
 /// did not fall.
 const SALABILITY_UP_STEP: f64 = 0.05;
 
 /// Largest salability lost on a night the AMV fell.
-const SALABILITY_LOSS_CAP: f64 = 0.2;
+const SALABILITY_LOSS_CAP: f64 = 0.01;
 
 /// Factor applied to a positive AMV. Clamped to [`AMV_SCALE_MIN`]..=1.
 pub fn amv_scale(salability: f64) -> f64 {

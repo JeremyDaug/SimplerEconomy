@@ -18,7 +18,7 @@ Rust 2024 library, crate `simpler_economy`. No binary. No Bevy in simulation cod
 
 World factuals live in `data/world`. `examples/rates_tester.rs` probes household demographics.
 
-Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` lives on species (base), culture, and religion (addends), stacked by `Factuals::work_time_fraction`.
+Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` lives on species (base), culture, stratum, and religion (addends), stacked by `Factuals::work_time_fraction`.
 
 `Unit` is a 0.4 type. Leave it empty until that cut. It stays thin until a client can show it.
 

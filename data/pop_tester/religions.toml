@@ -1,0 +1,27 @@
+# Religion for the pop tester. Id 0 is empty and is not stored.
+# Pop::update_desires copies a desire here onto each pop of this religion.
+# Tier 2 is a luxury desire. The goods table shares one amount.
+# cap is the share of that amount one good can fill. It defaults to 1.
+
+[[religions]]
+id = 1
+name = "hearth"
+
+[[religions.desires]]
+id = 1
+tier = 2
+amount = 1
+scalar = "all"
+
+[[religions.desires.goods]]
+good = "jewelry"
+efficiency = 1
+
+[[religions.desires.goods]]
+good = "cabins"
+efficiency = 2
+
+[[religions.desires.goods]]
+good = "time"
+efficiency = 1
+cap = 0.5

@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::game::{
-    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species,
+    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species, stratum::Stratum,
 };
 
 /// TOML world-data file of goods, processes, and crafts (factuals).
@@ -295,7 +295,7 @@ fn reject_added_and_removed(
 /// The error for craft `id` already stored at `origin`.
 ///
 /// An open craft is [`FactualsLoadError::DuplicateCraft`]. Culture and
-/// religion use their duplicate errors. Species and class name the
+/// religion use their duplicate errors. Species and stratum name the
 /// demographic in [`FactualsLoadError::InvalidCraft`].
 fn duplicate_craft(id: usize, origin: Option<DemographicSource>) -> FactualsLoadError {
     match origin {
@@ -309,8 +309,8 @@ fn duplicate_craft(id: usize, origin: Option<DemographicSource>) -> FactualsLoad
         Some(DemographicSource::Species(species)) => FactualsLoadError::InvalidCraft(format!(
             "species {species} already has craft {id}"
         )),
-        Some(DemographicSource::Class(class)) => FactualsLoadError::InvalidCraft(format!(
-            "class {class} already has craft {id}"
+        Some(DemographicSource::Stratum(stratum)) => FactualsLoadError::InvalidCraft(format!(
+            "stratum {stratum} already has craft {id}"
         )),
     }
 }
@@ -396,6 +396,8 @@ pub struct Factuals {
     pub crafts: HashMap<(usize, Option<DemographicSource>), Craft>,
     pub species: HashMap<usize, Species>,
     pub cultures: HashMap<usize, Culture>,
+    /// Strata keyed by id. Id `0` is empty and is not stored.
+    pub strata: HashMap<usize, Stratum>,
     pub religion: HashMap<usize, Religion>,
     /// Gameplay tunables. Loaded from `config.toml` when reading a world folder.
     pub config: GameConfig,
@@ -412,6 +414,7 @@ impl Factuals {
             crafts: HashMap::new(),
             cultures: HashMap::new(),
             species: HashMap::new(),
+            strata: HashMap::new(),
             religion: HashMap::new(),
             config: GameConfig::default(),
         }
@@ -596,7 +599,7 @@ impl Factuals {
             DemographicSource::Culture(_) => "culture",
             DemographicSource::Religion(_) => "religion",
             DemographicSource::Species(_) => "species",
-            DemographicSource::Class(_) => "class",
+            DemographicSource::Stratum(_) => "stratum",
         };
         let label = format!("{kind} {} craft {craft_id}", origin.id());
         check_complexity_modifier(&label, modifier)?;
@@ -625,7 +628,7 @@ impl Factuals {
                     .entry(id)
                     .or_insert_with(|| Religion::new(id, holder_name));
             }
-            DemographicSource::Species(_) | DemographicSource::Class(_) => {}
+            DemographicSource::Species(_) | DemographicSource::Stratum(_) => {}
         }
         self.add_craft(Craft {
             id: craft_id,
@@ -713,6 +716,43 @@ impl Factuals {
         self
     }
 
+    /// # With Stratum
+    ///
+    /// Stores `stratum` and returns these factuals.
+    ///
+    /// Storage is [`Self::add_stratum`].
+    pub fn with_stratum(mut self, stratum: Stratum) -> Self {
+        self.add_stratum(stratum);
+        self
+    }
+
+    /// # Add Stratum
+    ///
+    /// Stores `stratum` and records its id on the culture it derives from.
+    ///
+    /// Id `0` is the empty stratum and panics. A culture of `0` panics.
+    /// A missing culture panics. A stratum id already stored panics. The
+    /// culture's list gains the id when it is not already there.
+    pub fn add_stratum(&mut self, stratum: Stratum) {
+        let id = stratum.id;
+        if id == 0 {
+            panic!("Stratum 0 is empty.");
+        }
+        if self.strata.contains_key(&id) {
+            panic!("Stratum ID {id} already exists in factuals.");
+        }
+        let culture_id = stratum.culture;
+        if culture_id == 0 {
+            panic!("Stratum {id} derives from culture 0, which is empty.");
+        }
+        let culture = self
+            .cultures
+            .get_mut(&culture_id)
+            .unwrap_or_else(|| panic!("Culture {culture_id} missing from factuals."));
+        culture.push_stratum(id);
+        self.strata.insert(id, stratum);
+    }
+
     /// # With Craft
     ///
     /// Adds `craft` and returns these factuals.
@@ -762,6 +802,15 @@ impl Factuals {
         }
         self.religion.insert(id, religion);
         self
+    }
+
+    /// # Get Good
+    ///
+    /// The good stored under `id`.
+    ///
+    /// Returns `None` when the world has no good with that id.
+    pub fn get_good(&self, id: usize) -> Option<&Good> {
+        self.goods.get(&id)
     }
 
     /// # Get Process
@@ -850,6 +899,9 @@ impl Factuals {
         for culture in self.cultures.values_mut() {
             culture.household_changed = false;
         }
+        for stratum in self.strata.values_mut() {
+            stratum.household_changed = false;
+        }
         for religion in self.religion.values_mut() {
             religion.household_changed = false;
         }
@@ -859,6 +911,26 @@ impl Factuals {
     pub fn find_culture(&self, id: usize) -> &Culture {
         self.cultures.get(&id)
             .unwrap_or_else(|| panic!("Culture {id} missing from factuals."))
+    }
+
+    /// # Get Stratum
+    ///
+    /// The stratum stored under `id`.
+    ///
+    /// Returns `None` when that id is not stored. Id `0` is empty and is
+    /// not stored.
+    pub fn get_stratum(&self, id: usize) -> Option<&Stratum> {
+        self.strata.get(&id)
+    }
+
+    /// # Find Stratum
+    ///
+    /// The stratum stored under `id`.
+    ///
+    /// Panics when that id is missing.
+    pub fn find_stratum(&self, id: usize) -> &Stratum {
+        self.get_stratum(id)
+            .unwrap_or_else(|| panic!("Stratum {id} missing from factuals."))
     }
 
     /// Looks up a religion by id. Panics if missing.
@@ -873,7 +945,6 @@ impl Factuals {
     /// [`Desire::source`] and [`Desire::demo_desire_id`].
     ///
     /// Returns `None` when that holder or that desire is not stored.
-    /// Class is not implemented yet.
     pub fn source_demo_desire(&self, desire: &Desire) -> Option<&DemoDesire> {
         let demo_id = desire.demo_desire_id;
         match desire.source {
@@ -885,15 +956,13 @@ impl Factuals {
                 .cultures
                 .get(&source_id)
                 .and_then(|culture| culture.find_desire(demo_id)),
+            DemographicSource::Stratum(source_id) => self
+                .get_stratum(source_id)
+                .and_then(|stratum| stratum.find_desire(demo_id)),
             DemographicSource::Religion(source_id) => self
                 .religion
                 .get(&source_id)
                 .and_then(|religion| religion.find_desire(demo_id)),
-            DemographicSource::Class(source_id) => {
-                todo!("Class desires are not supported yet (class id {source_id}).");
-                #[allow(unreachable_code)]
-                None
-            }
         }
     }
 
@@ -905,8 +974,8 @@ impl Factuals {
     /// # Get Demographic Rates
     ///
     /// Resolve structural demographic rates for a pop's demographic ids:
-    /// `baseline + species_demo_eff + culture_demo_eff + religion_demo_eff`
-    /// (culture/religion id `0` means none and is skipped). Class is not folded in yet.
+    /// `baseline + species_demo_eff + culture_demo_eff + stratum_demo_eff + religion_demo_eff`
+    /// (culture, stratum, and religion id `0` means none and is skipped).
     ///
     /// ## Policy: recompute every call (no cache)
     ///
@@ -922,7 +991,7 @@ impl Factuals {
     /// ## If this becomes too slow (large pop counts)
     ///
     /// Prefer a **day-fill cache of living combos only** (not the full species x
-    /// culture x class x religion product):
+    /// culture x stratum x religion product):
     /// - Key: demographic ids only (not job, not household composition).
     /// - Sequential phase: ensure cache entries for every live key (or scan pops once).
     /// - Growth: `&self` lookup only (no interior mutability on the hot path).
@@ -942,6 +1011,11 @@ impl Factuals {
                 rates = rates.add(&culture.culture_demo_eff);
             }
         }
+        if demographics.stratum != 0 {
+            if let Some(stratum) = self.get_stratum(demographics.stratum) {
+                rates = rates.add(&stratum.stratum_demo_eff);
+            }
+        }
         if demographics.religion != 0 {
             if let Some(religion) = self.religion.get(&demographics.religion) {
                 rates = rates.add(&religion.religion_demo_eff);
@@ -953,8 +1027,8 @@ impl Factuals {
     /// Share of on-hand Time this demographic may commit to wage work.
     ///
     /// Species supplies the base (default `0.5` when the species is missing).
-    /// Culture and religion add their fractions. Id `0` on culture or religion
-    /// is skipped. The result is clamped to `0..=1`.
+    /// Culture, stratum, and religion add their fractions. Id `0` on any of
+    /// those is skipped. The result is clamped to `0..=1`.
     pub fn work_time_fraction(&self, demographics: DemoRow) -> f64 {
         let mut fraction = self
             .species
@@ -964,6 +1038,11 @@ impl Factuals {
         if demographics.culture != 0 {
             if let Some(culture) = self.cultures.get(&demographics.culture) {
                 fraction += culture.work_time_fraction;
+            }
+        }
+        if demographics.stratum != 0 {
+            if let Some(stratum) = self.get_stratum(demographics.stratum) {
+                fraction += stratum.work_time_fraction;
             }
         }
         if demographics.religion != 0 {
@@ -1395,6 +1474,18 @@ processes = [29]
         assert_eq!(subsistence.name, "subsistence");
         assert_eq!(subsistence.processes, vec![29, 30, 31]);
         assert!((subsistence.complexity_modifier - 1.0).abs() < 1e-12);
+        assert_eq!(
+            factuals.get_craft(5).expect("subsistence farming").processes,
+            vec![29, 30, 31, 1]
+        );
+        assert_eq!(
+            factuals.get_craft(6).expect("subsistence watering").processes,
+            vec![29, 30, 31, 2]
+        );
+        assert_eq!(
+            factuals.get_craft(7).expect("subsistence baking").processes,
+            vec![29, 30, 31, 3]
+        );
     }
 
     #[test]
@@ -1412,7 +1503,16 @@ processes = [29]
                 .iter()
                 .find(|input| input.good == TIME)
                 .expect("Time input");
-            assert!(time_in.amount > 0.0 && time_in.amount <= 1.0);
+            assert!(time_in.amount > 0.0);
+            // Subsistence feeds the household and may take more than one time unit.
+            if !process.is_subsistence() {
+                assert!(
+                    time_in.amount <= 1.0,
+                    "{} time {} exceeds 1",
+                    process.name,
+                    time_in.amount
+                );
+            }
             assert!(matches!(time_in.input_type, InputType::Destroyed));
             assert!(!time_in.is_optional());
             assert_eq!(process.outputs.len(), 1);
@@ -1626,17 +1726,69 @@ volume = 1.0
         culture.household_changed = true;
         let mut religion = Religion::new(2, "R");
         religion.household_changed = true;
+        let mut stratum = Stratum::new(3, "tenants", 1);
+        stratum.household_changed = true;
 
         let mut factuals = Factuals::new()
             .with_species(species)
             .with_culture(culture)
+            .with_stratum(stratum)
             .with_religion(religion);
 
         factuals.clear_household_changed_flags();
 
         assert!(!factuals.species[&0].household_changed);
         assert!(!factuals.cultures[&1].household_changed);
+        assert!(!factuals.strata[&3].household_changed);
         assert!(!factuals.religion[&2].household_changed);
+    }
+
+    #[test]
+    fn add_stratum_records_the_id_on_its_culture() {
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "farmers"))
+            .with_stratum(Stratum::new(2, "tenants", 1));
+
+        assert_eq!(factuals.find_culture(1).strata, vec![2]);
+        assert_eq!(factuals.find_stratum(2).culture, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Stratum 0 is empty.")]
+    fn add_stratum_rejects_the_empty_id() {
+        let _ = Factuals::new()
+            .with_culture(Culture::new(1, "farmers"))
+            .with_stratum(Stratum::new(0, "none", 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "derives from culture 0")]
+    fn add_stratum_rejects_an_empty_culture() {
+        let _ = Factuals::new().with_stratum(Stratum::new(1, "tenants", 0));
+    }
+
+    #[test]
+    fn work_time_fraction_adds_the_stratum() {
+        use crate::game::household::Household;
+        use crate::game::pop::DemoRow;
+
+        let mut culture = Culture::new(1, "farmers");
+        culture.work_time_fraction = 0.1;
+        let mut stratum = Stratum::new(2, "tenants", 1);
+        stratum.work_time_fraction = 0.05;
+        let factuals = Factuals::new()
+            .with_culture(culture)
+            .with_stratum(stratum);
+        let row = DemoRow {
+            household: Household::new(),
+            species: 0,
+            culture: 1,
+            stratum: 2,
+            religion: 0,
+        };
+
+        // Missing species uses 0.5. Culture and stratum add their fractions.
+        assert!((factuals.work_time_fraction(row) - 0.65).abs() < 1e-12);
     }
 
     #[test]
@@ -1654,6 +1806,11 @@ volume = 1.0
         culture_mod.infant_mortality = 0.05;
         culture.culture_demo_eff = culture_mod;
 
+        let mut stratum = Stratum::new(3, "tenants", 1);
+        let mut stratum_mod = DemographicRates::zero();
+        stratum_mod.maternal_mortality = 0.02;
+        stratum.stratum_demo_eff = stratum_mod;
+
         let mut religion = Religion::new(2, "Faith");
         let mut religion_mod = DemographicRates::zero();
         religion_mod.adult_mortality.0 = -0.001;
@@ -1662,12 +1819,13 @@ volume = 1.0
         let factuals = Factuals::new()
             .with_species(species)
             .with_culture(culture)
+            .with_stratum(stratum)
             .with_religion(religion);
         let row = DemoRow {
             household: Household::new(),
             species: 0,
             culture: 1,
-            class: 0,
+            stratum: 3,
             religion: 2,
         };
         let rates = factuals.get_demographic_rates(row);
@@ -1680,6 +1838,11 @@ volume = 1.0
             .add(&{
                 let mut m = DemographicRates::zero();
                 m.infant_mortality = 0.05;
+                m
+            })
+            .add(&{
+                let mut m = DemographicRates::zero();
+                m.maternal_mortality = 0.02;
                 m
             })
             .add(&{

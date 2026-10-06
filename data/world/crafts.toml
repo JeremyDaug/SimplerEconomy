@@ -19,3 +19,20 @@ processes = [2]
 id = 4
 name = "baking"
 processes = [3]
+
+# Household variants. The subsistence processes, then that craft's specialty.
+
+[[crafts]]
+id = 5
+name = "subsistence farming"
+processes = [29, 30, 31, 1]
+
+[[crafts]]
+id = 6
+name = "subsistence watering"
+processes = [29, 30, 31, 2]
+
+[[crafts]]
+id = 7
+name = "subsistence baking"
+processes = [29, 30, 31, 3]

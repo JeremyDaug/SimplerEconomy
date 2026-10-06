@@ -170,7 +170,7 @@ pub struct DealConfig {}
 pub struct MarketPriorityConfig {}
 
 /// Wage settlement. Empty. The share of Time a pop may sell lives on
-/// species, culture, and religion, not here.
+/// species, culture, stratum, and religion, not here.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct LaborConfig {}

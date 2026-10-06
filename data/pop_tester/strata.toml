@@ -1,0 +1,22 @@
+# Stratum for the pop tester. Id 0 is empty and is not stored.
+# culture is the culture this stratum derives from.
+# Tier 1 is a common desire. The goods table shares one amount.
+
+[[strata]]
+id = 1
+name = "householder"
+culture = "village"
+
+[[strata.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[strata.desires.goods]]
+good = "wood"
+efficiency = 1
+
+[[strata.desires.goods]]
+good = "wood_tools"
+efficiency = 2

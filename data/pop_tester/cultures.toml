@@ -1,0 +1,21 @@
+# Culture for the pop tester. Id 0 is empty and is not stored.
+# Pop::update_desires copies a desire here onto each pop of this culture.
+# Tier 1 is a common desire. The goods table shares one amount.
+
+[[cultures]]
+id = 1
+name = "village"
+
+[[cultures.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[cultures.desires.goods]]
+good = "time"
+efficiency = 1
+
+[[cultures.desires.goods]]
+good = "beer"
+efficiency = 2

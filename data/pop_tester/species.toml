@@ -1,0 +1,36 @@
+# Species for the pop tester. A desire here is copied onto each pop of
+# that species by Pop::update_desires. Amount is the base per member.
+# Scalar all multiplies it by every member. Household, adults, children,
+# elders, and labor multiply it by that part instead. Fixed keeps the
+# base. Scale is the extra multiplier and defaults to 1.
+# Tier 0 is basic, 1 is common, and 2 is luxury. One desire is one id.
+# A goods table lists every good that satisfies it. Efficiency is how
+# much one unit of that good satisfies. A higher efficiency needs fewer units.
+
+[[species]]
+id = 0
+name = "human"
+
+[[species.desires]]
+id = 1
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "grain"
+efficiency = 1
+
+[[species.desires.goods]]
+good = "bread"
+efficiency = 2
+
+[[species.desires]]
+id = 2
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "water"
+efficiency = 1

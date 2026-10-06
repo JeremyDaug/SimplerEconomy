@@ -250,19 +250,19 @@ outputs = [{ good = 0, amount = 1.0 }]
 id = 29
 name = "subsistence farm"
 complexity = 0.25
-inputs = [{ good = 0, amount = 0.5 }]
+inputs = [{ good = 0, amount = 10.0 }]
 outputs = [{ good = 1, amount = 2.0 }]
 
 [[processes]]
 id = 30
 name = "subsistence water"
 complexity = 0.25
-inputs = [{ good = 0, amount = 0.2 }]
+inputs = [{ good = 0, amount = 15.0 }]
 outputs = [{ good = 2, amount = 2.0 }]
 
 [[processes]]
 id = 31
 name = "subsistence forage"
 complexity = 0.25
-inputs = [{ good = 0, amount = 0.5 }]
+inputs = [{ good = 0, amount = 10.0 }]
 outputs = [{ good = 7, amount = 2.0 }]

@@ -1,13 +1,15 @@
 # Pops
 
 Read this for desire satisfaction, consume, cottage work, and the first deal pass.
-`examples/pop_tester` loads `data/world` and `data/pop_tester/scenario.toml`,
+`examples/pop_tester` loads `data/world` and `data/pop_tester/`,
 places those pops on one market, grants the day's Time, and runs
-`Market::market_day`. The scenario sets the opening board, crafts, stock,
-household size, and the first morning's line targets. The tester prints the
-meetings. It does not choose baskets or prices. The night's plan rewrites
-every line target. `docs/handoff/desire.md` sketches how a platonic desire
-becomes a demographic desire and then a pop desire.
+`Market::market_day`. The folder sets the opening board, crafts, stock,
+household size, and the first morning's line targets. Species, culture,
+stratum, and religion files hold the demographic desires, and `Pop::update_desires`
+copies them onto each pop. The tester prints the meetings. It does not
+choose baskets or prices. The night's plan rewrites every line target.
+`docs/handoff/desire.md` sketches how a platonic desire becomes a
+demographic desire and then a pop desire.
 
 ## Landed vs stub
 
@@ -21,8 +23,8 @@ becomes a demographic desire and then a pop desire.
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Rewrites every job line's target from desires, stock, and today's card. `Firm::plan` is empty |
-| Class desires | Unimplemented |
+| `Pop::plan` | Covers the first short desire tier the job can make. Each paying line adds its own paced surplus. A line that does not pay and is not covering moves to the back and keeps its target. `Firm::plan` is empty |
+| Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Field only. Nothing multiplies satisfaction by it |
 
 ## Satisfy
@@ -100,7 +102,7 @@ that morning produces on a later day, after the night's plan.
 
 `JobLine.target` is the quota. `None` runs as far as inputs on hand allow
 and does not shop. `Some(0.0)` skips the line. `Some(n)` with `n > 0` runs
-up to `n` and shops the shortfall. Required inputs are always drawn.
+up to `n` and shops enough of each spent input that another `n` is on hand after decay, rounded up to a whole unit. Required inputs are always drawn.
 Optional inputs are drawn when the line lists them. A missing required
 factor shops one unit and leaves the other inputs free.
 
@@ -113,18 +115,43 @@ after exchange, so the tester's extra bread is offered at the next day's
 exchange.
 
 `Actors::start_day` takes the markets and grants good 0 by
-`ScalingFactor::Labor(1.0)`. A positive grant is added to that good's
-production on the pop's market. The call sits in the tester,
+`ScalingFactor::Labor(TIME_PER_LABOR)` (64 quarter-hours per labor). A
+positive grant is added to that good's production on the pop's market.
+The call sits in the tester,
 before `market_day`. The morning reset leaves that production in place.
 The library day does not grant Time.
 
-`Pop::plan` runs after `rescale_desires`, so it uses the new amounts, and
-calls `Job::plan`, which writes `Some` on every line. For each desire, the
-highest-efficiency target is the good to make. Units wanted are
-`amount / efficiency`, one tier, summed when several
-desires share that good. The gap is wanted minus `quantity`. Iterations are
-the largest `gap / output.amount`. With no gap, the target is `1` when any
-output has a positive holding value, and `0` when none does.
+`Pop::plan` runs after `rescale_desires`, so it uses the new amounts.
+Decay has already written each row's `lost`. `produced` is still today's
+output, because the morning reset has not cleared it. The stock passed
+to the job includes the next morning's time grant on good 0, added to
+time still in `quantity`. The cover walks
+tiers from basic upward over `quantity`. One level is `amount / efficiency`
+of a single target. The highest efficiency that stock can fill is spent,
+and a tie keeps the later target. The walk stops at the first tier that
+still has a short desire and finishes that tier. A short desire adds the
+highest-efficiency target some line outputs. Units of one good are summed,
+then the remaining stock of that good is subtracted once. A desire no
+line can make adds nothing.
+
+`Job::plan` writes `Some` on every line. The first line that outputs a
+short good takes it, at the largest `(gap + 1) / output.amount`. The extra unit is one more of that output than the gap. That cover is
+a floor. Every line with a positive holding score adds its own surplus
+on that floor. The score is one iteration's output holding minus the
+holding of destroyed and consumed inputs. The extra iterations are what
+required inputs remain after the cover's need and after earlier lines'
+surplus, or one iteration when the process has no required input.
+Surplus then paces off that output. At `lost / produced` of
+`0.1` it holds the runs just made. Under that it can grow, up to twice
+those runs when nothing rotted. Over that it pulls back by
+`0.1 / share`. `produced == 0` and `lost > 0` leaves one extra run.
+The cover plus that extra is the ideal for a line that pays. The stored
+target steps at most a quarter of the way toward it in one night, using
+1 as the base when the target is below 1. A line that does not pay does
+not step down. When it is not covering a short good, it moves to the
+back of the list and keeps the target it had. A new or removed desire,
+or a growth change of a desire amount, snaps that night's cover in whole
+and steps only the surplus of a line that pays.
 
 `Job::complexity_cost` is the modifier `(complexity_modifier +
 craft_distance)`, capped at `1.0`. Each process id counts once. The
@@ -137,7 +164,7 @@ missing baseline process, full for an extra process. No base craft makes
 fraction of that line's input and output goods that another line also
 uses. Iterations stay on the desire gap.
 
-Job buys are the shopping list, floored to a whole unit, added onto an
+Job buys are the shopping list, rounded up to a whole unit, added onto an
 open desire buy for the same good. A purchase shrinks that list. The next
 morning's reset drops the list and the claim book. Targets stay.
 
@@ -261,7 +288,8 @@ Actor `record_keeping` and `plan` read a snapshot taken after decay and
 `rescale_desires`, and before that night write, so they still see today's
 card. Exchange priced itself from the snapshot at the start of
 `match_deals`. Firm record keeping clears that firm's production counters.
-`Pop::plan` rewrites job targets from that snapshot. `Firm::reserve_for_day`,
+`Pop::plan` rewrites job targets from that snapshot and from each row's
+`produced` and `lost`. `Firm::reserve_for_day`,
 `Firm::produce`, and `Firm::plan` are empty.
 
 `PlayState::phase_pop_growth` only grows and does not rescale.
@@ -273,5 +301,5 @@ record keeping still panic and are not called.
 (`Meeting`, `seller_can_accept`, `freight_shortfall`, `DealMaker` day steps),
 `src/game/market.rs` (`market_day`, `MarketGood`, `history`, `record_keeping`),
 `examples/pop_tester/main.rs`, `examples/pop_tester/load.rs`,
-`data/pop_tester/scenario.toml`, `data/world/crafts.toml`. Also
+`data/pop_tester/`, `data/world/crafts.toml`. Also
 `src/game/desire.rs`, `src/game/pop_property.rs`.

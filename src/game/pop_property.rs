@@ -11,8 +11,8 @@ pub struct DemoRow {
     pub species: usize,
     /// Culture ID. `0` means none.
     pub culture: usize,
-    /// Class ID. `0` means none. Class is not a type yet.
-    pub class: usize,
+    /// Stratum ID. `0` means none. This is the economic subgroup.
+    pub stratum: usize,
     /// Religion ID. `0` means none.
     pub religion: usize,
 }
@@ -53,6 +53,11 @@ pub struct PopPRow {
     pub fresh: f64,
     /// Units a process put out today.
     pub produced: f64,
+    /// Units lost to rot tonight.
+    ///
+    /// [`crate::game::pop::Pop::decay_goods`] writes this.
+    /// [`crate::game::pop::Pop::reset_day`] clears it.
+    pub lost: f64,
     /// Consumed today. Removed from `quantity` when recorded, destroyed at decay.
     pub consumed: f64,
     /// Used and not destroyed. Returned to `quantity` at day end, then decayed.

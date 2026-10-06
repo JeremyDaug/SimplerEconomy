@@ -34,6 +34,11 @@ pub struct Culture {
     /// Added to the species work-time fraction. `0` leaves the species value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
+    /// Stratum ids that derive from this culture.
+    ///
+    /// Id `0` is the empty stratum and is not listed. [`Self::push_stratum`]
+    /// records an id here.
+    pub strata: Vec<usize>,
     /// A helper flag to mark when a culture has changed, and so pop_households should
     /// also be updated. 
     /// 
@@ -62,6 +67,7 @@ impl Culture {
             culture_effects: vec![],
             culture_demo_eff: DemographicRates::zero(),
             work_time_fraction: 0.0,
+            strata: Vec::new(),
             household_changed: false,
         }
     }
@@ -82,6 +88,31 @@ impl Culture {
     pub fn with_state(mut self, state: usize) -> Self {
         self.state = state;
         self
+    }
+
+    /// # With Stratum
+    ///
+    /// Records `stratum` on this culture and returns it.
+    ///
+    /// Storage is [`Self::push_stratum`].
+    pub fn with_stratum(mut self, stratum: usize) -> Self {
+        self.push_stratum(stratum);
+        self
+    }
+
+    /// # Push Stratum
+    ///
+    /// Records `stratum` on this culture's list.
+    ///
+    /// Id `0` is the empty stratum and panics. An id already listed stays
+    /// where it is.
+    pub fn push_stratum(&mut self, stratum: usize) {
+        if stratum == 0 {
+            panic!("Stratum 0 is empty.");
+        }
+        if !self.strata.contains(&stratum) {
+            self.strata.push(stratum);
+        }
     }
 
     /// Adds a demographic desire keyed by its id.

@@ -19,7 +19,7 @@ Rust 2024 lib crate `simpler_economy`. No binary. No Bevy in simulation code. `s
 
 World factuals live in `data/world`. `examples/rates_tester.rs` probes household demographics. `examples/pop_tester` loads `data/world` and `data/pop_tester/scenario.toml`, grants Time, and calls `Market::market_day`.
 
-Money, time, land, and skills are goods with modifiers, not separate magic resources. Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` stacks species base plus culture and religion addends via `Factuals::work_time_fraction`.
+Money, time, land, and skills are goods with modifiers, not separate magic resources. Stored AMV may be negative and must not sit on zero (`AMV_EPSILON` in `market.rs`). Sentiment is a five-way partition. `work_time_fraction` stacks species base plus culture, stratum, and religion addends via `Factuals::work_time_fraction`.
 
 ## Live work (do not pretend it is finished)
 

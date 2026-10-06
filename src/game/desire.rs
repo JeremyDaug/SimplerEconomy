@@ -11,7 +11,7 @@ pub use crate::game::effects::DesireEffect;
 /// # Platonic Desire
 /// 
 /// Platonic Desires are the 'maximalist' form of pre-existing desires that can be
-/// used by Cultures/Religions/Classes/Species to generate their own variants.
+/// used by Cultures, Religions, Strata, and Species to generate their own variants.
 /// 
 /// These should be defined at game start and never changed.
 #[derive(Debug, Clone)]
@@ -182,7 +182,7 @@ impl PlatonicDesire {
 
 /// # Demographic Desire
 /// 
-/// A desire as it exists in a Species, Culture, Class, or Religion.
+/// A desire as it exists in a Species, Culture, Stratum, or Religion.
 /// 
 /// This includes a targeted amount as though it were for a singular household.
 /// 
@@ -528,7 +528,7 @@ impl Desire {
     /// to tier indices (then `priority` alone decides order).
     /// 
     /// 1. `priority` ascending (lower first) — demo priority, or post-update index
-    /// 2. source kind: Species → Culture → Class → Religion (tie-break only)
+    /// 2. source kind: Species → Culture → Stratum → Religion (tie-break only)
     /// 3. demo desire id ascending (tie-break only)
     /// 
     /// Provisional; may be reworked after playtesting.
