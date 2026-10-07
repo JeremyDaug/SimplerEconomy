@@ -111,7 +111,7 @@ target = 12.5
 
 [[pops.lines]]
 process = "make bread"
-target = 4.166666666666667
+target = 4.2
 
 [[pops]]
 id = 4

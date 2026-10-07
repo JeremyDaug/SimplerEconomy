@@ -6,8 +6,9 @@ places those pops on one market, grants the day's Time, and runs
 `Market::market_day`. The folder sets the opening board, crafts, stock,
 household size, and the first morning's line targets. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
-copies them onto each pop. The tester prints the meetings. It does not
-choose baskets or prices. The night's plan rewrites every line target.
+copies them onto each pop. The tester prints the meetings, including the
+morning buys/sells ratio. It does not choose baskets or prices. The night's
+plan rewrites every line target.
 `docs/handoff/desire.md` sketches how a platonic desire becomes a
 demographic desire and then a pop desire.
 
@@ -87,7 +88,7 @@ Running it on goods `satisfy` already counted records the level twice.
 
 A pop's `Job` (`src/game/job.rs`) runs on that pop's property. It does not
 set a price and does not sell. `Pop::sell_orders` offers free whole units
-that do not feed the lowest tier with room left.
+above what still feeds a desire. See Proposal and evaluate.
 
 Craft `0` is no baseline. Lines still run. An empty line list skips plan,
 reserve, produce, and job buys. Two pops of the same craft keep separate
@@ -109,10 +110,8 @@ factor shops one unit and leaves the other inputs free.
 Produce runs before exchange. Inputs destroyed that morning, including
 Time, are gone before freight. New output lands in `quantity`, `fresh`,
 and `produced`. If a lower tier is still unsatisfied, the pop tries to
-reserve, buy, and produce that tier's goods, and those goods stay off the
-sell book. Higher-tier goods are open for use and exchange. Consume runs
-after exchange, so the tester's extra bread is offered at the next day's
-exchange.
+reserve, buy, and produce that tier's goods. Units above what still feeds
+a desire are offered the same day. Consume runs after exchange.
 
 `Actors::start_day` takes the markets and grants good 0 by
 `ScalingFactor::Labor(TIME_PER_LABOR)` (64 quarter-hours per labor). A
@@ -165,8 +164,13 @@ fraction of that line's input and output goods that another line also
 uses. Iterations stay on the desire gap.
 
 Job buys are the shopping list, rounded up to a whole unit, added onto an
-open desire buy for the same good. A purchase shrinks that list. The next
-morning's reset drops the list and the claim book. Targets stay.
+open desire buy for the same good. The list is the next run's input need
+after decay, for goods that survive the night. A good that decays completely,
+such as time, is not bought. A line whose last plan did not pay also shops
+one unit of each output that survives the night: `1 / (1 - decay)` minus the
+units already on hand. A larger input buy for that good stays. The first
+morning, before a plan, does not shop an output. A purchase shrinks that
+list. The next morning's reset drops the list and the claim book. Targets stay.
 
 ## Match
 
@@ -187,7 +191,8 @@ Reject and abandon move nothing.
 After every meeting both sides `reevaluate`. A pop with a satisfaction
 bookmark runs `satisfy_continue`, so goods just received get reserved. Offers
 are read from free stock the next time they are asked, so a spent offer
-shrinks or disappears. A rejected or abandoned pair is not retried in that
+shrinks or disappears, and a surplus left by the trade is offered.
+A rejected or abandoned pair is not retried in that
 call. `match_deals` returns every `Meeting`. Only `Accepted` moves goods.
 
 ## Proposal and evaluate
@@ -206,9 +211,11 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   the goods. Holding value of a positive AMV is `amv * amv_scale(salability)`.
   A negative AMV is not scaled. Exact holding parity is a tie, so the buyer
   adds one more whole unit. The buyer's own evaluate must also accept.
-- A good whose free units still feed the lowest tier with a whole unit of
-  room stays out of sell orders and out of payment, including a seller
-  request for it. A higher tier can still be spent on that lower tier.
+- Sell orders and payment offer the free units above what still feeds a
+  desire. That room is `amount * cap` minus satisfaction already stored.
+  An input the job consumes to make a desired output counts as that desire,
+  except a good that decays completely. Units already reserved are not free.
+  The market reads sell orders again after every meeting.
 - Seller requests come first. Then the buyer's other free goods, highest
   monetary rating first, lowest id on a tie. Reserved stock is already out
   of `available`. Transport goods are skipped unless the seller requested
@@ -223,8 +230,10 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   good is within free stock.
 - A given unit that still feeds a desire is allowed only when something
   received feeds that end or an earlier one. Earlier is a lower tier, or the
-  same tier and an earlier list index. Coin does not buy a good the seller
-  can still use.
+  same tier and an earlier list index. An input consumed to make a desired
+  good feeds that desire. Units given are taken from the surplus first, so
+  a gift inside that surplus has no end use. Coin does not buy a unit that
+  still feeds a desire.
 - On the tier of the best end received, satisfaction gained must exceed
   satisfaction given up. Lower tiers are not subtracted.
 - With no satisfaction gain, holding-value credit must exceed holding-value
@@ -232,8 +241,9 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   (`4`). A good that feeds a desire is credited at face AMV. A good that
   feeds nothing is credited at holding value.
 
-Propose does not see the seller's desires. A seller who still needs the
-match good rejects, and nothing moves.
+Propose does not see the seller's desires. The listed offer already leaves
+out units that still feed a desire. Giving those units away is rejected
+when nothing received feeds that end, and nothing moves.
 
 Finalize moves the map, then the buyer spends transport they hold (including
 transport just received) until `freight` is covered.
@@ -243,7 +253,7 @@ transport just received) until `freight` is covered.
 `MarketGood.amv` and `MarketGood.salability` are the published card.
 `Market::history` copies them once at the start of `match_deals`, plus
 friction. A missing AMV reads as `1.0`. A missing salability reads as
-`SALABILITY_DEFAULT` (`0.1`). Deals do not write the card.
+`SALABILITY_DEFAULT` (`0.5`). Deals do not write the card.
 
 `amv_scale` clamps salability to `0.05..=1` and is the only multiplier on a
 positive AMV. `monetary_rating` is `max(salability - 1, 0)`. It orders
@@ -256,7 +266,7 @@ friction. `match_deals` adds `traded` and `paid`, records the print, then
 sets `sought_unmet` and `offered_unsold` from the book it left behind.
 After consumption, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
-from the card is inserted at AMV `1` and salability `0.1`.
+from the card is inserted at AMV `1` and salability `0.5`.
 
 `Market::record_keeping` is the night write:
 
@@ -264,18 +274,19 @@ from the card is inserted at AMV `1` and salability `0.1`.
   split across received goods with positive holding, by holding times units.
   The night closes a tenth of the gap between morning holding and
   `print_holding / print_units`. A good that was offered and did not trade
-  also falls by `0.05` of the payment scale. Those two together are clamped
-  to `±0.1` of that scale, applied in holding space, then written back to
-  AMV. Unmet buys do not move AMV. Production flow is
+  also falls by `0.005` of the payment scale. Those two together are clamped
+  to `±0.05` of that scale, applied in holding space, then written back to
+  AMV. Open buys put that night's rot back and then rise by `0.01` of the
+  payment scale. Production flow is
   `(consumption - production) / (stock + production + consumption + 1)`,
-  capped at `0.05`, taken off the payment scale: the paid-unit weighted
+  capped at `0.005`, taken off the payment scale: the paid-unit weighted
   holding value of goods that were paid and have positive holding value, or
   `1` when none were.
 - Rot, when `decayed` and a base are present: base is `volume`, or `stock`
   when volume is 0. AMV falls by `fraction * |AMV|`, fraction
-  `(decayed / base) / 4` clamped to `0..=0.95`.
+  `(decayed / base) / 4` clamped to `0..=1`.
 - If AMV fell, salability falls by that loss over the old absolute AMV,
-  capped at `0.2`. A night that took the good in payment and did not lose
+  capped at `0.01`. A night that took the good in payment and did not lose
   AMV raises salability by `0.05`.
 - The tape is cleared. Production and consumption are zeroed. Stock stays.
 - The card is then restated in one unit. That good is the positive-AMV row

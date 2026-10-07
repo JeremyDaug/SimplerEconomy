@@ -23,7 +23,7 @@ use simpler_economy::game::actors::Actors;
 use simpler_economy::game::deal::{Meeting, MeetingOutcome, ProposedDeal};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::good::Good;
-use simpler_economy::game::market::{Market, MarketGood};
+use simpler_economy::game::market::{Market, MarketGood, MarketHistory};
 use simpler_economy::game::pop::Pop;
 
 fn main() {
@@ -61,8 +61,10 @@ fn main() {
         let market = markets
             .get_mut(&market_id)
             .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
+        // Match prices this morning's card. The night write is inside the day.
+        let history = market.history();
         let meetings = market.market_day(&mut actors, &factuals, &mut rng);
-        print_exchanges(&factuals, &meetings);
+        print_exchanges(&factuals, &history, &meetings);
         print_pops(&factuals, &mut actors, &ids);
         print_market_board(&factuals, market);
     }
@@ -80,30 +82,64 @@ fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
 ///
 /// Prints one row per meeting.
 ///
-/// Columns are buyer, seller, the good they met on, the outcome, and the
-/// basket. An empty day still prints the header.
-fn print_exchanges(factuals: &Factuals, meetings: &[Meeting]) {
+/// Columns are buyer, seller, the good they met on, the outcome, the AMV
+/// exchange ratio, and the basket. The ratio is buys over sells on `history`,
+/// the morning card the meeting used. No proposal prints `none`. An empty
+/// day still prints the header.
+fn print_exchanges(factuals: &Factuals, history: &MarketHistory, meetings: &[Meeting]) {
     let rows = meetings
         .iter()
         .map(|meeting| {
-            let basket = match &meeting.proposal {
-                Some(proposal) => basket(factuals, proposal),
-                None => "none".to_string(),
+            let (ratio, basket) = match &meeting.proposal {
+                Some(proposal) => (
+                    amv_exchange_ratio(history, proposal),
+                    basket(factuals, proposal),
+                ),
+                None => ("none".to_string(), "none".to_string()),
             };
             vec![
                 actor_name(meeting.buyer),
                 actor_name(meeting.seller),
                 good_name(factuals, meeting.match_good).to_string(),
                 outcome_name(meeting.outcome).to_string(),
+                ratio,
                 basket,
             ]
         })
         .collect::<Vec<_>>();
     print_table(
         "exchanges",
-        &["buyer", "seller", "good", "outcome", "basket"],
+        &["buyer", "seller", "good", "outcome", "buys/sells", "basket"],
         &rows,
     );
+}
+
+/// # AMV Exchange Ratio
+///
+/// Buys divided by sells for one proposed basket, priced on `history`.
+///
+/// A buy is a positive good: units the buyer receives times that good's
+/// absolute AMV. A sell is a negative good: units the buyer gives times
+/// that good's absolute AMV. Freight is not a good in the basket, so it
+/// stays out. The two sides are the same absolute-price split
+/// [`seller_can_accept`](simpler_economy::game::deal::seller_can_accept)
+/// adds up. Returns `none` when the buyer gave no AMV.
+fn amv_exchange_ratio(history: &MarketHistory, proposal: &ProposedDeal) -> String {
+    let mut buys = 0.0;
+    let mut sells = 0.0;
+    for (&good, &qty) in &proposal.goods {
+        let amv = history.price(good).abs();
+        if qty > 0.0 {
+            buys += amv * qty;
+        } else if qty < 0.0 {
+            sells += amv * -qty;
+        }
+    }
+    if sells > 0.0 {
+        qty_text(buys / sells)
+    } else {
+        "none".to_string()
+    }
 }
 
 /// # Print Pops

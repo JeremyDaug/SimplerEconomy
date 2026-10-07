@@ -79,10 +79,26 @@ pub struct Job {
     ///
     /// Produce spends this claim and leaves desire reserves alone.
     claimed: HashMap<usize, f64>,
-    /// Units to buy for the next run, recorded by [`Job::claim_one`].
+    /// Units to buy for the next run, recorded by [`Job::claim_one`]
+    /// and [`Job::shop_unpaid_outputs`].
     ///
     /// Produce does not clear it. The next [`Job::reset_day`] does.
     shopping: HashMap<usize, f64>,
+    /// Inputs that survive the night, and the output each one makes.
+    ///
+    /// [`Self::reserve`] records this for the day. `per_output` is input
+    /// units consumed for one unit of that output. A good that decays
+    /// completely is left out.
+    input_feeds: Vec<InputFeed>,
+}
+
+/// One surviving input and an output it is consumed to make.
+#[derive(Debug, Clone)]
+struct InputFeed {
+    input: usize,
+    output: usize,
+    /// Input units per one output unit.
+    per_output: f64,
 }
 
 /// One process the job can run, plus the day's quota.
@@ -108,6 +124,10 @@ pub struct JobLine {
     pub cover: f64,
     /// Optional inputs this line is allowed to draw.
     pub inputs: Vec<usize>,
+    /// True when [`Job::plan`] last scored this line above zero.
+    ///
+    /// Stays true until a plan runs, so the first morning does not shop an output.
+    pub pays: bool,
 }
 
 impl JobLine {
@@ -124,6 +144,7 @@ impl JobLine {
             target,
             cover: 0.0,
             inputs,
+            pays: true,
         }
     }
 }
@@ -148,7 +169,21 @@ impl Job {
             plan_cost: 0.0,
             claimed: HashMap::new(),
             shopping: HashMap::new(),
+            input_feeds: Vec::new(),
         }
+    }
+
+    /// # Feeds Of
+    ///
+    /// Outputs `input` is consumed to make, and the input units per output unit.
+    ///
+    /// Recorded by [`Self::reserve`]. A good that was not recorded is empty.
+    pub(crate) fn feeds_of(&self, input: usize) -> Vec<(usize, f64)> {
+        self.input_feeds
+            .iter()
+            .filter(|feed| feed.input == input)
+            .map(|feed| (feed.output, feed.per_output))
+            .collect()
     }
 
     /// # Complexity Cost
@@ -243,14 +278,16 @@ impl Job {
 
     /// # Reset Day
     ///
-    /// Drops the morning's claim book and the shopping list.
+    /// Drops the morning's claim book, the shopping list, and the input links.
     ///
     /// Line targets stay, so last night's plan is what the next reserve runs.
     /// Does not touch pop property. [`crate::game::pop::Pop::reset_day`]
     /// zeros `reserved` on the rows, which releases the claim itself.
+    /// The next [`Self::reserve`] writes the input links again.
     pub fn reset_day(&mut self) {
         self.claimed.clear();
         self.shopping.clear();
+        self.input_feeds.clear();
     }
 
     /// # Has Craft
@@ -295,7 +332,8 @@ impl Job {
     /// A line that does not pay does not step down. A cover above its
     /// current target can still raise it. When it is not covering a short
     /// good, the line moves to the back of the list and keeps the target
-    /// it had. `snap_cover` is a population change or a new or removed
+    /// it had. The line records that score for [`Self::shop_unpaid_outputs`].
+    /// `snap_cover` is a population change or a new or removed
     /// desire: the new cover is written whole. The surplus above the old
     /// cover steps only on a line that pays.
     ///
@@ -411,6 +449,8 @@ impl Job {
             let new_cover = cover_targets[index];
             let current = line.target.unwrap_or(0.0);
             let pays = scores[index].is_some_and(|score| score > 0.0);
+            // The next morning's reserve reads this when it shops an output.
+            line.pays = pays;
             let target = if snap_cover {
                 let old_surplus = (current - line.cover).max(0.0);
                 if pays {
@@ -462,7 +502,10 @@ impl Job {
     /// is not shopped. Other optional inputs are claimed and shopped only
     /// when the line lists them. `None` claims what is free and does not
     /// shop an open-ended amount. `Some(0.0)` skips the line.
+    /// [`Self::shop_unpaid_outputs`] then shops for lines that did not pay.
+    /// [`Self::note_input_feeds`] records which surviving inputs make each output.
     pub fn reserve(&mut self, property: &mut HashMap<usize, PopPRow>, factuals: &Factuals) {
+        self.note_input_feeds(factuals);
         if self.lines.is_empty() {
             return;
         }
@@ -482,6 +525,110 @@ impl Job {
                 continue;
             }
             self.claim_inputs(property, process, line, iterations, factuals);
+        }
+        // One output unit for each line the last plan did not score as paying.
+        self.shop_unpaid_outputs(property, factuals);
+    }
+
+    /// # Shop Unpaid Outputs
+    ///
+    /// Records a buy for one unit of each output a line that does not pay makes.
+    ///
+    /// `property` is the pop's rows. `factuals` supplies processes and decay.
+    /// A line [`Job::plan`] has not scored is skipped. A missing process is
+    /// skipped. Each output good is shopped once.
+    ///
+    /// The buy is `1 / durability` minus the units already on hand.
+    /// Durability is `1 - decay`, clamped to `0..=1`. A good missing from
+    /// `factuals` does not decay. A good that decays completely is not
+    /// bought, because nothing would remain. A result at or below zero is
+    /// not shopped. A larger amount already on the shopping list for that
+    /// good stays.
+    fn shop_unpaid_outputs(
+        &mut self,
+        property: &HashMap<usize, PopPRow>,
+        factuals: &Factuals,
+    ) {
+        let mut seen = HashSet::new();
+        for line in &self.lines {
+            if line.pays {
+                continue;
+            }
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.amount <= 0.0 || !seen.insert(output.good) {
+                    continue;
+                }
+                if !survives_night(factuals, output.good) {
+                    continue;
+                }
+                let decay = factuals
+                    .get_good(output.good)
+                    .map(|row| row.decay_rate)
+                    .unwrap_or(0.0);
+                let durability = (1.0 - decay).clamp(0.0, 1.0);
+                let raw = 1.0 / durability - held(property, output.good);
+                if raw > 0.0 {
+                    let slot = self.shopping.entry(output.good).or_insert(0.0);
+                    *slot = (*slot).max(raw);
+                }
+            }
+        }
+    }
+
+    /// # Note Input Feeds
+    ///
+    /// Records each destroyed or consumed input that survives the night,
+    /// and the output it makes.
+    ///
+    /// `factuals` supplies processes and decay. A missing process is skipped.
+    /// Optional inputs count when the line lists them. Factors and capital
+    /// stay out. A good that decays completely stays out. The same input and
+    /// output keep the smaller input-per-output. The pop reads the record
+    /// through [`Self::feeds_of`].
+    fn note_input_feeds(&mut self, factuals: &Factuals) {
+        self.input_feeds.clear();
+        for line in &self.lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            let mut inputs = process.requirements();
+            for input in process.optional_inputs() {
+                if line.inputs.contains(&input.good) {
+                    inputs.push(input);
+                }
+            }
+            for input in inputs {
+                if !matches!(input.input_type, InputType::Destroyed | InputType::Consumed) {
+                    continue;
+                }
+                if input.amount <= 0.0 || !survives_night(factuals, input.good) {
+                    continue;
+                }
+                for output in &process.outputs {
+                    if output.amount <= 0.0 {
+                        continue;
+                    }
+                    let per_output = input.amount / output.amount;
+                    if let Some(feed) = self
+                        .input_feeds
+                        .iter_mut()
+                        .find(|feed| feed.input == input.good && feed.output == output.good)
+                    {
+                        if per_output < feed.per_output {
+                            feed.per_output = per_output;
+                        }
+                    } else {
+                        self.input_feeds.push(InputFeed {
+                            input: input.good,
+                            output: output.good,
+                            per_output,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -627,8 +774,8 @@ impl Job {
     /// on hand: leftover free stock for a destroyed or consumed input, or
     /// the whole free pile for capital, which comes back at decay. Fresh
     /// units sit in that pile and are not spared. A good missing from
-    /// `factuals` does not decay. A good that decays completely shops only
-    /// today's gap, because nothing bought today is left tomorrow.
+    /// `factuals` does not decay. A good that decays completely is not
+    /// bought. Today's claim still runs.
     fn claim_one(
         &mut self,
         property: &mut HashMap<usize, PopPRow>,
@@ -648,6 +795,10 @@ impl Job {
                     .get_good(good)
                     .map(|row| row.decay_rate)
                     .unwrap_or(0.0);
+                // Nothing bought today would be left tomorrow.
+                if !survives_night(factuals, good) {
+                    return;
+                }
                 let durability = (1.0 - decay).clamp(0.0, 1.0);
                 // Capital comes back at decay. Spent destroyed and consumed stock does not.
                 let kept = if matches!(input.input_type, InputType::Capital) {
@@ -655,12 +806,7 @@ impl Job {
                 } else {
                     free - take
                 };
-                // A total loss cannot be stocked overnight.
-                let raw = if durability > 0.0 {
-                    need / durability - kept
-                } else {
-                    need - take
-                };
+                let raw = need / durability - kept;
                 if raw > 0.0 {
                     *self.shopping.entry(good).or_insert(0.0) += raw;
                 }
@@ -923,6 +1069,21 @@ fn process_goods(factuals: &Factuals, process: usize) -> Option<HashSet<usize>> 
         goods.insert(output.good);
     }
     Some(goods)
+}
+
+/// # Survives Night
+///
+/// True when some of `good` is still there after decay.
+///
+/// A good missing from `factuals` does not decay. Decay of 1 or more
+/// leaves nothing, so that good is not bought and does not count as an
+/// input to a desire.
+fn survives_night(factuals: &Factuals, good: usize) -> bool {
+    let decay = factuals
+        .get_good(good)
+        .map(|row| row.decay_rate)
+        .unwrap_or(0.0);
+    (1.0 - decay) > 0.0
 }
 
 /// # Free Of
@@ -1499,6 +1660,170 @@ mod job {
         // 1 / 0.9 rounds up to 2.
         assert!((fraction.shopping[&1] - (1.0 / 0.9)).abs() < 1e-12);
         assert_eq!(fraction.buy_orders(Actor::Pop(1))[0].target_amount, 2.0);
+    }
+
+    /// Ten time in, two grain out. On an empty card that score is negative.
+    /// Make-grain spends half a time for six grain and pays.
+    #[test]
+    fn reserve_shops_one_output_when_the_line_does_not_pay() {
+        let farm = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let mill = Process::new(1, "make grain", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 6.0, true));
+        let factuals = Factuals::new()
+            .with_process(farm)
+            .with_process(mill)
+            .with_good(good(1, 0.0));
+        let mut unpaid = Job::new(1, vec![JobLine::new(29, Some(12.5), vec![])]);
+        unpaid.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        assert!(!unpaid.lines[0].pays);
+        unpaid.reserve(&mut HashMap::new(), &factuals);
+        // Decay 0, nothing on hand. One grain, already whole.
+        // The time input is a separate, larger buy.
+        assert_eq!(unpaid.shopping[&1], 1.0);
+        let grain = unpaid
+            .buy_orders(Actor::Pop(1))
+            .into_iter()
+            .find(|order| order.target == 1)
+            .expect("grain buy");
+        assert_eq!(grain.target_amount, 1.0);
+        assert_eq!(unpaid.lines[0].target, Some(12.5));
+
+        let mut paying = Job::new(1, vec![JobLine::new(1, Some(10.0), vec![])]);
+        paying.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        assert!(paying.lines[0].pays);
+        paying.reserve(&mut HashMap::new(), &factuals);
+        assert!(paying.shopping.get(&1).is_none());
+    }
+
+    #[test]
+    fn reserve_shops_the_output_up_through_decay_and_stops_when_stock_covers_it() {
+        let farm = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let factuals = Factuals::new()
+            .with_process(farm)
+            .with_good(good(1, 0.5));
+        let mut bare = Job::new(1, vec![JobLine::new(29, Some(1.0), vec![])]);
+        bare.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        bare.reserve(&mut HashMap::new(), &factuals);
+        // 1 / 0.5, nothing kept.
+        assert_eq!(bare.shopping[&1], 2.0);
+
+        let mut short = Job::new(1, vec![JobLine::new(29, Some(1.0), vec![])]);
+        short.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        short.reserve(&mut HashMap::from([(1, PopPRow::new(1.0))]), &factuals);
+        // 2 - 1 on hand.
+        assert_eq!(short.shopping[&1], 1.0);
+
+        let mut covered = Job::new(1, vec![JobLine::new(29, Some(1.0), vec![])]);
+        covered.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        covered.reserve(&mut HashMap::from([(1, PopPRow::new(2.0))]), &factuals);
+        assert!(covered.shopping.get(&1).is_none());
+    }
+
+    #[test]
+    fn reserve_keeps_a_larger_input_buy_than_the_output_unit() {
+        let cycle = Process::new(28, "make time", 0)
+            .with_input(ProcessInput::new(0, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(0, 1.0, true));
+        let factuals = Factuals::new().with_process(cycle).with_good(good(0, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(28, Some(4.0), vec![])]);
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        job.reserve(&mut HashMap::new(), &factuals);
+        // The next run wants 4. The output bid is 1. The 4 stays.
+        assert_eq!(job.shopping[&0], 4.0);
+    }
+
+    #[test]
+    fn reserve_does_not_shop_an_input_that_decays_completely() {
+        let farm = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let factuals = Factuals::new()
+            .with_process(farm)
+            .with_good(good(0, 1.0))
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(29, Some(2.0), vec![])]);
+
+        job.reserve(&mut HashMap::new(), &factuals);
+
+        // Time is gone by morning, so it is not a buy. The line still pays,
+        // so the grain output is not shopped either.
+        assert!(job.shopping.get(&0).is_none());
+        assert!(job.shopping.get(&1).is_none());
+        assert_eq!(job.feeds_of(0), vec![]);
+    }
+
+    #[test]
+    fn reserve_shops_one_output_once_when_two_lines_make_it() {
+        let farm = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let factuals = Factuals::new()
+            .with_process(farm)
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(29, Some(1.0), vec![]),
+                JobLine::new(29, Some(1.0), vec![]),
+            ],
+        );
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        job.reserve(&mut HashMap::new(), &factuals);
+        assert_eq!(job.shopping[&1], 1.0);
     }
 
     #[test]

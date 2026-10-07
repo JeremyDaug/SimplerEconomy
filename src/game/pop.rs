@@ -1110,9 +1110,8 @@ impl Pop {
 
     /// Seller requests first, then the buyer's other free goods.
     ///
-    /// A good that still feeds the lowest open tier is left out. Higher tiers
-    /// can be spent on that tier. Free goods go highest monetary rating first,
-    /// then lowest id. Reserved stock is already excluded by `available`.
+    /// A good is included when [`Self::surplus_for_sale`] is at least one
+    /// unit. Free goods go highest monetary rating first, then lowest id.
     /// Transport is included here and skipped later unless the seller requested it.
     fn payment_goods(
         &self,
@@ -1124,7 +1123,7 @@ impl Pop {
             .requests
             .iter()
             .map(|order| order.target)
-            .filter(|good| *good != avoid && !self.feeds_open_tier(*good))
+            .filter(|good| *good != avoid && self.surplus_for_sale(*good) >= 1.0)
             .collect();
         let mut extras: Vec<(usize, f64)> = self
             .property
@@ -1133,7 +1132,7 @@ impl Pop {
                 **good != avoid
                     && !goods.contains(*good)
                     && row.available().floor() >= 1.0
-                    && !self.feeds_open_tier(**good)
+                    && self.surplus_for_sale(**good) >= 1.0
             })
             .map(|(good, _)| {
                 (
@@ -1151,31 +1150,73 @@ impl Pop {
         goods
     }
 
-    /// True when free units of `good` still feed the lowest tier that has room.
+    /// # Desire Units
     ///
-    /// Those goods are not sold and are not used as payment. A higher tier
-    /// can be given in exchange for this one.
-    fn feeds_open_tier(&self, good: usize) -> bool {
-        let Some(floor) = self.desires.iter().enumerate().find_map(|(tier, desires)| {
-            let open = desires.iter().any(|desire| {
-                desire.target.iter().any(|target| {
-                    if target.efficiency <= 0.0 {
-                        return false;
+    /// Whole units of `good` that still feed a desire.
+    ///
+    /// Each direct target contributes the whole units that fill its remaining
+    /// room. An input the job consumes to make a desired output contributes
+    /// the input units for that same room. The room is `amount * cap` minus
+    /// satisfaction already stored. A full cap contributes nothing. The result
+    /// is not limited by stock on hand.
+    fn desire_units(&self, good: usize) -> f64 {
+        let mut units = 0.0;
+        for desires in &self.desires {
+            for desire in desires {
+                for target in &desire.target {
+                    if target.good != good || target.efficiency <= 0.0 {
+                        continue;
                     }
-                    let room = desire.amount * target.cap - desire.satisfaction;
-                    (room / target.efficiency).floor() >= 1.0
-                })
-            });
-            open.then_some(tier)
-        }) else {
-            return false;
-        };
-        self.end_uses(good, self.free_units(good))
-            .iter()
-            .any(|use_| use_.tier == floor)
+                    let room = desire_room(desire, target);
+                    units += (room / target.efficiency).floor();
+                }
+            }
+        }
+        for (output, per_output) in self.job.feeds_of(good) {
+            if per_output <= 0.0 {
+                continue;
+            }
+            for desires in &self.desires {
+                for desire in desires {
+                    for target in &desire.target {
+                        if target.good != output || target.efficiency <= 0.0 {
+                            continue;
+                        }
+                        let output_units = (desire_room(desire, target) / target.efficiency).floor();
+                        units += (output_units * per_output).floor();
+                    }
+                }
+            }
+        }
+        units
     }
 
+    /// # Surplus For Sale
+    ///
+    /// Whole free units of `good` above [`Self::desire_units`].
+    ///
+    /// Free units are [`Self::free_units`]. Units already reserved count
+    /// toward the desire, so they are not held back a second time. Sell
+    /// orders and payment both use this amount.
+    fn surplus_for_sale(&self, good: usize) -> f64 {
+        let free = self.free_units(good).floor();
+        let reserved = self
+            .property
+            .get(&good)
+            .map(|row| row.reserved)
+            .unwrap_or(0.0);
+        let still = (self.desire_units(good) - reserved).max(0.0);
+        (free - still).max(0.0).floor()
+    }
+
+    /// # End Uses
+    ///
     /// Whole units of `good` placed on the earliest desire that still has room.
+    ///
+    /// `good` is the good id. `qty` is the units to place. Direct targets are
+    /// placed first. Units still left are then placed on a desire whose good
+    /// this input is consumed to make. [`Job::reserve`] records those links.
+    /// Returns one [`EndUse`] per desire that received units.
     fn end_uses(&self, good: usize, qty: f64) -> Vec<EndUse> {
         let mut left = if qty.is_finite() && qty > 0.0 {
             qty.floor()
@@ -1184,9 +1225,12 @@ impl Pop {
         };
         let mut found = Vec::new();
         for (tier, desires) in self.desires.iter().enumerate() {
+            if left < 1.0 {
+                break;
+            }
             for (order, desire) in desires.iter().enumerate() {
                 if left < 1.0 {
-                    return found;
+                    break;
                 }
                 let Some(target) = desire.target.iter().find(|target| target.good == good) else {
                     continue;
@@ -1194,10 +1238,7 @@ impl Pop {
                 if target.efficiency <= 0.0 {
                     continue;
                 }
-                let room = desire.amount * target.cap - desire.satisfaction;
-                if room <= 0.0 {
-                    continue;
-                }
+                let room = desire_room(desire, target);
                 let take = (room / target.efficiency).floor().min(left);
                 if take < 1.0 {
                     continue;
@@ -1210,7 +1251,57 @@ impl Pop {
                 left -= take;
             }
         }
+        self.place_input_uses(good, &mut left, &mut found);
         found
+    }
+
+    /// # Place Input Uses
+    ///
+    /// Places leftover units of an input onto the desire its output feeds.
+    ///
+    /// `good` is the input. `left` is whole units not yet placed on a direct
+    /// target. `found` collects the uses. One output takes `per_output` input
+    /// units. Satisfaction is the output units made times that desire's
+    /// efficiency. `left` falls by the input units spent.
+    fn place_input_uses(&self, good: usize, left: &mut f64, found: &mut Vec<EndUse>) {
+        let feeds = self.job.feeds_of(good);
+        if feeds.is_empty() {
+            return;
+        }
+        for (tier, desires) in self.desires.iter().enumerate() {
+            for (order, desire) in desires.iter().enumerate() {
+                if *left < 1.0 {
+                    return;
+                }
+                for target in &desire.target {
+                    if target.efficiency <= 0.0 {
+                        continue;
+                    }
+                    let Some(per_output) = feeds
+                        .iter()
+                        .find(|(output, _)| *output == target.good)
+                        .map(|(_, per)| *per)
+                    else {
+                        continue;
+                    };
+                    if per_output <= 0.0 {
+                        continue;
+                    }
+                    let output_room = (desire_room(desire, target) / target.efficiency).floor();
+                    let made = (*left / per_output).floor().min(output_room);
+                    if made < 1.0 {
+                        continue;
+                    }
+                    let spent = made * per_output;
+                    found.push(EndUse {
+                        tier,
+                        order,
+                        satisfaction: made * target.efficiency,
+                    });
+                    *left -= spent;
+                }
+            }
+        }
     }
 
     /// Pop verdict on giving `given` and receiving `received`.
@@ -1224,7 +1315,9 @@ impl Pop {
     ) -> bool {
         let mut given_uses = Vec::new();
         for (&good, &qty) in given {
-            given_uses.extend(self.end_uses(good, qty));
+            // Surplus is given before the units a desire still needs.
+            let cutting = (qty - self.surplus_for_sale(good)).max(0.0);
+            given_uses.extend(self.end_uses(good, cutting));
         }
         let mut received_uses = Vec::new();
         for (&good, &qty) in received {
@@ -1443,11 +1536,16 @@ impl Pop {
         is_transport && !requested
     }
 
-    /// Free whole units of `good` still available to put in `goods`, capped
-    /// by the seller's request when they asked for it.
+    /// # Payable Units
+    ///
+    /// Surplus units of `good` still available to put in `goods`.
+    ///
+    /// `book` is the seller's offers and requests. `goods` is the basket so
+    /// far. Units already in the basket are subtracted from
+    /// [`Self::surplus_for_sale`]. A seller request caps the amount.
     fn payable_units(&self, book: &SellerBook, goods: &HashMap<usize, f64>, good: usize) -> f64 {
         let already = goods.get(&good).copied().unwrap_or(0.0).min(0.0).abs();
-        let mut free = self.free_units(good).floor() - already;
+        let mut free = self.surplus_for_sale(good) - already;
         if let Some(request) = book.requests.iter().find(|order| order.target == good) {
             free = free.min(request.target_amount.floor() - already).max(0.0);
         }
@@ -1532,9 +1630,9 @@ impl DealMaker for Pop {
 
     fn sell_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
         let mut orders = Vec::new();
-        for (&good, row) in &self.property {
-            let units = row.available().floor();
-            if units >= 1.0 && !self.feeds_open_tier(good) {
+        for (&good, _) in &self.property {
+            let units = self.surplus_for_sale(good);
+            if units >= 1.0 {
                 orders.push(MarketOrder::sell(self.actor(), good, units));
             }
         }
@@ -1707,6 +1805,7 @@ impl DealMaker for Pop {
 
     fn reevaluate(&mut self, history: &MarketHistory, rng: &mut dyn rand::RngCore) {
         let _ = history;
+        // Goods just received can fill the open desire before sell orders are read again.
         if self.satisfy_cursor.is_some() {
             self.satisfy_continue(rng);
         }
@@ -1744,6 +1843,16 @@ impl DealMaker for Pop {
     fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
         Pop::plan(self, factuals, history);
     }
+}
+
+/// # Desire Room
+///
+/// Satisfaction still open on `target`.
+///
+/// The room is `amount * cap` minus satisfaction already stored. A full
+/// cap is `0`.
+fn desire_room(desire: &Desire, target: &DesireTarget) -> f64 {
+    (desire.amount * target.cap - desire.satisfaction).max(0.0)
 }
 
 fn target_cap_left(desire: &Desire, index: usize, resumed_start: Option<f64>) -> f64 {
@@ -1930,6 +2039,103 @@ mod pop {
 
         assert!(sells.iter().all(|order| order.target != 1));
         assert!(sells.iter().any(|order| order.target == 9));
+    }
+
+    #[test]
+    fn sell_orders_offer_the_units_above_the_desire() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(1, PopPRow::new(10.0));
+
+        let grain = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 1)
+            .expect("grain");
+        assert!((grain.target_amount + 6.0).abs() < 1e-9);
+
+        // The buyer receives five more. The next read offers that surplus too.
+        let deal = ProposedDeal {
+            buyer: Actor::Pop(pop.id),
+            seller: Actor::Pop(2),
+            match_good: 1,
+            goods: HashMap::from([(1, 5.0)]),
+            fresh: HashMap::new(),
+            freight: 0.0,
+        };
+        pop.finalize(&deal, &Factuals::new());
+        let grain = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 1)
+            .expect("grain");
+        assert!((grain.target_amount + 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_input_counts_as_the_desire_it_feeds() {
+        let mut pop = make_pop();
+        // Target 0 still records the recipe and does not claim the gold.
+        pop.job = Job::new(1, vec![JobLine::new(6, Some(0.0), vec![])]);
+        pop.desires[2].push(desire(
+            1,
+            vec![DesireTarget::new(6, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(4, PopPRow::new(10.0));
+        pop.property.insert(8, PopPRow::new(5.0));
+        let jewelry = Process::new(6, "make jewelry", 0)
+            .with_input(ProcessInput::new(4, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(6, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(jewelry)
+            .with_good(make_good(4, "gold", 0.0));
+
+        pop.job.reserve(&mut pop.property, &factuals);
+
+        let gold = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 4)
+            .expect("gold");
+        // Four gold feed the jewelry desire. The other six are for sale.
+        assert!((gold.target_amount + 6.0).abs() < 1e-9);
+        // Stone feeds nothing. Gold feeds the jewelry desire, so giving stone is allowed.
+        assert!(pop.exchange_ok(
+            &HashMap::from([(8, 2.0)]),
+            &HashMap::from([(4, 2.0)]),
+            &MarketHistory::new(),
+        ));
+    }
+
+    #[test]
+    fn cabin_wood_above_the_recipe_is_for_sale() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(8, Some(0.0), vec![])]);
+        pop.desires[2].push(desire(
+            1,
+            vec![DesireTarget::new(8, DesireTargetType::Consume, 1.0)],
+            2.0,
+        ));
+        pop.property.insert(7, PopPRow::new(10.0));
+        let cabins = Process::new(8, "make cabins", 0)
+            .with_input(ProcessInput::new(7, 3.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(8, 1.0, true));
+        let factuals = Factuals::new().with_process(cabins);
+
+        pop.job.reserve(&mut pop.property, &factuals);
+
+        let wood = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 7)
+            .expect("wood");
+        // Two cabins take six wood. The other four are for sale.
+        assert!((wood.target_amount + 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2659,8 +2865,14 @@ mod pop {
         assert_eq!(deals[0].goods.get(&9), Some(&-9.0));
     }
 
+    /// The buyer wants one bread. They hold ten of a basic good the desire
+    /// still takes four of, and one luxury unit that fills its desire.
+    ///
+    /// Payment uses surplus. Six of the basic good are above the desire, so
+    /// the basket pays two of those: holding parity, then one more unit.
+    /// The luxury unit is the one that fills its desire, so it stays.
     #[test]
-    fn match_deals_pays_a_higher_tier_good_for_a_lower_tier_good() {
+    fn match_deals_pays_surplus_of_a_desired_good() {
         let mut buyer = make_pop();
         buyer.id = 1;
         buyer.property.insert(4, PopPRow::new(10.0));
@@ -2705,16 +2917,20 @@ mod pop {
 
         assert_eq!(deals.len(), 1);
         assert_eq!(deals[0].goods.get(&2), Some(&1.0));
-        assert_eq!(deals[0].goods.get(&8), Some(&-1.0));
-        assert!(deals[0].goods.get(&4).is_none());
-        assert_eq!(actors.pops[&1].property[&4].quantity, 10.0);
-        assert_eq!(actors.pops[&1].property[&8].quantity, 0.0);
-        assert_eq!(actors.pops[&2].property[&8].quantity, 1.0);
+        assert_eq!(deals[0].goods.get(&4), Some(&-2.0));
+        assert!(deals[0].goods.get(&8).is_none());
+        assert_eq!(actors.pops[&1].property[&4].quantity, 8.0);
+        assert_eq!(actors.pops[&1].property[&8].quantity, 1.0);
+        assert_eq!(actors.pops[&2].property[&4].quantity, 2.0);
+        assert!(actors.pops[&2].property.get(&8).is_none());
         assert_eq!(actors.pops[&1].property[&2].quantity, 1.0);
     }
 
+    /// The seller is stuck on tools. Bread is a later desire on that same
+    /// tier and still has room for four. Ten on hand leaves six above that
+    /// room, and those six can be sold.
     #[test]
-    fn match_deals_rejects_bread_that_still_feeds_a_later_desire() {
+    fn match_deals_sells_bread_above_a_later_desire() {
         let mut buyer = make_pop();
         buyer.id = 1;
         buyer.property.insert(9, PopPRow::new(10.0));
@@ -2751,9 +2967,21 @@ mod pop {
 
         let deals = do_match(&mut market, &mut actors, &Factuals::new());
 
-        assert!(deals.is_empty());
-        assert!((actors.pops[&1].property[&9].quantity - 10.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&2].quantity - 10.0).abs() < 1e-9);
+        // Four bread move. Payment is nine of good 9: holding parity, then one more.
+        assert_eq!(deals.len(), 1);
+        assert_eq!(deals[0].goods.get(&2), Some(&4.0));
+        assert_eq!(deals[0].goods.get(&9), Some(&-9.0));
+        assert!((actors.pops[&1].property[&2].quantity - 4.0).abs() < 1e-9);
+        assert!((actors.pops[&1].property[&9].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pops[&2].property[&2].quantity - 6.0).abs() < 1e-9);
+        assert!((actors.pops[&2].property[&9].quantity - 9.0).abs() < 1e-9);
+        // The four the later desire can still take stay. Two surplus remain.
+        let bread = actors.pops[&2]
+            .sell_orders(&market.history())
+            .into_iter()
+            .find(|order| order.target == 2)
+            .expect("bread");
+        assert!((bread.target_amount + 2.0).abs() < 1e-9);
     }
 
     fn time_good() -> Good {
@@ -3007,16 +3235,19 @@ mod pop {
         assert_eq!(empty.fresh_share(), 0.0);
     }
 
-    /// Seller gives 4 of good 2 and receives 9 of good 9.
+    /// Seller holds 10 of good 2. The desire still takes 4, so 6 are surplus.
     ///
-    /// Good 2 still fills the seller's basic desire, 4 satisfaction at
-    /// efficiency 1. Good 9 feeds no desire. At salability 1 the payment is
-    /// a holding gain, cost 8 against credit 9, which would be enough if the
-    /// seller wanted nothing. A good that still feeds a desire is given up
-    /// when the goods received feed that desire or an earlier one. Good 9
-    /// feeds nothing, so the seller rejects.
+    /// Giving 4 stays inside that surplus. Good 9 feeds no desire. At
+    /// salability 1 the payment is a holding gain, cost 8 against credit 9,
+    /// so the seller accepts.
+    ///
+    /// Giving 8 cuts 2 units into the desire. Those units still feed it, and
+    /// good 9 feeds nothing, so the seller rejects. Seventeen of good 9 would
+    /// be a holding gain against that gift (credit 17, cost 16) if the units
+    /// were surplus. A unit that still feeds a desire is given up when the
+    /// goods received feed that desire or an earlier one.
     #[test]
-    fn evaluate_rejects_a_good_that_still_feeds_the_open_desire() {
+    fn evaluate_accepts_surplus_and_rejects_a_cut_into_the_desire() {
         let mut seller = make_pop();
         seller.id = 2;
         seller.property.insert(2, PopPRow::new(10.0));
@@ -3026,9 +3257,14 @@ mod pop {
             4.0,
         ));
         let history = card(&[(2, 2.0, 1.0), (9, 1.0, 1.0)]);
-        let deal = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
+        let within = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
         assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
+            seller.evaluate(&within, &history, &Factuals::new()),
+            DealResponse::Accept
+        );
+        let cutting = proposal(2, HashMap::from([(2, 8.0), (9, -17.0)]));
+        assert_eq!(
+            seller.evaluate(&cutting, &history, &Factuals::new()),
             DealResponse::Reject
         );
     }
