@@ -1195,17 +1195,14 @@ impl Pop {
     ///
     /// Whole free units of `good` above [`Self::desire_units`].
     ///
-    /// Free units are [`Self::free_units`]. Units already reserved count
-    /// toward the desire, so they are not held back a second time. Sell
-    /// orders and payment both use this amount.
+    /// Free units are [`Self::free_units`]. Units a desire reserved are
+    /// already in its satisfaction, so they are out of the room. Units the
+    /// job claimed ([`Job::claimed_of`]) count toward the desire they feed,
+    /// so they are not held back a second time. Sell orders and payment
+    /// both use this amount.
     fn surplus_for_sale(&self, good: usize) -> f64 {
         let free = self.free_units(good).floor();
-        let reserved = self
-            .property
-            .get(&good)
-            .map(|row| row.reserved)
-            .unwrap_or(0.0);
-        let still = (self.desire_units(good) - reserved).max(0.0);
+        let still = (self.desire_units(good) - self.job.claimed_of(good)).max(0.0);
         (free - still).max(0.0).floor()
     }
 
@@ -2074,6 +2071,38 @@ mod pop {
             .find(|order| order.target == 1)
             .expect("grain");
         assert!((grain.target_amount + 11.0).abs() < 1e-9);
+    }
+
+    /// Ten bread. The first desire reserves four, then the walk stops on
+    /// tools. A later desire still takes four bread, so two are for sale.
+    #[test]
+    fn sell_orders_hold_back_a_later_desire_after_an_earlier_reserve() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(3, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[0].push(desire(
+            3,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(1, PopPRow::new(10.0));
+        do_satisfy(&mut pop).expect("stuck on tools");
+        assert!((pop.property[&1].reserved - 4.0).abs() < 1e-9);
+
+        let bread = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 1)
+            .expect("bread");
+        assert!((bread.target_amount + 2.0).abs() < 1e-9);
     }
 
     #[test]

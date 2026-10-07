@@ -186,6 +186,16 @@ impl Job {
             .collect()
     }
 
+    /// # Claimed Of
+    ///
+    /// Units of `good` the job holds in its claim book today.
+    ///
+    /// [`Self::reserve`] adds to the claim, produce spends it, and
+    /// [`Self::reset_day`] drops it. A good with no claim is `0`.
+    pub(crate) fn claimed_of(&self, good: usize) -> f64 {
+        self.claimed.get(&good).copied().unwrap_or(0.0)
+    }
+
     /// # Complexity Cost
     ///
     /// This job's modifier against `baseline`.
