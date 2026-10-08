@@ -559,12 +559,21 @@ impl Pop {
     /// For desires with a bucket of goods, higher-efficiency goods are preferred.
     ///
     /// The results of the consumption is stored in the desires as satisfaction.
+    /// Every desire starts this call at zero satisfaction, so the level
+    /// [`Pop::satisfy`] recorded for the reserved goods is counted once, when
+    /// those goods are eaten.
     ///
     /// Also mutates `self.property` (reduces `quantity`, increases `consumed`).
     /// 
     /// The function assumes that all desires are currently in `self.desires` and
     /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
+        // Drop the satisfaction the morning reserve recorded.
+        for tier in &mut self.desires {
+            for desire in tier.iter_mut() {
+                desire.satisfaction = 0.0;
+            }
+        }
         // first do basic desires, only one pass needed.
         let mut working_desires = self.desires.remove(0); // pop off front
         self.consume_tier(&mut working_desires); // satisfy them
@@ -2584,6 +2593,27 @@ mod pop {
         assert_eq!(ids, vec![1, 2]);
         assert!((pop.desires[2][0].satisfaction - 3.0).abs() < 1e-9);
         assert!((pop.desires[2][1].satisfaction - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn consume_counts_a_reserved_level_once() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(10.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+
+        assert!(do_satisfy(&mut pop).is_none());
+        assert!((pop.desires[0][0].satisfaction - 4.0).abs() < 1e-9);
+
+        pop.consume();
+
+        assert!((pop.desires[0][0].satisfaction - 4.0).abs() < 1e-9);
+        assert!((pop.property[&1].quantity - 6.0).abs() < 1e-9);
+        assert!((pop.property[&1].consumed - 4.0).abs() < 1e-9);
+        assert!(pop.property[&1].reserved.abs() < 1e-9);
     }
 
     #[test]
