@@ -379,6 +379,7 @@ impl DemoDesire {
             target: self.bucket.clone(),
             amount: self.amount * scale,
             satisfaction: 0.0,
+            target_taken: vec![0.0; self.bucket.len()],
             category: None,
             effect: self.scaled_effects(scale),
             scalar: self.scalar,
@@ -482,6 +483,12 @@ pub struct Desire {
     pub amount: f64,
     /// The current satisfaction of the desire in units. Does not differentiate goods.
     pub satisfaction: f64,
+
+    /// Satisfaction already reserved from each bucket target toward the open
+    /// level. Parallel to [`Self::target`]. Cleared with satisfaction on the
+    /// morning reset, and when a level is completed so the next luxury level
+    /// can use its caps again.
+    pub target_taken: Vec<f64>,
 
     /// Desires should have a category of good they are restricted to expanding into.
     /// 
@@ -654,6 +661,7 @@ mod tests {
             target: vec![],
             amount,
             satisfaction,
+            target_taken: vec![],
             category: None,
             effect,
             scalar: ScalingFactor::Fixed(1.0),

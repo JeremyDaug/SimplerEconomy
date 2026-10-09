@@ -41,18 +41,22 @@ Free stock is `quantity - reserved`. A take adds to `reserved` and to
 `satisfaction`. `quantity` stays put. A partial take on the stopping target
 is kept. Later targets in that bucket, and every later desire, are left alone.
 A target whose cap is filled does not stop the desire; the next target is used.
+Each target's contribution toward the open level is stored on the desire
+(`target_taken`), so a later `satisfy` call still sees that cap as spent.
+Completing the level clears those takes so the next luxury level can use its
+caps again. The morning reset clears them with satisfaction.
 
 The bookmark is tier, desire index, the chosen target's index in the bucket,
 the satisfaction the desire already had when that target started, and the
-level being filled. `satisfy_continue` only reserves the cap still open above
-that recorded satisfaction, and only the gap up to the current level
+level being filled. `satisfy_continue` only reserves the cap still open on
+that target, and only the gap up to the current level
 (`iter_target * amount - satisfaction`). When the open desire reaches the
 level, the walk moves on.
 
 `satisfy` always starts over at the first basic desire and replaces the
-bookmark. Calling it again on a half-filled cap can reserve that cap a second
-time. `Market::market_day` calls it every morning. After new stock arrives
-inside a day, `reevaluate` calls `satisfy_continue`.
+bookmark. Caps already taken toward the open level stay spent. `Market::market_day`
+calls it every morning. After new stock arrives inside a day, `reevaluate`
+calls `satisfy_continue`.
 
 ## Consume
 

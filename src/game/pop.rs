@@ -288,7 +288,8 @@ impl Pop {
     /// after every luxury desire has reached the current one.
     ///
     /// Within a desire, one target is chosen at random from the bucket. It is
-    /// capped at `amount * cap`. The walk stops if that target cannot be taken
+    /// capped at `amount * cap` minus what that target already contributed
+    /// toward the open level. The walk stops if that target cannot be taken
     /// in full. That partial reserve is kept. Later desires are left untouched.
     ///
     /// Claimed units are added to `reserved` and stay in `quantity`.
@@ -437,8 +438,11 @@ impl Pop {
     /// Reserves free stock (`quantity - reserved`) toward `iter_target` levels.
     ///
     /// A resumed target is finished first. Further targets are picked at random
-    /// from the bucket. A target that cannot be taken in full stops the desire,
-    /// after reserving whatever of that target is free.
+    /// from the bucket. Each target's cap is `amount * cap` minus what that
+    /// target already contributed toward the open level (`target_taken`). A
+    /// target that cannot be taken in full stops the desire, after reserving
+    /// whatever of that target is free. Completing the level clears
+    /// `target_taken` so the next luxury level can use its caps again.
     fn satisfy_one_desire(
         &mut self,
         desire: &mut Desire,
@@ -454,7 +458,11 @@ impl Pop {
         );
         let mut remaining = iter_target * desire.amount - desire.satisfaction;
         if remaining <= 1e-9 {
+            desire.target_taken.clear();
             return SatisfyProgress::Done;
+        }
+        while desire.target_taken.len() < desire.target.len() {
+            desire.target_taken.push(0.0);
         }
         // Targets whose cap share this call already took in full.
         let mut filled = vec![false; desire.target.len()];
@@ -469,7 +477,7 @@ impl Pop {
         }
         while remaining > 1e-9 {
             let open: Vec<usize> = (0..desire.target.len())
-                .filter(|&index| !filled[index] && target_cap_left(desire, index, None) > 1e-9)
+                .filter(|&index| !filled[index] && target_cap_left(desire, index) > 1e-9)
                 .collect();
             if open.is_empty() {
                 return SatisfyProgress::Blocked {
@@ -484,6 +492,7 @@ impl Pop {
             filled[index] = true;
         }
         if desire.tiers_satisfied() + 1e-9 >= iter_target {
+            desire.target_taken.clear();
             SatisfyProgress::Done
         } else {
             SatisfyProgress::Blocked {
@@ -511,7 +520,7 @@ impl Pop {
             return None;
         }
         let start_satisfaction = resumed_start.unwrap_or(desire.satisfaction);
-        let cap_room = target_cap_left(desire, index, resumed_start);
+        let cap_room = target_cap_left(desire, index);
         if cap_room <= 1e-9 {
             return None;
         }
@@ -532,6 +541,9 @@ impl Pop {
                 let sat_gained = take * target.efficiency;
                 desire.satisfaction += sat_gained;
                 *remaining -= sat_gained;
+                if let Some(taken) = desire.target_taken.get_mut(index) {
+                    *taken += sat_gained;
+                }
             }
         }
         if needed - take > 1e-9 {
@@ -717,7 +729,11 @@ impl Pop {
                 desire.amount = demo.amount * pop_scale;
                 desire.effect = demo.scaled_effects(pop_scale);
                 if old_amount > 0.0 {
-                    desire.satisfaction *= desire.amount / old_amount;
+                    let ratio = desire.amount / old_amount;
+                    desire.satisfaction *= ratio;
+                    for taken in &mut desire.target_taken {
+                        *taken *= ratio;
+                    }
                 }
             }
         }
@@ -748,16 +764,18 @@ impl Pop {
     ///
     /// Clears yesterday's satisfaction and same-day reserves.
     ///
-    /// Each desire's satisfaction is set to 0. The satisfy bookmark is
-    /// dropped. `reserved`, `fresh`, `produced`, and `lost` on every property
-    /// row are set to 0. Quantity, consumed, and used stay for today's walk
-    /// and for decay. The job drops its claimed-input list and its shopping
-    /// list. Line targets stay, so last night's plan is what this morning runs.
+    /// Each desire's satisfaction and per-target taken are set to 0. The
+    /// satisfy bookmark is dropped. `reserved`, `fresh`, `produced`, and `lost`
+    /// on every property row are set to 0. Quantity, consumed, and used stay
+    /// for today's walk and for decay. The job drops its claimed-input list
+    /// and its shopping list. Line targets stay, so last night's plan is what
+    /// this morning runs.
     pub fn reset_day(&mut self) {
         self.satisfy_cursor = None;
         for tier in &mut self.desires {
             for desire in tier.iter_mut() {
                 desire.satisfaction = 0.0;
+                desire.target_taken.clear();
             }
         }
         for row in self.property.values_mut() {
@@ -1861,13 +1879,11 @@ fn desire_room(desire: &Desire, target: &DesireTarget) -> f64 {
     (desire.amount * target.cap - desire.satisfaction).max(0.0)
 }
 
-fn target_cap_left(desire: &Desire, index: usize, resumed_start: Option<f64>) -> f64 {
+fn target_cap_left(desire: &Desire, index: usize) -> f64 {
     let Some(target) = desire.target.get(index) else {
         return 0.0;
     };
-    let already = resumed_start
-        .map(|start| (desire.satisfaction - start).max(0.0))
-        .unwrap_or(0.0);
+    let already = desire.target_taken.get(index).copied().unwrap_or(0.0);
     desire.amount * target.cap - already
 }
 
@@ -2557,6 +2573,7 @@ mod pop {
     }
 
     fn desire(id: usize, targets: Vec<DesireTarget>, amount: f64) -> Desire {
+        let n = targets.len();
         Desire {
             source: DemographicSource::Species(0),
             demo_desire_id: id,
@@ -2564,6 +2581,7 @@ mod pop {
             target: targets,
             amount,
             satisfaction: 0.0,
+            target_taken: vec![0.0; n],
             category: None,
             effect: vec![],
             scalar: ScalingFactor::Fixed(1.0),
@@ -2724,6 +2742,28 @@ mod pop {
             assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
             assert!((pop.property[&2].reserved - 5.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn satisfy_keeps_a_capped_target_across_calls() {
+        // First call takes 2 of a 5-cap and stops. A second satisfy with more
+        // stock only fills the 3 still open on that cap, not another full 5.
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(2.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5)],
+            10.0,
+        ));
+
+        let blocked = do_satisfy(&mut pop).expect("stock is short of the cap");
+        assert!((blocked.satisfaction - 2.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 2.0).abs() < 1e-9);
+
+        pop.property.get_mut(&1).unwrap().quantity = 100.0;
+        let blocked = do_satisfy(&mut pop).expect("one capped target cannot fill the level");
+        assert!((blocked.satisfaction - 5.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
     }
 
     #[test]

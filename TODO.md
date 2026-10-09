@@ -14,6 +14,7 @@ The day stays on the tester and `Market::market_day`. Do not wire `PlayState` he
 
 Still open, and still pop or job work:
 
+- [ ] Close the consume trap in the handoff. A normal day counts a reserved level twice.
 - [ ] Close the satisfy trap in the handoff. Calling `satisfy` again can reserve a half-filled cap a second time.
 - [ ] Savings between tiers, then between luxury levels.
 - [ ] `Desire.decay`. The field is unused. The morning reset still clears satisfaction.
