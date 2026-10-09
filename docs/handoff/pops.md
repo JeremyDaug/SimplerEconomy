@@ -60,11 +60,12 @@ Basic and common run once each, in list order, and do not stop when a desire
 is short. Luxury benches any desire that missed the current level and keeps
 filling the ones that made it.
 
-Each call sets its gap to a full `amount`, ignoring satisfaction already
-recorded. It subtracts the take from `quantity` and `reserved`, moves consume
-targets to `consumed` and use targets to `used`, and adds satisfaction.
-Running it on goods `satisfy` already counted records the level twice.
-`market_day` does both, so a normal day counts that level twice.
+`Pop::consume` first sets every desire's satisfaction to zero, so the level
+`satisfy` recorded for the reserved goods is counted once, when those goods
+are eaten. Each call sets its gap to a full `amount`. It subtracts the take
+from `quantity` and `reserved`, moves consume targets to `consumed` and use
+targets to `used`, and adds satisfaction. `consume_tier` and
+`consume_one_desire` do not clear satisfaction on their own.
 
 ## Traps
 
