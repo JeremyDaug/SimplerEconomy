@@ -217,7 +217,9 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   A negative AMV is not scaled. Exact holding parity is a tie, so the buyer
   adds one more whole unit. The buyer's own evaluate must also accept.
 - Sell orders and payment offer the free units above what still feeds a
-  desire. That room is `amount * cap` minus satisfaction already stored.
+  desire. That room is the target's cap, `amount * cap`, minus what that
+  target already reserved toward the level (`target_taken`), and no more
+  than the gap to one level, `amount - satisfaction`.
   An input the job consumes to make a desired output counts as that desire,
   except a good that decays completely. Units already reserved are not free.
   The market reads sell orders again after every meeting.
