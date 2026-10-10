@@ -1182,19 +1182,18 @@ impl Pop {
     /// Whole units of `good` that still feed a desire.
     ///
     /// Each direct target contributes the whole units that fill its remaining
-    /// room. An input the job consumes to make a desired output contributes
-    /// the input units for that same room. The room is `amount * cap` minus
-    /// satisfaction already stored. A full cap contributes nothing. The result
-    /// is not limited by stock on hand.
+    /// room ([`desire_room`]). An input the job consumes to make a desired
+    /// output contributes the input units for that same room. A full cap
+    /// contributes nothing. The result is not limited by stock on hand.
     fn desire_units(&self, good: usize) -> f64 {
         let mut units = 0.0;
         for desires in &self.desires {
             for desire in desires {
-                for target in &desire.target {
+                for (index, target) in desire.target.iter().enumerate() {
                     if target.good != good || target.efficiency <= 0.0 {
                         continue;
                     }
-                    let room = desire_room(desire, target);
+                    let room = desire_room(desire, index);
                     units += (room / target.efficiency).floor();
                 }
             }
@@ -1205,11 +1204,11 @@ impl Pop {
             }
             for desires in &self.desires {
                 for desire in desires {
-                    for target in &desire.target {
+                    for (index, target) in desire.target.iter().enumerate() {
                         if target.good != output || target.efficiency <= 0.0 {
                             continue;
                         }
-                        let output_units = (desire_room(desire, target) / target.efficiency).floor();
+                        let output_units = (desire_room(desire, index) / target.efficiency).floor();
                         units += (output_units * per_output).floor();
                     }
                 }
@@ -1256,13 +1255,14 @@ impl Pop {
                 if left < 1.0 {
                     break;
                 }
-                let Some(target) = desire.target.iter().find(|target| target.good == good) else {
+                let Some(index) = desire.target.iter().position(|target| target.good == good) else {
                     continue;
                 };
+                let target = &desire.target[index];
                 if target.efficiency <= 0.0 {
                     continue;
                 }
-                let room = desire_room(desire, target);
+                let room = desire_room(desire, index);
                 let take = (room / target.efficiency).floor().min(left);
                 if take < 1.0 {
                     continue;
@@ -1297,7 +1297,7 @@ impl Pop {
                 if *left < 1.0 {
                     return;
                 }
-                for target in &desire.target {
+                for (index, target) in desire.target.iter().enumerate() {
                     if target.efficiency <= 0.0 {
                         continue;
                     }
@@ -1311,7 +1311,7 @@ impl Pop {
                     if per_output <= 0.0 {
                         continue;
                     }
-                    let output_room = (desire_room(desire, target) / target.efficiency).floor();
+                    let output_room = (desire_room(desire, index) / target.efficiency).floor();
                     let made = (*left / per_output).floor().min(output_room);
                     if made < 1.0 {
                         continue;
@@ -1871,12 +1871,15 @@ impl DealMaker for Pop {
 
 /// # Desire Room
 ///
-/// Satisfaction still open on `target`.
+/// Satisfaction still open on the bucket target at `index`.
 ///
-/// The room is `amount * cap` minus satisfaction already stored. A full
-/// cap is `0`.
-fn desire_room(desire: &Desire, target: &DesireTarget) -> f64 {
-    (desire.amount * target.cap - desire.satisfaction).max(0.0)
+/// The room is that target's cap left ([`target_cap_left`]), and no more
+/// than the gap to one level (`amount - satisfaction`). Another target's
+/// take fills the level, not this target's cap. A full cap, or a met
+/// level, is `0`.
+fn desire_room(desire: &Desire, index: usize) -> f64 {
+    let level_left = desire.amount - desire.satisfaction;
+    target_cap_left(desire, index).min(level_left).max(0.0)
 }
 
 fn target_cap_left(desire: &Desire, index: usize) -> f64 {
@@ -2128,6 +2131,36 @@ mod pop {
             .find(|order| order.target == 1)
             .expect("bread");
         assert!((bread.target_amount + 2.0).abs() < 1e-9);
+    }
+
+    /// Ten units from a bucket, each target capped at half. Two cheese are
+    /// already reserved toward the level. Bread still has its whole cap of
+    /// five, so five of ten bread are for sale.
+    #[test]
+    fn sell_orders_hold_back_a_bucket_target_by_its_own_cap() {
+        let mut pop = make_pop();
+        let mut meal = desire(
+            1,
+            vec![
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0).with_cap(0.5),
+            ],
+            10.0,
+        );
+        meal.satisfaction = 2.0;
+        meal.target_taken = vec![0.0, 2.0];
+        pop.desires[0].push(meal);
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut cheese = PopPRow::new(2.0);
+        cheese.reserved = 2.0;
+        pop.property.insert(2, cheese);
+
+        let bread = pop
+            .sell_orders(&MarketHistory::new())
+            .into_iter()
+            .find(|order| order.target == 1)
+            .expect("bread");
+        assert!((bread.target_amount + 5.0).abs() < 1e-9);
     }
 
     #[test]
