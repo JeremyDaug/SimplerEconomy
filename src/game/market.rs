@@ -50,8 +50,10 @@ const AMV_ROT_DIVISOR: f64 = 4.0;
 /// Largest share of absolute AMV that one night of rot may remove.
 const AMV_ROT_CAP: f64 = 1.0;
 
-/// Salability gained on a night the good was taken in payment and its AMV
-/// did not fall.
+/// One night's salability step when AMV did not fall.
+///
+/// Payment and a purchase that was not paid out both use this step.
+/// [`Market::record_keeping`] stops the purchase at par.
 const SALABILITY_UP_STEP: f64 = 0.05;
 
 /// Largest salability lost on a night the AMV fell.
@@ -154,7 +156,9 @@ impl Market {
             }
             // Store the new AMV.
             good.set_amv(next);
-            // Salability. A fall lowers it. Payment without a fall raises it.
+            // Salability. A fall lowers it. Payment without a fall raises it,
+            // including past par. A good that was bought and not paid out
+            // rises toward par and stops there.
             let paid_units = good.paid;
             let informed = good.traded + good.paid + good.offered_unsold > 0.0;
             let fell = good.amv < old;
@@ -163,6 +167,9 @@ impl Market {
                 good.set_salability(good.salability - drop);
             } else if informed && paid_units > 0.0 {
                 good.set_salability(good.salability + SALABILITY_UP_STEP);
+            } else if good.traded > 0.0 && good.salability < 1.0 {
+                let next = (good.salability + SALABILITY_UP_STEP).min(1.0);
+                good.set_salability(next);
             }
             if paid_units > 0.0 {
                 paid.push((id, paid_units));
@@ -321,12 +328,20 @@ impl Market {
         }
     }
 
-    /// Snapshot of stored AMV and salability.
+    /// # History
+    ///
+    /// Snapshot of stored AMV, salability, and units still sought.
+    ///
+    /// Sought is copied from [`MarketGood::sought_unmet`]. A snapshot taken
+    /// before exchange has none. The night plan reads it.
     pub fn history(&self) -> MarketHistory {
         let mut history = MarketHistory::new();
         for (&good_id, good) in &self.goods {
             history.prices.insert(good_id, good.amv);
             history.salability.insert(good_id, good.salability);
+            if good.sought_unmet > 0.0 {
+                history.sought.insert(good_id, good.sought_unmet);
+            }
         }
         history.friction = self.friction;
         history
@@ -338,7 +353,8 @@ impl Market {
     ///
     /// Clears yesterday's exchange tape and rot, and each member's
     /// [`crate::game::deal::DealMaker::reset_day`],
-    /// then reserve, produce, [`Self::match_deals`], consume, pop growth,
+    /// then reserve, produce, a second pop satisfy for what was just made,
+    /// a resettle of each pop's input buys, [`Self::match_deals`], consume, pop growth,
     /// decay, [`crate::game::pop::Pop::rescale_desires`], then actor
     /// record keeping and planning, then [`Self::record_keeping`].
     ///
@@ -368,6 +384,18 @@ impl Market {
         // Production Phase
         for actor in &members {
             actors.get_mut(*actor).produce(factuals);
+        }
+        // Reserve what this morning made, so the buy is the desire still short.
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).satisfy_made(rng);
+            }
+        }
+        // Buy only the input that make left short.
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).settle_shopping(factuals);
+            }
         }
         // Exchange Phase
         let meetings = self.match_deals(actors, factuals, rng);
@@ -699,6 +727,10 @@ pub struct MarketHistory {
     pub prices: HashMap<usize, f64>,
     /// Last known salability per good.
     pub salability: HashMap<usize, f64>,
+    /// Units still on buy orders after the day's meetings.
+    ///
+    /// Empty on a snapshot taken before exchange.
+    pub sought: HashMap<usize, f64>,
     /// Copied from [`Market::friction`].
     pub friction: f64,
     /// Used when a good has no recorded salability.
@@ -716,9 +748,17 @@ impl MarketHistory {
         Self {
             prices: HashMap::new(),
             salability: HashMap::new(),
+            sought: HashMap::new(),
             friction: 0.0,
             default_salability: SALABILITY_DEFAULT,
         }
+    }
+
+    /// # Sought
+    ///
+    /// Units of `good_id` still sought on this snapshot, or 0.
+    pub fn sought(&self, good_id: usize) -> f64 {
+        self.sought.get(&good_id).copied().unwrap_or(0.0)
     }
 
     /// AMV for `good_id`, or 1.0 if this snapshot has none.
@@ -1058,6 +1098,21 @@ mod tests {
         assert!((market.goods[&1].salability - 0.55).abs() < 1e-9);
     }
 
+    /// A good that was bought and not paid out steps toward par, and stops there.
+    #[test]
+    fn record_keeping_raises_a_bought_good_toward_par() {
+        let mut market = Market::new(1);
+        let mut low = MarketGood::new().with_amv(1.0).with_salability(0.5);
+        low.traded = 4.0;
+        let mut near = MarketGood::new().with_amv(1.0).with_salability(0.99);
+        near.traded = 4.0;
+        market.goods.insert(1, low);
+        market.goods.insert(2, near);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].salability - 0.55).abs() < 1e-9);
+        assert!((market.goods[&2].salability - 1.0).abs() < 1e-9);
+    }
+
     /// Half the pile rots, so the price loses an eighth.
     #[test]
     fn record_keeping_cuts_amv_by_a_quarter_of_the_rot_share() {
@@ -1241,7 +1296,8 @@ mod tests {
         market.goods.insert(2, bread);
         market.record_keeping(&Factuals::new());
         assert!((market.goods[&2].amv - 2.1).abs() < 1e-9);
-        assert!((market.goods[&2].salability - 0.5).abs() < 1e-9);
+        // Bought, and the price did not fall, so salability steps toward par.
+        assert!((market.goods[&2].salability - 0.55).abs() < 1e-9);
     }
 
     /// The print step cannot exceed 0.05 of the payment scale.

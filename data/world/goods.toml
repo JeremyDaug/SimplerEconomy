@@ -67,7 +67,7 @@ decay_rate = 0.02
 [[goods]]
 id = 7
 name = "wood"
-mass = 2.0
+mass = 1.0
 volume = 0.003
 decay_rate = 0.18
 

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::game::actor::Actor;
 use crate::game::craft::Craft;
 use crate::game::factuals::Factuals;
+use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::MarketOrder;
 use crate::game::pop_property::PopPRow;
@@ -82,7 +83,9 @@ pub struct Job {
     /// Units to buy for the next run, recorded by [`Job::claim_one`]
     /// and [`Job::shop_unpaid_outputs`].
     ///
-    /// Produce does not clear it. The next [`Job::reset_day`] does.
+    /// Produce does not clear it. [`Self::settle_shopping`] rebuilds it
+    /// from stock still free after that produce. The next [`Job::reset_day`]
+    /// drops it.
     shopping: HashMap<usize, f64>,
     /// Inputs that survive the night, and the output each one makes.
     ///
@@ -326,26 +329,38 @@ impl Job {
     /// pop's rows. `factuals` supplies processes. `history` is yesterday's
     /// market board. `modifier` is [`Self::complexity_cost`].
     ///
-    /// The first line that outputs a short good takes that good. Its cover
-    /// iterations are the largest `(gap + 1) / output.amount` across the
-    /// short outputs it takes. The extra unit is one more of that output
-    /// than the gap. A missing process is no cover. That cover is a
-    /// floor under the line.
+    /// The line that makes the most of a short good per unit of time takes
+    /// that good. Its cover iterations are the largest
+    /// `(gap + 1) / output.amount` across the short outputs it takes. The
+    /// extra unit is one more of that output than the gap. A missing
+    /// process is no cover. Inputs a cover line consumes, when this job
+    /// also makes them, are added to the cover and assigned the same way.
+    /// That cover is a floor under the line.
     ///
     /// Every line with a positive [`trade_score`] adds its own surplus on
     /// that floor. The extra iterations start from [`surplus_iterations`]
     /// on the inputs the cover leaves, after earlier lines have taken
     /// theirs, then [`paced_surplus`] pulls that run toward the output
-    /// just made. The ideal is the cover plus that extra.
-    /// [`march_target`] moves the stored target one step toward it.
+    /// just made. Unmet buys of an output, above stock on hand, add more
+    /// runs on the best line for that good. The ideal is the cover plus the
+    /// surplus and those runs. A line that does not pay aims at the cover
+    /// and those unmet runs. A snap still aims there: the new cover is written in whole when
+    /// the step has not reached it, and the old target is not added on top.
+    /// A line that is already running keeps one run when that aim is
+    /// gone. A line at 0 stays at 0.
     ///
-    /// A line that does not pay does not step down. A cover above its
-    /// current target can still raise it. When it is not covering a short
-    /// good, the line moves to the back of the list and keeps the target
-    /// it had. The line records that score for [`Self::shop_unpaid_outputs`].
-    /// `snap_cover` is a population change or a new or removed
-    /// desire: the new cover is written whole. The surplus above the old
-    /// cover steps only on a line that pays.
+    /// [`march_target`] moves the stored target one
+    /// step toward its aim. A snap writes a cover above the current target
+    /// in whole, and does not add the old target to it. When the line is
+    /// not covering a short good and does not feed one that is, it moves
+    /// to the back of the list. A line that makes an input runs before the
+    /// line that consumes it. The
+    /// line records that score for [`Self::shop_unpaid_outputs`].
+    /// `snap_cover` is a population change or a new or removed desire. A
+    /// paying line that already has a stored cover writes the new cover
+    /// whole and steps only the surplus above that old cover. A paying
+    /// line whose stored cover is still 0 steps its current target toward
+    /// the new cover plus the extra.
     ///
     /// An empty line list stores [`Self::plan_cost`] as `0` and returns.
     /// Otherwise [`Self::plan_cost`] is the complexity cost of the targets
@@ -364,31 +379,14 @@ impl Job {
             return;
         }
 
-        // Cover. Walk the lines in order. The first line that outputs a short
-        // good takes it, at the largest (gap + 1) / output.amount. The extra
-        // unit is one more of that output than the gap. A later line does
-        // not take that good again. A missing process stores 0.
-        let mut assigned = HashSet::new();
-        let mut cover_targets = Vec::with_capacity(self.lines.len());
-        for line in &self.lines {
-            let Some(process) = factuals.get_process(line.process) else {
-                cover_targets.push(0.0);
-                continue;
-            };
-            let mut iterations = 0.0_f64;
-            for output in &process.outputs {
-                if output.amount <= 0.0 {
-                    continue;
-                }
-                let gap = cover.get(&output.good).copied().unwrap_or(0.0);
-                if gap <= 0.0 || assigned.contains(&output.good) {
-                    continue;
-                }
-                iterations = iterations.max((gap + 1.0) / output.amount);
-                assigned.insert(output.good);
-            }
-            cover_targets.push(iterations);
-        }
+        // Cover. The best line on the job takes each short good. Then a
+        // cover line's made inputs are added, and the assignment is run again.
+        let mut cover_units = cover.clone();
+        let mut cover_targets = assign_cover(&self.lines, &cover_units, factuals);
+        add_input_needs(&self.lines, &cover_targets, &mut cover_units, factuals);
+        cover_targets = assign_cover(&self.lines, &cover_units, factuals);
+        // Unmet buys the best line can still fill, after stock on hand.
+        let sought_extra = sought_runs(&self.lines, &cover_targets, property, factuals, history);
 
         // Inputs left for a surplus. Copy quantity, then subtract each cover's
         // required inputs times its iterations. What remains can fund a surplus.
@@ -422,7 +420,7 @@ impl Job {
         for line in &self.lines {
             let score = factuals
                 .get_process(line.process)
-                .map(|process| trade_score(process, history));
+                .map(|process| trade_score(process, factuals, history));
             scores.push(score);
         }
         let mut extras = vec![0.0; self.lines.len()];
@@ -450,30 +448,38 @@ impl Job {
             }
         }
 
-        // Step toward the ideal. A line that pays aims at its cover plus the
-        // extra. A line that does not pay does not step down. Its cover is
-        // still a floor, so a short good can raise it. A snap writes the new
-        // cover whole. The surplus above the old cover steps only on a line
-        // that pays. On a line that does not, that surplus stays.
+        // Step toward the ideal. A paying line aims at cover plus extra.
+        // An unpaid line aims at the cover. One already running keeps a run.
         for (index, line) in self.lines.iter_mut().enumerate() {
             let new_cover = cover_targets[index];
             let current = line.target.unwrap_or(0.0);
             let pays = scores[index].is_some_and(|score| score > 0.0);
+            let ideal = new_cover + extras[index] + sought_extra[index];
             // The next morning's reserve reads this when it shops an output.
             line.pays = pays;
-            let target = if snap_cover {
+            let target = if snap_cover && pays && line.cover == 0.0 && current > 0.0 {
+                // No stored cover yet, so march the current target instead of adding it to the cover.
+                march_target(current, ideal)
+            } else if snap_cover && pays {
                 let old_surplus = (current - line.cover).max(0.0);
-                if pays {
-                    new_cover + march_target(old_surplus, extras[index])
-                } else {
-                    new_cover + old_surplus
-                }
+                new_cover + march_target(old_surplus, extras[index] + sought_extra[index])
+            } else if snap_cover && new_cover > current {
+                // The new cover replaces the old target. Unmet buys stay in the aim.
+                let aim = new_cover + extras[index] + sought_extra[index];
+                march_target(current, aim).max(new_cover)
             } else if pays {
-                march_target(current, new_cover + extras[index])
-            } else if new_cover > current {
-                march_target(current, new_cover)
+                march_target(current, ideal)
             } else {
-                current
+                // A line already running keeps one run after its cover and
+                // any unmet buy are gone. A line at 0 stays there.
+                let aim = if ideal > 0.0 {
+                    ideal
+                } else if current > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                };
+                march_target(current, aim)
             };
             if snap_cover {
                 line.cover = new_cover;
@@ -481,19 +487,43 @@ impl Job {
             line.target = Some(target);
         }
 
-        // Priority. A line that does not pay and is not covering this night
-        // moves to the back. Paying lines and feeding lines keep their order.
+        // Priority. A line that does not pay, is not covering, and does not
+        // feed a line that is, moves to the back. Producers of an input run
+        // before the line that consumes it.
+        let mut front_flag = vec![false; self.lines.len()];
+        for index in 0..self.lines.len() {
+            let pays = scores[index].is_some_and(|score| score > 0.0);
+            front_flag[index] = pays || cover_targets[index] > 0.0;
+        }
+        loop {
+            let mut changed = false;
+            for index in 0..self.lines.len() {
+                if front_flag[index] {
+                    continue;
+                }
+                let feeds = self.lines.iter().enumerate().any(|(other, line)| {
+                    front_flag[other] && line_feeds(&self.lines[index], line, factuals)
+                });
+                if feeds {
+                    front_flag[index] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         let lines = std::mem::take(&mut self.lines);
         let mut next = Vec::with_capacity(lines.len());
         let mut back = Vec::new();
         for (index, line) in lines.into_iter().enumerate() {
-            let pays = scores[index].is_some_and(|score| score > 0.0);
-            if pays || cover_targets[index] > 0.0 {
+            if front_flag[index] {
                 next.push(line);
             } else {
                 back.push(line);
             }
         }
+        order_producers_first(&mut next, factuals);
         next.extend(back);
         self.lines = next;
         // Complexity cost of the targets just written.
@@ -560,6 +590,7 @@ impl Job {
         factuals: &Factuals,
     ) {
         let mut seen = HashSet::new();
+        let mut bids = Vec::new();
         for line in &self.lines {
             if line.pays {
                 continue;
@@ -580,11 +611,11 @@ impl Job {
                     .unwrap_or(0.0);
                 let durability = (1.0 - decay).clamp(0.0, 1.0);
                 let raw = 1.0 / durability - held(property, output.good);
-                if raw > 0.0 {
-                    let slot = self.shopping.entry(output.good).or_insert(0.0);
-                    *slot = (*slot).max(raw);
-                }
+                bids.push((output.good, raw));
             }
+        }
+        for (good, raw) in bids {
+            self.shop_at_least(good, raw);
         }
     }
 
@@ -653,7 +684,9 @@ impl Job {
     /// claims are released. Shopping stays for [`Job::buy_orders`].
     ///
     /// Lines run in order. An unlimited line can spend inputs a later line
-    /// also claimed. A planned line stops at its own quota.
+    /// also claimed. A planned line stops at its own quota. A line that
+    /// spends time leaves enough for a later line it feeds when that line
+    /// yields more per unit of time.
     pub fn produce(
         &mut self,
         property: &mut HashMap<usize, PopPRow>,
@@ -664,21 +697,33 @@ impl Job {
         }
         let mut effects = Vec::new();
         let lines = self.lines.clone();
-        for line in &lines {
+        for (index, line) in lines.iter().enumerate() {
             let Some(process) = factuals.get_process(line.process) else {
                 continue;
             };
-            let target = match line.target {
-                Some(n) if n > 0.0 => Some(n),
-                None => None,
+            let mut running = line.clone();
+            match line.target {
+                Some(n) if n > 0.0 => {
+                    let pace = time_spent(process);
+                    if pace > 0.0 {
+                        let hold = time_held_for_later(&lines, index, factuals);
+                        let room = (time_ready(property, &self.claimed) - hold).max(0.0);
+                        let capped = n.min(room / pace);
+                        if capped <= 0.0 {
+                            continue;
+                        }
+                        running.target = Some(capped);
+                    }
+                }
+                None => {}
                 Some(_) => continue,
-            };
+            }
             // Pass this line's inputs only, capped at its quota when it has one.
-            let inputs = self.inputs_for(process, line, property);
-            if target.is_none() && !inputs_bound(process, &inputs) {
+            let inputs = self.inputs_for(process, &running, property);
+            if running.target.is_none() && !inputs_bound(process, &inputs) {
                 continue;
             }
-            let result = process.do_process(&inputs, target, factuals);
+            let result = process.do_process(&inputs, running.target, factuals);
             self.apply_result(property, &result);
             effects.extend(result.effects);
         }
@@ -686,6 +731,177 @@ impl Job {
         let factors = self.factor_goods(factuals);
         self.release_claims(property, &factors);
         effects
+    }
+
+    /// # Settle Shopping
+    ///
+    /// Rebuilds the shopping list from stock still free after production.
+    ///
+    /// `property` is the pop's rows after produce and after the desire
+    /// reserve on that output. `factuals` supplies decay. Morning
+    /// [`Self::reserve`] shopped from stock before this morning's make, so
+    /// that list is dropped. Each positive target shops its next run.
+    /// Destroyed and consumed inputs count leftover free stock. Capital
+    /// counts that free stock plus [`PopPRow::used`], because the pile
+    /// returns at decay. Output an earlier line will make tomorrow morning
+    /// covers that need first: produce runs in this order, so the make is
+    /// on hand before the later line takes it, and it has not decayed yet.
+    /// A line with no quota speaks for the free stock and does not shop. A
+    /// missing required factor is recorded the same way as
+    /// [`Self::claim_factors`], and that line's other inputs are not shopped.
+    /// Unpaid outputs are shopped as in reserve.
+    pub fn settle_shopping(
+        &mut self,
+        property: &HashMap<usize, PopPRow>,
+        factuals: &Factuals,
+    ) {
+        self.shopping.clear();
+        if self.lines.is_empty() {
+            return;
+        }
+        // Stock an earlier line has already counted is not free for the next.
+        let mut spoken: HashMap<usize, f64> = HashMap::new();
+        // Units earlier lines will make tomorrow, not yet counted by a buyer.
+        let mut forthcoming: HashMap<usize, f64> = HashMap::new();
+        let lines = self.lines.clone();
+        for line in &lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            let iterations = match line.target {
+                Some(n) if n > 0.0 => Some(n),
+                None => None,
+                Some(_) => continue,
+            };
+            if self.required_factor_missing(property, process) {
+                continue;
+            }
+            self.settle_inputs(
+                property,
+                process,
+                line,
+                iterations,
+                factuals,
+                &mut spoken,
+                &mut forthcoming,
+            );
+            let Some(n) = iterations else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.amount > 0.0 {
+                    *forthcoming.entry(output.good).or_insert(0.0) += output.amount * n;
+                }
+            }
+        }
+        self.shop_unpaid_outputs(property, factuals);
+    }
+
+    /// # Required Factor Missing
+    ///
+    /// Records a buy for each required factor that is not on hand.
+    ///
+    /// `property` is the pop's rows. Returns true when a required factor is
+    /// missing, so the caller skips that line's other inputs. A held factor,
+    /// and a missing optional factor, do not block the line.
+    fn required_factor_missing(
+        &mut self,
+        property: &HashMap<usize, PopPRow>,
+        process: &Process,
+    ) -> bool {
+        let mut missing = false;
+        for factor in process.factors() {
+            if held(property, factor.good) > 0.0 || factor.is_optional() {
+                continue;
+            }
+            self.shop_at_least(factor.good, 1.0);
+            missing = true;
+        }
+        missing
+    }
+
+    /// # Settle Inputs
+    ///
+    /// Shops one line's inputs from the stock [`Self::settle_shopping`] can see.
+    ///
+    /// Required inputs and listed optionals are visited. `iterations` `None`
+    /// only marks the free stock as spoken for. `spoken` is stock earlier
+    /// lines in this rebuild have already counted. `forthcoming` is output
+    /// those lines will make tomorrow morning, and this line's share is
+    /// taken out of it.
+    fn settle_inputs(
+        &mut self,
+        property: &HashMap<usize, PopPRow>,
+        process: &Process,
+        line: &JobLine,
+        iterations: Option<f64>,
+        factuals: &Factuals,
+        spoken: &mut HashMap<usize, f64>,
+        forthcoming: &mut HashMap<usize, f64>,
+    ) {
+        for input in process.requirements() {
+            self.settle_one(property, &input, iterations, factuals, spoken, forthcoming);
+        }
+        for input in process.optional_inputs() {
+            if line.inputs.contains(&input.good) {
+                self.settle_one(property, &input, iterations, factuals, spoken, forthcoming);
+            }
+        }
+    }
+
+    /// # Settle One
+    ///
+    /// Records the next-run buy for `input`, or marks its stock spoken for.
+    ///
+    /// `iterations` `None` does not shop. `Some(n)` needs `input.amount * n`.
+    /// Output still in `forthcoming` covers that need before anything is
+    /// bought, and that share is removed. The stock counted is what is still
+    /// free, not the morning pile before this run. Capital adds
+    /// [`PopPRow::used`]. `spoken` keeps a later line from counting the same
+    /// units.
+    fn settle_one(
+        &mut self,
+        property: &HashMap<usize, PopPRow>,
+        input: &ProcessInput,
+        iterations: Option<f64>,
+        factuals: &Factuals,
+        spoken: &mut HashMap<usize, f64>,
+        forthcoming: &mut HashMap<usize, f64>,
+    ) {
+        let good = input.good;
+        let capital = matches!(input.input_type, InputType::Capital);
+        let base = next_stock(property, good, capital);
+        let visible = (base - spoken.get(&good).copied().unwrap_or(0.0)).max(0.0);
+        let Some(n) = iterations else {
+            if visible > 0.0 {
+                *spoken.entry(good).or_insert(0.0) += visible;
+            }
+            return;
+        };
+        let need = input.amount * n;
+        let made = forthcoming.get(&good).copied().unwrap_or(0.0);
+        let use_make = made.min(need);
+        if use_make > 0.0 {
+            forthcoming.insert(good, made - use_make);
+        }
+        let uncovered = need - use_make;
+        // This pile already survived today's run, so it is not reduced by another take.
+        self.add_next_buy(good, uncovered, visible, factuals);
+        let Some(durability) = night_durability(factuals, good) else {
+            return;
+        };
+        // Capital is claimed per run and returned. A destroyed input is
+        // counted up to the pre-decay units that run will use.
+        let counted = if uncovered <= 0.0 {
+            0.0
+        } else if capital {
+            visible.min(uncovered)
+        } else {
+            visible.min(uncovered / durability)
+        };
+        if counted > 0.0 {
+            *spoken.entry(good).or_insert(0.0) += counted;
+        }
     }
 
     /// # Buy Orders
@@ -741,8 +957,7 @@ impl Job {
                 let free = free_of(property, factor.good);
                 claim(property, &mut self.claimed, factor.good, free);
             } else if !factor.is_optional() {
-                let slot = self.shopping.entry(factor.good).or_insert(0.0);
-                *slot = (*slot).max(1.0);
+                self.shop_at_least(factor.good, 1.0);
                 ready = false;
             }
         }
@@ -779,13 +994,11 @@ impl Job {
     /// Claims `input` for today's run and records a buy for the next one.
     ///
     /// `iterations` `None` takes the free stock only and does not shop.
-    /// `Some(n)` needs `input.amount * n` today. The buy is that same need
-    /// divided by durability (`1 - decay`), minus stock that will still be
-    /// on hand: leftover free stock for a destroyed or consumed input, or
-    /// the whole free pile for capital, which comes back at decay. Fresh
-    /// units sit in that pile and are not spared. A good missing from
-    /// `factuals` does not decay. A good that decays completely is not
-    /// bought. Today's claim still runs.
+    /// `Some(n)` needs `input.amount * n` today. The buy is recorded by
+    /// [`Self::add_next_buy`]. Stock counted as still on hand is leftover
+    /// free stock for a destroyed or consumed input, or the whole free pile
+    /// for capital, which comes back at decay. Fresh units sit in that pile
+    /// and are not spared. Today's claim still runs when the good is not bought.
     fn claim_one(
         &mut self,
         property: &mut HashMap<usize, PopPRow>,
@@ -801,36 +1014,59 @@ impl Job {
                 let need = input.amount * n;
                 let take = free.min(need);
                 claim(property, &mut self.claimed, good, take);
-                let decay = factuals
-                    .get_good(good)
-                    .map(|row| row.decay_rate)
-                    .unwrap_or(0.0);
-                // Nothing bought today would be left tomorrow.
-                if !survives_night(factuals, good) {
-                    return;
-                }
-                let durability = (1.0 - decay).clamp(0.0, 1.0);
                 // Capital comes back at decay. Spent destroyed and consumed stock does not.
                 let kept = if matches!(input.input_type, InputType::Capital) {
                     free
                 } else {
                     free - take
                 };
-                let raw = need / durability - kept;
-                if raw > 0.0 {
-                    *self.shopping.entry(good).or_insert(0.0) += raw;
-                }
+                self.add_next_buy(good, need, kept, factuals);
             }
         }
+    }
+
+    /// # Add Next Buy
+    ///
+    /// Adds a buy so `need` of `good` is on hand after decay.
+    ///
+    /// `kept` is stock that will still be there, before decay. The amount is
+    /// `need / durability - kept`, where durability comes from
+    /// [`night_durability`]. A non-positive amount is not recorded. Two lines
+    /// that need the same good add.
+    fn add_next_buy(&mut self, good: usize, need: f64, kept: f64, factuals: &Factuals) {
+        if need <= 0.0 {
+            return;
+        }
+        let Some(durability) = night_durability(factuals, good) else {
+            return;
+        };
+        let raw = need / durability - kept;
+        if raw > 0.0 {
+            *self.shopping.entry(good).or_insert(0.0) += raw;
+        }
+    }
+
+    /// # Shop At Least
+    ///
+    /// Raises the shopping list for `good` to `amount` when the list is lower.
+    ///
+    /// A larger amount already recorded stays. A non-positive `amount` does
+    /// nothing.
+    fn shop_at_least(&mut self, good: usize, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+        let slot = self.shopping.entry(good).or_insert(0.0);
+        *slot = (*slot).max(amount);
     }
 
     /// # Inputs For
     ///
     /// The input map for one run of this line.
     ///
-    /// Required inputs and listed optionals contribute the claimed amount,
-    /// capped at this line's quota when it has one. A held factor is entered
-    /// so the process sees it; the amount is not spent.
+    /// Required inputs and listed optionals contribute the claimed amount
+    /// plus free stock, capped at this line's quota when it has one. A held
+    /// factor is entered so the process sees it; the amount is not spent.
     fn inputs_for(
         &self,
         process: &Process,
@@ -850,10 +1086,13 @@ impl Job {
                 }
                 continue;
             }
+            // Claimed stock, plus free stock an earlier line may have just made.
             let claimed_amount = self.claimed.get(&input.good).copied().unwrap_or(0.0);
+            let unreserved = free_of(property, input.good);
+            let have = claimed_amount + unreserved;
             let amount = match line.target {
-                Some(n) if n > 0.0 => claimed_amount.min(input.amount * n),
-                _ => claimed_amount,
+                Some(n) if n > 0.0 => have.min(input.amount * n),
+                _ => have,
             };
             if amount > 0.0 {
                 inputs.insert(input.good, amount);
@@ -887,10 +1126,12 @@ impl Job {
 
     /// # Spend
     ///
-    /// Removes `amount` of `good` from quantity, reserved, and the claim.
+    /// Removes `amount` of `good` from quantity.
     ///
-    /// When `capital` is set, those units are added to `used` so decay can
-    /// return them. The take is capped at the quantity on hand.
+    /// Free units go first. Reserved units and the claim are reduced only
+    /// for what free stock did not cover. When `capital` is set, the units
+    /// taken are added to `used` so decay can return them. The take is
+    /// capped at the quantity on hand.
     fn spend(
         &mut self,
         property: &mut HashMap<usize, PopPRow>,
@@ -901,19 +1142,23 @@ impl Job {
         if amount <= 0.0 {
             return;
         }
-        let take = if let Some(row) = property.get_mut(&good) {
-            let take = amount.min(row.quantity.max(0.0));
-            row.quantity -= take;
-            row.reserved = (row.reserved - take).max(0.0);
-            if capital {
-                row.used += take;
-            }
-            take
-        } else {
-            0.0
+        let Some(row) = property.get_mut(&good) else {
+            return;
         };
+        let take = amount.min(row.quantity.max(0.0));
+        if take <= 0.0 {
+            return;
+        }
+        // Free units go first, so a desire's reserve is left in place.
+        let free = (row.quantity - row.reserved).max(0.0);
+        let from_reserved = (take - free.min(take)).max(0.0);
+        row.quantity -= take;
+        row.reserved = (row.reserved - from_reserved).max(0.0);
+        if capital {
+            row.used += take;
+        }
         if let Some(left) = self.claimed.get_mut(&good) {
-            *left = (*left - take).max(0.0);
+            *left = (*left - from_reserved).max(0.0);
         }
     }
 
@@ -958,6 +1203,336 @@ impl Job {
     }
 }
 
+/// # Assign Cover
+///
+/// Iterations each line needs to make `cover`.
+///
+/// `lines` is the job, in its current order. `factuals` supplies processes.
+/// The line with the highest [`yield_per_time`] for a good takes that good.
+/// A tie keeps the earlier line. Iterations are the largest
+/// `(gap + 1) / output.amount` among the goods that line took. A missing
+/// process is 0. Returns one iteration count per line.
+fn assign_cover(
+    lines: &[JobLine],
+    cover: &HashMap<usize, f64>,
+    factuals: &Factuals,
+) -> Vec<f64> {
+    let mut winner: HashMap<usize, (usize, f64)> = HashMap::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(process) = factuals.get_process(line.process) else {
+            continue;
+        };
+        for output in &process.outputs {
+            if output.amount <= 0.0 {
+                continue;
+            }
+            let gap = cover.get(&output.good).copied().unwrap_or(0.0);
+            if gap <= 0.0 {
+                continue;
+            }
+            let pace = yield_per_time(process, output.good);
+            let replace = match winner.get(&output.good) {
+                None => true,
+                Some((_, best)) => pace > *best,
+            };
+            if replace {
+                winner.insert(output.good, (index, pace));
+            }
+        }
+    }
+    let mut iterations = vec![0.0; lines.len()];
+    for (good, (index, _)) in winner {
+        let Some(process) = factuals.get_process(lines[index].process) else {
+            continue;
+        };
+        let Some(output) = process
+            .outputs
+            .iter()
+            .find(|output| output.good == good && output.amount > 0.0)
+        else {
+            continue;
+        };
+        let gap = cover.get(&good).copied().unwrap_or(0.0);
+        let runs = (gap + 1.0) / output.amount;
+        if runs > iterations[index] {
+            iterations[index] = runs;
+        }
+    }
+    iterations
+}
+
+/// # Add Input Needs
+///
+/// Adds the inputs `iterations` will consume to `cover`, when this job makes them.
+///
+/// `lines` and `factuals` supply the processes. A good no line outputs is
+/// left for shopping. A good that does not survive the night is left out.
+/// The added units sit on top of any desire gap already in `cover`.
+fn add_input_needs(
+    lines: &[JobLine],
+    iterations: &[f64],
+    cover: &mut HashMap<usize, f64>,
+    factuals: &Factuals,
+) {
+    let mut produced = HashSet::new();
+    for line in lines {
+        let Some(process) = factuals.get_process(line.process) else {
+            continue;
+        };
+        for output in &process.outputs {
+            if output.amount > 0.0 {
+                produced.insert(output.good);
+            }
+        }
+    }
+    let mut extra: HashMap<usize, f64> = HashMap::new();
+    for (line, &runs) in lines.iter().zip(iterations) {
+        if runs <= 0.0 {
+            continue;
+        }
+        let Some(process) = factuals.get_process(line.process) else {
+            continue;
+        };
+        for input in process.requirements() {
+            if !produced.contains(&input.good) || !survives_night(factuals, input.good) {
+                continue;
+            }
+            *extra.entry(input.good).or_insert(0.0) += input.amount * runs;
+        }
+    }
+    for (good, units) in extra {
+        *cover.entry(good).or_insert(0.0) += units;
+    }
+}
+
+/// # Sought Runs
+///
+/// Extra iterations for outputs the market still wants.
+///
+/// `lines`, `cover_targets`, and `factuals` supply the plan so far.
+/// `property` is stock on hand. `history` supplies [`MarketHistory::sought`].
+/// The best line for a good takes the whole shortfall above stock when its
+/// yield matches the best process in `factuals`. A worse line adds no more
+/// than its cover. Returns one extra per line.
+fn sought_runs(
+    lines: &[JobLine],
+    cover_targets: &[f64],
+    property: &HashMap<usize, PopPRow>,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> Vec<f64> {
+    let mut best: HashMap<usize, (usize, f64)> = HashMap::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(process) = factuals.get_process(line.process) else {
+            continue;
+        };
+        for output in &process.outputs {
+            if output.amount <= 0.0 {
+                continue;
+            }
+            let pace = yield_per_time(process, output.good);
+            let replace = match best.get(&output.good) {
+                None => true,
+                Some((_, was)) => pace > *was,
+            };
+            if replace {
+                best.insert(output.good, (index, pace));
+            }
+        }
+    }
+    let mut extra = vec![0.0; lines.len()];
+    for (good, (index, _)) in best {
+        let unmet = history.sought(good);
+        if unmet <= 0.0 {
+            continue;
+        }
+        let on_hand = property
+            .get(&good)
+            .map(|row| row.quantity.max(0.0))
+            .unwrap_or(0.0);
+        let short = unmet - on_hand;
+        if short <= 0.0 {
+            continue;
+        }
+        let Some(process) = factuals.get_process(lines[index].process) else {
+            continue;
+        };
+        let Some(output) = process
+            .outputs
+            .iter()
+            .find(|output| output.good == good && output.amount > 0.0)
+        else {
+            continue;
+        };
+        let runs = short / output.amount;
+        let pace = yield_per_time(process, good);
+        // A worse recipe stays inside the cover. The best known one takes the shortfall.
+        let allow = if pace >= best_known_yield(factuals, good) {
+            runs
+        } else {
+            runs.min(cover_targets[index])
+        };
+        if allow > extra[index] {
+            extra[index] = allow;
+        }
+    }
+    extra
+}
+
+/// # Best Known Yield
+///
+/// The highest [`yield_per_time`] of `good` among processes in `factuals`.
+///
+/// A process that does not make `good` scores 0. No process returns 0.
+fn best_known_yield(factuals: &Factuals, good: usize) -> f64 {
+    factuals
+        .each_process()
+        .map(|process| yield_per_time(process, good))
+        .fold(0.0_f64, f64::max)
+}
+
+/// # Yield Per Time
+///
+/// How much of `good` one unit of time makes in `process`.
+///
+/// Time is a required destroyed or consumed input of [`TIME`]. A process
+/// with no time input returns the output amount, so it beats a process
+/// that spends time. A missing output is 0.
+fn yield_per_time(process: &Process, good: usize) -> f64 {
+    let amount = process
+        .outputs
+        .iter()
+        .find(|output| output.good == good)
+        .map(|output| output.amount)
+        .unwrap_or(0.0);
+    let time = time_spent(process);
+    if time <= 0.0 {
+        amount
+    } else {
+        amount / time
+    }
+}
+
+/// # Time Spent
+///
+/// Required time `process` destroys or consumes in one run.
+///
+/// Optional time is not counted. A process with no such input returns 0.
+fn time_spent(process: &Process) -> f64 {
+    process
+        .inputs
+        .iter()
+        .filter(|input| {
+            !input.is_optional()
+                && input.good == TIME
+                && matches!(input.input_type, InputType::Destroyed | InputType::Consumed)
+        })
+        .map(|input| input.amount)
+        .sum()
+}
+
+/// # Line Yield
+///
+/// The best [`yield_per_time`] among `process` outputs.
+///
+/// A process with no positive output is 0.
+fn line_yield(process: &Process) -> f64 {
+    process
+        .outputs
+        .iter()
+        .filter(|output| output.amount > 0.0)
+        .map(|output| yield_per_time(process, output.good))
+        .fold(0.0_f64, f64::max)
+}
+
+/// # Time Ready
+///
+/// Time this job can still spend.
+///
+/// Free units of [`TIME`] plus this job's claim. A desire reserve stays out.
+fn time_ready(property: &HashMap<usize, PopPRow>, claimed: &HashMap<usize, f64>) -> f64 {
+    free_of(property, TIME) + claimed.get(&TIME).copied().unwrap_or(0.0)
+}
+
+/// # Time Held For Later
+///
+/// Time `lines[index]` must leave for a later line it feeds.
+///
+/// A later line counts when [`line_feeds`] is true and its [`line_yield`]
+/// is higher. The time is that line's target times its required time.
+/// `factuals` supplies both processes. A missing process adds nothing.
+fn time_held_for_later(lines: &[JobLine], index: usize, factuals: &Factuals) -> f64 {
+    let Some(process) = factuals.get_process(lines[index].process) else {
+        return 0.0;
+    };
+    let mine = line_yield(process);
+    let mut held = 0.0;
+    for later in lines.iter().skip(index + 1) {
+        let Some(later_process) = factuals.get_process(later.process) else {
+            continue;
+        };
+        if line_yield(later_process) <= mine || !line_feeds(&lines[index], later, factuals) {
+            continue;
+        }
+        let Some(n) = later.target else {
+            continue;
+        };
+        if n > 0.0 {
+            held += time_spent(later_process) * n;
+        }
+    }
+    held
+}
+
+/// # Line Feeds
+///
+/// True when `producer` outputs a required input of `consumer`.
+///
+/// `factuals` supplies both processes. A missing process is false.
+fn line_feeds(producer: &JobLine, consumer: &JobLine, factuals: &Factuals) -> bool {
+    let Some(made) = factuals.get_process(producer.process) else {
+        return false;
+    };
+    let Some(used) = factuals.get_process(consumer.process) else {
+        return false;
+    };
+    for input in used.requirements() {
+        if made
+            .outputs
+            .iter()
+            .any(|output| output.good == input.good && output.amount > 0.0)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// # Order Producers First
+///
+/// Moves a line in front of a later line when it makes that line's input.
+///
+/// `lines` is the front group. `factuals` supplies processes. A pair that
+/// feeds both ways is left as it stands. The walk is bounded by the length
+/// of the group.
+fn order_producers_first(lines: &mut [JobLine], factuals: &Factuals) {
+    let n = lines.len();
+    for _ in 0..n.saturating_mul(n) {
+        let mut swapped = false;
+        for index in 0..n.saturating_sub(1) {
+            if line_feeds(&lines[index + 1], &lines[index], factuals)
+                && !line_feeds(&lines[index], &lines[index + 1], factuals)
+            {
+                lines.swap(index, index + 1);
+                swapped = true;
+            }
+        }
+        if !swapped {
+            break;
+        }
+    }
+}
+
 /// # March Target
 ///
 /// One night's step from `current` toward `ideal`.
@@ -975,8 +1550,10 @@ fn march_target(current: f64, ideal: f64) -> f64 {
 /// Holding gained by running `process` once, on `history`'s board.
 ///
 /// Output holding is added. Destroyed and consumed inputs are subtracted.
-/// Factors, optional inputs, and capital stay out. Returns the net.
-fn trade_score(process: &Process, history: &MarketHistory) -> f64 {
+/// An input that does not survive the night is costed at holding 1, which
+/// is AMV 1 and salability 1. Factors, optional inputs, and capital stay
+/// out. Returns the net.
+fn trade_score(process: &Process, factuals: &Factuals, history: &MarketHistory) -> f64 {
     let mut score = 0.0;
     for output in &process.outputs {
         if output.amount <= 0.0 {
@@ -991,25 +1568,41 @@ fn trade_score(process: &Process, history: &MarketHistory) -> f64 {
         if !matches!(input.input_type, InputType::Destroyed | InputType::Consumed) {
             continue;
         }
-        score -= input.amount * history.holding_per_unit(input.good);
+        score -= input.amount * input_holding(factuals, history, input.good);
     }
     score
 }
 
+/// # Input Holding
+///
+/// Holding `trade_score` subtracts for one unit of `good`.
+///
+/// An input that survives the night uses [`MarketHistory::holding_per_unit`].
+/// One that does not, such as time, returns 1.
+fn input_holding(factuals: &Factuals, history: &MarketHistory, good: usize) -> f64 {
+    if survives_night(factuals, good) {
+        history.holding_per_unit(good)
+    } else {
+        1.0
+    }
+}
+
 /// # Paced Surplus
 ///
-/// Extra runs left after rot pulls `raw` back toward the output just made.
+/// Extra runs left after rot and output still on hand pull `raw` back
+/// toward the output just made.
 ///
 /// `process` supplies the outputs. `property` is the pop's rows. `raw` is
 /// the input-limited surplus. An output with `amount <= 0`, or a missing
 /// row, does not change `raw`.
 ///
-/// `produced > 0` sets the room from `lost / produced`. At
-/// [`SURPLUS_ROT_SHARE`] the room is one, so the extra stays at that
-/// output's runs. Less rot raises the room, up to twice the runs when
-/// nothing rotted. More rot lowers it by `SURPLUS_ROT_SHARE / share`.
-/// `produced == 0` and `lost > 0` leaves one run. The tightest output
-/// wins. Returns that many runs, never negative.
+/// `produced > 0` sets the room from `(lost + kept) / produced`. `kept` is
+/// `quantity` clamped to `0..=produced`. At [`SURPLUS_ROT_SHARE`] the room
+/// is one, so the extra stays at that output's runs. A smaller share raises
+/// the room, up to twice the runs when nothing rotted and nothing of that
+/// output is left on hand. A larger share lowers it by
+/// `SURPLUS_ROT_SHARE / share`. `produced == 0` and `lost > 0` leaves one
+/// run. The tightest output wins. Returns that many runs, never negative.
 fn paced_surplus(process: &Process, property: &HashMap<usize, PopPRow>, raw: f64) -> f64 {
     if raw <= 0.0 {
         return 0.0;
@@ -1023,7 +1616,8 @@ fn paced_surplus(process: &Process, property: &HashMap<usize, PopPRow>, raw: f64
             continue;
         };
         if row.produced > 0.0 {
-            let share = row.lost / row.produced;
+            let kept = row.quantity.clamp(0.0, row.produced);
+            let share = (row.lost + kept) / row.produced;
             let last = row.produced / output.amount;
             let room = if share > SURPLUS_ROT_SHARE {
                 SURPLUS_ROT_SHARE / share
@@ -1094,6 +1688,47 @@ fn survives_night(factuals: &Factuals, good: usize) -> bool {
         .map(|row| row.decay_rate)
         .unwrap_or(0.0);
     (1.0 - decay) > 0.0
+}
+
+/// # Night Durability
+///
+/// Share of `good` still on hand after decay.
+///
+/// `None` when the good decays completely, so nothing bought today would
+/// remain. A good missing from `factuals` does not decay, and this returns 1.
+fn night_durability(factuals: &Factuals, good: usize) -> Option<f64> {
+    if !survives_night(factuals, good) {
+        return None;
+    }
+    let decay = factuals
+        .get_good(good)
+        .map(|row| row.decay_rate)
+        .unwrap_or(0.0);
+    let durability = (1.0 - decay).clamp(0.0, 1.0);
+    if durability <= 0.0 {
+        None
+    } else {
+        Some(durability)
+    }
+}
+
+/// # Next Stock
+///
+/// Stock of `good` the next morning's claim can still use.
+///
+/// Free stock is what is on hand and not reserved. A desire's reserve is
+/// left out. When `capital` is set, [`PopPRow::used`] is added, because
+/// that pile returns at decay.
+fn next_stock(property: &HashMap<usize, PopPRow>, good: usize, capital: bool) -> f64 {
+    let Some(row) = property.get(&good) else {
+        return 0.0;
+    };
+    let free = row.available().max(0.0);
+    if capital {
+        free + row.used.max(0.0)
+    } else {
+        free
+    }
 }
 
 /// # Free Of
@@ -1439,8 +2074,8 @@ mod job {
 
     #[test]
     fn plan_surplus_pulls_back_when_own_rot_passes_a_tenth() {
-        let mut line = JobLine::new(7, Some(12.0), vec![]);
-        line.cover = 0.0;
+        let mut line = JobLine::new(7, Some(15.0), vec![]);
+        line.cover = 3.0;
         let mut job = Job::new(1, vec![line]);
         let factuals = Factuals::new().with_process(bake());
         let mut history = MarketHistory::new();
@@ -1452,7 +2087,7 @@ mod job {
         let property = HashMap::from([(1, PopPRow::new(20.0)), (2, bread)]);
 
         // Cover snaps to 3: two short plus one unit. Twice the tenth leaves a surplus of 5.
-        // The old surplus of 12 steps to 9, and 3 + 9 stays at 12.
+        // The stored cover is 3, so the old surplus of 12 steps to 9, and 3 + 9 stays at 12.
         job.plan(&HashMap::from([(2, 2.0)]), &property, &factuals, &history, 1.0, true);
 
         assert_eq!(job.lines[0].target, Some(12.0));
@@ -1484,14 +2119,177 @@ mod job {
         let factuals = Factuals::new().with_process(make);
         let mut history = MarketHistory::new();
         history.prices.insert(0, 0.0);
+        let mut grain = PopPRow::new(0.0);
+        grain.produced = 6.0;
+        let property = HashMap::from([(0, PopPRow::new(512.0)), (1, grain)]);
+
+        job.plan(&HashMap::new(), &property, &factuals, &history, 1.0, false);
+
+        // 512 time would fund 1024 runs. Nothing rotted and nothing is left
+        // on hand, so the ideal doubles the one run and the line steps toward 2.
+        assert_eq!(job.lines[0].target, Some(1.25));
+    }
+
+    #[test]
+    fn plan_surplus_pulls_back_when_the_output_is_still_on_hand() {
+        let make = Process::new(1, "make grain", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 6.0, true));
+        let mut job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        let factuals = Factuals::new().with_process(make);
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 0.0);
         let mut grain = PopPRow::new(6.0);
         grain.produced = 6.0;
         let property = HashMap::from([(0, PopPRow::new(512.0)), (1, grain)]);
 
         job.plan(&HashMap::new(), &property, &factuals, &history, 1.0, false);
 
-        // 512 time would fund 1024 runs. Nothing rotted, so the ideal doubles the one run, and the line steps toward 2.
-        assert_eq!(job.lines[0].target, Some(1.25));
+        // The whole output is still on hand, so the share is 1 and the room
+        // is a tenth of the one run. The line is at 1, so it steps toward 0.1.
+        assert_eq!(job.lines[0].target, Some(0.75));
+    }
+
+    #[test]
+    fn plan_snap_does_not_stack_an_unpaid_target_on_the_cover() {
+        let mut line = JobLine::new(7, Some(12.5), vec![]);
+        line.cover = 0.0;
+        let mut job = Job::new(1, vec![line]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+        history.prices.insert(1, 0.0);
+
+        // 13 bread short, plus one unit. The line does not pay, so the snap
+        // raises 12.5 to that cover and does not add them.
+        job.plan(&HashMap::from([(2, 13.0)]), &HashMap::new(), &factuals, &history, 1.0, true);
+
+        assert_eq!(job.lines[0].target, Some(14.0));
+        assert!((job.lines[0].cover - 14.0).abs() < 1e-12);
+    }
+
+    /// The stored target is already the cover. A snap still steps toward the
+    /// unmet buys instead of writing only the new cover.
+    #[test]
+    fn plan_snap_keeps_unmet_buys_on_an_unpaid_cover() {
+        let mut line = JobLine::new(7, Some(10.0), vec![]);
+        line.cover = 10.0;
+        let mut job = Job::new(1, vec![line]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+        history.prices.insert(1, 0.0);
+        history.sought.insert(2, 40.0);
+
+        job.plan(&HashMap::from([(2, 10.0)]), &HashMap::new(), &factuals, &history, 1.0, true);
+
+        // Cover is 11. Sought of 40 sits above that. The step from 10 is a quarter of 10.
+        assert_eq!(job.lines[0].target, Some(12.5));
+        assert!((job.lines[0].cover - 11.0).abs() < 1e-12);
+    }
+
+    /// The stored target is already near the unmet buys. A covering line
+    /// steps to the whole shortfall, not to one extra cover.
+    #[test]
+    fn plan_sought_on_a_covering_line_takes_the_whole_shortfall() {
+        let mut line = JobLine::new(7, Some(48.0), vec![]);
+        line.cover = 11.0;
+        let mut job = Job::new(1, vec![line]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+        history.prices.insert(1, 0.0);
+        history.sought.insert(2, 40.0);
+
+        // Gap 10 plus one unit is a cover of 11. Sought 40 is the whole
+        // shortfall. The line does not pay, so 48 steps to 51.
+        job.plan(
+            &HashMap::from([(2, 10.0)]),
+            &HashMap::new(),
+            &factuals,
+            &history,
+            1.0,
+            false,
+        );
+
+        assert_eq!(job.lines[0].target, Some(51.0));
+    }
+
+    /// Forage is this job's only wood line, and a faster wood process is known.
+    /// The desire gap still lands on forage. The market's wood does not.
+    #[test]
+    fn plan_sought_on_a_worse_process_stays_inside_its_cover() {
+        let forage = Process::new(31, "subsistence forage", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(7, 2.0, true));
+        let saw = Process::new(7, "make wood", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(7, 8.0, true));
+        let mut line = JobLine::new(31, Some(10.0), vec![]);
+        line.cover = 5.5;
+        let mut job = Job::new(1, vec![line]);
+        let factuals = Factuals::new().with_process(forage).with_process(saw);
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 0.0);
+        history.prices.insert(7, 0.0);
+        history.sought.insert(7, 100.0);
+
+        // Gap 10 plus one unit is 5.5 forage runs. Sought of 100 stays inside
+        // that cover, so the aim is 11. The line is at 10 and takes the step.
+        job.plan(
+            &HashMap::from([(7, 10.0)]),
+            &HashMap::new(),
+            &factuals,
+            &history,
+            1.0,
+            false,
+        );
+
+        assert_eq!(job.lines[0].target, Some(11.0));
+        assert!((job.lines[0].cover - 5.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_snap_does_not_stack_a_paying_target_on_the_cover() {
+        let mut line = JobLine::new(7, Some(4.0), vec![]);
+        line.cover = 0.0;
+        let mut job = Job::new(1, vec![line]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 4.0);
+        history.prices.insert(1, 0.0);
+        let property = HashMap::from([(1, PopPRow::new(5.0))]);
+
+        // Cover snaps to 3. Two grain remain, so the extra is 2 and the ideal
+        // is 5. Stored cover is still 0, so 4 marches to 5 instead of 3 + 4.
+        job.plan(&HashMap::from([(2, 2.0)]), &property, &factuals, &history, 1.0, true);
+
+        assert_eq!(job.lines[0].target, Some(5.0));
+        assert!((job.lines[0].cover - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_costs_a_decayed_input_at_full_holding() {
+        let farm = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let mut job = Job::new(1, vec![JobLine::new(29, Some(12.5), vec![])]);
+        let factuals = Factuals::new()
+            .with_good(good(0, 1.0))
+            .with_good(good(1, 0.12))
+            .with_process(farm);
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 0.1);
+        history.prices.insert(1, 1.0);
+        history.salability.insert(0, 1.0);
+        history.salability.insert(1, 1.0);
+        let property = HashMap::from([(0, PopPRow::new(1000.0))]);
+
+        job.plan(&HashMap::new(), &property, &factuals, &history, 1.0, false);
+
+        // Time's board price is 0.1. A full holding of 1 makes the run a loss,
+        // so 12.5 steps toward a cover of 0 instead of growing on the spare time.
+        assert_eq!(job.lines[0].target, Some(9.375));
     }
 
     #[test]
@@ -1504,9 +2302,42 @@ mod job {
 
         job.plan(&HashMap::new(), &property, &factuals, &history, 1.0, false);
 
-        // Worth nothing, and it is not covering, so the 4 runs stay.
-        assert_eq!(job.lines[0].target, Some(4.0));
-        assert!((job.plan_cost - 4.0).abs() < 1e-12);
+        // Worth nothing, and it is not covering, so the 4 runs step toward one run.
+        assert_eq!(job.lines[0].target, Some(3.0));
+        assert!((job.plan_cost - 3.0).abs() < 1e-12);
+    }
+
+    /// No cover, and the bread is worthless. One run stays. A target of 0
+    /// stays at 0.
+    #[test]
+    fn plan_keeps_one_run_when_an_unpaid_line_has_no_cover() {
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
+        let factuals = Factuals::new().with_process(bake());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 0.0);
+
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &history,
+            1.0,
+            false,
+        );
+
+        assert_eq!(job.lines[0].target, Some(1.0));
+
+        job.lines[0].target = Some(0.0);
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &history,
+            1.0,
+            false,
+        );
+
+        assert_eq!(job.lines[0].target, Some(0.0));
     }
 
     #[test]
@@ -1531,11 +2362,48 @@ mod job {
 
         job.plan(&HashMap::new(), &property, &factuals, &history, 1.0, false);
 
-        // Bread is not worth holding, so its 4 runs stay and it follows the cloth.
+        // Bread is not worth holding, so its 4 runs step toward 0 and it follows the cloth.
         assert_eq!(job.lines[0].process, 8);
         assert_eq!(job.lines[0].target, Some(1.25));
         assert_eq!(job.lines[1].process, 7);
-        assert_eq!(job.lines[1].target, Some(4.0));
+        assert_eq!(job.lines[1].target, Some(3.0));
+    }
+
+    #[test]
+    fn plan_gives_the_cover_to_the_higher_yield() {
+        let slow = Process::new(29, "subsistence farm", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let fast = Process::new(1, "make grain", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 6.0, true));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(29, Some(0.0), vec![]),
+                JobLine::new(1, Some(0.0), vec![]),
+            ],
+        );
+        let factuals = Factuals::new().with_process(slow).with_process(fast);
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 0.0);
+        history.prices.insert(1, 0.0);
+
+        job.plan(
+            &HashMap::from([(1, 12.0)]),
+            &HashMap::new(),
+            &factuals,
+            &history,
+            1.0,
+            false,
+        );
+
+        // 12 grain short, plus one unit, six per run. The fast line steps from 0.
+        // The slow line has no cover and follows it.
+        assert_eq!(job.lines[0].process, 1);
+        assert_eq!(job.lines[0].target, Some(0.25));
+        assert_eq!(job.lines[1].process, 29);
+        assert_eq!(job.lines[1].target, Some(0.0));
     }
 
     #[test]
@@ -1595,8 +2463,8 @@ mod job {
 
         job.plan(&HashMap::new(), &HashMap::new(), &Factuals::new(), &MarketHistory::new(), 1.0, false);
 
-        // No process, so the line does not pay. The 4 runs stay.
-        assert_eq!(job.lines[0].target, Some(4.0));
+        // No process, so the line does not pay. The 4 steps toward a cover of 0.
+        assert_eq!(job.lines[0].target, Some(3.0));
         assert!(job.plan_cost.abs() < 1e-12);
     }
 
@@ -1706,7 +2574,8 @@ mod job {
             .find(|order| order.target == 1)
             .expect("grain buy");
         assert_eq!(grain.target_amount, 1.0);
-        assert_eq!(unpaid.lines[0].target, Some(12.5));
+        // Nothing is short, so 12.5 steps toward a cover of 0.
+        assert_eq!(unpaid.lines[0].target, Some(9.375));
 
         let mut paying = Job::new(1, vec![JobLine::new(1, Some(10.0), vec![])]);
         paying.plan(
@@ -1785,8 +2654,8 @@ mod job {
             false,
         );
         job.reserve(&mut HashMap::new(), &factuals);
-        // The next run wants 4. The output bid is 1. The 4 stays.
-        assert_eq!(job.shopping[&0], 4.0);
+        // The score is zero, so 4 steps to 3. The output bid is 1. The input buy stays larger.
+        assert_eq!(job.shopping[&0], 3.0);
     }
 
     #[test]
@@ -1855,6 +2724,38 @@ mod job {
             &Factuals::new().with_process(bake()),
         );
         assert!(stocked.shopping.is_empty());
+    }
+
+    /// Forage wants the whole morning. Cabins are later, use less time per
+    /// unit, and take forage's wood, so five time stays for them.
+    #[test]
+    fn produce_leaves_time_for_a_later_higher_yield_line() {
+        let forage = Process::new(31, "subsistence forage", 0)
+            .with_input(ProcessInput::new(0, 10.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(7, 2.0, true));
+        let cabins = Process::new(8, "make cabins", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(7, 3.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(8, 1.0, true));
+        let factuals = Factuals::new().with_process(forage).with_process(cabins);
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(31, Some(10.0), vec![]),
+                JobLine::new(8, Some(4.0), vec![]),
+            ],
+        );
+        let mut property = HashMap::from([(0, PopPRow::new(30.0))]);
+        job.reserve(&mut property, &factuals);
+
+        job.produce(&mut property, &factuals);
+
+        // 30 time, of which cabins keep 2. Forage runs 2.8 and makes 5.6 wood.
+        // That wood finishes 1.866... cabins. The stored targets stay put.
+        assert!((property[&7].produced - 5.6).abs() < 1e-9);
+        assert!((property[&8].produced - (5.6 / 3.0)).abs() < 1e-9);
+        assert_eq!(job.lines[0].target, Some(10.0));
+        assert_eq!(job.lines[1].target, Some(4.0));
     }
 
     #[test]
@@ -1978,5 +2879,170 @@ mod job {
         assert_eq!(job.lines[0].target, Some(2.0));
         assert!(job.shopping.is_empty());
         assert!(job.claimed.is_empty());
+    }
+
+    /// Grain made this morning is bread's input. The morning buy was the
+    /// whole next run, because the grain was not on hand yet.
+    #[test]
+    fn settle_shopping_drops_an_input_this_morning_made() {
+        let grow = Process::new(1, "make grain", 0)
+            .with_input(ProcessInput::new(0, 0.5, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(1, 6.0, true));
+        let bread = Process::new(7, "make bread", 0)
+            .with_input(ProcessInput::new(0, 0.2, true, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(grow)
+            .with_process(bread)
+            .with_good(good(0, 1.0))
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(1, Some(2.0), vec![]),
+                JobLine::new(7, Some(4.0), vec![]),
+            ],
+        );
+        let mut property = HashMap::from([(0, PopPRow::new(100.0))]);
+
+        job.reserve(&mut property, &factuals);
+        assert_eq!(job.shopping[&1], 4.0);
+
+        job.produce(&mut property, &factuals);
+        // 12 grain made, 4 spent on bread, 8 left.
+        assert_eq!(property[&1].quantity, 8.0);
+        job.settle_shopping(&property, &factuals);
+        assert!(job.shopping.get(&1).is_none());
+    }
+
+    /// The grain on hand is reserved for a desire, and no line here makes
+    /// grain. The next bread run is bought.
+    #[test]
+    fn settle_shopping_still_buys_stock_a_desire_is_holding() {
+        let factuals = Factuals::new()
+            .with_process(bake())
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(4.0), vec![])]);
+        let row = PopPRow::new(4.0).with_reserve(4.0);
+
+        job.settle_shopping(&HashMap::from([(1, row)]), &factuals);
+
+        assert_eq!(job.shopping[&1], 4.0);
+    }
+
+    /// The grain line runs before bread and makes 6. Bread needs 4. Nothing
+    /// is bought, and a make of 2 leaves a buy of 2.
+    #[test]
+    fn settle_shopping_counts_what_an_earlier_line_will_make() {
+        let grow = Process::new(1, "make grain", 0)
+            .with_output(ProcessOutput::new(1, 6.0, true));
+        let bread = Process::new(7, "make bread", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(grow)
+            .with_process(bread.clone())
+            .with_good(good(1, 0.0));
+        let mut covered = Job::new(
+            1,
+            vec![
+                JobLine::new(1, Some(1.0), vec![]),
+                JobLine::new(7, Some(4.0), vec![]),
+            ],
+        );
+        covered.settle_shopping(&HashMap::new(), &factuals);
+        assert!(covered.shopping.get(&1).is_none());
+
+        let short = Process::new(1, "make grain", 0)
+            .with_output(ProcessOutput::new(1, 2.0, true));
+        let factuals = Factuals::new()
+            .with_process(short)
+            .with_process(bread)
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(1, Some(1.0), vec![]),
+                JobLine::new(7, Some(4.0), vec![]),
+            ],
+        );
+        job.settle_shopping(&HashMap::new(), &factuals);
+        assert_eq!(job.shopping[&1], 2.0);
+    }
+
+    /// The pan is in `used` after produce. Counting only free stock would
+    /// shop a second pan. Half of the returned pile rots, so one replacement
+    /// is still bought.
+    #[test]
+    fn settle_shopping_counts_capital_produce_set_aside() {
+        let capital = Process::new(8, "with a pan", 0)
+            .with_input(ProcessInput::new(6, 1.0, true, InputType::Capital, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(capital)
+            .with_good(good(6, 0.5));
+        let mut job = Job::new(1, vec![JobLine::new(8, Some(4.0), vec![])]);
+        let mut property = HashMap::from([(6, PopPRow::new(4.0))]);
+        job.reserve(&mut property, &factuals);
+        job.produce(&mut property, &factuals);
+        assert_eq!(property[&6].used, 4.0);
+        assert_eq!(property[&6].quantity, 0.0);
+
+        job.settle_shopping(&property, &factuals);
+
+        // 4 / 0.5 - 4 = 4.
+        assert_eq!(job.shopping[&6], 4.0);
+    }
+
+    /// Six on hand, two lines that each need four, no decay. The first line
+    /// uses four of the six. The second buys the two it is still short.
+    #[test]
+    fn settle_shopping_counts_shared_leftover_once() {
+        let eat = Process::new(7, "eat", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(eat)
+            .with_good(good(1, 0.0));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(7, Some(4.0), vec![]),
+                JobLine::new(7, Some(4.0), vec![]),
+            ],
+        );
+
+        job.settle_shopping(&HashMap::from([(1, PopPRow::new(6.0))]), &factuals);
+
+        assert_eq!(job.shopping[&1], 2.0);
+    }
+
+    /// Need 4, half rots, 2 already free. 4 / 0.5 - 2 = 6.
+    #[test]
+    fn settle_shopping_buys_the_decay_the_leftover_does_not_cover() {
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(4.0), vec![])]);
+        let factuals = Factuals::new()
+            .with_process(bake())
+            .with_good(good(1, 0.5));
+
+        job.settle_shopping(&HashMap::from([(1, PopPRow::new(2.0))]), &factuals);
+
+        assert_eq!(job.shopping[&1], 6.0);
+    }
+
+    #[test]
+    fn settle_shopping_skips_inputs_when_a_factor_is_missing() {
+        let process = Process::new(8, "bake in an oven", 0)
+            .with_input(ProcessInput::new(5, 1.0, true, InputType::Factor, false))
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 1.0, true));
+        let factuals = Factuals::new().with_process(process);
+        let mut job = Job::new(1, vec![JobLine::new(8, Some(4.0), vec![])]);
+
+        job.settle_shopping(&HashMap::from([(1, PopPRow::new(10.0))]), &factuals);
+
+        assert_eq!(job.shopping[&5], 1.0);
+        assert!(job.shopping.get(&1).is_none());
     }
 }

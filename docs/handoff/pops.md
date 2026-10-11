@@ -16,22 +16,25 @@ demographic desire and then a pop desire.
 
 | Piece | Status |
 |-------|--------|
-| `Pop::satisfy` | Reserves free stock and records satisfaction. Starts at the first basic desire. Stops at the first target it cannot take in full. Returns a copy of that desire, or `None` |
+| `Pop::satisfy` | Reserves free stock and records satisfaction. Starts at the first basic desire. A target that can be taken in full comes first. Stops if the chosen target cannot. Returns a copy of that desire, or `None` |
 | `Pop::satisfy_continue` | Walks forward from the bookmark `satisfy` wrote. No bookmark: same as `satisfy` |
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Not written. Intended order is tier, then that tier's savings, then the next tier. Luxury is level, savings, next level |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Covers the first short desire tier the job can make. Each paying line adds its own paced surplus. A line that does not pay and is not covering moves to the back and keeps its target. `Firm::plan` is empty |
+| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys add runs on the best line. A line that does not pay aims at the cover and those unmet runs. One already running keeps a run when that aim is gone. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Field only. Nothing multiplies satisfaction by it |
 
 ## Satisfy
 
-Order is tier, then list index. The good inside a desire's bucket is
-chosen at random. `ordered_targets` is not used.
+Order is tier, then list index. Inside a bucket, a target that can be
+taken in full comes first. Among those, high priority, then higher
+efficiency, then the earlier index. When none can finish, the target
+with the most satisfaction on hand wins, then that same tie break.
+`ordered_targets` is not used.
 
 Basic and common each get one level. Luxury repeats one level at a time.
 The next luxury level starts only after every luxury desire has reached the
@@ -41,6 +44,9 @@ Free stock is `quantity - reserved`. A take adds to `reserved` and to
 `satisfaction`. `quantity` stays put. A partial take on the stopping target
 is kept. Later targets in that bucket, and every later desire, are left alone.
 A target whose cap is filled does not stop the desire; the next target is used.
+A target whose cap is below one level, and whose open cap can be taken in
+full, is reserved before a substitute takes the level. The substitute
+fills what that cap left open.
 Each target's contribution toward the open level is stored on the desire
 (`target_taken`), so a later `satisfy` call still sees that cap as spent.
 Completing the level clears those takes so the next luxury level can use its
@@ -48,15 +54,25 @@ caps again. The morning reset clears them with satisfaction.
 
 The bookmark is tier, desire index, the chosen target's index in the bucket,
 the satisfaction the desire already had when that target started, and the
-level being filled. `satisfy_continue` only reserves the cap still open on
-that target, and only the gap up to the current level
-(`iter_target * amount - satisfaction`). When the open desire reaches the
-level, the walk moves on.
+level being filled. `satisfy_continue` finishes that target when its open
+cap can be taken in full, and only the gap up to the current level
+(`iter_target * amount - satisfaction`). When that cap is still short and
+another target can be taken in full, the other target is reserved instead.
+The short bookmark stops the walk only when nothing else can. When the open
+desire reaches the level, the walk moves on.
 
 `satisfy` always starts over at the first basic desire and replaces the
 bookmark. Caps already taken toward the open level stay spent. `Market::market_day`
-calls it every morning. After new stock arrives inside a day, `reevaluate`
-calls `satisfy_continue`.
+calls it every morning. After produce, and before exchange, each pop's
+`satisfy_made` continues that bookmark. Luxury stops after one level, so
+a unit above that level stays free to sell. No bookmark means the morning
+walk finished, and the new output is left free. After a meeting,
+`reevaluate` calls `satisfy_continue`.
+
+The stopped desire buys every good that can still fill that open level.
+Each amount rounds up to a whole unit and stays inside the good's remaining
+cap. A luxury desire buys as many levels as it finished last night, and at
+least one.
 
 ## Consume
 
@@ -113,7 +129,11 @@ Optional inputs are drawn when the line lists them. A missing required
 factor shops one unit and leaves the other inputs free.
 
 Produce runs before exchange. Inputs destroyed that morning, including
-Time, are gone before freight. New output lands in `quantity`, `fresh`,
+Time, are gone before freight. A line may spend free stock an earlier
+line made that morning. A line that spends time leaves enough for a
+later line it feeds when that line yields more per unit of time.
+Free units go before a desire's reserve. New
+output lands in `quantity`, `fresh`,
 and `produced`. If a lower tier is still unsatisfied, the pop tries to
 reserve, buy, and produce that tier's goods. Units above what still feeds
 a desire are offered the same day. Consume runs after exchange.
@@ -129,33 +149,51 @@ The library day does not grant Time.
 Decay has already written each row's `lost`. `produced` is still today's
 output, because the morning reset has not cleared it. The stock passed
 to the job includes the next morning's time grant on good 0, added to
-time still in `quantity`. The cover walks
-tiers from basic upward over `quantity`. One level is `amount / efficiency`
-of a single target. The highest efficiency that stock can fill is spent,
-and a tie keeps the later target. The walk stops at the first tier that
-still has a short desire and finishes that tier. A short desire adds the
-highest-efficiency target some line outputs. Units of one good are summed,
-then the remaining stock of that good is subtracted once. A desire no
-line can make adds nothing.
+time still in `quantity`. The cover walks every tier over that stock.
+One level is `amount / efficiency` of a single target. A target whose
+cap is below 1 cannot finish that level. The highest efficiency that
+stock can fill is spent, and a tie keeps the later target. A short
+desire adds the highest-efficiency target some line outputs, and only
+when that cap is at least 1. Units of one good are summed, then the
+remaining stock of that good is subtracted once. A desire no line can
+make adds nothing.
 
-`Job::plan` writes `Some` on every line. The first line that outputs a
-short good takes it, at the largest `(gap + 1) / output.amount`. The extra unit is one more of that output than the gap. That cover is
-a floor. Every line with a positive holding score adds its own surplus
+`Job::plan` writes `Some` on every line. The line with the highest
+output per unit of time takes each short good. A tie keeps the earlier
+line. Its cover is the largest `(gap + 1) / output.amount` among the
+goods it took. The extra unit is one more of that output than the gap.
+Inputs a cover line consumes, when this job also makes them and they
+survive the night, are added on top of that gap and assigned the same
+way. That cover is a floor. Every line with a positive holding score adds its own surplus
 on that floor. The score is one iteration's output holding minus the
-holding of destroyed and consumed inputs. The extra iterations are what
+holding of destroyed and consumed inputs. An input that does not survive
+the night, such as time, is costed at holding 1. The extra iterations are what
 required inputs remain after the cover's need and after earlier lines'
 surplus, or one iteration when the process has no required input.
-Surplus then paces off that output. At `lost / produced` of
-`0.1` it holds the runs just made. Under that it can grow, up to twice
-those runs when nothing rotted. Over that it pulls back by
+Surplus then paces off that output. The share is
+`(lost + kept) / produced`. `kept` is the output still in `quantity`,
+and no more than `produced`. At a share of `0.1` it holds the runs just
+made. Under that it can grow, up to twice those runs when nothing rotted
+and nothing of that output is left on hand. Over that it pulls back by
 `0.1 / share`. `produced == 0` and `lost > 0` leaves one extra run.
-The cover plus that extra is the ideal for a line that pays. The stored
-target steps at most a quarter of the way toward it in one night, using
-1 as the base when the target is below 1. A line that does not pay does
-not step down. When it is not covering a short good, it moves to the
-back of the list and keeps the target it had. A new or removed desire,
-or a growth change of a desire amount, snaps that night's cover in whole
-and steps only the surplus of a line that pays.
+Unmet buys of an output, above stock on hand, add runs on the best line
+for that good. That line takes the whole shortfall above stock when its
+yield matches the best process known. A worse process adds no more than
+its cover. The cover plus the surplus plus those unmet runs is the
+ideal for a line that pays. A line that does not pay aims at the cover
+and those unmet runs. A line already running keeps one run when that
+aim is gone. A line at 0 stays at 0. The stored target steps at most a
+quarter of the way toward its aim, using 1 as the base when the target is
+below 1. A snap writes a new cover in whole when the step has not reached it, and
+does not add the old target on top. Unmet buys stay in that aim, so a
+snap does not drop them. When a line is not covering a short good and does not feed one
+that is, it moves to the back of the list. A line that makes an input
+runs before the line that consumes it. A new or removed desire, or a
+growth change of a desire amount,
+snaps that night. A paying line with a stored cover writes the new cover
+whole and steps only the surplus above the old cover. A paying line whose
+stored cover is still 0 steps its current target toward the new cover
+plus the surplus and the unmet runs.
 
 `Job::complexity_cost` is the modifier `(complexity_modifier +
 craft_distance)`, capped at `1.0`. Each process id counts once. The
@@ -171,8 +209,14 @@ uses. Iterations stay on the desire gap.
 Job buys are the shopping list, rounded up to a whole unit, added onto an
 open desire buy for the same good. The list is the next run's input need
 after decay, for goods that survive the night. A good that decays completely,
-such as time, is not bought. A line whose last plan did not pay also shops
-one unit of each output that survives the night: `1 / (1 - decay)` minus the
+such as time, is not bought. Morning reserve writes that list before produce.
+After produce, and after the second satisfy, the list is rebuilt from stock
+still free. An input this morning already made is not bought again.
+Output an earlier line will make tomorrow morning covers the later line's
+need before a buy is posted. Capital
+set aside in `used` still counts, because it returns at decay. A line whose
+last plan did not pay also shops one unit of each output that survives the
+night: `1 / (1 - decay)` minus the
 units already on hand. A larger input buy for that good stays. The first
 morning, before a plan, does not shop an output. A purchase shrinks that
 list. The next morning's reset drops the list and the claim book. Targets stay.
@@ -210,14 +254,18 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
 
 - `goods` is the buyer's change. Positive units come from the seller.
   Negative units go to the seller. A good is only on one side.
-- The positive match good is `min(units still needed, seller's listed offer)`,
-  whole units, at least 1 or the buyer abandons.
+- The positive match good starts at `min(units still needed, seller's listed offer)`,
+  whole units. A basket that cannot be paid steps down to the largest whole
+  quantity that can. Below 1, the buyer abandons.
 - Payment is sized in holding value against a seller who has no desire for
   the goods. Holding value of a positive AMV is `amv * amv_scale(salability)`.
   A negative AMV is not scaled. Exact holding parity is a tie, so the buyer
-  adds one more whole unit. The buyer's own evaluate must also accept.
-- Sell orders and payment offer the free units above what still feeds a
-  desire. That room is the target's cap, `amount * cap`, minus what that
+  adds one more whole unit. The buyer allows that holding loss when the
+  purchase feeds no open desire. The seller still requires a gain.
+- Sell orders offer the free units above what still feeds a desire.
+  Payment offers that surplus, and also units that feed only a later
+  tier than the good being bought. Same-tier goods are not spent on each
+  other. A purchase that feeds nothing spends the surplus alone. That room is the target's cap, `amount * cap`, minus what that
   target already reserved toward the level (`target_taken`), and no more
   than the gap to one level, `amount - satisfaction`.
   An input the job consumes to make a desired output counts as that desire,
@@ -225,11 +273,14 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   The market reads sell orders again after every meeting.
 - Seller requests come first. Then the buyer's other free goods, highest
   monetary rating first, lowest id on a tie. Reserved stock is already out
-  of `available`. Transport goods are skipped unless the seller requested
-  them.
+  of `available`. Unrequested transport is spent last, and only above the
+  freight bill of the basket so far. Requested transport is ordinary payment.
 - Freight is unchanged: `transaction_cost + bulk * market friction`, or 0
-  when the world has no transport good. The buyer still abandons when stock
-  plus the basket cannot cover it.
+  when the world has no transport good. When the buyer cannot cover the
+  bill, the bulkiest non-transport good in that basket is left out and the
+  same quantity is tried again, until the basket pays or every remaining
+  payment good is transport. The buyer abandons when stock plus the basket
+  still cannot cover it.
 
 `Pop::evaluate` accepts when all of these hold:
 
@@ -258,8 +309,9 @@ transport just received) until `freight` is covered.
 ## Market record
 
 `MarketGood.amv` and `MarketGood.salability` are the published card.
-`Market::history` copies them once at the start of `match_deals`, plus
-friction. A missing AMV reads as `1.0`. A missing salability reads as
+`Market::history` copies AMV, salability, friction, and units still sought.
+`match_deals` takes that snapshot at the start, after the morning clear.
+A missing AMV reads as `1.0`. A missing salability reads as
 `SALABILITY_DEFAULT` (`0.5`). Deals do not write the card.
 
 `amv_scale` clamps salability to `0.05..=1` and is the only multiplier on a
@@ -268,8 +320,8 @@ payment. It does not change evaluate.
 
 The day's exchange and rot sit on `MarketGood` with the card: `traded`,
 `paid`, `print_holding`, `print_units`, `sought_unmet`, `offered_unsold`,
-`decayed`, and `volume`. History still copies only AMV, salability, and
-friction. `match_deals` adds `traded` and `paid`, records the print, then
+`decayed`, and `volume`. History copies `sought_unmet` when it is still
+positive. A snapshot taken before exchange has none. `match_deals` adds `traded` and `paid`, records the print, then
 sets `sought_unmet` and `offered_unsold` from the book it left behind.
 After consumption, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
@@ -294,7 +346,9 @@ from the card is inserted at AMV `1` and salability `0.5`.
   `(decayed / base) / 4` clamped to `0..=1`.
 - If AMV fell, salability falls by that loss over the old absolute AMV,
   capped at `0.01`. A night that took the good in payment and did not lose
-  AMV raises salability by `0.05`.
+  AMV raises salability by `0.05`, including past par. A good that was
+  bought and not paid out rises by the same step and stops at par. A good
+  that was only offered, and did not sell, does not rise that way.
 - The tape is cleared. Production and consumption are zeroed. Stock stays.
 - The card is then restated in one unit. That good is the positive-AMV row
   with the highest salability. Equal salability goes to the largest payment

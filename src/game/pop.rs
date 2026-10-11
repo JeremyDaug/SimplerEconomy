@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::{
-    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::{GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment,
+    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::{GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment, util::whole_units_up,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -42,6 +42,12 @@ pub struct Pop {
     /// A difference is a new or removed desire, or a growth change of an
     /// amount. That night snaps cover. An empty stamp is no plan yet.
     planned_desires: Vec<(DemographicSource, usize, u64)>,
+
+    /// Complete luxury levels at the last [`Self::plan`].
+    ///
+    /// The morning buy uses this many levels of a stopped luxury desire,
+    /// and at least one. `0` is no plan yet, or a night that finished none.
+    luxury_reached: f64,
 }
 
 /// How far holding-value cost may run past face credit when satisfaction rose.
@@ -52,12 +58,14 @@ struct EndUse {
     tier: usize,
     order: usize,
     satisfaction: f64,
+    /// Whole units of the good placed on this desire.
+    units: f64,
 }
 
 /// Bookmark for one satisfaction walk.
 ///
-/// `target_index` is into `desire.target` as stored. The walk picks that
-/// target at random. `target_start_satisfaction` is the desire's satisfaction
+/// `target_index` is into `desire.target` as stored, the target the walk
+/// stopped on. `target_start_satisfaction` is the desire's satisfaction
 /// when that target began receiving goods, so a resume does not spend its cap twice.
 #[derive(Debug, Clone, Copy)]
 struct SatisfyCursor {
@@ -109,6 +117,7 @@ impl Pop {
             records: PopRecords::default(),
             satisfy_cursor: None,
             planned_desires: Vec::new(),
+            luxury_reached: 0.0,
         }
     }
 
@@ -287,7 +296,7 @@ impl Pop {
     /// level. Luxury repeats one level at a time, and a new level starts only
     /// after every luxury desire has reached the current one.
     ///
-    /// Within a desire, one target is chosen at random from the bucket. It is
+    /// Within a desire, a target that can be taken in full comes first. It is
     /// capped at `amount * cap` minus what that target already contributed
     /// toward the open level. The walk stops if that target cannot be taken
     /// in full. That partial reserve is kept. Later desires are left untouched.
@@ -300,7 +309,33 @@ impl Pop {
     /// Returns a copy of the desire that stopped the walk. `None` means basic
     /// and common are at one level and no luxury desire is waiting on another.
     pub fn satisfy(&mut self, rng: &mut dyn rand::RngCore) -> Option<Desire> {
-        self.satisfy_from(SatisfyCursor::start(), rng)
+        self.satisfy_from(SatisfyCursor::start(), rng, None)
+    }
+
+    /// # Satisfy What Was Made
+    ///
+    /// Reserves goods produced after the morning [`Self::satisfy`].
+    ///
+    /// Continues from the bookmark. Luxury stops after one level, so a unit
+    /// above that level stays free to sell. No bookmark means the morning
+    /// walk finished, and this does nothing.
+    pub fn satisfy_made(&mut self, rng: &mut dyn rand::RngCore) {
+        let Some(cursor) = self.satisfy_cursor else {
+            return;
+        };
+        let _ = self.satisfy_from(cursor, rng, Some(1.0));
+    }
+
+    /// # Settle Shopping
+    ///
+    /// Rebuilds the job's buy list from stock still free after this morning's make.
+    ///
+    /// `factuals` supplies decay. Morning reserve shopped before that make
+    /// and before [`Self::satisfy_made`] reserved any of it. An input the
+    /// make left free is not bought again. Capital set aside in `used` still
+    /// counts.
+    pub fn settle_shopping(&mut self, factuals: &Factuals) {
+        self.job.settle_shopping(&self.property, factuals);
     }
 
     /// # Satisfy Continue
@@ -312,11 +347,19 @@ impl Pop {
     /// this starts at the first basic desire, same as [`Pop::satisfy`].
     pub fn satisfy_continue(&mut self, rng: &mut dyn rand::RngCore) -> Option<Desire> {
         let cursor = self.satisfy_cursor.unwrap_or_else(SatisfyCursor::start);
-        self.satisfy_from(cursor, rng)
+        self.satisfy_from(cursor, rng, None)
     }
 
     /// Walk from `cursor` until a target cannot be filled or every open level is done.
-    fn satisfy_from(&mut self, mut cursor: SatisfyCursor, rng: &mut dyn rand::RngCore) -> Option<Desire> {
+    ///
+    /// `luxury_limit` stops the walk before a luxury level above that number
+    /// is opened. `None` walks every level the stock can fill.
+    fn satisfy_from(
+        &mut self,
+        mut cursor: SatisfyCursor,
+        rng: &mut dyn rand::RngCore,
+        luxury_limit: Option<f64>,
+    ) -> Option<Desire> {
         debug_assert!(
             self.desires.len() >= 3,
             "pop desires must have basic, common, and luxury tiers"
@@ -329,6 +372,15 @@ impl Pop {
             if cursor.tier == 2 && self.desires[2].is_empty() {
                 self.satisfy_cursor = None;
                 return None;
+            }
+            // The post-production walk sells anything above one luxury level.
+            if cursor.tier == 2 {
+                if let Some(limit) = luxury_limit {
+                    if cursor.iter_target > limit {
+                        self.satisfy_cursor = None;
+                        return None;
+                    }
+                }
             }
             if let Some(blocked) = self.satisfy_tier_from(&mut cursor, rng) {
                 self.satisfy_cursor = Some(cursor);
@@ -437,8 +489,13 @@ impl Pop {
     ///
     /// Reserves free stock (`quantity - reserved`) toward `iter_target` levels.
     ///
-    /// A resumed target is finished first. Further targets are picked at random
-    /// from the bucket. Each target's cap is `amount * cap` minus what that
+    /// A resumed target is finished first when its open cap can be taken in
+    /// full. When that cap is still short and another target can be taken in
+    /// full, that other target is used instead. The short bookmark stops the
+    /// desire only when nothing else can. Further targets take a fillable
+    /// cap below one level before a substitute, then one that can be taken
+    /// in full, then a high-priority target, then higher efficiency. Each
+    /// target's cap is `amount * cap` minus what that
     /// target already contributed toward the open level (`target_taken`). A
     /// target that cannot be taken in full stops the desire, after reserving
     /// whatever of that target is free. Completing the level clears
@@ -449,7 +506,7 @@ impl Pop {
         iter_target: f64,
         target_index: usize,
         target_start_satisfaction: Option<f64>,
-        rng: &mut dyn rand::RngCore,
+        _rng: &mut dyn rand::RngCore,
     ) -> SatisfyProgress {
         debug_assert!(desire.amount > 0.0, "desire amount must be positive");
         debug_assert!(
@@ -467,12 +524,16 @@ impl Pop {
         // Targets whose cap share this call already took in full.
         let mut filled = vec![false; desire.target.len()];
         if let Some(start) = target_start_satisfaction {
-            if let Some(blocked) = self.fill_target(desire, target_index, Some(start), &mut remaining)
-            {
-                return blocked;
-            }
-            if let Some(done) = filled.get_mut(target_index) {
-                *done = true;
+            // A short bookmark must not hide a good that can finish the level.
+            if self.target_can_fill(desire, target_index, remaining) {
+                if let Some(blocked) =
+                    self.fill_target(desire, target_index, Some(start), &mut remaining)
+                {
+                    return blocked;
+                }
+                if let Some(done) = filled.get_mut(target_index) {
+                    *done = true;
+                }
             }
         }
         while remaining > 1e-9 {
@@ -485,7 +546,7 @@ impl Pop {
                     target_start_satisfaction: desire.satisfaction,
                 };
             }
-            let index = open[crate::game::util::random_index(rng, open.len())];
+            let index = self.pick_open_target(desire, &open, remaining);
             if let Some(blocked) = self.fill_target(desire, index, None, &mut remaining) {
                 return blocked;
             }
@@ -500,6 +561,82 @@ impl Pop {
                 target_start_satisfaction: desire.satisfaction,
             }
         }
+    }
+
+    /// # Pick Open Target
+    ///
+    /// The next bucket index [`Self::satisfy_one_desire`] should take.
+    ///
+    /// `desire` is the open desire. `open` is the indexes whose caps are not
+    /// full. `remaining` is the satisfaction still needed for this level.
+    /// A target whose cap is below one level, and whose open cap can be
+    /// taken in full, comes first. Then a target that can be taken in full.
+    /// Among those, a high-priority target comes first, then the higher
+    /// efficiency, then the earlier index. When none can be filled, the
+    /// target with the most satisfaction on hand wins, then that same tie
+    /// break. Returns that index.
+    fn pick_open_target(&self, desire: &Desire, open: &[usize], remaining: f64) -> usize {
+        let key = |index: usize| -> (bool, bool, bool, f64, f64) {
+            let target = &desire.target[index];
+            let available = self
+                .property
+                .get(&target.good)
+                .map(|row| row.available().max(0.0))
+                .unwrap_or(0.0);
+            let fills = self.target_can_fill(desire, index, remaining);
+            let share = target.cap < 1.0 && fills;
+            let on_hand = if target.efficiency > 0.0 {
+                available * target.efficiency
+            } else {
+                0.0
+            };
+            (share, fills, target.high_priority, on_hand, target.efficiency)
+        };
+        open.iter().copied().max_by(|&a, &b| {
+            let (share_a, fill_a, pri_a, hand_a, eff_a) = key(a);
+            let (share_b, fill_b, pri_b, hand_b, eff_b) = key(b);
+            let order = share_a
+                .cmp(&share_b)
+                .then(fill_a.cmp(&fill_b))
+                .then(pri_a.cmp(&pri_b));
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+            // Both can finish the level: take the better good. Neither can:
+            // take whichever stock satisfies more.
+            let ranked = if fill_a {
+                eff_a.partial_cmp(&eff_b).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                hand_a
+                    .partial_cmp(&hand_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(eff_a.partial_cmp(&eff_b).unwrap_or(std::cmp::Ordering::Equal))
+            };
+            ranked.then(b.cmp(&a))
+        }).unwrap_or(open[0])
+    }
+
+    /// # Target Can Fill
+    ///
+    /// True when free stock can take `index`'s open cap in full.
+    ///
+    /// `remaining` is the satisfaction still needed for this level. The cap
+    /// is what that target may still contribute. A missing target, a
+    /// non-positive efficiency, or a need of zero is false.
+    fn target_can_fill(&self, desire: &Desire, index: usize, remaining: f64) -> bool {
+        let Some(target) = desire.target.get(index) else {
+            return false;
+        };
+        if target.efficiency <= 0.0 {
+            return false;
+        }
+        let available = self
+            .property
+            .get(&target.good)
+            .map(|row| row.available().max(0.0))
+            .unwrap_or(0.0);
+        let needed = remaining.min(target_cap_left(desire, index)).max(0.0) / target.efficiency;
+        available >= needed && needed > 0.0
     }
 
     /// Reserve one bucket target. `None` means its cap share was taken in full.
@@ -801,6 +938,7 @@ impl Pop {
     /// from the last plan when the household grew into an amount or a desire
     /// was added or removed, and that night snaps the cover.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
+        self.luxury_reached = self.finished_luxury_levels();
         let cover = self.cover_gaps(factuals);
         let modifier = self.complexity_cost(factuals);
         let property = self.planning_property();
@@ -808,6 +946,30 @@ impl Pop {
         let snap_cover = stamp != self.planned_desires;
         self.planned_desires = stamp;
         self.job.plan(&cover, &property, factuals, history, modifier, snap_cover);
+    }
+
+    /// # Finished Luxury Levels
+    ///
+    /// Complete luxury levels every luxury desire has reached.
+    ///
+    /// The result is the floor of the lowest luxury [`Desire::tiers_satisfied`].
+    /// An empty luxury tier, or a non-finite level, is `0`.
+    fn finished_luxury_levels(&self) -> f64 {
+        let Some(tier) = self.desires.get(2) else {
+            return 0.0;
+        };
+        if tier.is_empty() {
+            return 0.0;
+        }
+        let lowest = tier
+            .iter()
+            .map(Desire::tiers_satisfied)
+            .fold(f64::INFINITY, f64::min);
+        if lowest.is_finite() {
+            lowest.floor().max(0.0)
+        } else {
+            0.0
+        }
     }
 
     /// # Desire Stamp
@@ -849,23 +1011,24 @@ impl Pop {
 
     /// # Cover Gaps
     ///
-    /// Units still short for the first desire tier that stock cannot fill.
+    /// Units still short on every desire tier, after stock and tomorrow's time.
     ///
     /// `factuals` supplies process outputs. Satisfaction is not read. This
     /// runs after consumption and before the morning reset, so stock is
-    /// `quantity`. One level of a desire is `amount / efficiency` of a
-    /// single target. Goods are not mixed. [`Self::best_target`] picks the
-    /// target. The walk stops at the first tier with a short desire and
-    /// finishes that tier. A later desire in it that stock can still cover
-    /// is spent.
+    /// `quantity`, plus the morning time grant on [`TIME`]. One level of a
+    /// desire is `amount / efficiency` of a single target. A target whose
+    /// cap is below 1 cannot finish that level. Goods are not mixed.
+    /// [`Self::best_target`] picks the target. A desire stock can finish is
+    /// spent. Every tier is walked, so a later desire is planned while an
+    /// earlier one is still short.
     ///
     /// Each short desire adds the highest-efficiency target some line
     /// outputs. A desire no line can make adds nothing. Units of one good
     /// are summed, then the remaining stock of that good is subtracted once.
     /// [`Job::plan`] adds one output unit above that gap.
     ///
-    /// Returns the gap per good. An empty map means every tier is covered,
-    /// or no short desire is producible.
+    /// Returns the gap per good. An empty map means every producible desire
+    /// is covered.
     fn cover_gaps(&self, factuals: &Factuals) -> HashMap<usize, f64> {
         let mut producible = HashSet::new();
         for line in &self.job.lines {
@@ -880,23 +1043,28 @@ impl Pop {
         }
 
         // Planning copy. Covered desires spend it. Short desires do not.
+        // Tomorrow's time is included, since the grant arrives before satisfy.
         let mut stock: HashMap<usize, f64> = self
             .property
             .iter()
             .filter(|(_, row)| row.quantity > 0.0)
             .map(|(&good, row)| (good, row.quantity))
             .collect();
+        let time = self.get_scaling_factor(ScalingFactor::Labor(TIME_PER_LABOR));
+        if time > 0.0 {
+            *stock.entry(TIME).or_insert(0.0) += time;
+        }
 
+        let mut gross: HashMap<usize, f64> = HashMap::new();
         for tier in &self.desires {
-            let mut short = false;
-            let mut gross: HashMap<usize, f64> = HashMap::new();
             for desire in tier {
                 if desire.amount <= 0.0 {
                     continue;
                 }
                 let covered = Self::best_target(&desire.target, |target| {
-                    let units = desire.amount / target.efficiency;
-                    stock.get(&target.good).copied().unwrap_or(0.0) >= units
+                    target.cap >= 1.0
+                        && stock.get(&target.good).copied().unwrap_or(0.0)
+                            >= desire.amount / target.efficiency
                 });
                 if let Some(target) = covered {
                     let units = desire.amount / target.efficiency;
@@ -908,27 +1076,22 @@ impl Pop {
                     }
                     continue;
                 }
-                short = true;
-                let Some(target) =
-                    Self::best_target(&desire.target, |target| producible.contains(&target.good))
-                else {
+                let Some(target) = Self::best_target(&desire.target, |target| {
+                    target.cap >= 1.0 && producible.contains(&target.good)
+                }) else {
                     continue;
                 };
                 *gross.entry(target.good).or_insert(0.0) += desire.amount / target.efficiency;
             }
-            if !short {
-                continue;
-            }
-            let mut gaps = HashMap::new();
-            for (good, units) in gross {
-                let gap = units - stock.get(&good).copied().unwrap_or(0.0);
-                if gap > 0.0 {
-                    gaps.insert(good, gap);
-                }
-            }
-            return gaps;
         }
-        HashMap::new()
+        let mut gaps = HashMap::new();
+        for (good, units) in gross {
+            let gap = units - stock.get(&good).copied().unwrap_or(0.0);
+            if gap > 0.0 {
+                gaps.insert(good, gap);
+            }
+        }
+        gaps
     }
 
     /// # Best Target
@@ -1106,74 +1269,105 @@ impl Pop {
         sum
     }
 
-    /// Buy order for the desire [`Pop::satisfy`] stopped on.
+    /// # Buys For Stopped Desire
     ///
-    /// The good is that desire's current target. The amount is the whole units
-    /// still needed to finish this level, and no more than that target's
-    /// remaining cap. Payment is chosen later, when a seller's book is known.
+    /// One buy for each good that can still fill the desire [`Pop::satisfy`] stopped on.
     ///
-    /// `None` when nothing is stopped on, or the gap is under one unit.
-    fn buy_for_stopped_desire(&self) -> Option<MarketOrder> {
-        let cursor = self.satisfy_cursor?;
-        let desire = self.desires.get(cursor.tier)?.get(cursor.desire_index)?;
-        let target = desire.target.get(cursor.target_index).cloned()?;
-        if target.efficiency <= 0.0 {
-            return None;
-        }
-
-        // Satisfaction already recorded against this target since it was opened.
-        let already = cursor
-            .target_start_satisfaction
-            .map(|start| (desire.satisfaction - start).max(0.0))
-            .unwrap_or(0.0);
-        let cap_left = desire.amount * target.cap - already;
+    /// Each amount is the whole units of that good that finish the open level,
+    /// rounded away from zero, and no more than that good's remaining cap on
+    /// the level. A luxury desire that finished more than one level last
+    /// night ([`Self::luxury_reached`]) buys that many levels, each capped
+    /// the same way. Payment is chosen later, when a seller's book is known.
+    ///
+    /// Empty when nothing is stopped on, or every gap is under one unit.
+    fn buys_for_stopped_desire(&self) -> Vec<MarketOrder> {
+        let Some(cursor) = self.satisfy_cursor else {
+            return Vec::new();
+        };
+        let Some(desire) = self.desires.get(cursor.tier).and_then(|tier| tier.get(cursor.desire_index)) else {
+            return Vec::new();
+        };
         let level_left = cursor.iter_target * desire.amount - desire.satisfaction;
-        let units = (cap_left.min(level_left) / target.efficiency).floor();
-        if units < 1.0 {
-            return None;
+        if level_left <= 1e-9 {
+            return Vec::new();
         }
-        Some(MarketOrder::buy(Actor::Pop(self.id), target.good, units))
+        let levels = if cursor.tier == 2 {
+            self.luxury_reached.max(1.0)
+        } else {
+            1.0
+        };
+        let mut orders = Vec::new();
+        for (index, target) in desire.target.iter().enumerate() {
+            if target.efficiency <= 0.0 {
+                continue;
+            }
+            let cap_left = target_cap_left(desire, index);
+            if cap_left <= 1e-9 {
+                continue;
+            }
+            // This level's open share, then one full cap for each later level.
+            let open = cap_left.min(level_left).max(0.0) / target.efficiency;
+            let later = (levels - 1.0).max(0.0) * desire.amount * target.cap / target.efficiency;
+            let units = whole_units_up(open + later);
+            if units < 1.0 {
+                continue;
+            }
+            orders.push(MarketOrder::buy(Actor::Pop(self.id), target.good, units));
+        }
+        orders
     }
 
+    /// # Payment Goods
+    ///
     /// Seller requests first, then the buyer's other free goods.
     ///
-    /// A good is included when [`Self::surplus_for_sale`] is at least one
-    /// unit. Free goods go highest monetary rating first, then lowest id.
-    /// Transport is included here and skipped later unless the seller requested it.
+    /// `factuals` distinguishes transport. `avoid` is the good being bought.
+    /// `skip` ids are left out. A good is included when [`Self::spendable`]
+    /// for that purchase is at least one unit. Free goods go highest monetary
+    /// rating first, then lowest id. Unrequested transport is listed after
+    /// the other free goods. [`Self::add_payment`] then keeps a freight
+    /// reserve of that transport.
     fn payment_goods(
         &self,
+        factuals: &Factuals,
         book: &SellerBook,
         history: &MarketHistory,
         avoid: usize,
+        skip: &[usize],
     ) -> Vec<usize> {
         let mut goods: Vec<usize> = book
             .requests
             .iter()
             .map(|order| order.target)
-            .filter(|good| *good != avoid && self.surplus_for_sale(*good) >= 1.0)
-            .collect();
-        let mut extras: Vec<(usize, f64)> = self
-            .property
-            .iter()
-            .filter(|(good, row)| {
-                **good != avoid
-                    && !goods.contains(*good)
-                    && row.available().floor() >= 1.0
-                    && self.surplus_for_sale(**good) >= 1.0
-            })
-            .map(|(good, _)| {
-                (
-                    *good,
-                    crate::game::market::monetary_rating(history.salability(*good)),
-                )
+            .filter(|good| {
+                *good != avoid && !skip.contains(good) && self.spendable(*good, avoid) >= 1.0
             })
             .collect();
-        extras.sort_by(|a, b| {
+        let mut ordinary = Vec::new();
+        let mut transport = Vec::new();
+        for (good, row) in &self.property {
+            if *good == avoid || goods.contains(good) || skip.contains(good) {
+                continue;
+            }
+            if row.available().floor() < 1.0 || self.spendable(*good, avoid) < 1.0 {
+                continue;
+            }
+            let rating = crate::game::market::monetary_rating(history.salability(*good));
+            if self.is_unrequested_transport(factuals, book, *good) {
+                transport.push((*good, rating));
+            } else {
+                ordinary.push((*good, rating));
+            }
+        }
+        let by_pay = |a: &(usize, f64), b: &(usize, f64)| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.0.cmp(&b.0))
-        });
-        goods.extend(extras.into_iter().map(|(good, _)| good));
+        };
+        ordinary.sort_by(by_pay);
+        transport.sort_by(by_pay);
+        goods.extend(ordinary.into_iter().map(|(good, _)| good));
+        goods.extend(transport.into_iter().map(|(good, _)| good));
         goods
     }
 
@@ -1232,6 +1426,46 @@ impl Pop {
         (free - still).max(0.0).floor()
     }
 
+    /// # Spendable
+    ///
+    /// Whole free units of `good` the buyer may offer while buying `buying`.
+    ///
+    /// Surplus above every desire is always included, via
+    /// [`Self::surplus_for_sale`], when `buying` feeds no open desire.
+    /// When `buying` still feeds a desire, units of `good` placed on that
+    /// tier or an earlier one stay. Units placed only on a later tier, and
+    /// any units past every desire, are spendable. Same-tier goods are not
+    /// spent on each other. Sell orders stay on the surplus alone.
+    fn spendable(&self, good: usize, buying: usize) -> f64 {
+        let free = self.free_units(good).floor();
+        if free < 1.0 {
+            return 0.0;
+        }
+        let Some(limit) = self.earliest_use(buying) else {
+            return self.surplus_for_sale(good);
+        };
+        let keep: f64 = self
+            .end_uses(good, free)
+            .into_iter()
+            .filter(|use_| tier_through(use_.tier, limit.0))
+            .map(|use_| use_.units)
+            .sum();
+        (free - keep).max(0.0).floor()
+    }
+
+    /// # Earliest Use
+    ///
+    /// Tier and list index of the first open desire `good` still feeds.
+    ///
+    /// A missing use means the good fills nothing that still has room.
+    /// The walk is the same one [`Self::end_uses`] uses.
+    fn earliest_use(&self, good: usize) -> Option<(usize, usize)> {
+        self.end_uses(good, f64::MAX)
+            .into_iter()
+            .find(|use_| use_.units >= 1.0)
+            .map(|use_| (use_.tier, use_.order))
+    }
+
     /// # End Uses
     ///
     /// Whole units of `good` placed on the earliest desire that still has room.
@@ -1271,6 +1505,7 @@ impl Pop {
                     tier,
                     order,
                     satisfaction: take * target.efficiency,
+                    units: take,
                 });
                 left -= take;
             }
@@ -1321,6 +1556,7 @@ impl Pop {
                         tier,
                         order,
                         satisfaction: made * target.efficiency,
+                        units: spent,
                     });
                     *left -= spent;
                 }
@@ -1417,10 +1653,13 @@ impl Pop {
         row.fresh = (row.fresh + delta).max(0.0);
     }
 
+    /// # Buy Transport For Freight
+    ///
     /// Buy transport the seller is offering when that lowers the unpaid freight.
     ///
-    /// Returns `None` when freight remains and no further purchase helps.
-    /// Returns `Some(())` when stock plus transport in the basket can pay it.
+    /// `skip` goods are not used to pay for that transport. Returns `None`
+    /// when freight remains and no further purchase helps. Returns `Some(())`
+    /// when stock plus transport in the basket can pay it.
     fn buy_transport_for_freight(
         &self,
         factuals: &Factuals,
@@ -1428,6 +1667,7 @@ impl Pop {
         book: &SellerBook,
         goods: &mut HashMap<usize, f64>,
         covered: &mut f64,
+        skip: &[usize],
     ) -> Option<()> {
         let free = self.free_stock();
         loop {
@@ -1440,7 +1680,7 @@ impl Pop {
                 crate::game::deal::freight_shortfall(factuals, history.friction, goods, &free);
             let mut bought = false;
             for order in &book.offers {
-                let Some(row) = factuals.goods.get(&order.target) else {
+                let Some(row) = factuals.get_good(order.target) else {
                     continue;
                 };
                 if row.transport_efficiency() <= 0.0 {
@@ -1464,6 +1704,7 @@ impl Pop {
                         &mut trial,
                         &mut trial_covered,
                         price,
+                        skip,
                     )
                 {
                     continue;
@@ -1484,12 +1725,15 @@ impl Pop {
         }
     }
 
-    /// Add `need` more holding value of payment. Skips transport goods unless
-    /// the seller requested them, so transport stock stays available for freight.
+    /// # Add Payment
     ///
-    /// `covered` is holding value already offered. Returns when `covered`
-    /// reaches `covered + need`. A later step adds one more unit when that
-    /// tie would leave a seller with no desires unmoved.
+    /// Add `need` more holding value of payment. Unrequested transport keeps
+    /// a freight reserve, so the bill can still be paid from what remains.
+    ///
+    /// `covered` is holding value already offered. `skip` goods are not
+    /// offered. Returns when `covered` reaches `covered + need`. A later
+    /// step adds one more unit when that tie would leave a seller with no
+    /// desires unmoved.
     fn add_payment(
         &self,
         factuals: &Factuals,
@@ -1499,20 +1743,18 @@ impl Pop {
         goods: &mut HashMap<usize, f64>,
         covered: &mut f64,
         need: f64,
+        skip: &[usize],
     ) -> bool {
         let target = *covered + need;
-        for good in self.payment_goods(book, history, avoid) {
+        for good in self.payment_goods(factuals, book, history, avoid, skip) {
             if *covered >= target {
                 return true;
-            }
-            if self.skips_transport(factuals, book, good) {
-                continue;
             }
             let per = history.holding_per_unit(good);
             if per <= 0.0 {
                 continue;
             }
-            let free = self.payable_units(book, goods, good);
+            let free = self.payable_after_freight(factuals, history, book, goods, good, avoid);
             if free < 1.0 {
                 continue;
             }
@@ -1526,7 +1768,11 @@ impl Pop {
         *covered >= target
     }
 
+    /// # Add One Payment
+    ///
     /// One more unit of the first payable good. Used to break a holding-value tie.
+    ///
+    /// `skip` goods are not offered. Returns whether a unit was added.
     fn add_one_payment(
         &self,
         factuals: &Factuals,
@@ -1535,13 +1781,13 @@ impl Pop {
         avoid: usize,
         goods: &mut HashMap<usize, f64>,
         covered: &mut f64,
+        skip: &[usize],
     ) -> bool {
-        for good in self.payment_goods(book, history, avoid) {
-            if self.skips_transport(factuals, book, good) {
-                continue;
-            }
+        for good in self.payment_goods(factuals, book, history, avoid, skip) {
             let per = history.holding_per_unit(good);
-            if per <= 0.0 || self.payable_units(book, goods, good) < 1.0 {
+            if per <= 0.0
+                || self.payable_after_freight(factuals, history, book, goods, good, avoid) < 1.0
+            {
                 continue;
             }
             *goods.entry(good).or_insert(0.0) -= 1.0;
@@ -1551,25 +1797,87 @@ impl Pop {
         false
     }
 
-    fn skips_transport(&self, factuals: &Factuals, book: &SellerBook, good: usize) -> bool {
+    /// True when `good` is transport and the seller did not request it.
+    ///
+    /// `factuals` supplies the transport tag. `book` is the seller's requests.
+    /// Requested transport is ordinary payment. Unrequested transport is spent
+    /// only above [`Self::freight_reserve`].
+    fn is_unrequested_transport(
+        &self,
+        factuals: &Factuals,
+        book: &SellerBook,
+        good: usize,
+    ) -> bool {
         let is_transport = factuals
-            .goods
-            .get(&good)
+            .get_good(good)
             .is_some_and(|row| row.is_transport());
         let requested = book.requests.iter().any(|order| order.target == good);
         is_transport && !requested
     }
 
+    /// Whole transport units `goods` must leave in stock to cover its freight.
+    ///
+    /// `factuals` prices the bill and the efficiency. `history` supplies
+    /// friction. `good` is the transport good. A missing efficiency is `0`,
+    /// and then the reserve is `0`. The bill is [`crate::game::deal::freight_bill`]
+    /// of the basket so far. The result is that bill divided by efficiency,
+    /// rounded up.
+    fn freight_reserve(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        goods: &HashMap<usize, f64>,
+        good: usize,
+    ) -> f64 {
+        let efficiency = factuals
+            .get_good(good)
+            .map(|row| row.transport_efficiency())
+            .unwrap_or(0.0);
+        if efficiency <= 0.0 {
+            return 0.0;
+        }
+        let bill = crate::game::deal::freight_bill(factuals, history.friction, goods);
+        (bill / efficiency).ceil()
+    }
+
+    /// Units of `good` still free to pay with, after the freight reserve.
+    ///
+    /// `factuals` and `history` price the reserve. `book` and `goods` are the
+    /// seller's book and the basket so far. `buying` is the good being bought.
+    /// Unrequested transport subtracts [`Self::freight_reserve`]. Other goods
+    /// return [`Self::payable_units`].
+    fn payable_after_freight(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        book: &SellerBook,
+        goods: &HashMap<usize, f64>,
+        good: usize,
+        buying: usize,
+    ) -> f64 {
+        let free = self.payable_units(book, goods, good, buying);
+        if !self.is_unrequested_transport(factuals, book, good) {
+            return free;
+        }
+        (free - self.freight_reserve(factuals, history, goods, good)).max(0.0)
+    }
+
     /// # Payable Units
     ///
-    /// Surplus units of `good` still available to put in `goods`.
+    /// Units of `good` still available to put in `goods` while buying `buying`.
     ///
     /// `book` is the seller's offers and requests. `goods` is the basket so
     /// far. Units already in the basket are subtracted from
-    /// [`Self::surplus_for_sale`]. A seller request caps the amount.
-    fn payable_units(&self, book: &SellerBook, goods: &HashMap<usize, f64>, good: usize) -> f64 {
+    /// [`Self::spendable`]. A seller request caps the amount.
+    fn payable_units(
+        &self,
+        book: &SellerBook,
+        goods: &HashMap<usize, f64>,
+        good: usize,
+        buying: usize,
+    ) -> f64 {
         let already = goods.get(&good).copied().unwrap_or(0.0).min(0.0).abs();
-        let mut free = self.surplus_for_sale(good) - already;
+        let mut free = self.spendable(good, buying) - already;
         if let Some(request) = book.requests.iter().find(|order| order.target == good) {
             free = free.min(request.target_amount.floor() - already).max(0.0);
         }
@@ -1591,7 +1899,11 @@ impl Pop {
         cost - credit
     }
 
-    /// Buyer side of the same verdict `evaluate` uses for the seller.
+    /// Buyer side of the verdict `evaluate` uses for the seller.
+    ///
+    /// End-use checks match the seller. A holding loss is allowed: the
+    /// basket was priced for a seller who needs a gain, and a job input
+    /// often feeds no open desire.
     fn buyer_accepts(&self, goods: &HashMap<usize, f64>, history: &MarketHistory) -> bool {
         let mut given = HashMap::new();
         let mut received = HashMap::new();
@@ -1602,7 +1914,78 @@ impl Pop {
                 given.insert(good, -qty);
             }
         }
+        // A job input often has no open desire, so the priced basket is a
+        // holding loss. The seller still requires a gain. This buyer allows
+        // the loss and puts the basket on the table.
         self.exchange_ok(&given, &received, history)
+            || self.exchange_why(&given, &received, history) == "holding_loss"
+    }
+
+    /// Names the first check [`Self::exchange_ok`] fails. Tracing only.
+    fn exchange_why(
+        &self,
+        given: &HashMap<usize, f64>,
+        received: &HashMap<usize, f64>,
+        history: &MarketHistory,
+    ) -> &'static str {
+        let mut given_uses = Vec::new();
+        for (&good, &qty) in given {
+            let cutting = (qty - self.surplus_for_sale(good)).max(0.0);
+            given_uses.extend(self.end_uses(good, cutting));
+        }
+        let mut received_uses = Vec::new();
+        for (&good, &qty) in received {
+            received_uses.extend(self.end_uses(good, qty));
+        }
+        let best = received_uses.iter().min_by(|a, b| {
+            a.tier.cmp(&b.tier).then(a.order.cmp(&b.order))
+        });
+        for use_ in &given_uses {
+            let blocked = match best {
+                None => true,
+                Some(best) => {
+                    use_.tier < best.tier || (use_.tier == best.tier && use_.order < best.order)
+                }
+            };
+            if blocked {
+                return "blocked";
+            }
+        }
+        let direct = if let Some(best) = best {
+            let gain: f64 = received_uses
+                .iter()
+                .filter(|use_| use_.tier == best.tier)
+                .map(|use_| use_.satisfaction)
+                .sum();
+            let loss: f64 = given_uses
+                .iter()
+                .filter(|use_| use_.tier == best.tier)
+                .map(|use_| use_.satisfaction)
+                .sum();
+            if gain <= loss {
+                return "sat_tie";
+            }
+            gain - loss
+        } else {
+            0.0
+        };
+        let cost: f64 = given
+            .iter()
+            .map(|(&good, &qty)| history.holding_per_unit(good) * qty)
+            .sum();
+        let mut credit = 0.0;
+        for (&good, &qty) in received {
+            if self.end_uses(good, qty).is_empty() {
+                credit += history.holding_per_unit(good) * qty;
+            } else {
+                credit += history.price(good) * qty;
+            }
+        }
+        if direct == 0.0 && credit <= cost {
+            "holding_loss"
+        } else {
+            "over_limit"
+        }
     }
 
     fn free_stock(&self) -> HashMap<usize, f64> {
@@ -1645,6 +2028,144 @@ impl Pop {
             left -= take * efficiency;
         }
     }
+
+    /// # Bulky Payment
+    ///
+    /// The non-transport good in `goods` that adds the most bulk.
+    ///
+    /// `factuals` supplies bulk and the transport tag. Only negative
+    /// quantities are payment. A missing good counts as bulk `0`. Equal
+    /// bulk selects the higher id. Returns `None` when every payment good
+    /// is transport.
+    fn bulky_payment(factuals: &Factuals, goods: &HashMap<usize, f64>) -> Option<usize> {
+        let mut best: Option<(usize, f64)> = None;
+        for (&id, &qty) in goods {
+            if qty >= 0.0 {
+                continue;
+            }
+            let row = factuals.get_good(id);
+            if row.is_some_and(|good| good.is_transport()) {
+                continue;
+            }
+            let bulk = row.map(|good| good.bulk()).unwrap_or(0.0);
+            let replace = match best {
+                None => true,
+                Some((held, score)) => bulk > score || (bulk == score && id > held),
+            };
+            if replace {
+                best = Some((id, bulk));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// # Propose Quantity
+    ///
+    /// One basket for `qty` of `match_good`, or why that size was refused.
+    ///
+    /// `book` is the seller's offers and requests. `history` prices the
+    /// goods. `factuals` supplies transport. Payment, freight, and the
+    /// buyer's own check all have to pass. When the freight bill is the
+    /// check that fails, the bulkiest non-transport good in that basket is
+    /// left out and the same quantity is tried again. That stops when the
+    /// basket pays or every remaining payment good is transport. Any other
+    /// failure is returned as it is. The `Err` string is the check that
+    /// stopped the last try.
+    fn propose_quantity(
+        &self,
+        match_good: usize,
+        qty: f64,
+        book: &SellerBook,
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> Result<ProposedDeal, &'static str> {
+        let mut skip = Vec::new();
+        loop {
+            match self.propose_skipped(match_good, qty, book, history, factuals, &skip) {
+                Ok(deal) => return Ok(deal),
+                Err((reason, goods)) if reason == "freight" || reason == "freight_left" => {
+                    match Self::bulky_payment(factuals, &goods) {
+                        Some(drop) if !skip.contains(&drop) => skip.push(drop),
+                        _ => return Err(reason),
+                    }
+                }
+                Err((reason, _)) => return Err(reason),
+            }
+        }
+    }
+
+    /// # Propose Skipped
+    ///
+    /// One basket for `qty` of `match_good`, leaving out `skip`.
+    ///
+    /// Same checks as [`Self::propose_quantity`]. On failure the basket that
+    /// failed is returned with the check that failed.
+    fn propose_skipped(
+        &self,
+        match_good: usize,
+        qty: f64,
+        book: &SellerBook,
+        history: &MarketHistory,
+        factuals: &Factuals,
+        skip: &[usize],
+    ) -> Result<ProposedDeal, (&'static str, HashMap<usize, f64>)> {
+        let mut goods = HashMap::from([(match_good, qty)]);
+        let mut covered = 0.0;
+        let need = history.holding_per_unit(match_good) * qty;
+        if need > 0.0
+            && !self.add_payment(
+                factuals,
+                history,
+                book,
+                match_good,
+                &mut goods,
+                &mut covered,
+                need,
+                skip,
+            )
+        {
+            return Err(("cannot_pay", goods));
+        }
+        if self
+            .buy_transport_for_freight(factuals, history, book, &mut goods, &mut covered, skip)
+            .is_none()
+        {
+            return Err(("freight", goods));
+        }
+        if Self::holding_shortfall(history, &goods) >= 0.0
+            && !self.add_one_payment(
+                factuals,
+                history,
+                book,
+                match_good,
+                &mut goods,
+                &mut covered,
+                skip,
+            )
+        {
+            return Err(("tie", goods));
+        }
+        if crate::game::deal::freight_shortfall(
+            factuals,
+            history.friction,
+            &goods,
+            &self.free_stock(),
+        ) > 0.0
+        {
+            return Err(("freight_left", goods));
+        }
+        if !self.buyer_accepts(&goods, history) {
+            return Err(("buyer_rejects", goods));
+        }
+        Ok(ProposedDeal {
+            buyer: self.actor(),
+            seller: book.seller,
+            match_good,
+            freight: crate::game::deal::freight_bill(factuals, history.friction, &goods),
+            goods,
+            fresh: HashMap::new(),
+        })
+    }
 }
 
 impl DealMaker for Pop {
@@ -1664,7 +2185,7 @@ impl DealMaker for Pop {
     }
 
     fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
-        let mut orders: Vec<MarketOrder> = self.buy_for_stopped_desire().into_iter().collect();
+        let mut orders = self.buys_for_stopped_desire();
         for order in self.job.buy_orders(self.actor()) {
             if let Some(existing) = orders.iter_mut().find(|held| held.target == order.target) {
                 existing.target_amount += order.target_amount;
@@ -1702,73 +2223,36 @@ impl DealMaker for Pop {
         let offer = book
             .offers
             .iter()
-            .find(|order| order.target == match_good && order.target_amount < 0.0)?;
+            .find(|order| order.target == match_good && order.target_amount < 0.0);
+        let Some(offer) = offer else {
+            return None;
+        };
         // This meeting is for one good. Use the buy for that good: the open
         // desire, the job's input shortfall, or the two added together.
         let wanted = self
             .buy_orders(history)
             .into_iter()
             .find(|order| order.target == match_good)
-            .map(|order| order.target_amount)?;
+            .map(|order| order.target_amount);
+        let Some(wanted) = wanted else {
+            return None;
+        };
         if wanted < 1.0 {
             return None;
         }
         let qty = wanted.min((-offer.target_amount).floor());
-        if qty < 1.0 {
+        if qty < 1.0 || history.price(match_good) == 0.0 {
             return None;
         }
-        if history.price(match_good) == 0.0 {
-            return None;
+        // The whole pile may not be payable. Keep the largest whole quantity that is.
+        let mut left = qty.floor();
+        while left >= 1.0 {
+            if let Ok(deal) = self.propose_quantity(match_good, left, book, history, factuals) {
+                return Some(deal);
+            }
+            left -= 1.0;
         }
-        let mut goods = HashMap::from([(match_good, qty)]);
-        let mut covered = 0.0;
-        let need = history.holding_per_unit(match_good) * qty;
-        if need > 0.0
-            && !self.add_payment(
-                factuals,
-                history,
-                book,
-                match_good,
-                &mut goods,
-                &mut covered,
-                need,
-            )
-        {
-            return None;
-        }
-        self.buy_transport_for_freight(factuals, history, book, &mut goods, &mut covered)?;
-        if Self::holding_shortfall(history, &goods) >= 0.0
-            && !self.add_one_payment(
-                factuals,
-                history,
-                book,
-                match_good,
-                &mut goods,
-                &mut covered,
-            )
-        {
-            return None;
-        }
-        if crate::game::deal::freight_shortfall(
-            factuals,
-            history.friction,
-            &goods,
-            &self.free_stock(),
-        ) > 0.0
-        {
-            return None;
-        }
-        if !self.buyer_accepts(&goods, history) {
-            return None;
-        }
-        Some(ProposedDeal {
-            buyer: self.actor(),
-            seller: book.seller,
-            match_good,
-            freight: crate::game::deal::freight_bill(factuals, history.friction, &goods),
-            goods,
-            fresh: HashMap::new(),
-        })
+        None
     }
 
     fn evaluate(
@@ -1877,6 +2361,16 @@ impl DealMaker for Pop {
 /// than the gap to one level (`amount - satisfaction`). Another target's
 /// take fills the level, not this target's cap. A full cap, or a met
 /// level, is `0`.
+/// # Tier Through
+///
+/// True when `tier` is `limit` or an earlier tier.
+///
+/// A later tier is false. List index is not compared, so a good on the
+/// same tier is not spent on another desire of that tier.
+fn tier_through(tier: usize, limit: usize) -> bool {
+    tier <= limit
+}
+
 fn desire_room(desire: &Desire, index: usize) -> f64 {
     let level_left = desire.amount - desire.satisfaction;
     target_cap_left(desire, index).min(level_left).max(0.0)
@@ -1896,7 +2390,8 @@ mod pop {
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
-    use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal};
+    use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal, SellerBook};
+    use crate::game::marketorder::MarketOrder;
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{DemoDesire, Desire, DesireEffect, DesireTarget, DesireTargetType};
     use crate::game::scalingfactor::ScalingFactor;
@@ -1907,7 +2402,6 @@ mod pop {
     use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
     use crate::game::market::{Market, MarketGood, MarketHistory};
-    use crate::game::config::TIME_PER_LABOR;
     use crate::game::good::{Good, GoodTag, TIME};
     use crate::game::household::Household;
     use crate::game::job::{Job, JobLine};
@@ -1961,6 +2455,7 @@ mod pop {
             records: PopRecords::default(),
             satisfy_cursor: None,
             planned_desires: Vec::new(),
+            luxury_reached: 0.0,
         }
     }
 
@@ -2225,6 +2720,163 @@ mod pop {
         assert!((wood.target_amount + 4.0).abs() < 1e-9);
     }
 
+    /// No water, and the six wood sit inside a later desire, so none of it is surplus.
+    /// The buyer still pays with that wood, because water is the earlier desire.
+    #[test]
+    fn propose_pays_for_an_earlier_desire_with_a_later_good() {
+        let mut buyer = make_pop();
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        buyer.desires[1].push(desire(
+            2,
+            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
+            6.0,
+        ));
+        buyer.property.insert(7, PopPRow::new(6.0));
+        do_satisfy(&mut buyer);
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 4.0)],
+            requests: vec![],
+        };
+        let history = card(&[(2, 1.0, 1.0), (7, 1.0, 1.0)]);
+
+        let deal = buyer
+            .propose(2, &book, &history, &Factuals::new())
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
+        assert_eq!(deal.goods.get(&7).copied(), Some(-5.0));
+    }
+
+    /// Ten time, freight bill 1. Four water take five time: four at par and
+    /// one more to break the tie. The reserve stays out of the basket. One
+    /// time is only the reserve, so that buyer offers nothing.
+    #[test]
+    fn propose_pays_with_time_above_the_freight_reserve() {
+        let mut buyer = make_pop();
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        buyer.property.insert(0, PopPRow::new(10.0));
+        do_satisfy(&mut buyer);
+        let factuals = Factuals::new().with_good(time_good());
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 4.0)],
+            requests: vec![],
+        };
+        let history = card(&[(2, 1.0, 1.0), (0, 1.0, 1.0)]);
+
+        let deal = buyer
+            .propose(2, &book, &history, &factuals)
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
+        assert_eq!(deal.goods.get(&0).copied(), Some(-5.0));
+
+        buyer.property.insert(0, PopPRow::new(1.0));
+        assert!(buyer.propose(2, &book, &history, &factuals).is_none());
+    }
+
+    /// Eight water are on offer. Five time covers three once the freight
+    /// reserve is held back, and the buyer keeps those three.
+    #[test]
+    fn propose_steps_down_to_the_quantity_it_can_pay() {
+        let mut buyer = make_pop();
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            8.0,
+        ));
+        buyer.property.insert(0, PopPRow::new(5.0));
+        do_satisfy(&mut buyer);
+        let factuals = Factuals::new().with_good(time_good());
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 8.0)],
+            requests: vec![],
+        };
+        let history = card(&[(2, 1.0, 1.0), (0, 1.0, 1.0)]);
+
+        let deal = buyer
+            .propose(2, &book, &history, &factuals)
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&2).copied(), Some(3.0));
+    }
+
+    /// One wood. The cabin covers the price, then its bulk makes the freight
+    /// larger than the ten time on hand. Leaving the cabin out, that time
+    /// covers the wood, so the buyer pays with time.
+    #[test]
+    fn propose_drops_a_bulky_payment_when_freight_fails() {
+        let mut buyer = make_pop();
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        buyer.property.insert(8, PopPRow::new(1.0));
+        buyer.property.insert(0, PopPRow::new(10.0));
+        do_satisfy(&mut buyer);
+        let factuals = Factuals::new()
+            .with_good(time_good())
+            .with_good(make_good(7, "wood", 0.0).with_mass(2.0).with_volume(0.003))
+            .with_good(make_good(8, "cabins", 0.0).with_mass(20.0).with_volume(0.05));
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 7, 1.0)],
+            requests: vec![],
+        };
+        let mut history = card(&[(7, 1.0, 1.0), (8, 1.0, 1.0), (0, 1.0, 1.0)]);
+        history.friction = 1.0;
+
+        let deal = buyer
+            .propose(7, &book, &history, &factuals)
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&7).copied(), Some(1.0));
+        assert!(deal.goods.get(&8).is_none());
+        assert!(deal.goods.get(&0).copied().unwrap_or(0.0) < 0.0);
+    }
+
+    /// The meal is already full, so the grain is only a job input. Stone feeds
+    /// nothing. The priced basket is a holding loss, and the buyer still offers it.
+    #[test]
+    fn propose_offers_a_job_input_at_a_holding_loss() {
+        let mut buyer = make_pop();
+        buyer.job = Job::new(1, vec![JobLine::new(7, Some(4.0), vec![])]);
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        buyer.property.insert(2, PopPRow::new(4.0));
+        buyer.property.insert(8, PopPRow::new(10.0));
+        do_satisfy(&mut buyer);
+        let factuals = Factuals::new().with_process(bake());
+        buyer.job.reserve(&mut buyer.property, &factuals);
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 1, 4.0)],
+            requests: vec![],
+        };
+        let history = card(&[(1, 1.0, 1.0), (8, 1.0, 1.0)]);
+
+        let deal = buyer
+            .propose(1, &book, &history, &factuals)
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&1).copied(), Some(4.0));
+        assert!(deal.goods.get(&8).copied().unwrap_or(0.0) <= -4.0);
+    }
+
     #[test]
     fn job_buy_orders_cover_the_shortfall() {
         let mut pop = make_pop();
@@ -2305,9 +2957,12 @@ mod pop {
 
         pop.plan(&factuals, &history);
 
-        // 4 bread wanted, 1 on hand, plus one unit. Grain is not the best target, and its price is 0.
-        assert_eq!(pop.job.lines[0].target, Some(4.0));
-        assert_eq!(pop.job.lines[1].target, Some(0.0));
+        // Bread is the meal. The grain line makes that input, so it runs first.
+        // Four bread, plus one unit, need four grain, plus one grain.
+        assert_eq!(pop.job.lines[0].process, 9);
+        assert_eq!(pop.job.lines[0].target, Some(5.0));
+        assert_eq!(pop.job.lines[1].process, 7);
+        assert_eq!(pop.job.lines[1].target, Some(4.0));
     }
 
     #[test]
@@ -2369,7 +3024,7 @@ mod pop {
     }
 
     #[test]
-    fn plan_does_not_cover_luxury_while_basic_is_short() {
+    fn plan_covers_a_later_tier_while_basic_is_short() {
         let mut pop = make_pop();
         pop.job = Job::new(
             1,
@@ -2394,8 +3049,12 @@ mod pop {
 
         pop.plan(&factuals, &history);
 
+        // Basic is short, and the gem tier is short too. Both are written.
+        // Bread stays in front. 4 bread plus one unit, and 3 gems plus one.
+        assert_eq!(pop.job.lines[0].process, 7);
         assert_eq!(pop.job.lines[0].target, Some(5.0));
-        assert_eq!(pop.job.lines[1].target, Some(0.0));
+        assert_eq!(pop.job.lines[1].process, 9);
+        assert_eq!(pop.job.lines[1].target, Some(4.0));
     }
 
     #[test]
@@ -2463,21 +3122,21 @@ mod pop {
         pop.plan(&factuals, &history);
 
         // The desire is new, so the cover of 5 is written whole: 4 short plus one unit.
-        // Bread is not worth holding, so the opening run stays above that cover.
-        assert_eq!(pop.job.lines[0].target, Some(6.0));
+        // Bread is not worth holding, so the snap raises 1 to that cover and does not add them.
+        assert_eq!(pop.job.lines[0].target, Some(5.0));
 
         pop.property.insert(2, PopPRow::new(4.0));
         pop.plan(&factuals, &history);
 
-        // The desire is unchanged. Stock covers it, and the line still does not pay, so 6 stays.
-        assert_eq!(pop.job.lines[0].target, Some(6.0));
+        // The desire is unchanged. Stock covers it, and the line still does not pay, so 5 steps toward 0.
+        assert_eq!(pop.job.lines[0].target, Some(3.75));
 
         pop.desires[0][0].amount = 8.0;
         pop.property.clear();
         pop.plan(&factuals, &history);
 
-        // The amount changed, so the cover snaps to 9 and the one run above the old cover stays.
-        assert_eq!(pop.job.lines[0].target, Some(10.0));
+        // The amount changed, so the cover snaps to 9. The line does not pay, so 3.75 rises to 9.
+        assert_eq!(pop.job.lines[0].target, Some(9.0));
     }
 
     #[test]
@@ -2705,7 +3364,7 @@ mod pop {
     }
 
     #[test]
-    fn satisfy_stops_at_the_first_target_it_cannot_fill() {
+    fn satisfy_fills_the_target_it_can_finish() {
         let mut pop = make_pop();
         pop.property.insert(1, PopPRow::new(3.0));
         pop.property.insert(2, PopPRow::new(100.0));
@@ -2718,18 +3377,57 @@ mod pop {
             10.0,
         ));
 
-        match do_satisfy(&mut pop) {
-            Some(blocked) => {
-                assert!((blocked.satisfaction - 6.0).abs() < 1e-9);
-                assert!((pop.property[&1].reserved - 3.0).abs() < 1e-9);
-                assert_eq!(pop.property[&2].reserved, 0.0);
-            }
-            None => {
-                assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
-                assert_eq!(pop.property[&1].reserved, 0.0);
-                assert!((pop.property[&2].reserved - 10.0).abs() < 1e-9);
-            }
-        }
+        // The efficient good cannot finish the level. The other good can,
+        // so the walk takes that one and does not stop on the short pile.
+        assert!(do_satisfy(&mut pop).is_none());
+        assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
+        assert_eq!(pop.property[&1].reserved, 0.0);
+        assert!((pop.property[&2].reserved - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn satisfy_takes_the_higher_efficiency_when_both_can_finish() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(6.0));
+        pop.property.insert(2, PopPRow::new(100.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 2.0),
+            ],
+            10.0,
+        ));
+
+        // Both goods can finish the level. The better one is reserved,
+        // even though it is later in the bucket and the other pile is larger.
+        assert!(do_satisfy(&mut pop).is_none());
+        assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+        assert_eq!(pop.property[&2].reserved, 0.0);
+    }
+
+    #[test]
+    fn satisfy_stops_when_no_target_can_be_filled() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(3.0));
+        pop.property.insert(2, PopPRow::new(4.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 2.0),
+            ],
+            10.0,
+        ));
+
+        // Neither pile finishes the level. The one that satisfies more is
+        // reserved, and the walk stops there.
+        let blocked = do_satisfy(&mut pop).expect("no target finishes the level");
+        assert!((blocked.satisfaction - 6.0).abs() < 1e-9);
+        assert!((pop.desires[0][0].satisfaction - 6.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 3.0).abs() < 1e-9);
+        assert_eq!(pop.property[&2].reserved, 0.0);
     }
 
     #[test]
@@ -2754,8 +3452,7 @@ mod pop {
 
     #[test]
     fn satisfy_does_not_refill_a_capped_target() {
-        // Seeds cover both pick orders, so a capped target picked first is
-        // never picked again past its cap.
+        // Each cap is half the level. A target is taken once, up to that cap.
         for seed in 0..20 {
             let mut pop = make_pop();
             pop.property.insert(1, PopPRow::new(100.0));
@@ -2837,6 +3534,115 @@ mod pop {
         assert!((pop.desires[2][1].satisfaction - 10.0).abs() < 1e-9);
         assert!((pop.property[&1].reserved - 15.0).abs() < 1e-9);
         assert!((pop.property[&2].reserved - 10.0).abs() < 1e-9);
+    }
+
+    /// Three grain cannot finish a level of 10. Five bread then can, at
+    /// efficiency 2. Continue reserves 3.5 bread and leaves the grain reserve.
+    #[test]
+    fn satisfy_continue_uses_a_good_that_can_finish_when_the_bookmark_cannot() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(3.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+            ],
+            10.0,
+        ));
+
+        let blocked = do_satisfy(&mut pop).expect("grain is short of the level");
+        assert!((blocked.satisfaction - 3.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 3.0).abs() < 1e-9);
+
+        pop.property.insert(2, PopPRow::new(5.0));
+        assert!(do_continue(&mut pop).is_none());
+        assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 3.0).abs() < 1e-9);
+        assert!((pop.property[&2].reserved - 3.5).abs() < 1e-9);
+    }
+
+    /// Time's cap is half a level and can be filled. Cabins are the better
+    /// substitute and can fill the level alone. The cap is reserved first,
+    /// and cabins take only what that cap left open.
+    #[test]
+    fn satisfy_takes_a_fillable_cap_before_a_better_substitute() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(100.0));
+        pop.property.insert(2, PopPRow::new(100.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
+            ],
+            10.0,
+        ));
+
+        assert!(do_satisfy(&mut pop).is_none());
+        assert!((pop.desires[0][0].satisfaction - 10.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+        assert!((pop.property[&2].reserved - 2.5).abs() < 1e-9);
+    }
+
+    /// The capped good fills its share. The better good is missing, so the
+    /// buy is the whole units that finish the level, for every good that
+    /// still has room.
+    #[test]
+    fn satisfy_buys_the_goods_that_finish_a_capped_level() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(100.0));
+        pop.desires[2].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(3, DesireTargetType::Consume, 2.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
+            ],
+            10.0,
+        ));
+
+        let blocked = do_satisfy(&mut pop).expect("the level is only half filled");
+        assert!((blocked.satisfaction - 5.0).abs() < 1e-9);
+        assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
+
+        let orders = pop.buy_orders(&MarketHistory::new());
+        let units = |good: usize| {
+            orders
+                .iter()
+                .find(|order| order.target == good)
+                .map(|order| order.target_amount)
+                .unwrap_or(0.0)
+        };
+        // Five satisfaction is left. Efficiency 1 needs 5. Efficiency 2 needs 3.
+        assert!((units(2) - 5.0).abs() < 1e-9);
+        assert!((units(3) - 3.0).abs() < 1e-9);
+        assert_eq!(units(1), 0.0);
+    }
+
+    /// Last night finished two luxury levels, so today's buy asks for two.
+    #[test]
+    fn luxury_buy_repeats_levels_finished_last_night() {
+        let mut pop = make_pop();
+        pop.luxury_reached = 2.0;
+        pop.property.insert(1, PopPRow::new(100.0));
+        pop.desires[2].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
+            ],
+            10.0,
+        ));
+
+        assert!(do_satisfy(&mut pop).is_some());
+        let orders = pop.buy_orders(&MarketHistory::new());
+        let cabins = orders
+            .iter()
+            .find(|order| order.target == 2)
+            .expect("cabins finish the open share");
+        // This level needs 2.5, and the next level's cap is another 5.
+        assert!((cabins.target_amount - 8.0).abs() < 1e-9);
     }
 
     #[test]

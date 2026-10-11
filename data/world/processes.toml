@@ -264,5 +264,5 @@ outputs = [{ good = 2, amount = 2.0 }]
 id = 31
 name = "subsistence forage"
 complexity = 0.25
-inputs = [{ good = 0, amount = 10.0 }]
+inputs = [{ good = 0, amount = 20.0 }]
 outputs = [{ good = 7, amount = 2.0 }]
