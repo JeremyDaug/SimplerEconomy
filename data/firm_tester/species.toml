@@ -1,0 +1,31 @@
+# Species for the firm tester. Same rows as the pop tester's basic
+# desires. Pop::update_desires copies them onto each pop of that species.
+# Tier 0 is basic. Scalar all multiplies the amount by every member.
+
+[[species]]
+id = 0
+name = "human"
+
+[[species.desires]]
+id = 1
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "grain"
+efficiency = 1
+
+[[species.desires.goods]]
+good = "bread"
+efficiency = 2
+
+[[species.desires]]
+id = 2
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "water"
+efficiency = 1

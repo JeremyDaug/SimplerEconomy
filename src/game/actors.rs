@@ -72,6 +72,17 @@ impl Actors {
             .unwrap_or_else(|| panic!("pop {id} is not in Actors"))
     }
 
+    /// # Firm
+    ///
+    /// The firm stored under `id`.
+    ///
+    /// Panics if that firm is missing.
+    pub fn firm(&self, id: usize) -> &Firm {
+        self.firms
+            .get(&id)
+            .unwrap_or_else(|| panic!("firm {id} is not in Actors"))
+    }
+
     /// # Pops In Craft
     ///
     /// Pop ids whose job has this craft, lowest id first.
