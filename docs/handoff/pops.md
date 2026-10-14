@@ -20,7 +20,7 @@ demographic desire and then a pop desire.
 | `Pop::satisfy_continue` | Walks forward from the bookmark `satisfy` wrote. No bookmark: same as `satisfy` |
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
-| Savings between tiers, and between luxury iterations | Not written. Intended order is tier, then that tier's savings, then the next tier. Luxury is level, savings, next level |
+| Savings between tiers, and between luxury iterations | Written. One extra day on the highest `salability * durability * fill` good, withheld from eating, selling, and payment. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
@@ -73,13 +73,14 @@ walk finished, and the new output is left free. After a meeting,
 The stopped desire buys every good that can still fill that open level.
 Each amount rounds up to a whole unit and stays inside the good's remaining
 cap. A luxury desire buys as many levels as it finished last night, and at
-least one.
+least one. The saved day's shortfall is added on top.
 
 ## Consume
 
 Basic and common run once each, in list order, and do not stop when a desire
-is short. Luxury benches any desire that missed the current level and keeps
-filling the ones that made it.
+is short. Luxury benches any desire that missed the current level. A further
+luxury level runs only while the saved day is on hand, and leaves those units.
+The saved day is not a finished level.
 
 `Pop::consume` first sets every desire's satisfaction to zero, so the level
 `satisfy` recorded for the reserved goods is counted once, when those goods
@@ -87,6 +88,21 @@ are eaten. Each call sets its gap to a full `amount`. It subtracts the take
 from `quantity` and `reserved`, moves consume targets to `consumed` and use
 targets to `used`, and adds satisfaction. `consume_tier` and
 `consume_one_desire` do not clear satisfaction on their own.
+
+## Savings
+
+One extra day per desire. The rate is fixed for this tester. Demographics
+and sentiment do not change it. The day is grossed up by `1 / durability`
+and placed on the single highest `salability * durability * fill` good.
+Fill is 1 when this pop makes the good or already holds that day, and
+otherwise the share of today's buy that arrived. A good that decays
+completely is not a candidate. The eaten good keeps a tie. A day outside
+the desire is the holding value of the eaten day, and an exact holding
+total adds one more whole unit.
+
+The pile is withheld from eating, selling, and payment. A later tier's day
+is not added while an earlier day is short of stock. The job covers a day
+it can make. The morning buy adds the shortfall on the winning good.
 
 ## Traps
 
@@ -157,7 +173,7 @@ stock can fill is spent, and a tie keeps the later target. A short
 desire adds the highest-efficiency target some line outputs, and only
 when that cap is at least 1. Units of one good are summed, then the
 remaining stock of that good is subtracted once. A desire no line can
-make adds nothing.
+make adds nothing. A saved day this job can make is included in that gap.
 
 `Job::plan` writes `Some` on every line. The line with the highest
 output per unit of time takes each short good. A tie keeps the earlier
@@ -263,7 +279,7 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   A negative AMV is not scaled. Exact holding parity is a tie, so the buyer
   adds one more whole unit. The buyer allows that holding loss when the
   purchase feeds no open desire. The seller still requires a gain.
-- Sell orders offer the free units above what still feeds a desire.
+- Sell orders offer the free units above what still feeds a desire and above the savings pile.
   Payment offers that surplus, and also units that feed only a later
   tier than the good being bought. Same-tier goods are not spent on each
   other. A purchase that feeds nothing spends the surplus alone. That room is the target's cap, `amount * cap`, minus what that

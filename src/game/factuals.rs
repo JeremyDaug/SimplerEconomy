@@ -832,6 +832,15 @@ impl Factuals {
         self.processes.values()
     }
 
+    /// # Each Good
+    ///
+    /// Every good stored in this world.
+    ///
+    /// Map order. One id is [`Self::get_good`].
+    pub fn each_good(&self) -> impl Iterator<Item = &Good> {
+        self.goods.values()
+    }
+
     /// # Get Craft
     ///
     /// The open craft stored under `id`.

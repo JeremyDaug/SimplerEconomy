@@ -16,7 +16,7 @@ Still open, and still pop or job work:
 
 - [ ] Close the consume trap in the handoff. A normal day counts a reserved level twice.
 - [ ] Close the satisfy trap in the handoff. Calling `satisfy` again can reserve a half-filled cap a second time.
-- [ ] Savings between tiers, then between luxury levels.
+- [x] Savings between tiers, then between luxury levels.
 - [x] `Desire.decay`. Morning reset multiplies satisfaction by it (`0.0` clears).
 - [ ] `ordered_targets`. Satisfy picks a bucket good at random.
 - [ ] Skills as goods: priced, not traded like other goods. `Workforce.labor` is already keyed by skill or good id. No skill good exists yet.
