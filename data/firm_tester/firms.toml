@@ -1,0 +1,40 @@
+# Firms for examples/firm_tester. Goods and processes are world names.
+#
+# owner is a pop id from pops.toml. 0 or omitted is no owner.
+# profit_share is the owner's share of profit, 0 to 1. liable = true makes
+# the owner the residual claimant instead. A firm sets one or neither.
+# stock reserve is held back from sale and defaults to 0.
+# A line target is that process's iterations. Omitted is as many as
+# inputs allow.
+
+[[firms]]
+id = 1
+name = "bakery"
+owner = 1
+profit_share = 0.5
+
+[[firms.stock]]
+good = "bread"
+quantity = 30
+
+[[firms.stock]]
+good = "grain"
+quantity = 10
+reserve = 10
+
+[[firms.lines]]
+process = "make bread"
+target = 10
+
+[[firms]]
+id = 2
+name = "well"
+owner = 2
+liable = true
+
+[[firms.stock]]
+good = "water"
+quantity = 30
+
+[[firms.lines]]
+process = "make water"

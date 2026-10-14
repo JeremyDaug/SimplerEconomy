@@ -550,12 +550,22 @@ fn scaling(name: &str, scale: f64) -> Result<ScalingFactor, String> {
     }
 }
 
-fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+/// # Read TOML
+///
+/// Reads the file at `path` and parses it as `T`.
+///
+/// A read or parse failure is an error that names the path.
+pub fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let text = std::fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     toml::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))
 }
 
-fn names<T>(
+/// # Names
+///
+/// Maps each row's name to its id.
+///
+/// `name_of` picks the name. `kind` labels the error when two rows share a name.
+pub fn names<T>(
     rows: &HashMap<usize, T>,
     name_of: impl Fn(&T) -> &String,
     kind: &str,
@@ -570,7 +580,12 @@ fn names<T>(
     Ok(names)
 }
 
-fn lookup(names: &HashMap<String, usize>, kind: &str, name: &str) -> Result<usize, String> {
+/// # Lookup
+///
+/// The id stored for `name`.
+///
+/// `kind` labels the error when no row has that name.
+pub fn lookup(names: &HashMap<String, usize>, kind: &str, name: &str) -> Result<usize, String> {
     names
         .get(name)
         .copied()

@@ -1,0 +1,93 @@
+# Customers and owners for examples/firm_tester. Same format as
+# data/pop_tester/pops.toml. Crafts, processes, and goods are world names.
+#
+# Pop 1 farms grain and owns the bakery. Pop 2 draws water and owns the
+# well. Pop 3 digs gold and starts with 20. It opens with no farm or water
+# line, so its food and water come from the market. Gold is not a desire,
+# so it is what pop 3 has to pay with.
+# Each pop is 5 households of 2 adults, 2.5 children, and 0.5 elders.
+
+[[pops]]
+id = 1
+craft = "subsistence farming"
+species = "human"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 0
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make grain"
+target = 10
+
+[[pops]]
+id = 2
+craft = "subsistence watering"
+species = "human"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 0
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make water"
+target = 10
+
+[[pops]]
+id = 3
+craft = "subsistence"
+species = "human"
+
+[pops.household]
+count = 5
+adult = 2
+elder = 0.5
+child = 2.5
+
+[[pops.stock]]
+good = "gold"
+quantity = 20
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 0
+
+[[pops.lines]]
+process = "subsistence water"
+target = 0
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make gold"
+target = 5
