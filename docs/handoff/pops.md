@@ -26,7 +26,7 @@ demographic desire and then a pop desire.
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
 | `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys add runs on the best line. A line that does not pay aims at the cover and those unmet runs. One already running keeps a run when that aim is gone. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
-| `Desire.decay` | Field only. Nothing multiplies satisfaction by it |
+| `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
 
 ## Satisfy
 
@@ -50,7 +50,8 @@ fills what that cap left open.
 Each target's contribution toward the open level is stored on the desire
 (`target_taken`), so a later `satisfy` call still sees that cap as spent.
 Completing the level clears those takes so the next luxury level can use its
-caps again. The morning reset clears them with satisfaction.
+caps again. The morning reset clears them and multiplies satisfaction by
+`Desire.decay`.
 
 The bookmark is tier, desire index, the chosen target's index in the bucket,
 the satisfaction the desire already had when that target started, and the

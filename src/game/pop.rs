@@ -899,19 +899,20 @@ impl Pop {
 
     /// # Reset Day
     ///
-    /// Clears yesterday's satisfaction and same-day reserves.
+    /// Applies desire decay and clears same-day reserves.
     ///
-    /// Each desire's satisfaction and per-target taken are set to 0. The
-    /// satisfy bookmark is dropped. `reserved`, `fresh`, `produced`, and `lost`
-    /// on every property row are set to 0. Quantity, consumed, and used stay
-    /// for today's walk and for decay. The job drops its claimed-input list
-    /// and its shopping list. Line targets stay, so last night's plan is what
+    /// Each desire's satisfaction is multiplied by [`Desire::decay`]. A decay
+    /// of `0.0` clears it. Per-target taken is cleared, and the satisfy
+    /// bookmark is dropped. `reserved`, `fresh`, `produced`, and `lost` on
+    /// every property row are set to 0. Quantity, consumed, and used stay for
+    /// today's walk and for decay. The job drops its claimed-input list and
+    /// its shopping list. Line targets stay, so last night's plan is what
     /// this morning runs.
     pub fn reset_day(&mut self) {
         self.satisfy_cursor = None;
         for tier in &mut self.desires {
             for desire in tier.iter_mut() {
-                desire.satisfaction = 0.0;
+                desire.satisfaction *= desire.decay;
                 desire.target_taken.clear();
             }
         }
@@ -2544,6 +2545,46 @@ mod pop {
         pop.reset_day();
 
         assert_eq!(pop.property[&1].lost, 0.0);
+    }
+
+    /// Satisfaction carries by [`Desire::decay`] on the morning reset. A
+    /// decay of `0.0` clears it. Per-target taken always clears.
+    #[test]
+    fn reset_day_scales_satisfaction_by_desire_decay() {
+        let mut pop = make_pop();
+        let mut kept = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        kept.satisfaction = 8.0;
+        kept.decay = 0.5;
+        kept.target_taken = vec![3.0];
+        let mut cleared = desire(
+            2,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        cleared.satisfaction = 6.0;
+        cleared.decay = 0.0;
+        cleared.target_taken = vec![2.0];
+        pop.desires[0].push(kept);
+        pop.desires[0].push(cleared);
+        pop.satisfy_cursor = Some(super::SatisfyCursor {
+            tier: 0,
+            desire_index: 0,
+            target_index: 0,
+            target_start_satisfaction: Some(0.0),
+            iter_target: 1.0,
+        });
+
+        pop.reset_day();
+
+        assert!((pop.desires[0][0].satisfaction - 4.0).abs() < 1e-12);
+        assert!(pop.desires[0][0].target_taken.is_empty());
+        assert_eq!(pop.desires[0][1].satisfaction, 0.0);
+        assert!(pop.desires[0][1].target_taken.is_empty());
+        assert!(pop.satisfy_cursor.is_none());
     }
 
     #[test]
