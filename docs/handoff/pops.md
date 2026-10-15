@@ -12,6 +12,17 @@ plan rewrites every line target.
 `docs/handoff/desire.md` sketches how a platonic desire becomes a
 demographic desire and then a pop desire.
 
+## Where this stopped
+
+Cottage planning, savings, and the first deal pass are the current stop.
+Seller weight is a first cut: the whole units on the offer. Refine that
+weight later. The buyer draw is still one ticket per buy.
+
+A specialty line aims at its cover, its paced surplus, and the unmet buys
+it is allowed to take. It does not take the rest of the morning. Each pop's
+surplus is one offer. The weight pulls a meeting toward the larger pile.
+The other pops still make and sell the same goods.
+
 ## Landed vs stub
 
 | Piece | Status |
@@ -20,7 +31,7 @@ demographic desire and then a pop desire.
 | `Pop::satisfy_continue` | Walks forward from the bookmark `satisfy` wrote. No bookmark: same as `satisfy` |
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
-| Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from eating, selling, and payment. The job does not spend that pile as an input. See Savings |
+| Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from selling and payment. The job does not spend that pile as an input. Basic, common, and the first luxury level may eat it. A further luxury level leaves it. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
@@ -103,8 +114,9 @@ completely is not a candidate. The eaten good keeps a tie. A day outside
 the desire is the holding value of the eaten day, and an exact holding
 total adds one more whole unit.
 
-The pile is withheld from eating, selling, and payment, and the job does
-not spend it as an input. Output an earlier line made this morning counts
+The pile is withheld from selling and payment, and the job does not spend
+it as an input. Basic, common, and the first luxury level may eat it. A
+further luxury level leaves it. Output an earlier line made this morning counts
 toward the pile, and only the surplus over it feeds a later line. A later
 tier's day is not added while an earlier day is short of one day's
 units of its winning good. The pile stored is the larger grossed hold.
@@ -257,7 +269,9 @@ Exchange, production, and consumption stay separate phases.
 
 `Market::match_deals` collects sells, then picks a buyer at random from those
 who still have a buy, and a seller from the valid matches in proportion to
-the units that seller offers. They meet because one sought good is one offered good. The buyer is
+the whole units that seller offers. An offer under one unit has no weight.
+When every offer has no weight, that draw is uniform. The buyer draw does
+not grow with the size of the buy. They meet because one sought good is one offered good. The buyer is
 shown the seller's whole book and either proposes a basket or abandons.
 The seller accepts or rejects. Accept moves every good in the basket.
 The basket is one map: positive units come to the buyer, negative units
