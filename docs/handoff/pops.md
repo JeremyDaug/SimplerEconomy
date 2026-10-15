@@ -22,7 +22,7 @@ demographic desire and then a pop desire.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Written. One extra day on the highest `salability * durability * fill` good, withheld from eating, selling, and payment. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. `Firm::produce` runs each line via `Process::do_process` on firm property; `reserve_for_day` and `plan` are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
 | `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys add runs on the best line. A line that does not pay aims at the cover and those unmet runs. One already running keeps a run when that aim is gone. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
@@ -378,8 +378,7 @@ Actor `record_keeping` and `plan` read a snapshot taken after decay and
 card. Exchange priced itself from the snapshot at the start of
 `match_deals`. Firm record keeping clears that firm's production counters.
 `Pop::plan` rewrites job targets from that snapshot and from each row's
-`produced` and `lost`. `Firm::reserve_for_day`,
-`Firm::produce`, and `Firm::plan` are empty.
+`produced` and `lost`. `Firm::produce` runs each line from stock. `Firm::reserve_for_day` and `Firm::plan` are empty.
 
 `PlayState::phase_pop_growth` only grows and does not rescale.
 `phase_pop_consumption` is still `todo`. Institution decay and institution

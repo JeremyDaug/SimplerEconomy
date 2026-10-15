@@ -5,7 +5,8 @@ use hexx::Hex;
 use crate::game::{
     actor::Actor, contract::Contract, deal::DealMaker, factuals::Factuals,
     firmorganization::FirmOrganization, good::GoodTag, market::MarketHistory,
-    marketorder::MarketOrder, pop::Pop, workforce::Workforce,
+    marketorder::MarketOrder, pop::Pop, process::{InputType, Process, ProcessResult},
+    workforce::Workforce,
 };
 
 /// A firm is one workshop: production, stock, and the people tied to it.
@@ -84,8 +85,39 @@ impl Firm {
     /// Reserve stock for today's production and for savings. Not written yet.
     pub fn reserve_for_day(&mut self, _factuals: &Factuals) {}
 
-    /// Run today's production lines. Not written yet.
-    pub fn produce(&mut self, _factuals: &Factuals) {}
+    /// # Produce
+    ///
+    /// Runs each [`ProductionLine`] against this firm's property.
+    ///
+    /// Lines run in order. A missing process is skipped. `Some(0)` or any
+    /// non-positive target skips the line. `None` runs as many iterations as
+    /// inputs allow. `Some(n)` with `n > 0` caps iterations at `n`.
+    ///
+    /// Each run passes on-hand quantity into [`Process::do_process`]. Negative
+    /// changes leave `quantity`, spending free stock (`quantity - reserve`)
+    /// first and reducing `reserve` only for what free stock did not cover.
+    /// Positive changes add to `quantity`, `fresh`, and `produced`. Capital in
+    /// `used_inputs` moves from `quantity` into `used` the same way. Process
+    /// effects on pops are not applied here.
+    pub fn produce(&mut self, factuals: &Factuals) {
+        let lines = self.production_line.clone();
+        for line in &lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            let target = match line.target {
+                Some(n) if n > 0.0 => Some(n),
+                None => None,
+                Some(_) => continue,
+            };
+            let inputs = self.inputs_for(process, line);
+            if target.is_none() && !inputs_bound(process, &inputs) {
+                continue;
+            }
+            let result = process.do_process(&inputs, target, factuals);
+            self.apply_result(&result);
+        }
+    }
 
     /// End-of-day planning. Not written yet.
     pub fn plan(&mut self, _factuals: &Factuals, _history: &MarketHistory) {}
@@ -122,9 +154,11 @@ impl Firm {
     ///
     /// Returns `used` to `quantity`, then decays the aging part of `quantity`
     /// by the good's rate. [`FirmPRow::fresh`] is the fresh portion and stays
-    /// in place. [`GoodTag::Exposure`] skips decay while the good is owned.
-    /// Byproducts are credited into `quantity`. `consumed` is a flow counter
-    /// and is not destroyed here.
+    /// in place. Reserved units stay; only aging free stock
+    /// (`quantity - reserve`, after fresh is set aside) can rot.
+    /// [`GoodTag::Exposure`] skips decay while the good is owned. Byproducts
+    /// are credited into `quantity`. `consumed` is a flow counter and is not
+    /// destroyed here.
     ///
     /// Returns `(decayed, volume)` per good. Volume is on-hand after `used`
     /// returns, plus `consumed`, including fresh stock.
@@ -141,12 +175,14 @@ impl Firm {
             let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
-            // Fresh stock stays whole. Only the older pile rots.
+            // Fresh stock stays whole. Only the older pile rots, and not below reserve.
             let fresh = row.fresh.max(0.0).min(row.quantity.max(0.0));
             let aging = (row.quantity - fresh).max(0.0);
             let mut lost = 0.0;
             if !exposure && good.decay_rate > 0.0 && aging > 0.0 {
-                lost = aging * good.decay_rate;
+                let floor = row.reserve.max(0.0).min(row.quantity.max(0.0));
+                let room = (row.quantity - floor).max(0.0);
+                lost = (aging * good.decay_rate).min(room);
                 row.quantity -= lost;
                 for (&byproduct, &ratio) in &good.decay_result {
                     if ratio != 0.0 && lost != 0.0 {
@@ -368,6 +404,109 @@ impl Firm {
         let row = self.property.entry(good).or_insert_with(FirmPRow::new);
         row.fresh = (row.fresh + delta).max(0.0);
     }
+
+    /// # Inputs For
+    ///
+    /// On-hand amounts this line may pass into [`Process::do_process`].
+    ///
+    /// Factors take the whole stack when any is held. Optional non-factor
+    /// inputs are drawn only when listed on the line. Other inputs take
+    /// on-hand quantity, capped at `amount * target` when the line has a
+    /// positive quota.
+    fn inputs_for(&self, process: &Process, line: &ProductionLine) -> HashMap<usize, f64> {
+        let mut inputs = HashMap::new();
+        for input in &process.inputs {
+            let is_factor = matches!(input.input_type, InputType::Factor);
+            if input.is_optional() && !is_factor && !line.inputs.contains(&input.good) {
+                continue;
+            }
+            let have = self
+                .property
+                .get(&input.good)
+                .map(|row| row.quantity.max(0.0))
+                .unwrap_or(0.0);
+            if is_factor {
+                if have > 0.0 {
+                    inputs.insert(input.good, have);
+                }
+                continue;
+            }
+            let amount = match line.target {
+                Some(n) if n > 0.0 => have.min(input.amount * n),
+                _ => have,
+            };
+            if amount > 0.0 {
+                inputs.insert(input.good, amount);
+            }
+        }
+        inputs
+    }
+
+    /// # Apply Result
+    ///
+    /// Writes one [`ProcessResult`] onto this firm's property rows.
+    ///
+    /// A negative change is input spent. A positive change is new output,
+    /// added to `quantity`, [`FirmPRow::fresh`], and [`FirmPRow::produced`].
+    /// `used_inputs` is capital set aside for the day.
+    fn apply_result(&mut self, result: &ProcessResult) {
+        for (&good, &change) in &result.changes {
+            if change < 0.0 {
+                self.spend(good, -change, false);
+            } else if change > 0.0 {
+                let row = self.property.entry(good).or_insert_with(FirmPRow::new);
+                row.quantity += change;
+                row.fresh += change;
+                row.produced += change;
+            }
+        }
+        for (&good, &used) in &result.used_inputs {
+            self.spend(good, used, true);
+        }
+    }
+
+    /// # Spend
+    ///
+    /// Removes `amount` of `good` from quantity.
+    ///
+    /// Free units (`quantity - reserve`) go first. Reserved units are reduced
+    /// only for what free stock did not cover. When `capital` is set, the
+    /// units taken are added to `used` so decay can return them. The take is
+    /// capped at the quantity on hand.
+    fn spend(&mut self, good: usize, amount: f64, capital: bool) {
+        if amount <= 0.0 {
+            return;
+        }
+        let Some(row) = self.property.get_mut(&good) else {
+            return;
+        };
+        let take = amount.min(row.quantity.max(0.0));
+        if take <= 0.0 {
+            return;
+        }
+        // Free units go first, so the reserve is left in place when it can be.
+        let free = (row.quantity - row.reserve).max(0.0);
+        let from_reserve = (take - free.min(take)).max(0.0);
+        row.quantity -= take;
+        row.reserve = (row.reserve - from_reserve).max(0.0);
+        if capital {
+            row.used += take;
+        }
+    }
+}
+
+/// # Inputs Bound
+///
+/// True when the map holds a positive amount of some non-factor input.
+///
+/// An unlimited run with nothing bounding it would not stop. Callers skip
+/// that run instead of passing an open target.
+fn inputs_bound(process: &Process, inputs: &HashMap<usize, f64>) -> bool {
+    process
+        .requirements()
+        .iter()
+        .chain(process.optional_inputs().iter())
+        .any(|input| inputs.get(&input.good).copied().unwrap_or(0.0) > 0.0 && input.amount > 0.0)
 }
 
 /// Who owns the firm and whether they carry the residual.
@@ -462,11 +601,12 @@ mod firm_should {
 
     use hexx::Hex;
 
-    use super::{DealMaker, Firm, FirmPRow};
+    use super::{DealMaker, Firm, FirmPRow, ProductionLine};
     use crate::game::actor::Actor;
     use crate::game::deal::ProposedDeal;
     use crate::game::factuals::Factuals;
     use crate::game::good::Good;
+    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
 
     fn mill(id: usize) -> Firm {
         Firm::new(id, format!("mill {id}"), 1, Hex::new(0, 0))
@@ -576,5 +716,179 @@ mod firm_should {
 
         assert_eq!(firm.take_good(2), 10.0);
         assert!(firm.property.get(&2).is_none());
+    }
+
+    fn loaf() -> Good {
+        Good {
+            id: 3,
+            name: "bread".into(),
+            class: None,
+            decay_rate: 0.30,
+            decay_result: HashMap::new(),
+            mass: 0.5,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    fn grain() -> Good {
+        Good {
+            id: 1,
+            name: "grain".into(),
+            class: None,
+            decay_rate: 0.12,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    fn water() -> Good {
+        Good {
+            id: 2,
+            name: "water".into(),
+            class: None,
+            decay_rate: 0.03,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    fn time_good() -> Good {
+        Good {
+            id: 0,
+            name: "time".into(),
+            class: None,
+            decay_rate: 1.0,
+            decay_result: HashMap::new(),
+            mass: 0.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        }
+    }
+
+    /// grain + water + time -> bread, matching the world make-bread recipe shape.
+    fn make_bread() -> Process {
+        Process::new(3, "make bread", 0)
+            .with_input(ProcessInput::new(0, 0.2, true, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(2, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(3, 3.0, true))
+    }
+
+    #[test]
+    fn produce_turns_grain_water_and_time_into_bread() {
+        let mut firm = mill(1);
+        firm.property.insert(0, FirmPRow::new().with_quantity(2.0));
+        firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+        firm.property.insert(2, FirmPRow::new().with_quantity(10.0));
+        firm.production_line.push(ProductionLine {
+            process: 3,
+            target: Some(10.0),
+            inputs: Vec::new(),
+        });
+        let factuals = Factuals::new()
+            .with_good(time_good())
+            .with_good(grain())
+            .with_good(water())
+            .with_good(loaf())
+            .with_process(make_bread());
+
+        firm.produce(&factuals);
+
+        assert!((firm.property[&0].quantity - 0.0).abs() < 1e-12);
+        assert!((firm.property[&1].quantity - 0.0).abs() < 1e-12);
+        assert!((firm.property[&2].quantity - 0.0).abs() < 1e-12);
+        assert!((firm.property[&3].quantity - 30.0).abs() < 1e-12);
+        assert!((firm.property[&3].fresh - 30.0).abs() < 1e-12);
+        assert!((firm.property[&3].produced - 30.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn produce_spends_free_stock_before_reserve() {
+        let mut firm = mill(1);
+        firm.property.insert(0, FirmPRow::new().with_quantity(0.4));
+        firm.property
+            .insert(1, FirmPRow::new().with_quantity(4.0).with_reserve(2.0));
+        firm.property.insert(2, FirmPRow::new().with_quantity(2.0));
+        firm.production_line.push(ProductionLine {
+            process: 3,
+            target: Some(2.0),
+            inputs: Vec::new(),
+        });
+        let factuals = Factuals::new()
+            .with_good(time_good())
+            .with_good(grain())
+            .with_good(water())
+            .with_good(loaf())
+            .with_process(make_bread());
+
+        firm.produce(&factuals);
+
+        assert!((firm.property[&1].quantity - 2.0).abs() < 1e-12);
+        assert!((firm.property[&1].reserve - 2.0).abs() < 1e-12);
+        assert!((firm.property[&3].quantity - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn produce_skips_a_non_positive_target() {
+        let mut firm = mill(1);
+        firm.property.insert(0, FirmPRow::new().with_quantity(2.0));
+        firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+        firm.property.insert(2, FirmPRow::new().with_quantity(10.0));
+        firm.production_line.push(ProductionLine {
+            process: 3,
+            target: Some(0.0),
+            inputs: Vec::new(),
+        });
+        let factuals = Factuals::new()
+            .with_good(time_good())
+            .with_good(grain())
+            .with_good(water())
+            .with_good(loaf())
+            .with_process(make_bread());
+
+        firm.produce(&factuals);
+
+        assert!((firm.property[&1].quantity - 10.0).abs() < 1e-12);
+        assert!(firm.property.get(&3).is_none());
+    }
+
+    #[test]
+    fn decay_leaves_quantity_at_reserve() {
+        let mut firm = mill(1);
+        firm.property
+            .insert(1, FirmPRow::new().with_quantity(10.0).with_reserve(10.0));
+        let factuals = Factuals::new().with_good(grain());
+
+        let rot = firm.decay_goods(&factuals);
+
+        assert_eq!(firm.property[&1].quantity, 10.0);
+        assert_eq!(firm.property[&1].reserve, 10.0);
+        assert_eq!(rot[&1].0, 0.0);
+        assert_eq!(rot[&1].1, 10.0);
+    }
+
+    #[test]
+    fn decay_rots_aging_free_stock_down_to_reserve() {
+        let mut firm = mill(1);
+        let mut row = FirmPRow::new().with_quantity(20.0).with_reserve(10.0);
+        row.fresh = 0.0;
+        firm.property.insert(1, row);
+        let factuals = Factuals::new().with_good(grain());
+
+        let rot = firm.decay_goods(&factuals);
+
+        // 20 * 0.12 = 2.4 lost from aging free stock; reserve floor is 10.
+        assert!((firm.property[&1].quantity - 17.6).abs() < 1e-12);
+        assert_eq!(firm.property[&1].reserve, 10.0);
+        assert!((rot[&1].0 - 2.4).abs() < 1e-12);
     }
 }

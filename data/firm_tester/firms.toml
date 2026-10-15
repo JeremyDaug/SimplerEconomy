@@ -6,6 +6,7 @@
 # stock reserve is held back from sale and defaults to 0.
 # A line target is that process's iterations. Omitted is as many as
 # inputs allow.
+# Time is stocked here; firms do not receive the morning Time grant pops get.
 
 [[firms]]
 id = 1
@@ -19,8 +20,16 @@ quantity = 30
 
 [[firms.stock]]
 good = "grain"
-quantity = 10
+quantity = 20
 reserve = 10
+
+[[firms.stock]]
+good = "water"
+quantity = 15
+
+[[firms.stock]]
+good = "time"
+quantity = 4
 
 [[firms.lines]]
 process = "make bread"
@@ -36,5 +45,10 @@ liable = true
 good = "water"
 quantity = 30
 
+[[firms.stock]]
+good = "time"
+quantity = 3
+
 [[firms.lines]]
 process = "make water"
+target = 10

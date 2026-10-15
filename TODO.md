@@ -36,9 +36,9 @@ Focus: firms, their logic and reasoning, and their trade. No `PlayState`.
 
 Enough wages, owners, and firm strategy to scaffold and test. Not the full strategy set. Not company hierarchy (`parent`, `children`, `level` stay links only).
 
-Shells already in tree: `Firm`, `Owners`, `Workforce` (hours, labor, wage basket, profit share; morning settlement is not written), `Contract` (empty), `FirmOrganization` (empty). `reserve_for_day`, `produce`, and `plan` are empty. A firm seller still only checks `seller_can_accept`.
+Shells already in tree: `Firm`, `Owners`, `Workforce` (hours, labor, wage basket, profit share; morning settlement is not written), `Contract` (empty), `FirmOrganization` (empty). `Firm::produce` runs each line from stock. `reserve_for_day` and `plan` are empty. A firm seller still only checks `seller_can_accept`.
 
-- [ ] A firm tester, same shape as `pop_tester`: one market, firms that produce and trade, printed meetings.
+- [x] A firm tester, same shape as `pop_tester`: one market, firms that produce and trade, printed meetings.
 - [ ] Firm reserve, produce, and plan.
 - [ ] Firm propose / evaluate, not only the stock check.
 - [ ] Wage settlement and owner profit, enough to test. Morning settlement is not written.
