@@ -330,10 +330,11 @@ impl Market {
 
     /// # History
     ///
-    /// Snapshot of stored AMV, salability, and units still sought.
+    /// Snapshot of stored AMV, salability, units still sought, and production.
     ///
-    /// Sought is copied from [`MarketGood::sought_unmet`]. A snapshot taken
-    /// before exchange has none. The night plan reads it.
+    /// Sought is copied from [`MarketGood::sought_unmet`]. Production is
+    /// copied from [`MarketGood::production`]. A snapshot taken before
+    /// exchange has no sought units. The night plan reads it.
     pub fn history(&self) -> MarketHistory {
         let mut history = MarketHistory::new();
         for (&good_id, good) in &self.goods {
@@ -341,6 +342,9 @@ impl Market {
             history.salability.insert(good_id, good.salability);
             if good.sought_unmet > 0.0 {
                 history.sought.insert(good_id, good.sought_unmet);
+            }
+            if good.production > 0.0 {
+                history.produced.insert(good_id, good.production);
             }
         }
         history.friction = self.friction;
@@ -453,7 +457,8 @@ impl Market {
     /// # Match Deals
     ///
     /// Collects sell orders, then picks a buyer at random from those who still
-    /// have a buy, and a seller at random from the valid matches.
+    /// have a buy, and a seller from the valid matches in proportion to the
+    /// units that seller offers.
     /// The buyer sees that seller's offers and requests and either proposes
     /// a basket or abandons. The seller accepts or rejects. An accepted
     /// basket is finalized, freight included. The buyer pays that freight
@@ -504,7 +509,8 @@ impl Market {
             }
             let pick = crate::game::util::random_index(rng, candidates.len());
             let (buyer, buy, matches) = candidates.swap_remove(pick);
-            let sell = matches[crate::game::util::random_index(rng, matches.len())].clone();
+            // A larger offer is drawn more often, in proportion to its units.
+            let sell = pick_seller(&matches, rng).clone();
             tried.insert((buyer, sell.origin, buy.target));
             let meeting = self.meet(actors, buyer, &sell, &history, factuals, rng);
             if meeting.outcome == MeetingOutcome::Accepted {
@@ -675,6 +681,61 @@ impl Market {
     }
 }
 
+/// # Pick Seller
+///
+/// One order from `matches`, drawn in proportion to the units it offers.
+///
+/// `rng` supplies the draw. `matches` is not empty. [`offered_units`] is
+/// the weight. A larger pile is drawn more often by that many units. An
+/// order with no whole unit to sell is skipped. When every weight is zero,
+/// the draw is uniform over `matches`.
+fn pick_seller<'a>(matches: &'a [MarketOrder], rng: &mut impl rand::RngCore) -> &'a MarketOrder {
+    let weights: Vec<f64> = matches.iter().map(offered_units).collect();
+    let total: f64 = weights.iter().copied().sum();
+    if total <= 0.0 {
+        return &matches[crate::game::util::random_index(rng, matches.len())];
+    }
+    let mut mark = unit_interval(rng) * total;
+    for (order, weight) in matches.iter().zip(weights) {
+        if weight <= 0.0 {
+            continue;
+        }
+        mark -= weight;
+        if mark < 0.0 {
+            return order;
+        }
+    }
+    matches
+        .iter()
+        .rev()
+        .find(|order| offered_units(order) > 0.0)
+        .unwrap_or(&matches[0])
+}
+
+/// # Offered Units
+///
+/// Whole units `order` is selling.
+///
+/// A buy, a non-finite amount, and a sell under one unit return 0. The
+/// weight [`pick_seller`] uses.
+fn offered_units(order: &MarketOrder) -> f64 {
+    if !order.target_amount.is_finite() || order.target_amount >= 0.0 {
+        return 0.0;
+    }
+    (-order.target_amount).floor().max(0.0)
+}
+
+/// # Unit Interval
+///
+/// A draw in `[0, 1)` from `rng`.
+///
+/// Uses 53 bits so the value lands on an `f64` mantissa. [`pick_seller`]
+/// scales it by the total weight.
+fn unit_interval(rng: &mut impl rand::RngCore) -> f64 {
+    let bits = rng.next_u64() >> 11;
+    (bits as f64) / ((1_u64 << 53) as f64)
+}
+
 fn listed_sells(
     actors: &Actors,
     actor: Actor,
@@ -731,6 +792,10 @@ pub struct MarketHistory {
     ///
     /// Empty on a snapshot taken before exchange.
     pub sought: HashMap<usize, f64>,
+    /// Units produced today, per good.
+    ///
+    /// Copied from [`MarketGood::production`]. Empty when nothing was made.
+    pub produced: HashMap<usize, f64>,
     /// Copied from [`Market::friction`].
     pub friction: f64,
     /// Used when a good has no recorded salability.
@@ -749,6 +814,7 @@ impl MarketHistory {
             prices: HashMap::new(),
             salability: HashMap::new(),
             sought: HashMap::new(),
+            produced: HashMap::new(),
             friction: 0.0,
             default_salability: SALABILITY_DEFAULT,
         }
@@ -759,6 +825,13 @@ impl MarketHistory {
     /// Units of `good_id` still sought on this snapshot, or 0.
     pub fn sought(&self, good_id: usize) -> f64 {
         self.sought.get(&good_id).copied().unwrap_or(0.0)
+    }
+
+    /// # Produced
+    ///
+    /// Units of `good_id` produced on this snapshot, or 0.
+    pub fn produced(&self, good_id: usize) -> f64 {
+        self.produced.get(&good_id).copied().unwrap_or(0.0)
     }
 
     /// AMV for `good_id`, or 1.0 if this snapshot has none.
@@ -1026,13 +1099,48 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        amv_scale, monetary_rating, Market, MarketGood, MarketHistory, AMV_EPSILON,
+        amv_scale, monetary_rating, pick_seller, Market, MarketGood, MarketHistory, AMV_EPSILON,
         SALABILITY_DEFAULT, SALABILITY_MAX, SALABILITY_MIN,
     };
+    use rand::SeedableRng;
+
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
     use crate::game::deal::ProposedDeal;
     use crate::game::factuals::Factuals;
+    use crate::game::marketorder::MarketOrder;
+
+    /// Nine of the ten units sit on one seller. That seller is drawn most of the time.
+    #[test]
+    fn pick_seller_favors_the_larger_offer() {
+        let matches = vec![
+            MarketOrder::sell(Actor::Pop(1), 1, 1.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 9.0),
+        ];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let mut large = 0;
+        let draws = 1000;
+        for _ in 0..draws {
+            if pick_seller(&matches, &mut rng).origin == Actor::Pop(2) {
+                large += 1;
+            }
+        }
+        assert!(large > 800, "large seller chosen {large} of {draws}");
+    }
+
+    /// A buy and a sell under one unit have no weight. The whole offer is drawn.
+    #[test]
+    fn pick_seller_skips_orders_with_no_whole_unit() {
+        let matches = vec![
+            MarketOrder::buy(Actor::Pop(1), 1, 5.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 0.4),
+            MarketOrder::sell(Actor::Pop(3), 1, 4.0),
+        ];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(2);
+        for _ in 0..20 {
+            assert_eq!(pick_seller(&matches, &mut rng).origin, Actor::Pop(3));
+        }
+    }
 
     #[test]
     fn amv_scale_clamps_and_monetary_rating_starts_at_par() {
@@ -1066,6 +1174,19 @@ mod tests {
         history.prices.insert(1, -2.0);
         history.salability.insert(1, 0.1);
         assert!((history.holding_per_unit(1) - -2.0).abs() < 1e-12);
+    }
+
+    /// Production on the card is the night's produced snapshot. A good that
+    /// was not made reads as zero.
+    #[test]
+    fn history_copies_production() {
+        let mut market = Market::new(1);
+        let mut made = MarketGood::new();
+        made.production = 12.0;
+        market.goods.insert(6, made);
+        let history = market.history();
+        assert!((history.produced(6) - 12.0).abs() < 1e-12);
+        assert_eq!(history.produced(1), 0.0);
     }
 
     /// Good 0 is already the unit, so the unsold good's step stays on the card.

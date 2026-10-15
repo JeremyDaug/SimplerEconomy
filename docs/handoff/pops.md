@@ -20,11 +20,11 @@ demographic desire and then a pop desire.
 | `Pop::satisfy_continue` | Walks forward from the bookmark `satisfy` wrote. No bookmark: same as `satisfy` |
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
-| Savings between tiers, and between luxury iterations | Written. One extra day on the highest `salability * durability * fill` good, withheld from eating, selling, and payment. See Savings |
+| Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from eating, selling, and payment. The job does not spend that pile as an input. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys add runs on the best line. A line that does not pay aims at the cover and those unmet runs. One already running keeps a run when that aim is gone. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
+| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
 
@@ -79,8 +79,9 @@ least one. The saved day's shortfall is added on top.
 
 Basic and common run once each, in list order, and do not stop when a desire
 is short. Luxury benches any desire that missed the current level. A further
-luxury level runs only while the saved day is on hand, and leaves those units.
-The saved day is not a finished level.
+luxury level runs only when the luxury day was placed and is still on hand,
+and leaves those units. An earlier short day means that luxury day was not
+placed. The saved day is not a finished level.
 
 `Pop::consume` first sets every desire's satisfaction to zero, so the level
 `satisfy` recorded for the reserved goods is counted once, when those goods
@@ -92,17 +93,24 @@ targets to `used`, and adds satisfaction. `consume_tier` and
 ## Savings
 
 One extra day per desire. The rate is fixed for this tester. Demographics
-and sentiment do not change it. The day is grossed up by `1 / durability`
-and placed on the single highest `salability * durability * fill` good.
+and sentiment do not change it. The day is grossed up by `1 / durability`.
+Basic and common place it on a good that desire eats. Luxury may place it
+on any good. Among those candidates, it sits on the single highest
+`salability * durability * fill` good.
 Fill is 1 when this pop makes the good or already holds that day, and
 otherwise the share of today's buy that arrived. A good that decays
 completely is not a candidate. The eaten good keeps a tie. A day outside
 the desire is the holding value of the eaten day, and an exact holding
 total adds one more whole unit.
 
-The pile is withheld from eating, selling, and payment. A later tier's day
-is not added while an earlier day is short of stock. The job covers a day
-it can make. The morning buy adds the shortfall on the winning good.
+The pile is withheld from eating, selling, and payment, and the job does
+not spend it as an input. Output an earlier line made this morning counts
+toward the pile, and only the surplus over it feeds a later line. A later
+tier's day is not added while an earlier day is short of one day's
+units of its winning good. The pile stored is the larger grossed hold.
+Tomorrow's meal is not set aside before that check. A further
+luxury level waits while the earlier day is short. The job covers a day it can
+make. The morning buy adds the shortfall on the winning good.
 
 ## Traps
 
@@ -147,7 +155,7 @@ factor shops one unit and leaves the other inputs free.
 
 Produce runs before exchange. Inputs destroyed that morning, including
 Time, are gone before freight. A line may spend free stock an earlier
-line made that morning. A line that spends time leaves enough for a
+line made that morning, above the saved day. A line that spends time leaves enough for a
 later line it feeds when that line yields more per unit of time.
 Free units go before a desire's reserve. New
 output lands in `quantity`, `fresh`,
@@ -174,6 +182,9 @@ desire adds the highest-efficiency target some line outputs, and only
 when that cap is at least 1. Units of one good are summed, then the
 remaining stock of that good is subtracted once. A desire no line can
 make adds nothing. A saved day this job can make is included in that gap.
+When the line that takes a gap costs more per unit than that good's
+holding, those units are also posted as a buy. The line still aims at
+the gap. A purchase on hand shrinks the next night's gap.
 
 `Job::plan` writes `Some` on every line. The line with the highest
 output per unit of time takes each short good. A tie keeps the earlier
@@ -193,24 +204,26 @@ and no more than `produced`. At a share of `0.1` it holds the runs just
 made. Under that it can grow, up to twice those runs when nothing rotted
 and nothing of that output is left on hand. Over that it pulls back by
 `0.1 / share`. `produced == 0` and `lost > 0` leaves one extra run.
-Unmet buys of an output, above stock on hand, add runs on the best line
-for that good. That line takes the whole shortfall above stock when its
-yield matches the best process known. A worse process adds no more than
-its cover. The cover plus the surplus plus those unmet runs is the
-ideal for a line that pays. A line that does not pay aims at the cover
-and those unmet runs. A line already running keeps one run when that
-aim is gone. A line at 0 stays at 0. The stored target steps at most a
-quarter of the way toward its aim, using 1 as the base when the target is
-below 1. A snap writes a new cover in whole when the step has not reached it, and
-does not add the old target on top. Unmet buys stay in that aim, so a
-snap does not drop them. When a line is not covering a short good and does not feed one
-that is, it moves to the back of the list. A line that makes an input
-runs before the line that consumes it. A new or removed desire, or a
+Unmet buys of an output, plus units downstream production used, above
+stock on hand, add runs on the best line for that good. That line takes
+the whole shortfall above stock when its yield matches the best process
+known. A worse process adds no more than its cover. One that costs
+more to make than the good's holding adds none of that shortfall. The cover plus the
+surplus plus those runs is the ideal for a line that pays. A line that
+does not pay aims at the cover and those runs. A line already running
+keeps one run when that aim is gone. A line at 0 stays at 0. The stored
+target steps at most a quarter of the way toward its aim, using 1 as the
+base when the target is below 1. A snap writes a new cover in whole when
+the step has not reached it, and does not add the old target on top.
+Those runs stay in that aim, so a snap does not drop them. A covering line returns to the order it was added, ahead of a line that
+only pays or only feeds one of those lines. When a line is not covering a
+short good and does not feed one that is, it moves to the back of the list.
+A line that makes an input runs before the line that consumes it. A new or removed desire, or a
 growth change of a desire amount,
 snaps that night. A paying line with a stored cover writes the new cover
 whole and steps only the surplus above the old cover. A paying line whose
 stored cover is still 0 steps its current target toward the new cover
-plus the surplus and the unmet runs.
+plus the surplus and those runs.
 
 `Job::complexity_cost` is the modifier `(complexity_modifier +
 craft_distance)`, capped at `1.0`. Each process id counts once. The
@@ -243,8 +256,8 @@ list. The next morning's reset drops the list and the claim book. Targets stay.
 Exchange, production, and consumption stay separate phases.
 
 `Market::match_deals` collects sells, then picks a buyer at random from those
-who still have a buy, and a seller at random from the valid matches for that
-buy. They meet because one sought good is one offered good. The buyer is
+who still have a buy, and a seller from the valid matches in proportion to
+the units that seller offers. They meet because one sought good is one offered good. The buyer is
 shown the seller's whole book and either proposes a basket or abandons.
 The seller accepts or rejects. Accept moves every good in the basket.
 The basket is one map: positive units come to the buyer, negative units
@@ -326,7 +339,7 @@ transport just received) until `freight` is covered.
 ## Market record
 
 `MarketGood.amv` and `MarketGood.salability` are the published card.
-`Market::history` copies AMV, salability, friction, and units still sought.
+`Market::history` copies AMV, salability, friction, units still sought, and production.
 `match_deals` takes that snapshot at the start, after the morning clear.
 A missing AMV reads as `1.0`. A missing salability reads as
 `SALABILITY_DEFAULT` (`0.5`). Deals do not write the card.
@@ -338,7 +351,8 @@ payment. It does not change evaluate.
 The day's exchange and rot sit on `MarketGood` with the card: `traded`,
 `paid`, `print_holding`, `print_units`, `sought_unmet`, `offered_unsold`,
 `decayed`, and `volume`. History copies `sought_unmet` when it is still
-positive. A snapshot taken before exchange has none. `match_deals` adds `traded` and `paid`, records the print, then
+positive, and `production` when it is still positive. A snapshot taken
+before exchange has no sought units. `match_deals` adds `traded` and `paid`, records the print, then
 sets `sought_unmet` and `offered_unsold` from the book it left behind.
 After consumption, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
