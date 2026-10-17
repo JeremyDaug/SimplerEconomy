@@ -367,6 +367,80 @@ fn female_fraction(females: f64, total: f64) -> f64 {
     result
 }
 
+/// # Birth Sentiment
+///
+/// Fractional change in births per woman when one emotion is the whole pop.
+///
+/// Species, culture, stratum, and religion each hold one of these, and the
+/// four rates add. Contentment has no rate, so a content pop does not change
+/// births.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BirthSentiment {
+    /// Added when the whole pop is hopeful.
+    pub hope: f64,
+    /// Added when the whole pop is happy.
+    pub happiness: f64,
+    /// Added when the whole pop is afraid.
+    pub fear: f64,
+    /// Added when the whole pop is angry.
+    pub anger: f64,
+}
+
+impl BirthSentiment {
+    /// # Zero
+    ///
+    /// No change in births at any sentiment.
+    pub fn zero() -> Self {
+        Self::default()
+    }
+
+    /// # Human
+    ///
+    /// The species default.
+    ///
+    /// Full hope adds 25% of births per woman, happiness adds 10%, fear
+    /// subtracts 30%, and anger subtracts 10%.
+    pub fn human() -> Self {
+        Self {
+            hope: 0.25,
+            happiness: 0.10,
+            fear: -0.30,
+            anger: -0.10,
+        }
+    }
+
+    /// # Add
+    ///
+    /// Field-wise sum, for stacking species, culture, stratum, and religion.
+    pub fn add(self, other: Self) -> Self {
+        Self {
+            hope: self.hope + other.hope,
+            happiness: self.happiness + other.happiness,
+            fear: self.fear + other.fear,
+            anger: self.anger + other.anger,
+        }
+    }
+
+    /// # Multiplier
+    ///
+    /// `1` plus each rate times that emotion's share of the pop.
+    ///
+    /// `hope`, `happiness`, `fear`, and `anger` are shares. The result is
+    /// not below 0. A non-finite result is 1.
+    pub fn multiplier(self, hope: f64, happiness: f64, fear: f64, anger: f64) -> f64 {
+        let factor = 1.0
+            + self.hope * hope
+            + self.happiness * happiness
+            + self.fear * fear
+            + self.anger * anger;
+        if factor.is_finite() {
+            factor.max(0.0)
+        } else {
+            1.0
+        }
+    }
+}
+
 /// # Demographic Rates
 ///
 /// Birth, mortality, and household-formation parameters for [`Household::update`].
@@ -710,5 +784,58 @@ mod apply_mortality_should {
         assert_eq!(rates.child_mortality, (0.0, 0.04, 0.0));
         assert_eq!(rates.adult_mortality, (0.0, 0.04, 0.0));
         assert_eq!(rates.elder_mortality, (0.0, 0.04, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod birth_sentiment_should {
+    use super::BirthSentiment;
+
+    #[test]
+    fn human_full_shares_match_the_species_default() {
+        let rates = BirthSentiment::human();
+        assert!((rates.multiplier(1.0, 0.0, 0.0, 0.0) - 1.25).abs() < 1e-12);
+        assert!((rates.multiplier(0.0, 1.0, 0.0, 0.0) - 1.10).abs() < 1e-12);
+        assert!((rates.multiplier(0.0, 0.0, 1.0, 0.0) - 0.70).abs() < 1e-12);
+        assert!((rates.multiplier(0.0, 0.0, 0.0, 1.0) - 0.90).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_shares_stay_at_one() {
+        let scale = BirthSentiment::human().multiplier(0.0, 0.0, 0.0, 0.0);
+        assert!((scale - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn even_shares_are_slightly_below_one() {
+        let scale = BirthSentiment::human().multiplier(0.2, 0.2, 0.2, 0.2);
+        assert!((scale - 0.99).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_large_fear_rate_floors_at_zero() {
+        let rates = BirthSentiment {
+            fear: -2.0,
+            ..BirthSentiment::zero()
+        };
+        assert_eq!(rates.multiplier(0.0, 0.0, 1.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_non_finite_share_returns_one() {
+        let scale = BirthSentiment::human().multiplier(f64::NAN, 0.0, 0.0, 0.0);
+        assert_eq!(scale, 1.0);
+    }
+
+    #[test]
+    fn add_sums_each_emotion() {
+        let stacked = BirthSentiment::human().add(BirthSentiment {
+            hope: 0.05,
+            ..BirthSentiment::zero()
+        });
+        assert!((stacked.hope - 0.30).abs() < 1e-12);
+        assert!((stacked.happiness - 0.10).abs() < 1e-12);
+        assert!((stacked.fear - (-0.30)).abs() < 1e-12);
+        assert!((stacked.anger - (-0.10)).abs() < 1e-12);
     }
 }

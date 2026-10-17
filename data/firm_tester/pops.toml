@@ -5,18 +5,13 @@
 # well. Pop 3 digs gold and starts with 20. It opens with no farm or water
 # line, so its food and water come from the market. Gold is not a desire,
 # so it is what pop 3 has to pay with.
-# Each pop is 5 households of 2 adults, 2.5 children, and 0.5 elders.
+# A missing count is 10 households. Each household is 2 adults, 2.5
+# children, and 0.5 elders unless [pops.household] overrides those.
 
 [[pops]]
 id = 1
 craft = "subsistence farming"
 species = "human"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.lines]]
 process = "subsistence farm"
@@ -39,12 +34,6 @@ id = 2
 craft = "subsistence watering"
 species = "human"
 
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
-
 [[pops.lines]]
 process = "subsistence farm"
 target = 12.5
@@ -65,12 +54,6 @@ target = 10
 id = 3
 craft = "subsistence"
 species = "human"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.stock]]
 good = "gold"

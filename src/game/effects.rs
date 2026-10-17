@@ -103,11 +103,10 @@ pub enum DesireEffect {
     Birthrate(f64, bool),
     /// Extra goods granted from satisfaction path.
     BonusGood(usize, f64, bool),
-    /// Extra satisfaction units applied to the **same tier** as the source desire.
+    /// Extra satisfaction counted with the desire that carries it.
     ///
-    /// Applied early in [`crate::game::pop::Pop::update_sentiments`]. Never used
-    /// on basic (tier 0). Common clamps to one full level; luxury may oversat.
-    /// The `bool` is bonus (scales with sat) vs malus (scales with lack).
+    /// The `bool` is bonus (scales with levels met) vs malus (scales with
+    /// the unmet share of one level).
     Satisfaction(f64, bool),
     /// Flat share-of-pop shift into a sentiment axis (from other axes proportionally).
     ///
@@ -283,9 +282,11 @@ pub enum PopEffect {
     Birthrate(f64),
     /// Mortality delta for the targeted household subgroup.
     Mortality(HouseholdTarget, f64),
-    /// Extra satisfaction units for a **non-basic** desire tier (`tier` 1 = common,
-    /// 2 = luxury). Applied early in update_sentiments. Common clamps to one
-    /// full level; luxury may oversat. `amount` is already scaled.
+    /// Extra satisfaction on one tier (`0` basic, `1` common, `2` luxury).
+    ///
+    /// Sentiment counts it on that tier. Standard of living adds it, and
+    /// [`crate::game::pop::Pop::calculate_sol`] removes it. `amount` is
+    /// already scaled.
     Satisfaction { tier: usize, amount: f64 },
     /// Extra goods already scaled; granted at end-of-day decay.
     BonusGood { good: usize, amount: f64 },

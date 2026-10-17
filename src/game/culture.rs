@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    desire::DemoDesire, effects::DemographicEffect, household::DemographicRates,
+    desire::DemoDesire, effects::DemographicEffect, household::{BirthSentiment, DemographicRates},
 };
 
 /// # Culture
@@ -31,6 +31,8 @@ pub struct Culture {
     pub culture_effects: Vec<DemographicEffect>,
     /// The Demogarphic effects on a species. Is added to the baseline of a pop's species.
     pub culture_demo_eff: DemographicRates,
+    /// Added to the species birth-sentiment rates. Zero leaves those rates alone.
+    pub birth_sentiment: BirthSentiment,
     /// Added to the species work-time fraction. `0` leaves the species value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
@@ -66,6 +68,7 @@ impl Culture {
             desires: HashMap::new(),
             culture_effects: vec![],
             culture_demo_eff: DemographicRates::zero(),
+            birth_sentiment: BirthSentiment::zero(),
             work_time_fraction: 0.0,
             strata: Vec::new(),
             household_changed: false,

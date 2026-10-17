@@ -359,11 +359,14 @@ impl Market {
     /// [`crate::game::deal::DealMaker::reset_day`],
     /// then reserve, produce, a second pop satisfy for what was just made,
     /// a resettle of each pop's input buys, [`Self::match_deals`], consume, pop growth,
-    /// decay, [`crate::game::pop::Pop::rescale_desires`], then actor
+    /// [`Self::rebalance_population_cap`],
+    /// [`crate::game::pop::Pop::update_sentiments`], decay,
+    /// [`crate::game::pop::Pop::rescale_desires`], then actor
     /// record keeping and planning, then [`Self::record_keeping`].
     ///
     /// Rescale is after decay, so this day's desire effects stay at the
-    /// previous size. Planning then reads the new targets.
+    /// previous size. It also runs after the population cap, so satisfaction
+    /// and targets match the fitted size. Planning then reads those targets.
     ///
     /// A pop's reserve applies its craft before the job reserves inputs.
     ///
@@ -411,6 +414,15 @@ impl Market {
         for actor in &members {
             if let Actor::Pop(id) = *actor {
                 actors.pop_mut(id).growth_phase(factuals);
+            }
+        }
+        // Fit capped pops back to their combined ceiling before sentiment.
+        self.rebalance_population_cap(actors);
+        // Sentiment. Consume has written today's satisfaction.
+        let sentiment_history = self.history();
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).update_sentiments(&sentiment_history);
             }
         }
         // Decay Phase
@@ -660,6 +672,51 @@ impl Market {
             match_good,
             proposal,
             outcome,
+        }
+    }
+
+    /// # Rebalance Population Cap
+    ///
+    /// Scales every capped pop by one factor when their combined headcount
+    /// is above the sum of their shares.
+    ///
+    /// `actors` holds the pops. Each [`Pop::population_cap`](crate::game::pop::Pop::population_cap)
+    /// is that pop's share, in people. A pop with no share is left out of
+    /// both sums and is not scaled. The factor is the summed shares divided
+    /// by the summed headcount, applied to household count, so the age mix
+    /// stays and the capped pops sum to the ceiling. A non-finite or negative
+    /// share is left out. A summed headcount of 0, or one already at or below
+    /// the ceiling, leaves every pop alone. Desire amounts are matched later
+    /// by [`Pop::rescale_desires`](crate::game::pop::Pop::rescale_desires).
+    pub(crate) fn rebalance_population_cap(&self, actors: &mut Actors) {
+        let mut ceiling = 0.0;
+        let mut people = 0.0;
+        let mut ids = Vec::new();
+        for actor in self.members() {
+            let Actor::Pop(id) = actor else {
+                continue;
+            };
+            let pop = actors.pop(id);
+            let Some(share) = pop.population_cap else {
+                continue;
+            };
+            if !share.is_finite() || share < 0.0 {
+                continue;
+            }
+            let size = pop.demographics.total_population();
+            if !size.is_finite() || size < 0.0 {
+                continue;
+            }
+            ceiling += share;
+            people += size;
+            ids.push(id);
+        }
+        if people <= ceiling || people == 0.0 {
+            return;
+        }
+        let factor = ceiling / people;
+        for id in ids {
+            actors.pop_mut(id).demographics.household.count *= factor;
         }
     }
 

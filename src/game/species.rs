@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::game::{desire::DemoDesire, effects::DemographicEffect, household::DemographicRates};
+use crate::game::{
+    desire::DemoDesire, effects::DemographicEffect, household::{BirthSentiment, DemographicRates},
+};
 
 /// # Species
 ///
@@ -32,6 +34,11 @@ pub struct Species {
     /// 
     /// Currently, the baseline is set by `DemographicRates::baseline()`
     pub species_demo_eff: DemographicRates,
+    /// Birth change at a full share of one emotion.
+    ///
+    /// Defaults to [`BirthSentiment::human`]. Culture, stratum, and religion
+    /// add theirs.
+    pub birth_sentiment: BirthSentiment,
     /// Share of on-hand Time this species may commit to wage work. `0..=1`.
     ///
     /// Culture, stratum, and religion add their own fractions on top. The sum is clamped
@@ -56,6 +63,7 @@ impl Species {
             desires: HashMap::new(),
             species_effects: vec![],
             species_demo_eff: DemographicRates::zero(),
+            birth_sentiment: BirthSentiment::human(),
             work_time_fraction: 0.5,
             household_changed: false,
         }

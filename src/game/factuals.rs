@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::game::{
-    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::DemographicRates, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species, stratum::Stratum,
+    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::{BirthSentiment, DemographicRates}, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species, stratum::Stratum,
 };
 
 /// TOML world-data file of goods, processes, and crafts (factuals).
@@ -1070,6 +1070,36 @@ impl Factuals {
         }
         fraction.clamp(0.0, 1.0)
     }
+
+    /// # Birth Sentiment
+    ///
+    /// Species, culture, stratum, and religion birth-sentiment rates, added.
+    ///
+    /// `demographics` names the four records. Culture, stratum, and religion
+    /// id `0` are skipped. A missing species adds nothing. The result is that
+    /// stacked schedule.
+    pub fn birth_sentiment(&self, demographics: DemoRow) -> BirthSentiment {
+        let mut mods = BirthSentiment::zero();
+        if let Some(species) = self.species.get(&demographics.species) {
+            mods = mods.add(species.birth_sentiment);
+        }
+        if demographics.culture != 0 {
+            if let Some(culture) = self.cultures.get(&demographics.culture) {
+                mods = mods.add(culture.birth_sentiment);
+            }
+        }
+        if demographics.stratum != 0 {
+            if let Some(stratum) = self.get_stratum(demographics.stratum) {
+                mods = mods.add(stratum.birth_sentiment);
+            }
+        }
+        if demographics.religion != 0 {
+            if let Some(religion) = self.religion.get(&demographics.religion) {
+                mods = mods.add(religion.birth_sentiment);
+            }
+        }
+        mods
+    }
 }
 
 #[cfg(test)]
@@ -1916,5 +1946,75 @@ volume = 1.0
                 m
             });
         assert_eq!(rates, expected);
+    }
+
+    #[test]
+    fn birth_sentiment_adds_culture_stratum_and_religion() {
+        use crate::game::household::{BirthSentiment, Household};
+        use crate::game::pop::DemoRow;
+
+        let species = Species::new(0, "Human");
+        let mut culture = Culture::new(1, "Test");
+        culture.birth_sentiment.hope = 0.05;
+        let mut stratum = Stratum::new(3, "tenants", 1);
+        stratum.birth_sentiment.fear = -0.10;
+        let mut religion = Religion::new(2, "Faith");
+        religion.birth_sentiment.anger = -0.05;
+
+        let factuals = Factuals::new()
+            .with_species(species)
+            .with_culture(culture)
+            .with_stratum(stratum)
+            .with_religion(religion);
+        let row = DemoRow {
+            household: Household::new(),
+            species: 0,
+            culture: 1,
+            stratum: 3,
+            religion: 2,
+        };
+
+        let got = factuals.birth_sentiment(row);
+        let expected = BirthSentiment::human().add(BirthSentiment {
+            hope: 0.05,
+            happiness: 0.0,
+            fear: -0.10,
+            anger: -0.05,
+        });
+        assert_eq!(got, expected);
+        // The sentiment schedule stays off the additive rate bundle.
+        assert_eq!(
+            factuals.get_demographic_rates(row).birth_per_woman,
+            crate::game::household::DemographicRates::baseline().birth_per_woman
+        );
+    }
+
+    #[test]
+    fn birth_sentiment_skips_a_missing_species_and_empty_ids() {
+        use crate::game::household::{BirthSentiment, Household};
+        use crate::game::pop::DemoRow;
+
+        let mut culture = Culture::new(1, "Test");
+        culture.birth_sentiment.hope = 0.05;
+        let factuals = Factuals::new().with_culture(culture);
+        let named = DemoRow {
+            household: Household::new(),
+            species: 9,
+            culture: 1,
+            stratum: 0,
+            religion: 0,
+        };
+        let empty_ids = DemoRow {
+            household: Household::new(),
+            species: 9,
+            culture: 0,
+            stratum: 0,
+            religion: 0,
+        };
+
+        let mut only_culture = BirthSentiment::zero();
+        only_culture.hope = 0.05;
+        assert_eq!(factuals.birth_sentiment(named), only_culture);
+        assert_eq!(factuals.birth_sentiment(empty_ids), BirthSentiment::zero());
     }
 }

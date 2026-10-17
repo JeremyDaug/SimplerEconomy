@@ -6,14 +6,23 @@
 //! species, culture, and religion files. This file does not decide prices,
 //! baskets, or accept/reject.
 //!
+//! The first argument is how many days to run before asking for more
+//! (default 3). The second is the population cap, as a multiplier on each
+//! pop's starting size (default 1000). Those shares add up to one ceiling.
+//! After growth, if the pops pass it, every pop is scaled by the same
+//! factor. After those days, enter runs one
+//! more, a number runs that many, and 0 quits.
+//!
 //! ```text
 //! cargo run --example pop_tester
 //! cargo run --example pop_tester -- 5
+//! cargo run --example pop_tester -- 5 10
 //! ```
 
 mod load;
 
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use rand::rngs::StdRng;
@@ -27,10 +36,7 @@ use simpler_economy::game::market::{Market, MarketGood, MarketHistory};
 use simpler_economy::game::pop::Pop;
 
 fn main() {
-    let days = std::env::args()
-        .nth(1)
-        .and_then(|arg| arg.parse::<u32>().ok())
-        .unwrap_or(3);
+    let (days, cap_multiplier) = tester_args();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
     let world = root.join("world");
     let scenario_dir = root.join("pop_tester");
@@ -49,24 +55,137 @@ fn main() {
     let mut actors = scenario.actors;
 
     let mut rng = StdRng::seed_from_u64(1);
+    set_population_caps(&mut actors, &ids, cap_multiplier);
     println!("pop tester");
     println!("world: {}", world.display());
     println!("scenario: {}", scenario_dir.display());
     println!("days: {days}");
+    println!(
+        "pop cap: {}x starting size, shared",
+        qty_text(cap_multiplier)
+    );
     println!();
 
-    for day in 1..=days {
-        println!("=== day {day} ===");
-        actors.start_day(&mut markets, &factuals);
-        let market = markets
-            .get_mut(&market_id)
-            .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
-        // Match prices this morning's card. The night write is inside the day.
-        let history = market.history();
-        let meetings = market.market_day(&mut actors, &factuals, &mut rng);
-        print_exchanges(&factuals, &history, &meetings);
-        print_pops(&factuals, &mut actors, &ids);
-        print_market_board(&factuals, market);
+    let mut day = 1u32;
+    let mut left = days;
+    loop {
+        if left == 0 {
+            left = more_days();
+            if left == 0 {
+                break;
+            }
+        }
+        run_day(
+            day,
+            &mut actors,
+            &mut markets,
+            &factuals,
+            market_id,
+            &ids,
+            &mut rng,
+        );
+        day += 1;
+        left -= 1;
+    }
+}
+
+/// # Tester Args
+///
+/// Days to run first, then the population-cap multiplier.
+///
+/// Days default to 3. A first argument that is not a whole number also
+/// defaults to 3. The multiplier defaults to 1000. A present multiplier
+/// that is not a positive finite number stops the tester.
+fn tester_args() -> (u32, f64) {
+    let mut args = std::env::args().skip(1);
+    let days = match args.next() {
+        Some(arg) => arg.parse::<u32>().unwrap_or(3),
+        None => 3,
+    };
+    let cap_multiplier = match args.next() {
+        Some(arg) => match arg.parse::<f64>() {
+            Ok(multiplier) if multiplier.is_finite() && multiplier > 0.0 => multiplier,
+            _ => {
+                eprintln!("pop cap must be a positive number, got {arg}");
+                std::process::exit(1);
+            }
+        },
+        None => 1000.0,
+    };
+    (days, cap_multiplier)
+}
+
+/// # Set Population Caps
+///
+/// Each pop's share of the ceiling is its current size times `multiplier`.
+///
+/// The size is read once, before the first market day, and stored on the
+/// pop. The shares add up to the ceiling the market fits after growth.
+fn set_population_caps(actors: &mut Actors, ids: &[usize], multiplier: f64) {
+    for id in ids {
+        let pop = actors.pop_mut(*id);
+        let start = pop.demographics.total_population();
+        pop.population_cap = Some(start * multiplier);
+    }
+}
+
+/// # Run Day
+///
+/// One market day: morning grant, exchange, then the day's tables.
+///
+/// `day` is the number printed on the header. Sizes for the growth column
+/// are taken after the morning grant and before the market day.
+fn run_day(
+    day: u32,
+    actors: &mut Actors,
+    markets: &mut HashMap<usize, Market>,
+    factuals: &Factuals,
+    market_id: usize,
+    ids: &[usize],
+    rng: &mut StdRng,
+) {
+    println!("=== day {day} ===");
+    actors.start_day(markets, factuals);
+    let market = markets
+        .get_mut(&market_id)
+        .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
+    // Match prices this morning's card. The night write is inside the day.
+    let history = market.history();
+    // Size before the day, so the pop table can show this day's growth.
+    let sizes = pop_sizes(actors, ids);
+    let meetings = market.market_day(actors, factuals, rng);
+    print_exchanges(factuals, &history, &meetings);
+    print_pops(factuals, actors, ids, &sizes);
+    print_market_board(factuals, market);
+}
+
+/// # More Days
+///
+/// Reads how many more market days to run.
+///
+/// An empty line is one day. `0` quits. Any other whole number is that
+/// many days. A line that is not a whole number asks again. End of input
+/// quits.
+fn more_days() -> u32 {
+    loop {
+        println!();
+        print!("run more days (enter = 1, 0 = quit): ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => return 0,
+            Ok(_) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    return 1;
+                }
+                match line.parse::<u32>() {
+                    Ok(days) => return days,
+                    Err(_) => println!("enter a whole number, or press enter for one day"),
+                }
+            }
+            Err(_) => return 0,
+        }
     }
 }
 
@@ -144,32 +263,86 @@ fn amv_exchange_ratio(history: &MarketHistory, proposal: &ProposedDeal) -> Strin
 
 /// # Print Pops
 ///
-/// Prints each pop's craft, the schedule left on the job, what that day
-/// made, standard of living, and what they still hold.
+/// Prints two tables for `ids`, in that order.
 ///
-/// `ids` is the pop order. Standard of living is today's satisfaction,
-/// including desire bonuses. Holdings skip goods whose quantity is 0.
-fn print_pops(factuals: &Factuals, actors: &mut Actors, ids: &[usize]) {
-    let rows = ids
-        .iter()
-        .map(|id| {
-            let pop = actors.pop_mut(*id);
-            let sol = pop.calculate_sol(factuals);
-            vec![
-                id.to_string(),
-                craft_name(factuals, pop.job.craft),
-                schedule(factuals, pop),
-                made(factuals, pop),
-                qty_text(sol),
-                holdings(factuals, pop),
-            ]
-        })
-        .collect::<Vec<_>>();
+/// The work table is the craft, the schedule left on the job, and the
+/// goods still held. Schedule lines and holdings each take their own
+/// line, so a long row does not run off the screen.
+///
+/// The pop table is one row each: id, standard of living, size, growth,
+/// and the five sentiment shares. Size is people
+/// (`DemoRow::total_population`). Growth is that size minus `sizes`, the
+/// population before this market day. A pop missing from `sizes` prints
+/// `none`. Standard of living is today's satisfaction, including desire
+/// bonuses. The shares are the partition after this day's sentiment update.
+fn print_pops(
+    factuals: &Factuals,
+    actors: &mut Actors,
+    ids: &[usize],
+    sizes: &HashMap<usize, f64>,
+) {
+    let mut pops = Vec::new();
+    let mut work = Vec::new();
+    for id in ids {
+        let pop = actors.pop_mut(*id);
+        let sol = pop.calculate_sol(factuals);
+        let size = pop.demographics.total_population();
+        let growth = sizes
+            .get(id)
+            .map(|before| growth_text(size - before))
+            .unwrap_or_else(|| "none".to_string());
+        pops.push(vec![
+            id.to_string(),
+            qty_text(sol),
+            qty_text(size),
+            growth,
+            qty_text(pop.sentiment.happiness()),
+            qty_text(pop.sentiment.contentment()),
+            qty_text(pop.sentiment.anger()),
+            qty_text(pop.sentiment.fear()),
+            qty_text(pop.sentiment.hope()),
+        ]);
+        work.push(vec![
+            id.to_string(),
+            craft_name(factuals, pop.job.craft),
+            schedule(factuals, pop),
+            holdings(factuals, pop),
+        ]);
+    }
+    print_table("work", &["pop", "craft", "schedule", "holdings"], &work);
     print_table(
         "pops",
-        &["pop", "craft", "schedule", "made", "sol", "holdings"],
-        &rows,
+        &[
+            "pop", "sol", "size", "growth", "happy", "content", "anger", "fear", "hope",
+        ],
+        &pops,
     );
+}
+
+/// # Pop Sizes
+///
+/// Population of each id, read before the market day runs.
+fn pop_sizes(actors: &Actors, ids: &[usize]) -> HashMap<usize, f64> {
+    ids.iter()
+        .map(|id| (*id, actors.pop(*id).demographics.total_population()))
+        .collect()
+}
+
+/// # Growth Text
+///
+/// `delta` people, with a leading plus when the pop grew.
+///
+/// A change that prints as zero has no sign. That is the headcount sitting
+/// on a population cap, where the leftover is smaller than the print.
+fn growth_text(delta: f64) -> String {
+    let text = qty_text(delta);
+    if text == "0" || text == "-0" {
+        "0".to_string()
+    } else if delta > 0.0 {
+        format!("+{text}")
+    } else {
+        text
+    }
 }
 
 /// # Craft Name
@@ -184,9 +357,9 @@ fn craft_name(factuals: &Factuals, craft: usize) -> String {
 
 /// # Schedule
 ///
-/// Each job line as `process target`, in line order.
+/// Each job line as `process target`, one line per process, in line order.
 ///
-/// A missing process keeps its id. No lines read as "idle".
+/// A missing process reads as "unknown". No lines read as "idle".
 fn schedule(factuals: &Factuals, pop: &Pop) -> String {
     if pop.job.lines.is_empty() {
         return "idle".to_string();
@@ -203,30 +376,7 @@ fn schedule(factuals: &Factuals, pop: &Pop) -> String {
             format!("{name} {target}")
         })
         .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// # Made
-///
-/// Goods this pop's job put out today, lowest id first.
-///
-/// Reads `produced`. Nothing made reads as "nothing".
-fn made(factuals: &Factuals, pop: &Pop) -> String {
-    let mut rows: Vec<(&Good, f64)> = pop
-        .property
-        .iter()
-        .filter(|(_, row)| row.produced > 0.0)
-        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.produced)))
-        .collect();
-    rows.sort_by_key(|(good, _)| good.id);
-    if rows.is_empty() {
-        "nothing".to_string()
-    } else {
-        rows.iter()
-            .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
+        .join("\n")
 }
 
 /// # Print Market Board
@@ -277,7 +427,7 @@ fn decay_percent(good: &MarketGood) -> f64 {
 
 /// # Holdings
 ///
-/// Goods this pop still has, lowest id first.
+/// Goods this pop still has, lowest id first, one good per line.
 ///
 /// A quantity of 0 is left out. No stock reads as "nothing".
 fn holdings(factuals: &Factuals, pop: &Pop) -> String {
@@ -294,7 +444,7 @@ fn holdings(factuals: &Factuals, pop: &Pop) -> String {
         rows.iter()
             .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join("\n")
     }
 }
 
@@ -302,7 +452,9 @@ fn holdings(factuals: &Factuals, pop: &Pop) -> String {
 ///
 /// Prints `title`, then a header and one row per entry in `rows`.
 ///
-/// Columns line up by the widest cell. `rows` may be empty.
+/// Columns line up by the widest line in a cell. A cell with newlines
+/// prints one line at a time, and a blank line separates those rows.
+/// `rows` may be empty.
 fn print_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
     println!("{title}");
     let widths: Vec<usize> = headers
@@ -311,7 +463,11 @@ fn print_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
         .map(|(column, header)| {
             let widest = rows
                 .iter()
-                .map(|row| row.get(column).map(String::len).unwrap_or(0))
+                .map(|row| {
+                    row.get(column)
+                        .map(|cell| cell_width(cell))
+                        .unwrap_or(0)
+                })
                 .max()
                 .unwrap_or(0);
             header.len().max(widest)
@@ -326,10 +482,53 @@ fn print_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
             .collect::<Vec<_>>()
             .join("  ")
     );
-    for row in rows {
-        println!("{}", table_line(row, &widths));
+    let stacked = rows
+        .iter()
+        .any(|row| row.iter().any(|cell| cell.contains('\n')));
+    for (index, row) in rows.iter().enumerate() {
+        if stacked && index > 0 {
+            println!();
+        }
+        for line in row_lines(row) {
+            println!("{}", table_line(&line, &widths));
+        }
     }
     println!();
+}
+
+/// # Cell Width
+///
+/// The widest line in `cell`. A newline starts another line.
+fn cell_width(cell: &str) -> usize {
+    cell.split('\n').map(str::len).max().unwrap_or(0)
+}
+
+/// # Row Lines
+///
+/// Splits each cell on newlines and pads shorter cells with blanks.
+///
+/// Line 0 is the first line of every cell. Later lines leave a cell blank
+/// once that cell has run out.
+fn row_lines(row: &[String]) -> Vec<Vec<String>> {
+    let cells: Vec<Vec<&str>> = row
+        .iter()
+        .map(|cell| {
+            if cell.is_empty() {
+                vec![""]
+            } else {
+                cell.split('\n').collect()
+            }
+        })
+        .collect();
+    let height = cells.iter().map(Vec::len).max().unwrap_or(1);
+    (0..height)
+        .map(|line| {
+            cells
+                .iter()
+                .map(|cell| cell.get(line).copied().unwrap_or("").to_string())
+                .collect()
+        })
+        .collect()
 }
 
 fn table_line(cells: &[impl AsRef<str>], widths: &[usize]) -> String {

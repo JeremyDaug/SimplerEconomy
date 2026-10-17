@@ -4,10 +4,14 @@ Read this for desire satisfaction, consume, cottage work, and the first deal pas
 `examples/pop_tester` loads `data/world` and `data/pop_tester/`,
 places those pops on one market, grants the day's Time, and runs
 `Market::market_day`. The folder sets the opening board, crafts, stock,
-household size, and the first morning's line targets. Species, culture,
+and the first morning's line targets. A missing household count is 10.
+A household table overrides the adult, elder, and child averages. The
+firm tester loads its pops through the same reader. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
-copies them onto each pop. The tester prints the meetings, including the
-morning buys/sells ratio. It does not choose baskets or prices. The night's
+copies them onto each pop. The tester prints exchanges, including the
+morning buys/sells ratio, then each pop's work, then the pop table, then
+the market board. The pop table is standard of living, size, growth, and
+the five sentiment shares. It does not choose baskets or prices. The night's
 plan rewrites every line target and each line's optional inputs.
 `docs/handoff/desire.md` sketches how a platonic desire becomes a
 demographic desire and then a pop desire.
@@ -18,8 +22,19 @@ Cottage planning, savings, the optional-input list, and the first deal pass
 are the current stop. Seller weight is a first cut: the whole units on the
 offer. Refine that weight later. The buyer draw is still one ticket per buy.
 Owned targets are in the tester: wood tools on the householder common
-desire, and cabins on the hearth luxury desire. Population-growth testing,
-sentiment, and internal migration are the open 0.1 items in `TODO.md`.
+desire, and cabins on the hearth luxury desire. Population-growth testing
+and internal migration are the open 0.1 items in `TODO.md`. The pop tester
+shares one ceiling: each pop's starting size times a multiplier (default
+1000) is its share. After growth, if the capped headcount passes the sum
+of those shares, every capped pop's household count is scaled by the same
+factor. Sentiment runs on that size. Desires match it after decay.
+After the days on the command line, it asks how many more to run. Sentiment
+updates after growth from desire arms, stored effects, tier satisfaction,
+wealth per household, and the change in standard of living against its
+recent average. Each other emotion moves 15 percent of its stored share
+into contentment in that same batch, and a larger stored share moves more.
+Growth scales the next day's births per woman by the demographic
+sentiment schedule. A content pop stays on the baseline. The tester desires carry no sentiment arms.
 
 A specialty line aims at its cover, its paced surplus, and the unmet buys
 it is allowed to take. It does not take the rest of the morning. Each pop's
@@ -36,11 +51,12 @@ The other pops still make and sell the same goods.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from selling and payment. The job does not spend that pile as an input. Basic, common, and the first luxury level may eat it. A further luxury level leaves it. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, `rebalance_population_cap`, sentiment, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size, and after the population cap so satisfaction and targets match the fitted size. A pop with no share is left out of the ceiling. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
 | `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
+| Sentiment | Updated after growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment already stored, so this day's update changes the next day's births. Tester desires carry no sentiment arms |
 | Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. A deal offers at most one unit of a skill. The goods still carry `untradeable`, so a meeting is not opened on a skill |
 
 ## Satisfy
@@ -143,8 +159,8 @@ make. The morning buy adds the shortfall on the winning good.
   planning. It rewrites amount, additive effects, and recorded satisfaction
   from the new size. `update_desires` does not. A desire with no stored
   demographic source is left alone.
-- `PlayState::phase_pop_growth` only grows. A turn that also runs
-  `market_day` grows those pops twice.
+- `PlayState::phase_pop_growth` only grows. It does not fit the ceiling
+  or rescale. A turn that also runs `market_day` grows those pops twice.
 
 ## Cottage work
 
@@ -443,7 +459,7 @@ card. Exchange priced itself from the snapshot at the start of
 snapshot and from each row's `produced` and `lost`. `Firm::reserve_for_day`,
 `Firm::produce`, and `Firm::plan` are empty.
 
-`PlayState::phase_pop_growth` only grows and does not rescale.
+`PlayState::phase_pop_growth` only grows. It does not fit the ceiling or rescale.
 `phase_pop_consumption` is still `todo`. Institution decay and institution
 record keeping still panic and are not called.
 

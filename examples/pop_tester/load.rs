@@ -60,6 +60,8 @@ struct PopRow {
     stratum: String,
     #[serde(default)]
     religion: String,
+    #[serde(default = "ten_households")]
+    count: f64,
     #[serde(default)]
     household: HouseholdRow,
     #[serde(default)]
@@ -71,17 +73,21 @@ struct PopRow {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct HouseholdRow {
-    count: f64,
     adult: f64,
     elder: f64,
     child: f64,
 }
 
 impl Default for HouseholdRow {
+    /// # Default
+    ///
+    /// Copies the adult, elder, and child averages from [`Household::new`].
+    ///
+    /// Returns those three bands. A household table that sets one leaves
+    /// the others here.
     fn default() -> Self {
         let household = Household::new();
         Self {
-            count: household.count,
             adult: household.adult,
             elder: household.elder,
             child: household.child,
@@ -180,6 +186,15 @@ fn one() -> f64 {
     1.0
 }
 
+/// # Ten Households
+///
+/// The household count a pop row uses when `pops.toml` omits `count`.
+///
+/// Returns 10.
+fn ten_households() -> f64 {
+    10.0
+}
+
 fn fixed_scalar() -> String {
     "fixed".to_string()
 }
@@ -189,7 +204,9 @@ fn fixed_scalar() -> String {
 /// Reads `dir` against `factuals` and returns the opening market and pops.
 ///
 /// `market.toml` is the opening board. `pops.toml` is each pop's craft,
-/// household, stock, and first-morning lines. `species.toml`,
+/// household count, stock, and first-morning lines. A missing count is
+/// [`ten_households`]. A household table overrides the adult, elder, and
+/// child averages. `species.toml`,
 /// `cultures.toml`, `strata.toml`, and `religions.toml` are read when
 /// present. Their desires are stored on `factuals`, and
 /// [`Pop::update_desires`] copies them onto each pop. Good, process, and
@@ -257,7 +274,7 @@ pub fn load_scenario(dir: &Path, factuals: &mut Factuals) -> Result<Scenario, St
         let mut pop = Pop::new(row.id);
         pop.job = Job::new(craft, lines);
         let mut household = Household::new();
-        household.count = row.household.count;
+        household.count = row.count;
         household.adult = row.household.adult;
         household.elder = row.household.elder;
         household.child = row.household.child;
@@ -628,5 +645,62 @@ mod tests {
         };
         assert!(matches!(kind("wood"), Some(DesireTargetType::Consume)));
         assert!(matches!(kind("wood_tools"), Some(DesireTargetType::Use)));
+    }
+
+    /// # Omitted Count Is Ten Households
+    ///
+    /// Parses a pop row with no count and no household table. The count is
+    /// 10 and the bands are 2 adults, 0.5 elders, and 2.5 children. Returns
+    /// nothing. A different count or band fails.
+    #[test]
+    fn omitted_count_is_ten_households() {
+        let row: PopRow = toml::from_str("id = 1").expect("row");
+        assert_eq!(row.count, 10.0);
+        assert_eq!(row.household.adult, 2.0);
+        assert_eq!(row.household.elder, 0.5);
+        assert_eq!(row.household.child, 2.5);
+    }
+
+    /// # Household Table Overrides One Band
+    ///
+    /// Parses a pop row with `count` and one household average. That count
+    /// and the adult average are kept, and the omitted bands stay at 0.5
+    /// elders and 2.5 children. Returns nothing. A dropped override fails.
+    #[test]
+    fn household_table_overrides_one_band() {
+        let row: PopRow = toml::from_str(
+            r#"
+            id = 1
+            count = 4
+            [household]
+            adult = 3
+            "#,
+        )
+        .expect("row");
+        assert_eq!(row.count, 4.0);
+        assert_eq!(row.household.adult, 3.0);
+        assert_eq!(row.household.elder, 0.5);
+        assert_eq!(row.household.child, 2.5);
+    }
+
+    /// # Loaded Pops Default To Ten Households
+    ///
+    /// Loads the pop tester and the firm tester. Each pop is 10 households
+    /// of 2 adults, 0.5 elders, and 2.5 children. Returns nothing. A load
+    /// failure or a different household fails.
+    #[test]
+    fn loaded_pops_default_to_ten_households() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        for (dir, ids) in [("pop_tester", 1..=9), ("firm_tester", 1..=3)] {
+            let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+            let scenario = load_scenario(&root.join(dir), &mut factuals).expect(dir);
+            for id in ids {
+                let household = &scenario.actors.pop(id).demographics.household;
+                assert_eq!(household.count, 10.0, "{dir} pop {id}");
+                assert_eq!(household.adult, 2.0, "{dir} pop {id}");
+                assert_eq!(household.elder, 0.5, "{dir} pop {id}");
+                assert_eq!(household.child, 2.5, "{dir} pop {id}");
+            }
+        }
     }
 }

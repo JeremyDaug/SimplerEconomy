@@ -9,11 +9,12 @@
 # Their extra process is on the job: make wood, make beer, make
 # wood_tools, make cabins, make gold, or make jewelry. Digging gold and
 # making jewelry are separate pops. Gold is not a desire. The jeweler
-# starts with 4 gold so the first morning can run. Each pop wants 25 of
+# starts with 4 gold so the first morning can run. Each pop wants 50 of
 # its basic desire.
 # Opening targets are the line targets in this file. Later nights step
 # from there.
-# Each pop is 5 households of 2 adults, 2.5 children, and 0.5 elders.
+# A missing count is 10 households. Each household is 2 adults, 2.5
+# children, and 0.5 elders unless [pops.household] overrides those.
 
 [[pops]]
 id = 1
@@ -22,12 +23,6 @@ species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.lines]]
 process = "subsistence farm"
@@ -53,12 +48,6 @@ culture = "village"
 stratum = "householder"
 religion = "hearth"
 
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
-
 [[pops.lines]]
 process = "subsistence farm"
 target = 12.5
@@ -82,12 +71,6 @@ species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.stock]]
 good = "grain"
@@ -121,12 +104,6 @@ culture = "village"
 stratum = "householder"
 religion = "hearth"
 
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
-
 [[pops.lines]]
 process = "subsistence farm"
 target = 12.5
@@ -150,12 +127,6 @@ species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.stock]]
 good = "grain"
@@ -189,12 +160,6 @@ culture = "village"
 stratum = "householder"
 religion = "hearth"
 
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
-
 [[pops.stock]]
 good = "wood"
 quantity = 4
@@ -222,12 +187,6 @@ species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.stock]]
 good = "wood"
@@ -257,12 +216,6 @@ culture = "village"
 stratum = "householder"
 religion = "hearth"
 
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
-
 [[pops.lines]]
 process = "subsistence farm"
 target = 12.5
@@ -286,12 +239,6 @@ species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
-
-[pops.household]
-count = 5
-adult = 2
-elder = 0.5
-child = 2.5
 
 [[pops.stock]]
 good = "gold"

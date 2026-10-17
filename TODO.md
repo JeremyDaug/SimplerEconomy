@@ -18,8 +18,8 @@ Landed pop and job work:
 - [x] `Desire.decay`. Morning reset multiplies satisfaction by it (`0.0` clears).
 - [x] Skills as goods: priced and tradeable. A job lists the skill goods its processes take. Day start raises each one to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Used skill comes back fresh. A deal offers at most one unit of a skill.
 - [x] Emergent money selection. The night write restates the card in one unit.
-- [ ] Population Growth testing. With both capped and uncapped versions.
-- [ ] Sentiments. Mostly unused in terms of wider effects but needed for Internal Migration.
+- [ ] Population Growth testing. With both capped and uncapped versions. The pop tester takes a cap multiplier after the day count (default 1000). Each pop's starting size times that multiplier is its share of one ceiling. After growth, if the total passes the sum, every capped pop is scaled by the same factor and desires match that size. After those days it asks for more: enter is one day, a number is that many, 0 quits.
+- [ ] Sentiments. The day applies desire and stored sentiment effects, then tier satisfaction, wealth per household, and the change in standard of living against its recent average. Each other emotion then moves 15 percent of its share into contentment. Growth scales births per woman by the stacked demographic sentiment schedule. Wider effects are still unused. Needed for Internal Migration.
 - [ ] Internal Migration. Using Sentiments and SOL, allows for pops to move between pops within our limited tester. Not a complete write up of this, just the internal version.
 
 Not this cut:

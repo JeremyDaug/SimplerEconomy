@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::game::{
-    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::ProcessEffect, factuals::Factuals, good::{Good, GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::Sentiment, util::whole_units_up,
+    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::{DesireEffect, ProcessEffect}, factuals::Factuals, good::{Good, GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::whole_units_up,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -25,14 +25,22 @@ pub struct Pop {
     /// Species, culture, stratum, and religion for this slice.
     pub demographics: DemoRow,
 
+    /// Share of the market population ceiling, in people. `None` leaves this pop out.
+    pub population_cap: Option<f64>,
+
     /// Same-day effects waiting for growth or decay.
     pub stored_effects: Vec<PopEffect>,
 
-    /// Mood shares. How they change other behavior is not wired.
+    /// Mood shares. [`Self::growth_phase`] scales births per woman from these.
     pub sentiment: Sentiment,
 
     /// Day-end records. The struct is a placeholder.
     pub records: PopRecords,
+
+    /// Recent standards of living, oldest first.
+    ///
+    /// [`Self::sol_shift`] reads these before [`Self::record_sol`] appends today.
+    sol_samples: VecDeque<f64>,
 
     /// Where [`Pop::satisfy`] stopped. [`Pop::satisfy_continue`] walks from here.
     satisfy_cursor: Option<SatisfyCursor>,
@@ -94,6 +102,39 @@ const LOSS_LIMIT: f64 = 4.0;
 ///
 /// Fixed for this tester. Demographics and sentiment do not change it.
 const SAVINGS_DAYS: f64 = 1.0;
+
+/// Share of the pop moved into anger and into fear for each full share of
+/// basic needs left unmet. Fixed for this tester.
+const BASIC_UNMET_SENTIMENT: f64 = 0.04;
+
+/// Share of the pop moved into contentment for each full share of common
+/// needs met. A share above one still counts. Fixed for this tester.
+const COMMON_SENTIMENT: f64 = 0.02;
+
+/// Share of the pop moved into hope and into happiness for each luxury
+/// level met. Further levels still count. Fixed for this tester.
+const LUXURY_SENTIMENT: f64 = 0.01;
+
+/// Share of the pop moved per point of wealth per household.
+///
+/// Positive wealth moves that share into hope. Negative wealth moves the
+/// absolute share into fear. Fixed for this tester.
+const WEALTH_SENTIMENT: f64 = 0.01;
+
+/// Market days kept for the living average. Fixed for this tester.
+const SOL_AVERAGE_DAYS: usize = 5;
+
+/// Share of the pop moved per point of living above or below its recent average.
+///
+/// One point is larger than the tier flats and a point of wealth above.
+/// Fixed for this tester.
+const SOL_CHANGE_SENTIMENT: f64 = 0.25;
+
+/// Fraction of each other emotion moved into contentment.
+///
+/// A larger share moves more. A content pop moves nothing. Fixed for
+/// this tester.
+const CONTENTMENT_PULL: f64 = 0.15;
 
 /// Cover gaps and the savings pile for one night.
 struct NightNeeds {
@@ -163,9 +204,11 @@ impl Pop {
                 stratum: 0,
                 religion: 0,
             },
+            population_cap: None,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
+            sol_samples: VecDeque::new(),
             satisfy_cursor: None,
             planned_desires: Vec::new(),
             luxury_reached: 0.0,
@@ -936,19 +979,374 @@ impl Pop {
         desire.satisfaction / desire.amount
     }
 
-    /// Applies structural demographic rates, then same-day birth and mortality
-    /// effects, then [`Household::update`](crate::game::household::Household::update).
+    /// # Growth Phase
     ///
-    /// Pops with household `count < 1` are left alone. Desire satisfaction does
-    /// not change the rates. [`Self::rescale_desires`] matches desires to the
-    /// size this returns.
+    /// Applies structural demographic rates, then same-day birth and mortality
+    /// effects, then scales births per woman by the demographic sentiment
+    /// schedule, then [`Household::update`](crate::game::household::Household::update).
+    ///
+    /// Pops with household `count < 1` are left alone. The scale is
+    /// [`Factuals::birth_sentiment`](crate::game::factuals::Factuals::birth_sentiment)
+    /// times this pop's current sentiment. Desire satisfaction does not change
+    /// the rates by itself. A market day may then scale this household with
+    /// the other capped pops before [`Self::rescale_desires`] matches desires
+    /// to the size that remains.
     pub fn growth_phase(&mut self, factuals: &Factuals) {
         if self.demographics.household.count < 1.0 {
             return;
         }
         let mut rates = factuals.get_demographic_rates(self.demographics);
         rates = rates.add(&self.take_stored_growth_mods());
+        // Scale births by the stacked sentiment schedule. Mortality stays.
+        let birth = factuals.birth_sentiment(self.demographics);
+        let scale = birth.multiplier(
+            self.sentiment.hope(),
+            self.sentiment.happiness(),
+            self.sentiment.fear(),
+            self.sentiment.anger(),
+        );
+        rates.birth_per_woman *= scale;
         self.demographics.household.update(&rates);
+    }
+
+    /// # Update Sentiments
+    ///
+    /// Applies this day's sentiment arms, then drops the stored ones.
+    ///
+    /// Every desire contributes its sentiment effects.
+    /// [`DesireEffect::signed_strength`] of that desire's
+    /// [`Desire::tiers_satisfied`](crate::game::desire::Desire::tiers_satisfied)
+    /// is the amount. A flat arm shifts that share of the whole pop. A
+    /// relative arm scales that emotion's current share. Stored
+    /// [`PopEffect::SentimentFlat`] and [`PopEffect::SentimentRelative`]
+    /// are already amounts and are removed. Other stored effects stay.
+    ///
+    /// After those arms are collected, tier satisfaction and
+    /// [`Self::wealth_per_household`] add their own flats, and the change in
+    /// living since its recent average adds a larger one. Each other emotion
+    /// then moves [`CONTENTMENT_PULL`] of its current share into contentment.
+    /// `history` prices the wealth. The whole list is applied together through
+    /// [`Sentiment::apply_mods_simultaniously`]. With nothing to apply,
+    /// the sentiment stays. Today's living is recorded after that.
+    pub fn update_sentiments(&mut self, history: &MarketHistory) {
+        let mut mods = Vec::new();
+        // Desire arms, from the satisfaction consume wrote.
+        for tier in &self.desires {
+            for desire in tier {
+                let sat = desire.tiers_satisfied();
+                if !sat.is_finite() {
+                    continue;
+                }
+                for effect in &desire.effect {
+                    match *effect {
+                        DesireEffect::SentimentFlat(kind, _, _) => {
+                            mods.push(SentimentMod::Flat {
+                                kind,
+                                delta: effect.signed_strength(sat),
+                            });
+                        }
+                        DesireEffect::SentimentRelative(kind, _, _) => {
+                            mods.push(SentimentMod::Relative {
+                                kind,
+                                relative: effect.signed_strength(sat),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Stored arms are spent here. Other same-day effects stay.
+        let mut kept = Vec::new();
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::SentimentFlat { kind, delta } => {
+                    mods.push(SentimentMod::Flat { kind, delta });
+                }
+                PopEffect::SentimentRelative { kind, relative } => {
+                    mods.push(SentimentMod::Relative { kind, relative });
+                }
+                other => kept.push(other),
+            }
+        }
+        self.stored_effects = kept;
+        // Tier satisfaction, wealth, and the living shift, after the arms above.
+        self.push_living_mods(history, &mut mods);
+        // Move the shares already stored toward contentment.
+        self.push_contentment_pull(&mut mods);
+        if !mods.is_empty() {
+            self.sentiment.apply_mods_simultaniously(mods);
+        }
+        // Keep today's living for the next comparison.
+        self.record_sol();
+    }
+
+    /// # Standard of Living
+    ///
+    /// The same sum [`Self::calculate_sol`] records, without removing
+    /// stored satisfaction or writing the record.
+    ///
+    /// No desires returns `+inf`. Otherwise each desire adds
+    /// [`Desire::tiers_satisfied`](crate::game::desire::Desire::tiers_satisfied)
+    /// and [`Desire::get_bonus_satisfaction`](crate::game::desire::Desire::get_bonus_satisfaction),
+    /// then each stored [`PopEffect::Satisfaction`] amount is added.
+    fn standard_of_living(&self) -> f64 {
+        if self.desires.iter().all(|tier| tier.is_empty()) {
+            return f64::INFINITY;
+        }
+        let mut sum = 0.0;
+        for tier in &self.desires {
+            for desire in tier {
+                sum += desire.tiers_satisfied();
+                sum += desire.get_bonus_satisfaction();
+            }
+        }
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { amount, .. } = *effect {
+                sum += amount;
+            }
+        }
+        sum
+    }
+
+    /// # Wealth per Household
+    ///
+    /// Holding value of what this pop still has, divided by its household count.
+    ///
+    /// Each good adds `quantity` times
+    /// [`MarketHistory::holding_per_unit`](MarketHistory::holding_per_unit).
+    /// Time is the day's labor and is left out. A household count at or below
+    /// 0, or a non-finite result, returns 0.
+    fn wealth_per_household(&self, history: &MarketHistory) -> f64 {
+        let households = self.demographics.household.count;
+        if households <= 0.0 {
+            return 0.0;
+        }
+        let mut value = 0.0;
+        for (&good, row) in &self.property {
+            if good == TIME || row.quantity == 0.0 {
+                continue;
+            }
+            value += row.quantity * history.holding_per_unit(good);
+        }
+        let per = value / households;
+        if per.is_finite() { per } else { 0.0 }
+    }
+
+    /// # Tier Met
+    ///
+    /// Mean levels met on `tier`, plus stored satisfaction for that tier.
+    ///
+    /// Each desire adds its tiers satisfied and its bonus satisfaction.
+    /// A non-finite desire is skipped. Stored [`PopEffect::Satisfaction`]
+    /// on this tier is added once, after the mean. No desires and no stored
+    /// satisfaction returns 0.
+    fn tier_met(&self, tier: usize) -> f64 {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        if let Some(desires) = self.desires.get(tier) {
+            for desire in desires {
+                let levels = desire.tiers_satisfied();
+                let bonus = desire.get_bonus_satisfaction();
+                if !levels.is_finite() || !bonus.is_finite() {
+                    continue;
+                }
+                sum += levels + bonus;
+                count += 1.0;
+            }
+        }
+        let mut stored = 0.0;
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { tier: effect_tier, amount } = *effect {
+                if effect_tier == tier && amount.is_finite() {
+                    stored += amount;
+                }
+            }
+        }
+        let mean = if count > 0.0 { sum / count } else { 0.0 };
+        mean + stored
+    }
+
+    /// # Basic Unmet
+    ///
+    /// Mean shortfall of the basic desires, reduced by stored basic satisfaction.
+    ///
+    /// Each desire's shortfall is how far its levels plus bonus sit below one
+    /// full level, and not below 0. One desire met past one level does not
+    /// fill another desire's gap. The mean of those shortfalls is then
+    /// reduced by stored satisfaction on tier 0, and not below 0. No basic
+    /// desires returns 0.
+    fn basic_unmet(&self) -> f64 {
+        let Some(desires) = self.desires.get(0) else {
+            return 0.0;
+        };
+        let mut shortfall = 0.0;
+        let mut count = 0.0;
+        for desire in desires {
+            let levels = desire.tiers_satisfied();
+            let bonus = desire.get_bonus_satisfaction();
+            if !levels.is_finite() || !bonus.is_finite() {
+                continue;
+            }
+            shortfall += (1.0 - (levels + bonus)).max(0.0);
+            count += 1.0;
+        }
+        if count == 0.0 {
+            return 0.0;
+        }
+        let mut stored = 0.0;
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { tier, amount } = *effect {
+                if tier == 0 && amount.is_finite() {
+                    stored += amount;
+                }
+            }
+        }
+        (shortfall / count - stored).max(0.0)
+    }
+
+    /// # Push Living Mods
+    ///
+    /// Appends the tier, wealth, and living-shift flats to `mods`.
+    ///
+    /// Unmet basic needs move [`BASIC_UNMET_SENTIMENT`] per full share into
+    /// anger and the same share into fear. That is the largest tier rate.
+    /// Common satisfaction moves [`COMMON_SENTIMENT`] per full share into
+    /// contentment, including a share above one. Luxury levels move
+    /// [`LUXURY_SENTIMENT`] per level into hope and the same share into
+    /// happiness, and further levels keep counting. That is the smallest
+    /// tier rate.
+    /// Wealth per household moves [`WEALTH_SENTIMENT`] per point into hope
+    /// when positive and fear when negative. A rise in living since its
+    /// recent average moves [`SOL_CHANGE_SENTIMENT`] per point into hope and
+    /// the same share into happiness. A fall moves that share into anger and
+    /// the same share into fear. A zero level adds nothing.
+    fn push_living_mods(&self, history: &MarketHistory, mods: &mut Vec<SentimentMod>) {
+        let basic = self.basic_unmet();
+        if basic > 0.0 {
+            let delta = basic * BASIC_UNMET_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta,
+            });
+        }
+        let common = self.tier_met(1);
+        if common > 0.0 {
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Contentment,
+                delta: common * COMMON_SENTIMENT,
+            });
+        }
+        let luxury = self.tier_met(2);
+        if luxury > 0.0 {
+            let delta = luxury * LUXURY_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta,
+            });
+        }
+        let wealth = self.wealth_per_household(history);
+        if wealth != 0.0 {
+            let delta = wealth * WEALTH_SENTIMENT;
+            if delta > 0.0 {
+                mods.push(SentimentMod::Flat {
+                    kind: SentimentKind::Hope,
+                    delta,
+                });
+            } else if delta < 0.0 {
+                mods.push(SentimentMod::Flat {
+                    kind: SentimentKind::Fear,
+                    delta: -delta,
+                });
+            }
+        }
+        let shift = self.sol_shift();
+        if shift > 0.0 {
+            let delta = shift * SOL_CHANGE_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta,
+            });
+        } else if shift < 0.0 {
+            let delta = -shift * SOL_CHANGE_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta,
+            });
+        }
+    }
+
+    /// # Push Contentment Pull
+    ///
+    /// Appends a transfer into contentment for each other emotion.
+    ///
+    /// The amount is that emotion's current share times [`CONTENTMENT_PULL`].
+    /// A zero share adds nothing.
+    fn push_contentment_pull(&self, mods: &mut Vec<SentimentMod>) {
+        for kind in [
+            SentimentKind::Happiness,
+            SentimentKind::Anger,
+            SentimentKind::Fear,
+            SentimentKind::Hope,
+        ] {
+            let share = self.sentiment.get(kind);
+            if share > 0.0 {
+                mods.push(SentimentMod::Transfer {
+                    from: kind,
+                    to: SentimentKind::Contentment,
+                    amount: share * CONTENTMENT_PULL,
+                });
+            }
+        }
+    }
+
+    /// # Standard of Living Shift
+    ///
+    /// Today's living minus the mean of the recent samples.
+    ///
+    /// The samples are earlier days only. No samples, or a non-finite
+    /// living, returns 0.
+    fn sol_shift(&self) -> f64 {
+        let today = self.standard_of_living();
+        if !today.is_finite() || self.sol_samples.is_empty() {
+            return 0.0;
+        }
+        let average = self.sol_samples.iter().sum::<f64>() / self.sol_samples.len() as f64;
+        let shift = today - average;
+        if shift.is_finite() { shift } else { 0.0 }
+    }
+
+    /// # Record Standard of Living
+    ///
+    /// Appends today's living to the samples [`Self::sol_shift`] reads.
+    ///
+    /// A non-finite living is left out. The list keeps the most recent
+    /// [`SOL_AVERAGE_DAYS`] readings.
+    fn record_sol(&mut self) {
+        let today = self.standard_of_living();
+        if !today.is_finite() {
+            return;
+        }
+        if self.sol_samples.len() == SOL_AVERAGE_DAYS {
+            self.sol_samples.pop_front();
+        }
+        self.sol_samples.push_back(today);
     }
 
     /// # Rescale Desires
@@ -1738,24 +2136,17 @@ impl Pop {
     /// If a pop has no desires, then we return +inf to denote that.
     /// 
     /// Currently, this is a direct summation of satisfaction from all desires, plus
-    /// bonus satisfaction from the desire and pop effects.
+    /// bonus satisfaction from the desire and pop effects. The sum is
+    /// [`Self::standard_of_living`]. Stored satisfaction is then removed.
     pub fn calculate_sol(&mut self, factuals: &Factuals) -> f64 {
         // sanity check, if a pop has no desires, then return +inf
         if self.desires.iter().all(|tier| tier.is_empty()) {
             self.records.satisfaction = f64::INFINITY;
             return f64::INFINITY;
         }
-        let mut sum = 0.0;
-        // get sum from desire satsifactino directly
-        for tier in self.desires.iter() {
-            for desire in tier {
-                sum += desire.tiers_satisfied();
-                sum += desire.get_bonus_satisfaction();
-            }
-        }
-
-        // get satisfaction from pop effects.
-        sum += self.satisfaction_from_pop_effects();
+        let sum = self.standard_of_living();
+        // Drop the stored satisfaction now that the sum includes it.
+        let _ = self.satisfaction_from_pop_effects();
         self.records.satisfaction = sum;
         sum
     }
@@ -2933,7 +3324,7 @@ fn target_cap_left(desire: &Desire, index: usize) -> f64 {
 
 #[cfg(test)]
 mod pop {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
@@ -2950,11 +3341,11 @@ mod pop {
     use crate::game::factuals::Factuals;
     use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::good::{Good, GoodTag, TIME};
-    use crate::game::household::Household;
+    use crate::game::household::{BirthSentiment, DemographicRates, Household};
     use crate::game::job::{Job, JobLine};
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::process::{InputType, Process, ProcessEffect, ProcessInput, ProcessOutput};
-    use crate::game::sentiment::Sentiment;
+    use crate::game::sentiment::{Sentiment, SentimentKind};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
@@ -2997,9 +3388,11 @@ mod pop {
                 stratum: 0,
                 religion: 0,
             },
+            population_cap: None,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
+            sol_samples: VecDeque::new(),
             satisfy_cursor: None,
             planned_desires: Vec::new(),
             luxury_reached: 0.0,
@@ -3010,6 +3403,192 @@ mod pop {
             buy_posted: HashMap::new(),
             buy_received: HashMap::new(),
         }
+    }
+
+    /// # Population At
+    ///
+    /// Headcount after one year of baseline rates.
+    ///
+    /// `birth_add` is added to births per woman, then that sum is multiplied
+    /// by `scale`. Mortality stays at the baseline.
+    fn population_at(birth_add: f64, scale: f64) -> f64 {
+        let mut household = Household::new();
+        let mut rates = DemographicRates::baseline();
+        rates.birth_per_woman = (rates.birth_per_woman + birth_add) * scale;
+        household.update(&rates);
+        household.total_count()
+    }
+
+    #[test]
+    fn growth_phase_raises_births_for_a_hopeful_pop() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+
+        pop.growth_phase(&factuals);
+
+        let scale = BirthSentiment::human().multiplier(1.0, 0.0, 0.0, 0.0);
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.0, scale)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn growth_phase_lowers_births_for_a_fearful_pop() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+
+        pop.growth_phase(&factuals);
+
+        let scale = BirthSentiment::human().multiplier(0.0, 0.0, 1.0, 0.0);
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.0, scale)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn growth_phase_leaves_a_content_pop_on_the_baseline() {
+        let mut pop = make_pop();
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+
+        pop.growth_phase(&factuals);
+
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.0, 1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn growth_phase_mixes_every_sentiment_share() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.10, 0.20, 0.30, 0.15, 0.25);
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+        let scale = BirthSentiment::human().multiplier(
+            pop.sentiment.hope(),
+            pop.sentiment.happiness(),
+            pop.sentiment.fear(),
+            pop.sentiment.anger(),
+        );
+
+        pop.growth_phase(&factuals);
+
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.0, scale)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn growth_phase_scales_stored_births_after_the_add() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
+        pop.stored_effects.push(PopEffect::Birthrate(0.10));
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+
+        pop.growth_phase(&factuals);
+
+        let scale = BirthSentiment::human().multiplier(1.0, 0.0, 0.0, 0.0);
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.10, scale)).abs() < 1e-9);
+        assert!(pop.stored_effects.is_empty());
+    }
+
+    #[test]
+    fn growth_phase_ignores_sentiment_without_a_species_schedule() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
+
+        pop.growth_phase(&Factuals::new());
+
+        let got = pop.demographics.household.total_count();
+        assert!((got - population_at(0.0, 1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebalance_scales_every_capped_pop_down_to_the_shared_ceiling() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut large = make_pop();
+        large.id = 1;
+        large.demographics.household.count = 4.0;
+        large.population_cap = Some(10.0);
+        let mut small = make_pop();
+        small.id = 2;
+        small.demographics.household.count = 2.0;
+        small.population_cap = Some(10.0);
+        let adult = large.demographics.household.adult;
+        market.pops.insert(large.id);
+        market.pops.insert(small.id);
+        actors.pops.insert(large.id, large);
+        actors.pops.insert(small.id, small);
+
+        market.rebalance_population_cap(&mut actors);
+
+        let large = actors.pop(1);
+        let small = actors.pop(2);
+        let factor = 20.0 / 30.0;
+        assert!((large.demographics.total_population() - 20.0 * factor).abs() < 1e-9);
+        assert!((small.demographics.total_population() - 10.0 * factor).abs() < 1e-9);
+        assert!((large.demographics.household.adult - adult).abs() < 1e-12);
+        assert!((small.demographics.household.adult - adult).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rebalance_shrinks_a_pop_that_is_under_its_own_share() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut under = make_pop();
+        under.id = 1;
+        under.demographics.household.count = 2.0;
+        under.population_cap = Some(12.0);
+        let mut over = make_pop();
+        over.id = 2;
+        over.demographics.household.count = 2.0;
+        over.population_cap = Some(4.0);
+        market.pops.insert(under.id);
+        market.pops.insert(over.id);
+        actors.pops.insert(under.id, under);
+        actors.pops.insert(over.id, over);
+
+        market.rebalance_population_cap(&mut actors);
+
+        let under = actors.pop(1).demographics.total_population();
+        let over = actors.pop(2).demographics.total_population();
+        assert!((under - 8.0).abs() < 1e-9);
+        assert!((over - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebalance_leaves_an_uncapped_pop_at_its_size() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut capped = make_pop();
+        capped.id = 1;
+        capped.demographics.household.count = 4.0;
+        capped.population_cap = Some(10.0);
+        let mut open = make_pop();
+        open.id = 2;
+        open.demographics.household.count = 4.0;
+        market.pops.insert(capped.id);
+        market.pops.insert(open.id);
+        actors.pops.insert(capped.id, capped);
+        actors.pops.insert(open.id, open);
+
+        market.rebalance_population_cap(&mut actors);
+
+        assert!((actors.pop(1).demographics.total_population() - 10.0).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.total_population() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebalance_does_nothing_while_the_sum_is_under_the_ceiling() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut pop = make_pop();
+        pop.population_cap = Some(pop.demographics.total_population() * 1000.0);
+        let before = pop.demographics.household.count;
+        market.pops.insert(pop.id);
+        actors.pops.insert(pop.id, pop);
+
+        market.rebalance_population_cap(&mut actors);
+
+        assert!((actors.pop(1).demographics.household.count - before).abs() < 1e-12);
     }
 
     #[test]
@@ -5112,6 +5691,698 @@ mod pop {
         assert_eq!(pop.stored_effects, vec![PopEffect::Birthrate(0.01)]);
     }
 
+    /// A fully met basic desire carries a happiness bonus of 0.2. Nothing
+    /// basic is unmet, and the pop holds nothing. Shares are then brought
+    /// back to 1.
+    #[test]
+    fn update_sentiments_shifts_happiness_from_a_met_desire() {
+        let mut pop = make_pop();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        basic
+            .effect
+            .push(DesireEffect::SentimentFlat(SentimentKind::Happiness, 0.2, true));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.happiness() - 0.2 / 1.2).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.2).abs() < 1e-9);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    /// The basic desire is unmet, so its whole shortfall moves 0.04 into
+    /// anger and 0.04 into fear. Its anger arm adds another 0.2 of anger.
+    /// A stored hope arm is applied in the same batch and then removed.
+    /// The birth arm stays.
+    #[test]
+    fn update_sentiments_applies_stored_hope_and_drops_it() {
+        let mut pop = make_pop();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 0.0;
+        basic.effect.push(DesireEffect::SentimentFlat(
+            SentimentKind::Anger,
+            -0.2,
+            false,
+        ));
+        pop.desires[0].push(basic);
+        pop.stored_effects
+            .push(PopEffect::SentimentFlat {
+                kind: SentimentKind::Hope,
+                delta: 0.2,
+            });
+        pop.stored_effects.push(PopEffect::Birthrate(0.01));
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.24 / 1.48).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.04 / 1.48).abs() < 1e-9);
+        assert!((pop.sentiment.hope() - 0.2 / 1.48).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.48).abs() < 1e-9);
+        assert_eq!(pop.stored_effects, vec![PopEffect::Birthrate(0.01)]);
+    }
+
+    /// Hope is an even fifth. A met basic desire scales that share by half.
+    /// 15 percent of each other share moves into contentment. The basic need
+    /// is met, so the tier adds nothing before the partition is brought
+    /// back to 1.
+    #[test]
+    fn update_sentiments_scales_one_emotion_from_its_current_share() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        basic.effect.push(DesireEffect::SentimentRelative(
+            SentimentKind::Hope,
+            0.5,
+            true,
+        ));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.hope() - 0.27 / 1.1).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.17 / 1.1).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 0.32 / 1.1).abs() < 1e-9);
+    }
+
+    /// No desires, so the tiers add nothing. Ten grain at a price and
+    /// salability of 1 is 10 of holding value. The pop is one household,
+    /// so wealth per household is 10 and hope takes 0.10 of the pop.
+    #[test]
+    fn update_sentiments_moves_hope_from_wealth_per_household() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.salability.insert(1, 1.0);
+
+        pop.update_sentiments(&history);
+
+        assert!((pop.sentiment.hope() - 0.10 / 1.10).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.10).abs() < 1e-9);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    /// One basic desire is two levels met and the other is empty. The
+    /// overshot desire does not fill the empty one, so half of basic is
+    /// unmet. That half moves 0.02 into anger and 0.02 into fear.
+    #[test]
+    fn update_sentiments_splits_basic_shortfalls_across_desires() {
+        let mut pop = make_pop();
+        let mut met = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        met.satisfaction = 8.0;
+        let unmet = desire(
+            2,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        pop.desires[0].push(met);
+        pop.desires[0].push(unmet);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.04).abs() < 1e-9);
+    }
+
+    /// The common desire is one level met and its bonus adds another half,
+    /// so the tier is 1.5. Contentment takes 0.03 of the pop.
+    #[test]
+    fn update_sentiments_lets_common_satisfaction_pass_one_level() {
+        let mut pop = make_pop();
+        let mut common = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        common.satisfaction = 4.0;
+        common
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.contentment() - 1.03 / 1.03).abs() < 1e-9);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    /// Both luxury desires are met twice. The tier level is 2, so hope and
+    /// happiness each take 0.02 of the pop.
+    #[test]
+    fn update_sentiments_counts_each_luxury_level() {
+        let mut pop = make_pop();
+        for id in [1, 2] {
+            let mut luxury = desire(
+                id,
+                vec![DesireTarget::new(id, DesireTargetType::Consume, 1.0)],
+                4.0,
+            );
+            luxury.satisfaction = 8.0;
+            pop.desires[2].push(luxury);
+        }
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.hope() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.04).abs() < 1e-9);
+    }
+
+    /// The common desire is unmet. A stored satisfaction of 1.5 on that tier
+    /// is the tier's level, so contentment takes 0.03 of the pop. Sentiment
+    /// leaves that stored satisfaction in place. The birth arm stays.
+    #[test]
+    fn update_sentiments_adds_stored_satisfaction_on_its_tier() {
+        let mut pop = make_pop();
+        pop.desires[1].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.stored_effects
+            .push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Birthrate(0.01));
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.contentment() - 1.03 / 1.03).abs() < 1e-9);
+        assert_eq!(
+            pop.stored_effects,
+            vec![
+                PopEffect::Satisfaction { tier: 1, amount: 1.5 },
+                PopEffect::Birthrate(0.01),
+            ]
+        );
+    }
+
+    /// One basic level is met and no earlier living is stored. The shift
+    /// adds nothing. Today's living is kept for the next day.
+    #[test]
+    fn update_sentiments_records_living_before_it_can_shift() {
+        let mut pop = make_pop();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples.len(), 1);
+        assert!((pop.sol_samples[0] - 1.0).abs() < 1e-9);
+    }
+
+    /// Yesterday's living was 0 and today one level is met. The rise of 1
+    /// moves 0.25 into hope and 0.25 into happiness.
+    #[test]
+    fn update_sentiments_moves_hope_and_happiness_from_a_rising_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.hope() - 0.25 / 1.50).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.25 / 1.50).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.50).abs() < 1e-9);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    /// The recent living was 2 and today one level is met. The fall of 1
+    /// moves 0.25 into anger and 0.25 into fear. The basic need is met, so
+    /// the tier adds nothing.
+    #[test]
+    fn update_sentiments_moves_anger_and_fear_from_a_falling_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(2.0);
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.25 / 1.50).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.25 / 1.50).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.50).abs() < 1e-9);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+    }
+
+    /// Living rose by 1 and the household holds 10 of wealth. Hope takes
+    /// 0.25 from the rise and 0.10 from the wealth. The rise is the larger add.
+    #[test]
+    fn update_sentiments_lets_a_rising_living_outweigh_wealth() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.salability.insert(1, 1.0);
+
+        pop.update_sentiments(&history);
+
+        assert!((pop.sentiment.hope() - 0.35 / 1.60).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.25 / 1.60).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.60).abs() < 1e-9);
+    }
+
+    /// Five earlier days are stored, the oldest at 0 and the rest at 1.
+    /// Today's living is 1, so the gap is 0.2 and each of hope and happiness
+    /// takes 0.05. The oldest day is dropped and today is kept.
+    #[test]
+    fn update_sentiments_drops_the_oldest_living_sample() {
+        let mut pop = make_pop();
+        pop.sol_samples = VecDeque::from([0.0, 1.0, 1.0, 1.0, 1.0]);
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.hope() - 0.05 / 1.10).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.05 / 1.10).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.10).abs() < 1e-9);
+        assert_eq!(pop.sol_samples.len(), 5);
+        assert!(pop.sol_samples.iter().all(|sample| (sample - 1.0).abs() < 1e-9));
+    }
+
+    /// A pop with no desires has infinite living. That reading is not a
+    /// rise, and it is not stored over the earlier finite day.
+    #[test]
+    fn update_sentiments_skips_an_infinite_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0]));
+    }
+
+    /// Five households hold 10 grain and a pile of time. Wealth is 2 per
+    /// household. Time is left out, and hope takes 0.02 of the pop.
+    #[test]
+    fn update_sentiments_divides_wealth_by_households_and_skips_time() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 5.0;
+        pop.property.insert(TIME, PopPRow::new(100.0));
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.salability.insert(1, 1.0);
+
+        pop.update_sentiments(&history);
+
+        assert!((pop.sentiment.hope() - 0.02 / 1.02).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.02).abs() < 1e-9);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    /// Ten units priced at -1 cost 10 to hold. Salability does not shrink
+    /// that cost. Fear takes 0.10 of the pop.
+    #[test]
+    fn update_sentiments_moves_fear_from_negative_wealth() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, -1.0);
+        history.salability.insert(1, 0.1);
+
+        pop.update_sentiments(&history);
+
+        assert!((pop.sentiment.fear() - 0.10 / 1.10).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.10).abs() < 1e-9);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+    }
+
+    /// No households. The grain on hand does not move hope.
+    #[test]
+    fn update_sentiments_skips_wealth_when_there_are_no_households() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 0.0;
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.salability.insert(1, 1.0);
+
+        pop.update_sentiments(&history);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    /// The basic desire is unmet. Stored satisfaction of 0.5 on that tier
+    /// cuts the gap in half, so anger and fear each take 0.02.
+    #[test]
+    fn update_sentiments_reduces_basic_unmet_by_stored_satisfaction() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.stored_effects
+            .push(PopEffect::Satisfaction { tier: 0, amount: 0.5 });
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.02 / 1.04).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.04).abs() < 1e-9);
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 0, amount: 0.5 }]
+        );
+    }
+
+    /// Stored basic satisfaction larger than the gap clears it. Anger and
+    /// fear stay empty, and the stored satisfaction stays.
+    #[test]
+    fn update_sentiments_lets_stored_basic_satisfaction_clear_the_gap() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.stored_effects
+            .push(PopEffect::Satisfaction { tier: 0, amount: 1.5 });
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 0, amount: 1.5 }]
+        );
+    }
+
+    /// An unmet basic desire carries a satisfaction malus of 0.5. The gap
+    /// is 1.5, so anger and fear each take 0.06.
+    #[test]
+    fn update_sentiments_deepens_basic_unmet_with_a_satisfaction_malus() {
+        let mut pop = make_pop();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, false));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.06 / 1.12).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.06 / 1.12).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.12).abs() < 1e-9);
+    }
+
+    /// The basic desire is met and its bonus adds half a level. Basic
+    /// satisfaction does not move hope or happiness, and nothing is unmet.
+    #[test]
+    fn update_sentiments_leaves_a_met_basic_bonus_alone() {
+        let mut pop = make_pop();
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        basic
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+    }
+
+    /// Sentiment starts even, so a contentment add is visible. The common
+    /// desire is one level met and its bonus adds another half. 15 percent
+    /// of each other share also moves into contentment.
+    #[test]
+    fn update_sentiments_shows_common_satisfaction_above_one_level() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut common = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        common.satisfaction = 4.0;
+        common
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.contentment() - 0.35 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.17 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.hope() - 0.17 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.anger() - 0.17 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.17 / 1.03).abs() < 1e-9);
+    }
+
+    /// One luxury desire is met twice and its bonus adds one more level,
+    /// so the tier is 3. Hope and happiness each take 0.03.
+    #[test]
+    fn update_sentiments_adds_luxury_bonus_levels() {
+        let mut pop = make_pop();
+        let mut luxury = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        luxury.satisfaction = 8.0;
+        luxury
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[2].push(luxury);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.hope() - 0.03 / 1.06).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.03 / 1.06).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.06).abs() < 1e-9);
+    }
+
+    /// Sentiment starts even. The common desire is unmet and its malus
+    /// pulls the tier below zero, which adds nothing. 15 percent of each
+    /// other share still moves into contentment.
+    #[test]
+    fn update_sentiments_ignores_a_negative_common_level() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut common = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        common
+            .effect
+            .push(DesireEffect::Satisfaction(0.5, false));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.contentment() - 0.32).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.17).abs() < 1e-9);
+        assert!((pop.sentiment.anger() - 0.17).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.17).abs() < 1e-9);
+        assert!((pop.sentiment.hope() - 0.17).abs() < 1e-9);
+    }
+
+    /// No desires sit on the common tier. Stored satisfaction of 1.5 there
+    /// is the whole level. Sentiment starts even, so the add is visible.
+    /// 15 percent of each other share also moves into contentment.
+    #[test]
+    fn update_sentiments_counts_stored_satisfaction_on_an_empty_tier() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        pop.stored_effects
+            .push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.contentment() - 0.35 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - 0.17 / 1.03).abs() < 1e-9);
+        assert!((pop.sentiment.hope() - 0.17 / 1.03).abs() < 1e-9);
+        assert!(pop.sol_samples.is_empty());
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 1, amount: 1.5 }]
+        );
+    }
+
+    /// Today's living matches the one day already stored. The shift adds
+    /// nothing, and both days stay on the list.
+    #[test]
+    fn update_sentiments_adds_nothing_when_living_matches_the_average() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0, 1.0]));
+    }
+
+    /// Living rises from 0 to 1, then stays at 1. The second day is still
+    /// half a point above the average, so hope and happiness are pushed
+    /// again. 15 percent of the first day's hope and happiness moves into
+    /// contentment.
+    #[test]
+    fn update_sentiments_adds_the_living_shift_again_on_the_next_day() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(&MarketHistory::new());
+        pop.update_sentiments(&MarketHistory::new());
+
+        let carried_hope = 0.25 / 1.50;
+        let carried_contentment = 1.0 / 1.50;
+        let hope = carried_hope * (1.0 - 0.15) + 0.125;
+        let contentment = carried_contentment + 0.15 * carried_hope * 2.0;
+        let mass = hope + hope + contentment;
+        assert!((pop.sentiment.hope() - hope / mass).abs() < 1e-9);
+        assert!((pop.sentiment.happiness() - hope / mass).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - contentment / mass).abs() < 1e-9);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([0.0, 1.0, 1.0]));
+    }
+
+    /// Living fell from 1 to 0, and the basic desire is unmet. Anger and
+    /// fear take 0.25 from the fall and 0.04 from the gap. The fall is larger.
+    #[test]
+    fn update_sentiments_lets_a_falling_living_outweigh_unmet_basic() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.29 / 1.58).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.29 / 1.58).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.58).abs() < 1e-9);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+    }
+
+    /// No desires and no stock. The pop that is mostly angry moves more
+    /// of itself into contentment than the pop that is mostly content.
+    #[test]
+    fn update_sentiments_pulls_a_larger_share_harder_toward_contentment() {
+        let mut far = make_pop();
+        far.sentiment = Sentiment::from_parts(0.0, 0.2, 0.8, 0.0, 0.0);
+        let mut near = make_pop();
+        near.sentiment = Sentiment::from_parts(0.0, 0.8, 0.2, 0.0, 0.0);
+
+        far.update_sentiments(&MarketHistory::new());
+        near.update_sentiments(&MarketHistory::new());
+
+        assert!((far.sentiment.anger() - 0.68).abs() < 1e-9);
+        assert!((far.sentiment.contentment() - 0.32).abs() < 1e-9);
+        assert!((near.sentiment.anger() - 0.17).abs() < 1e-9);
+        assert!((near.sentiment.contentment() - 0.83).abs() < 1e-9);
+    }
+
+    /// No desires and no stock. A fully angry pop moves 15 percent of that
+    /// share into contentment, then 15 percent of what remains.
+    #[test]
+    fn update_sentiments_pulls_again_when_the_cause_is_gone() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 1.0, 0.0, 0.0);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.85).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 0.15).abs() < 1e-9);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+
+        pop.update_sentiments(&MarketHistory::new());
+
+        assert!((pop.sentiment.anger() - 0.7225).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 0.2775).abs() < 1e-9);
+    }
+
     /// Yesterday's satisfaction is 25 and good 1 is fully reserved. The
     /// desire is for a good the pop does not hold. Good 1 does not rot and
     /// cannot be sold. The market still has yesterday's payment on good 1.
@@ -5263,6 +6534,71 @@ mod pop {
         assert_eq!(pop.desires[1][0].satisfaction, 1.0);
     }
 
+    /// The pop holds 4 grain and the basic desire wants 4. Consume meets it.
+    /// The desire's happiness bonus of 0.2 then shifts that share of the pop
+    /// out of contentment.
+    #[test]
+    fn market_day_shifts_sentiment_from_a_met_desire() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(4.0));
+        let mut basic = desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        );
+        basic.effect.push(DesireEffect::SentimentFlat(
+            SentimentKind::Happiness,
+            0.2,
+            true,
+        ));
+        pop.desires[0].push(basic);
+        let factuals = Factuals::new().with_good(make_good(1, "grain", 0.0));
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        let pop = actors.pop(1);
+        // The grain is eaten, so wealth adds nothing. The basic need is met.
+        assert!((pop.sentiment.happiness() - 0.2 / 1.2).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.2).abs() < 1e-9);
+    }
+
+    /// The first day eats the grain and records living of 1. The next morning
+    /// clears that satisfaction and nothing is left to eat, so living is 0.
+    /// Anger and fear take 0.25 from the fall and 0.04 from the unmet need.
+    #[test]
+    fn market_day_shifts_anger_after_living_falls() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(4.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let factuals = Factuals::new().with_good(make_good(1, "grain", 0.0));
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+        let pop = actors.pop(1);
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0]));
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+        let pop = actors.pop(1);
+        assert!((pop.sentiment.anger() - 0.29 / 1.58).abs() < 1e-9);
+        assert!((pop.sentiment.fear() - 0.29 / 1.58).abs() < 1e-9);
+        assert!((pop.sentiment.contentment() - 1.0 / 1.58).abs() < 1e-9);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0, 0.0]));
+    }
+
     #[test]
     fn market_day_rescales_satisfaction_after_growth() {
         let demo = DemoDesire::new(1)
@@ -5291,6 +6627,72 @@ mod pop {
         let pop = actors.pop(1);
         let count = pop.demographics.household.count;
         assert!((pop.desires[0][0].amount - 2.0 * count).abs() < 1e-9);
+    }
+
+    #[test]
+    fn market_day_matches_desires_to_the_fitted_population() {
+        let demo = DemoDesire::new(1)
+            .with_tier(0)
+            .with_scalar(ScalingFactor::Household(1.0))
+            .with_amount(2.0);
+        let factuals = Factuals::new()
+            .with_species(Species::new(0, "human").with_desire(demo));
+        let mut pop = make_pop();
+        let start = pop.demographics.total_population();
+        pop.population_cap = Some(start);
+        let linked = factuals.species[&0]
+            .find_desire(1)
+            .unwrap()
+            .create_desire(&pop, DemographicSource::Species(0));
+        pop.desires[0].push(linked);
+        pop.desires[0][0].amount = 99.0;
+        pop.desires[0][0].satisfaction = 49.5;
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        let pop = actors.pop(1);
+        let count = pop.demographics.household.count;
+        assert!((pop.demographics.total_population() - start).abs() < 1e-6);
+        assert!((pop.desires[0][0].amount - 2.0 * count).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebalance_then_rescale_keeps_the_met_fraction() {
+        let demo = DemoDesire::new(1)
+            .with_tier(0)
+            .with_scalar(ScalingFactor::Household(1.0))
+            .with_amount(2.0);
+        let factuals = Factuals::new()
+            .with_species(Species::new(0, "human").with_desire(demo));
+        let mut pop = make_pop();
+        let start = pop.demographics.total_population();
+        pop.population_cap = Some(start);
+        pop.demographics.household.count = 2.0;
+        let linked = factuals.species[&0]
+            .find_desire(1)
+            .unwrap()
+            .create_desire(&pop, DemographicSource::Species(0));
+        pop.desires[0].push(linked);
+        pop.desires[0][0].amount = 99.0;
+        pop.desires[0][0].satisfaction = 49.5;
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+
+        market.rebalance_population_cap(&mut actors);
+        actors.pop_mut(1).rescale_desires(&factuals);
+
+        let pop = actors.pop(1);
+        let amount = pop.desires[0][0].amount;
+        assert!((pop.demographics.total_population() - start).abs() < 1e-9);
+        assert!((amount - 2.0 * pop.demographics.household.count).abs() < 1e-9);
+        assert!((pop.desires[0][0].satisfaction / amount - 0.5).abs() < 1e-9);
     }
 
     /// A basic day stays on bread even when grain rates higher and is already held.

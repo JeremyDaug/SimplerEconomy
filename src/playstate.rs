@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rayon::prelude::*;
 
 use crate::game::actors::Actors;
@@ -98,7 +100,8 @@ impl PlayState {
     /// Population growth occurs here.
     ///
     /// Each pop resolves structural demographic rates from factuals (recomputed per
-    /// pop; not a prebuilt combo table), stacks same-day mods, and runs
+    /// pop; not a prebuilt combo table), stacks same-day mods, scales births by
+    /// the demographic sentiment schedule, and runs
     /// `Household::update`. Parallel over pops with shared `&Factuals` is safe
     /// because rate resolution is pure recompute today.
     ///
@@ -118,9 +121,25 @@ impl PlayState {
 
     /// # Phase Update Sentiments
     ///
-    /// After consume and growth, before migration. Walks each market so pops
-    /// get that market's price snapshot (`Market::history`).
+    /// After consume and growth, before migration. Each pop runs
+    /// [`Pop::update_sentiments`](crate::game::pop::Pop::update_sentiments)
+    /// with the history of a market it sits on. A pop on no market gets an
+    /// empty history.
     fn phase_update_sentiments(&mut self) {
+        let mut history_for_pop = HashMap::new();
+        for market in self.map_data.markets.values() {
+            let history = market.history();
+            for &pop_id in &market.pops {
+                history_for_pop.insert(pop_id, history.clone());
+            }
+        }
+        self.actors.pops.par_iter_mut().for_each(|(id, pop)| {
+            let history = history_for_pop
+                .get(id)
+                .cloned()
+                .unwrap_or_else(MarketHistory::new);
+            pop.update_sentiments(&history);
+        });
     }
 
     /// After sentiments, before migration. Pops are independent.
