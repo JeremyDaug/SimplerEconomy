@@ -316,6 +316,36 @@ impl Pop {
             self.demographics.religion,
         );
         self.job.ensure_lines(&processes);
+        self.prepare_skills(factuals);
+    }
+
+    /// Household floor for one attached skill. Flat, not per person.
+    const SKILL_PER_HOUSEHOLD: f64 = 0.1;
+
+    /// # Prepare Skills
+    ///
+    /// Attaches the job's skills and raises each pile to the household floor.
+    ///
+    /// `factuals` supplies which inputs are skills. The floor is
+    /// [`Self::SKILL_PER_HOUSEHOLD`] times the household count. A pile
+    /// already at or above that floor stays. A missing row is created at
+    /// the floor. A floor of zero does nothing.
+    pub fn prepare_skills(&mut self, factuals: &Factuals) {
+        self.job.attach_skills(factuals);
+        let floor = Self::SKILL_PER_HOUSEHOLD * self.demographics.household.count.max(0.0);
+        if floor <= 0.0 {
+            return;
+        }
+        let skills = self.job.skills.clone();
+        for skill in skills {
+            let row = self
+                .property
+                .entry(skill)
+                .or_insert_with(|| PopPRow::new(0.0));
+            if row.quantity < floor {
+                row.quantity = floor;
+            }
+        }
     }
 
     /// # Complexity Cost
@@ -1298,6 +1328,10 @@ impl Pop {
         let eaten = Self::eaten_target(desire)?;
         let mut best: Option<(f64, usize, f64, f64)> = None;
         for good in factuals.each_good() {
+            // A skill is practice on the pop, not a good that holds a saved day.
+            if good.is_skill() {
+                continue;
+            }
             if in_bucket
                 && !desire
                     .target
@@ -2237,6 +2271,7 @@ impl Pop {
                 continue;
             }
             let free = self.payable_after_freight(factuals, history, book, goods, good, avoid);
+            let free = self.skill_offer_room(factuals, goods, good, free);
             if free < 1.0 {
                 continue;
             }
@@ -2267,9 +2302,8 @@ impl Pop {
     ) -> bool {
         for good in self.payment_goods(factuals, book, history, avoid, skip) {
             let per = history.holding_per_unit(good);
-            if per <= 0.0
-                || self.payable_after_freight(factuals, history, book, goods, good, avoid) < 1.0
-            {
+            let free = self.payable_after_freight(factuals, history, book, goods, good, avoid);
+            if per <= 0.0 || self.skill_offer_room(factuals, goods, good, free) < 1.0 {
                 continue;
             }
             *goods.entry(good).or_insert(0.0) -= 1.0;
@@ -2277,6 +2311,28 @@ impl Pop {
             return true;
         }
         false
+    }
+
+    /// # Skill Offer Room
+    ///
+    /// How many units of `good` this basket may still offer.
+    ///
+    /// `factuals` says whether `good` is a skill. `goods` is the basket so
+    /// far, and payment is a negative amount. `free` is the units otherwise
+    /// payable. A skill is offered once: the basket takes at most one unit.
+    /// Any other good returns `free`.
+    fn skill_offer_room(
+        &self,
+        factuals: &Factuals,
+        goods: &HashMap<usize, f64>,
+        good: usize,
+        free: f64,
+    ) -> f64 {
+        if !factuals.get_good(good).is_some_and(|row| row.is_skill()) {
+            return free;
+        }
+        let offered = (-goods.get(&good).copied().unwrap_or(0.0)).max(0.0);
+        (1.0 - offered).max(0.0).min(free)
     }
 
     /// True when `good` is transport and the seller did not request it.
@@ -3287,6 +3343,42 @@ mod pop {
 
         assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
         assert_eq!(deal.goods.get(&7).copied(), Some(-5.0));
+    }
+
+    /// Eight survival would cover the water and the tie-break by itself.
+    /// The basket offers one, and wood covers the rest.
+    #[test]
+    fn propose_offers_a_skill_once() {
+        let mut buyer = make_pop();
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        buyer.property.insert(40, PopPRow::new(8.0));
+        buyer.property.insert(7, PopPRow::new(4.0));
+        do_satisfy(&mut buyer);
+        let mut skill = make_good(40, "survival", 0.05);
+        skill.mass = 0.0;
+        skill.tags.insert(GoodTag::Skill);
+        let factuals = Factuals::new()
+            .with_good(skill)
+            .with_good(make_good(7, "wood", 0.0))
+            .with_good(make_good(2, "water", 0.0));
+        let book = SellerBook {
+            seller: Actor::Pop(2),
+            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 1.0)],
+            requests: vec![],
+        };
+        let history = card(&[(2, 1.0, 1.0), (40, 1.0, 1.5), (7, 1.0, 1.0)]);
+
+        let deal = buyer
+            .propose(2, &book, &history, &factuals)
+            .expect("basket");
+
+        assert_eq!(deal.goods.get(&2).copied(), Some(1.0));
+        assert_eq!(deal.goods.get(&40).copied(), Some(-1.0));
+        assert_eq!(deal.goods.get(&7).copied(), Some(-1.0));
     }
 
     /// Ten time, freight bill 1. Four water take five time: four at par and

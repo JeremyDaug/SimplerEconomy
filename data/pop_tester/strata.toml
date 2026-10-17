@@ -1,6 +1,8 @@
 # Stratum for the pop tester. Id 0 is empty and is not stored.
 # culture is the culture this stratum derives from.
 # Tier 1 is a common desire. The goods table shares one amount.
+# Wood is eaten. Wood tools are owned: consume sets them aside and decay
+# returns them, minus the tool's own decay.
 
 [[strata]]
 id = 1
@@ -20,3 +22,4 @@ efficiency = 1
 [[strata.desires.goods]]
 good = "wood_tools"
 efficiency = 2
+use = true

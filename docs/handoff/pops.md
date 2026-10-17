@@ -8,15 +8,18 @@ household size, and the first morning's line targets. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
 copies them onto each pop. The tester prints the meetings, including the
 morning buys/sells ratio. It does not choose baskets or prices. The night's
-plan rewrites every line target.
+plan rewrites every line target and each line's optional inputs.
 `docs/handoff/desire.md` sketches how a platonic desire becomes a
 demographic desire and then a pop desire.
 
 ## Where this stopped
 
-Cottage planning, savings, and the first deal pass are the current stop.
-Seller weight is a first cut: the whole units on the offer. Refine that
-weight later. The buyer draw is still one ticket per buy.
+Cottage planning, savings, the optional-input list, and the first deal pass
+are the current stop. Seller weight is a first cut: the whole units on the
+offer. Refine that weight later. The buyer draw is still one ticket per buy.
+Owned targets are in the tester: wood tools on the householder common
+desire, and cabins on the hearth luxury desire. Population-growth testing,
+sentiment, and internal migration are the open 0.1 items in `TODO.md`.
 
 A specialty line aims at its cover, its paced surplus, and the unmet buys
 it is allowed to take. It does not take the rest of the morning. Each pop's
@@ -35,9 +38,10 @@ The other pops still make and sell the same goods.
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. `Firm::plan` is empty |
+| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
+| Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. A deal offers at most one unit of a skill. The goods still carry `untradeable`, so a meeting is not opened on a skill |
 
 ## Satisfy
 
@@ -162,8 +166,37 @@ that morning produces on a later day, after the night's plan.
 `JobLine.target` is the quota. `None` runs as far as inputs on hand allow
 and does not shop. `Some(0.0)` skips the line. `Some(n)` with `n > 0` runs
 up to `n` and shops enough of each spent input that another `n` is on hand after decay, rounded up to a whole unit. Required inputs are always drawn.
-Optional inputs are drawn when the line lists them. A missing required
-factor shops one unit and leaves the other inputs free.
+A missing required factor shops one unit and leaves the other inputs free.
+
+`JobLine.inputs` is the on/off list. An optional factor is claimed when
+held and is not on the list. Any other optional, including capital, is
+drawn only when the line lists it. A skill on that list is claimed and is
+not shopped. An empty list draws none of those. The first morning starts
+empty, because the list is written at night.
+
+`Job::plan` rewrites the list. Each optional is scored on its own, against
+the same one-iteration run with no optionals. Capital is costed at its
+decay. A destroyed or consumed optional is costed at its holding. The
+product includes that optional's output bonus on ordinary outputs, and an
+extra output as its own units. A fixed output stays at its written amount.
+When another line on the job consumes the product as a required input, the
+product is priced at the better of holding it and that later line's
+unboosted output holding per input unit. One step. The best later line
+wins. The optional stays on when the rate and the product both hold or
+rise. A lower rate stays on when the bare run already earns a positive
+return and the product's relative gain is at least the rate's relative
+drop. A product that does not rise turns it off. The list does not change
+the buy. A listed input is still topped up for the line's quota.
+
+The pop tester owns two goods. The householder common desire eats wood at
+efficiency 1 and owns wood tools at efficiency 2. The hearth luxury desire
+eats jewelry at efficiency 1, owns cabins at efficiency 2, and takes time
+at efficiency 1 with cap 0.5. `use = true` on the demographic row is
+`DesireTargetType::Use`. Satisfy reserves that pile before the job can
+claim it as capital. Only units above the reserve and the saved day equip
+a run. Some tester processes take wood tools as optional capital, one per
+run, with an output effect, and the skill input carries an output effect
+beside its extra output. Those amounts are test data.
 
 Produce runs before exchange. Inputs destroyed that morning, including
 Time, are gone before freight. A line may spend free stock an earlier
@@ -251,7 +284,8 @@ uses. Iterations stay on the desire gap.
 Job buys are the shopping list, rounded up to a whole unit, added onto an
 open desire buy for the same good. The list is the next run's input need
 after decay, for goods that survive the night. A good that decays completely,
-such as time, is not bought. Morning reserve writes that list before produce.
+such as time, is not bought. A non-factor optional is shopped only when
+the line lists it. A skill is not shopped. Morning reserve writes that list before produce.
 After produce, and after the second satisfy, the list is rebuilt from stock
 still free. An input this morning already made is not bought again.
 Output an earlier line will make tomorrow morning covers the later line's
@@ -261,7 +295,7 @@ last plan did not pay also shops one unit of each output that survives the
 night: `1 / (1 - decay)` minus the
 units already on hand. A larger input buy for that good stays. The first
 morning, before a plan, does not shop an output. A purchase shrinks that
-list. The next morning's reset drops the list and the claim book. Targets stay.
+list. The next morning's reset drops that shopping list and the claim book. Targets and the optional-input list stay.
 
 ## Match
 
@@ -405,8 +439,8 @@ Actor `record_keeping` and `plan` read a snapshot taken after decay and
 `rescale_desires`, and before that night write, so they still see today's
 card. Exchange priced itself from the snapshot at the start of
 `match_deals`. Firm record keeping clears that firm's production counters.
-`Pop::plan` rewrites job targets from that snapshot and from each row's
-`produced` and `lost`. `Firm::reserve_for_day`,
+`Pop::plan` rewrites job targets and each line's optional inputs from that
+snapshot and from each row's `produced` and `lost`. `Firm::reserve_for_day`,
 `Firm::produce`, and `Firm::plan` are empty.
 
 `PlayState::phase_pop_growth` only grows and does not rescale.

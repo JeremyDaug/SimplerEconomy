@@ -1081,7 +1081,7 @@ mod factuals_should {
     use crate::game::demographic_source::DemographicSource;
     use crate::game::effects::ProcessEffect;
     use crate::game::good::{GoodTag, TIME};
-    use crate::game::process::InputType;
+    use crate::game::process::{InputEffect, InputType};
     use crate::game::{culture::Culture, religion::Religion, species::Species};
     use std::path::PathBuf;
 
@@ -1510,7 +1510,19 @@ processes = [29]
     fn load_from_path_reads_world_dir_goods_and_processes() {
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         assert!(!factuals.goods.is_empty());
-        assert!(factuals.processes.len() >= factuals.goods.len());
+        let products = factuals
+            .goods
+            .values()
+            .filter(|good| !good.is_skill())
+            .count();
+        assert!(factuals.processes.len() >= products);
+        let survival = factuals.goods.values().find(|good| good.name == "survival");
+        let survival = survival.expect("survival");
+        assert_eq!(survival.mass, 0.0);
+        assert_eq!(survival.volume, 0.0);
+        assert!((survival.decay_rate - 0.05).abs() < 1e-12);
+        assert!(survival.is_skill());
+        assert!(survival.tags.contains(&GoodTag::Untradeable));
         const RAW_EXTRACTS: &[&str] = &[
             "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal",
             "clay",
@@ -1533,8 +1545,19 @@ processes = [29]
             }
             assert!(matches!(time_in.input_type, InputType::Destroyed));
             assert!(!time_in.is_optional());
-            assert_eq!(process.outputs.len(), 1);
+            assert!(process.outputs.len() >= 2, "{}", process.name);
             assert!(process.outputs[0].amount > 0.0 && process.outputs[0].amount <= 8.0);
+            let practice = process.outputs.last().expect("skill output");
+            assert!(practice.fixed, "{}", process.name);
+            // The flat skill output is positive.
+            assert!(practice.amount > 0.0, "{}", process.name);
+            assert!(
+                factuals
+                    .get_good(practice.good)
+                    .is_some_and(|good| good.is_skill()),
+                "{}",
+                process.name
+            );
             assert!(process.complexity > 0.0);
             let output_name = factuals
                 .goods
@@ -1565,7 +1588,7 @@ processes = [29]
         assert_eq!(grain.outputs[0].good, 1);
         assert!(!grain.is_subsistence());
         assert!((grain.complexity - 1.0).abs() < 1e-12);
-        assert_eq!(grain.inputs.len(), 3);
+        assert_eq!(grain.inputs.len(), 4);
         assert!((grain.inputs[0].amount - 0.5).abs() < 1e-12);
         assert!(grain.inputs[1].is_optional());
         assert!(grain.inputs[2].is_optional());
@@ -1574,18 +1597,42 @@ processes = [29]
         assert!(farm.is_subsistence());
         assert!((farm.complexity - 0.25).abs() < 1e-12);
         assert_eq!(farm.outputs[0].good, 1);
-        assert_eq!(farm.inputs.len(), 1);
+        assert_eq!(farm.inputs.len(), 3);
+        let farm_tool = farm.inputs.iter().find(|input| input.good == 9);
+        let farm_tool = farm_tool.expect("wood tools");
+        assert!(farm_tool.is_optional());
+        assert!(matches!(farm_tool.input_type, InputType::Capital));
+        assert!(farm_tool.optional_effects().is_some_and(|effects| {
+            effects
+                .iter()
+                .any(|effect| matches!(effect, InputEffect::Output(amount) if *amount > 0.0))
+        }));
+        let farm_skill = farm.inputs.iter().find(|input| input.good == survival.id);
+        let farm_skill = farm_skill.expect("survival input");
+        assert!(farm_skill.is_optional());
+        // The return on the fed skill is positive, and so is its output effect.
+        assert!(farm_skill.optional_effects().is_some_and(|effects| {
+            effects
+                .iter()
+                .any(|effect| matches!(effect, InputEffect::Output(amount) if *amount > 0.0))
+        }));
+        assert!(farm_skill.optional_effects().is_some_and(|effects| {
+            effects.iter().any(|effect| {
+                matches!(effect, InputEffect::ExtraOutput(good, amount)
+                    if *good == survival.id && *amount > 0.0)
+            })
+        }));
         let pots = factuals.processes.get(&27).expect("make pots");
         assert_eq!(pots.name, "make pots");
         assert_eq!(pots.outputs[0].good, 27);
-        assert_eq!(pots.inputs.len(), 3);
+        assert_eq!(pots.inputs.len(), 4);
         assert_eq!(pots.inputs[1].good, 26);
         assert_eq!(pots.inputs[2].good, 23);
         assert!((pots.outputs[0].amount - 1.0).abs() < 1e-12);
         let time = factuals.processes.get(&28).expect("make time");
         assert_eq!(time.name, "make time");
         assert_eq!(time.outputs[0].good, 0);
-        assert_eq!(time.inputs.len(), 1);
+        assert_eq!(time.inputs.len(), 2);
         assert!((time.outputs[0].amount - 1.0).abs() < 1e-12);
         assert_eq!(factuals.config, GameConfig::default());
         assert_eq!(factuals.config.market.friction, 1.0);

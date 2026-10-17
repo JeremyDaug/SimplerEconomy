@@ -304,12 +304,15 @@ impl Process {
             }
             working_target -= result.iterations;
             result_acc.iterations += result.iterations;
-            // add the results to the accumulator, and subtract used inputs from the working inputs for the next leg.
+            // Net changes accumulate. The next leg loses what this leg spent,
+            // including when that good was also produced.
             for (good, change) in &result.changes {
                 *result_acc.changes.entry(*good).or_insert(0.0) += *change;
-                if *change < 0.0 {
-                    *working_inputs.entry(*good).or_insert(0.0) += *change;
-                }
+            }
+            for (&good, &spent) in &result.spent {
+                *result_acc.spent.entry(good).or_insert(0.0) += spent;
+                let pile = working_inputs.entry(good).or_insert(0.0);
+                *pile = (*pile - spent).max(0.0);
             }
             for (good, used) in &result.used_inputs {
                 *result_acc.used_inputs.entry(*good).or_insert(0.0) += *used;
@@ -456,6 +459,7 @@ impl Process {
         let mut result = ProcessResult {
             iterations: shortest,
             changes: HashMap::new(),
+            spent: HashMap::new(),
             used_inputs: HashMap::new(),
             effects: Vec::new(),
             missing_goods: Vec::new(),
@@ -476,11 +480,17 @@ impl Process {
                 InputType::Factor => {}, // skip factors
                 // capital goes to used.
                 InputType::Capital => { result.used_inputs.insert(input.good, change); },
-                // Destroyed is subtracted from changes.
-                InputType::Destroyed => { result.changes.insert(input.good, -change); },
+                // Destroyed is subtracted from changes. Spent is the gross take,
+                // so a later leg does not feed the same units when this good
+                // is also produced.
+                InputType::Destroyed => {
+                    result.changes.insert(input.good, -change);
+                    result.spent.insert(input.good, change);
+                },
                 // Consumed is subtracted and it's decay added to changes
                 InputType::Consumed => {
                     result.changes.insert(input.good, -change);
+                    result.spent.insert(input.good, change);
                     // also add decay results to output changes.
                     // we can unwrap here since decay results are guaranteed to exist for consumed goods.
                     if let Some(good) = factuals.goods.get(&input.good) {
@@ -563,6 +573,12 @@ pub struct ProcessResult {
     pub iterations: f64,
     /// The changes to the goods input, negative means destroyed, positive means created.
     pub changes: HashMap<usize, f64>,
+    /// Gross units of each destroyed or consumed input this result took.
+    ///
+    /// Kept apart from [`Self::changes`] so a good that is also produced
+    /// still leaves the working pile. The next leg does not feed those
+    /// units again. The net on [`Self::changes`] is unchanged.
+    pub spent: HashMap<usize, f64>,
     /// Inputs that were used, but not consumed, always peositive value.
     pub used_inputs: HashMap<usize, f64>,
     /// Any addititional effects produced by the process.
@@ -582,6 +598,7 @@ impl ProcessResult {
         Self {
             iterations: 0.0,
             changes: HashMap::new(),
+            spent: HashMap::new(),
             used_inputs: HashMap::new(),
             effects: Vec::new(),
             missing_goods: Vec::new(),
@@ -1634,6 +1651,35 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 0);
+        }
+
+        #[test]
+        fn skill_fed_once_returns_the_bonus_and_the_flat_output() {
+            let skill = 40;
+            let process = Process::new(1, "practice", 0)
+                .with_input(make_input(REQ_GOOD, 1.0, true, InputType::Destroyed))
+                .with_input(make_optional_input(
+                    skill,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![InputEffect::ExtraOutput(skill, 1.1)],
+                ))
+                .with_output(ProcessOutput::new(OUT_GOOD, 1.0, true))
+                .with_output(ProcessOutput::new(skill, 0.01, true));
+            let mut available = HashMap::new();
+            available.insert(REQ_GOOD, 2.0);
+            available.insert(skill, 1.0);
+
+            let result = process.do_process(&available, Some(2.0), &make_factuals(vec![]));
+
+            // One skill is fed on the first leg. The second leg still runs.
+            assert_eq!(result.iterations, 2.0);
+            assert_eq!(result.spent.get(&skill), Some(&1.0));
+            assert_eq!(result.changes.get(&REQ_GOOD), Some(&-2.0));
+            assert_eq!(result.changes.get(&OUT_GOOD), Some(&2.0));
+            // 1.1 back for the 1 fed, plus 0.01 on each of the two runs.
+            assert!((result.changes[&skill] - 0.12).abs() < 1e-12);
         }
 
         #[test]

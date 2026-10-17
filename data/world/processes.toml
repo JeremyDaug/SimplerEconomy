@@ -11,6 +11,18 @@
 # optional boosters. Crafted recipes take Time plus at least one destroyed
 # material. Subsistence is Time-only and weaker than the matching extract.
 #
+# Every process also takes one skill. The input is optional and is not
+# required. The return, the flat output, and an output effect are written
+# on the process. Some processes also take wood tools (good 9) as optional
+# capital, one per run, with an output effect. Those amounts are test data.
+# survival 28: subsistence and make time. farming 29: make grain.
+# watering 30: make water. baking 31: make bread.
+# goldsmithing 32: gold, gold token, jewelry.
+# woodworking 33: wood, cabins, wood tools, buckets, charcoal.
+# smithing 34: iron, iron tools, blades, iron token.
+# metalworking 35: copper, tin, bronze, and their tools, mirror, and tokens.
+# mining 36: coal. pottery 37: clay and pots. brewing 38: beer.
+#
 # input type: destroyed | consumed | capital | factor  (default destroyed)
 # optional = true to skip if the good is missing.
 # outputs scale with bonuses unless fixed = true.
@@ -21,15 +33,26 @@ name = "make grain"
 inputs = [
     { good = 0, amount = 0.5 },
     { good = 2, amount = 0.5, optional = true, optional_effects = [{ output = 0.25 }] },
-    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ throughput = 0.25 }] },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 29, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 29, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 1, amount = 6.0 }]
+outputs = [
+    { good = 1, amount = 6.0 },
+    { good = 29, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 2
 name = "make water"
-inputs = [{ good = 0, amount = 0.2 }]
-outputs = [{ good = 2, amount = 6.0 }]
+inputs = [
+    { good = 0, amount = 0.2 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 30, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 30, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 2, amount = 6.0 },
+    { good = 30, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 3
@@ -38,14 +61,26 @@ inputs = [
     { good = 0, amount = 0.2 },
     { good = 1, amount = 1.0 },
     { good = 2, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 31, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 31, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 3, amount = 3.0 }]
+outputs = [
+    { good = 3, amount = 3.0 },
+    { good = 31, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 4
 name = "make gold"
-inputs = [{ good = 0, amount = 1.0 }]
-outputs = [{ good = 4, amount = 3.0 }]
+inputs = [
+    { good = 0, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 4, amount = 3.0 },
+    { good = 32, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 5
@@ -53,8 +88,12 @@ name = "make gold_token"
 inputs = [
     { good = 0, amount = 0.1 },
     { good = 4, amount = 1.0 },
+    { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 5, amount = 3.0 }]
+outputs = [
+    { good = 5, amount = 3.0 },
+    { good = 32, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 6
@@ -62,17 +101,26 @@ name = "make jewelry"
 inputs = [
     { good = 0, amount = 0.5 },
     { good = 4, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 6, amount = 1.0 }]
+outputs = [
+    { good = 6, amount = 1.0 },
+    { good = 32, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 7
 name = "make wood"
 inputs = [
     { good = 0, amount = 0.5 },
-    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ throughput = 0.25 }] },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 7, amount = 8.0 }]
+outputs = [
+    { good = 7, amount = 8.0 },
+    { good = 33, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 8
@@ -80,8 +128,13 @@ name = "make cabins"
 inputs = [
     { good = 0, amount = 0.5 },
     { good = 7, amount = 3.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 8, amount = 1.0 }]
+outputs = [
+    { good = 8, amount = 1.0 },
+    { good = 33, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 9
@@ -89,8 +142,13 @@ name = "make wood_tools"
 inputs = [
     { good = 0, amount = 0.3 },
     { good = 7, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 9, amount = 1.0 }]
+outputs = [
+    { good = 9, amount = 1.0 },
+    { good = 33, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 10
@@ -98,14 +156,24 @@ name = "make buckets"
 inputs = [
     { good = 0, amount = 0.2 },
     { good = 7, amount = 1.0 },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 10, amount = 1.0 }]
+outputs = [
+    { good = 10, amount = 1.0 },
+    { good = 33, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 11
 name = "make iron"
-inputs = [{ good = 0, amount = 0.5 }]
-outputs = [{ good = 11, amount = 3.0 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 11, amount = 3.0 },
+    { good = 34, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 12
@@ -114,26 +182,48 @@ inputs = [
     { good = 0, amount = 0.4 },
     { good = 11, amount = 1.0 },
     { good = 7, amount = 1.0 },
+    { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 12, amount = 1.0 }]
+outputs = [
+    { good = 12, amount = 1.0 },
+    { good = 34, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 13
 name = "make copper"
-inputs = [{ good = 0, amount = 0.5 }]
-outputs = [{ good = 13, amount = 2.0 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 13, amount = 2.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 14
 name = "make tin"
-inputs = [{ good = 0, amount = 0.5 }]
-outputs = [{ good = 14, amount = 2.0 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 14, amount = 2.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 15
 name = "make bronze"
-inputs = [{ good = 0, amount = 0.5 }]
-outputs = [{ good = 15, amount = 3.0 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 15, amount = 3.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 16
@@ -142,8 +232,12 @@ inputs = [
     { good = 0, amount = 0.4 },
     { good = 15, amount = 1.0 },
     { good = 7, amount = 1.0 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 16, amount = 1.0 }]
+outputs = [
+    { good = 16, amount = 1.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 17
@@ -151,8 +245,12 @@ name = "make blades"
 inputs = [
     { good = 0, amount = 0.3 },
     { good = 11, amount = 1.0 },
+    { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 17, amount = 1.0 }]
+outputs = [
+    { good = 17, amount = 1.0 },
+    { good = 34, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 18
@@ -160,8 +258,12 @@ name = "make bronze_mirror"
 inputs = [
     { good = 0, amount = 0.5 },
     { good = 15, amount = 1.0 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 18, amount = 1.0 }]
+outputs = [
+    { good = 18, amount = 1.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 19
@@ -169,8 +271,12 @@ name = "make bronze_token"
 inputs = [
     { good = 0, amount = 0.1 },
     { good = 15, amount = 1.0 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 19, amount = 3.0 }]
+outputs = [
+    { good = 19, amount = 3.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 20
@@ -178,8 +284,12 @@ name = "make iron_token"
 inputs = [
     { good = 0, amount = 0.1 },
     { good = 11, amount = 1.0 },
+    { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 20, amount = 3.0 }]
+outputs = [
+    { good = 20, amount = 3.0 },
+    { good = 34, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 21
@@ -187,8 +297,12 @@ name = "make copper_token"
 inputs = [
     { good = 0, amount = 0.1 },
     { good = 13, amount = 1.0 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 21, amount = 3.0 }]
+outputs = [
+    { good = 21, amount = 3.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 22
@@ -196,14 +310,24 @@ name = "make tin_token"
 inputs = [
     { good = 0, amount = 0.1 },
     { good = 14, amount = 1.0 },
+    { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 22, amount = 3.0 }]
+outputs = [
+    { good = 22, amount = 3.0 },
+    { good = 35, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 23
 name = "make coal"
-inputs = [{ good = 0, amount = 0.5 }]
-outputs = [{ good = 23, amount = 5.0 }]
+inputs = [
+    { good = 0, amount = 0.5 },
+    { good = 36, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 36, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 23, amount = 5.0 },
+    { good = 36, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 24
@@ -211,8 +335,12 @@ name = "make charcoal"
 inputs = [
     { good = 0, amount = 0.3 },
     { good = 7, amount = 1.0 },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 24, amount = 2.0 }]
+outputs = [
+    { good = 24, amount = 2.0 },
+    { good = 33, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 25
@@ -221,14 +349,25 @@ inputs = [
     { good = 0, amount = 0.3 },
     { good = 1, amount = 1.0 },
     { good = 2, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 38, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 38, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 25, amount = 2.0 }]
+outputs = [
+    { good = 25, amount = 2.0 },
+    { good = 38, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 26
 name = "make clay"
-inputs = [{ good = 0, amount = 0.3 }]
-outputs = [{ good = 26, amount = 3.0 }]
+inputs = [
+    { good = 0, amount = 0.3 },
+    { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 26, amount = 3.0 },
+    { good = 37, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 27
@@ -237,32 +376,63 @@ inputs = [
     { good = 0, amount = 0.3 },
     { good = 26, amount = 1.0 },
     { good = 23, amount = 1.0 },
+    { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
 ]
-outputs = [{ good = 27, amount = 1.0 }]
+outputs = [
+    { good = 27, amount = 1.0 },
+    { good = 37, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 28
 name = "make time"
-inputs = [{ good = 0, amount = 1.0 }]
-outputs = [{ good = 0, amount = 1.0 }]
+inputs = [
+    { good = 0, amount = 1.0 },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 0, amount = 1.0 },
+    { good = 28, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 29
 name = "subsistence farm"
 complexity = 0.25
-inputs = [{ good = 0, amount = 10.0 }]
-outputs = [{ good = 1, amount = 2.0 }]
+inputs = [
+    { good = 0, amount = 10.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 1, amount = 2.0 },
+    { good = 28, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 30
 name = "subsistence water"
 complexity = 0.25
-inputs = [{ good = 0, amount = 15.0 }]
-outputs = [{ good = 2, amount = 2.0 }]
+inputs = [
+    { good = 0, amount = 15.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 2, amount = 2.0 },
+    { good = 28, amount = 0.01, fixed = true },
+]
 
 [[processes]]
 id = 31
 name = "subsistence forage"
 complexity = 0.25
-inputs = [{ good = 0, amount = 20.0 }]
-outputs = [{ good = 7, amount = 2.0 }]
+inputs = [
+    { good = 0, amount = 20.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 7, amount = 2.0 },
+    { good = 28, amount = 0.01, fixed = true },
+]

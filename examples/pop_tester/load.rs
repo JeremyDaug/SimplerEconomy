@@ -155,6 +155,9 @@ struct DesireRow {
     efficiency: f64,
     #[serde(default = "one")]
     cap: f64,
+    /// Owned, not eaten. Omitted means the good is consumed.
+    #[serde(default, rename = "use")]
+    own: bool,
     #[serde(default = "fixed_scalar")]
     scalar: String,
     #[serde(default = "one")]
@@ -168,6 +171,9 @@ struct DesireGoodRow {
     efficiency: f64,
     #[serde(default = "one")]
     cap: f64,
+    /// Owned, not eaten. Omitted means the good is consumed.
+    #[serde(default, rename = "use")]
+    own: bool,
 }
 
 fn one() -> f64 {
@@ -447,8 +453,9 @@ fn load_religions(
 /// `owner` is that group's name, used in errors. `rows` is the file order.
 /// `goods` resolves each target. The map is keyed by desire id. One row is
 /// one desire. Its bucket is the single `good`, or every entry in `goods`.
-/// Each target keeps that entry's efficiency and cap. Priority follows the
-/// file order.
+/// Each target keeps that entry's efficiency, cap, and whether the pop owns
+/// it or eats it. Priority follows the file order. `use` on a target is an
+/// owned good. An omitted `use` is consumed.
 fn demo_desires(
     owner: &str,
     rows: &[DesireRow],
@@ -489,9 +496,13 @@ fn demo_desires(
             if !seen.insert(good) {
                 return Err(format!("{owner} desire {} lists {} twice", row.id, target.good));
             }
+            let kind = if target.own {
+                DesireTargetType::Use
+            } else {
+                DesireTargetType::Consume
+            };
             desire = desire.with_good(
-                DesireTarget::new(good, DesireTargetType::Consume, target.efficiency)
-                    .with_cap(target.cap),
+                DesireTarget::new(good, kind, target.efficiency).with_cap(target.cap),
             );
         }
         if desires.insert(row.id, desire).is_some() {
@@ -506,8 +517,9 @@ fn demo_desires(
 /// The goods that satisfy one desire row, in file order.
 ///
 /// `owner` names the demographic in errors. A row sets `good` or `goods`.
-/// Each entry is the good name, its efficiency, and its cap. Listing both,
-/// or neither, is an error.
+/// Each entry is the good name, its efficiency, its cap, and whether it is
+/// owned. Listing both a single good and a goods list, or neither, is an
+/// error. A single good copies the row's `use` flag.
 fn desire_targets(owner: &str, row: &DesireRow) -> Result<Vec<DesireGoodRow>, String> {
     if !row.good.is_empty() && !row.goods.is_empty() {
         return Err(format!(
@@ -520,6 +532,7 @@ fn desire_targets(owner: &str, row: &DesireRow) -> Result<Vec<DesireGoodRow>, St
             good: row.good.clone(),
             efficiency: row.efficiency,
             cap: row.cap,
+            own: row.own,
         }]);
     }
     if row.goods.is_empty() {
@@ -590,4 +603,30 @@ pub fn lookup(names: &HashMap<String, usize>, kind: &str, name: &str) -> Result<
         .get(name)
         .copied()
         .ok_or_else(|| format!("no {kind} named {name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// # Wood Tools Are Owned And Wood Is Eaten
+    ///
+    /// Loads the pop tester. The householder common desire eats wood and owns
+    /// wood tools. Returns nothing. A missing stratum, desire, or target fails.
+    #[test]
+    fn wood_tools_are_owned_and_wood_is_eaten() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+        load_scenario(&root.join("pop_tester"), &mut factuals).expect("scenario");
+        let stratum = factuals.get_stratum(1).expect("householder");
+        let desire = stratum.desires.get(&1).expect("common desire");
+        let kind = |name: &str| {
+            desire.bucket.iter().find_map(|target| {
+                let good = factuals.goods.get(&target.good)?;
+                (good.name == name).then_some(target.desire_type)
+            })
+        };
+        assert!(matches!(kind("wood"), Some(DesireTargetType::Consume)));
+        assert!(matches!(kind("wood_tools"), Some(DesireTargetType::Use)));
+    }
 }

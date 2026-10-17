@@ -12,7 +12,9 @@ use crate::game::good::TIME;
 use crate::game::market::MarketHistory;
 use crate::game::marketorder::MarketOrder;
 use crate::game::pop_property::PopPRow;
-use crate::game::process::{InputType, Process, ProcessEffect, ProcessInput, ProcessResult};
+use crate::game::process::{
+    InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessResult,
+};
 use crate::game::util::whole_units_up;
 
 /// Share of this pop's own output where surplus holds.
@@ -73,6 +75,11 @@ pub struct Job {
     ///
     /// If there are no processes, the job does not run.
     pub lines: Vec<JobLine>,
+    /// Skill goods this job's processes take.
+    ///
+    /// Good ids, sorted. [`Self::attach_skills`] rewrites the list from the
+    /// lines. Empty when no line takes a skill.
+    pub skills: Vec<usize>,
     /// Complexity cost of the targets [`Job::plan`] last wrote.
     ///
     /// `0` before the first plan, and when no line has a positive target.
@@ -112,8 +119,9 @@ struct InputFeed {
 
 /// One process the job can run, plus the day's quota.
 ///
-/// Same shape as a firm's production line. `inputs` lists optional goods
-/// this line may draw. Required inputs are always drawn.
+/// Same shape as a firm's production line. `inputs` is the on/off list of
+/// optional goods this line may draw. Required inputs are always drawn.
+/// [`Job::plan`] rewrites the list.
 #[derive(Debug, Clone)]
 pub struct JobLine {
     /// Process id in [`Factuals`].
@@ -131,7 +139,9 @@ pub struct JobLine {
     /// Surplus on the line is `target - cover`. A night that does not snap
     /// leaves this where the last snap put it.
     pub cover: f64,
-    /// Optional inputs this line is allowed to draw.
+    /// Optional inputs this line draws. Empty draws none.
+    ///
+    /// [`Job::plan`] rewrites it from [`chosen_inputs`].
     pub inputs: Vec<usize>,
     /// True when [`Job::plan`] last scored this line above zero.
     ///
@@ -184,12 +194,39 @@ impl Job {
         Self {
             craft,
             lines,
+            skills: Vec::new(),
             plan_cost: 0.0,
             claimed: HashMap::new(),
             shopping: HashMap::new(),
             input_feeds: Vec::new(),
             kept: HashMap::new(),
         }
+    }
+
+    /// # Attach Skills
+    ///
+    /// Rewrites [`Self::skills`] from the skill inputs on this job's lines.
+    ///
+    /// `factuals` supplies the processes and which goods are skills. An
+    /// optional input tagged [`crate::game::good::GoodTag::Skill`] is kept.
+    /// A missing process is skipped. The list is sorted and has no repeats.
+    pub fn attach_skills(&mut self, factuals: &Factuals) {
+        let mut skills = Vec::new();
+        for line in &self.lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            for input in process.optional_inputs() {
+                let Some(good) = factuals.get_good(input.good) else {
+                    continue;
+                };
+                if good.is_skill() && !skills.contains(&input.good) {
+                    skills.push(input.good);
+                }
+            }
+        }
+        skills.sort_unstable();
+        self.skills = skills;
     }
 
     /// # Leave
@@ -400,7 +437,8 @@ impl Job {
     ///
     /// An empty line list stores [`Self::plan_cost`] as `0` and returns.
     /// Otherwise [`Self::plan_cost`] is the complexity cost of the targets
-    /// just written.
+    /// just written. Each line's optional inputs are then rewritten by
+    /// [`chosen_inputs`].
     pub fn plan(
         &mut self,
         cover: &HashMap<usize, f64>,
@@ -468,7 +506,7 @@ impl Job {
                 continue;
             };
             let raw = surplus_iterations(process, &remaining);
-            let extra = paced_surplus(process, property, raw);
+            let extra = paced_surplus(process, property, factuals, raw);
             extras[index] = extra;
             if extra <= 0.0 {
                 continue;
@@ -571,6 +609,12 @@ impl Job {
         order_producers_first(&mut next, factuals);
         next.append(&mut back);
         self.lines = next;
+        let chosen: Vec<Vec<usize>> = (0..self.lines.len())
+            .map(|index| chosen_inputs(&self.lines, index, factuals, history))
+            .collect();
+        for (line, inputs) in self.lines.iter_mut().zip(chosen) {
+            line.inputs = inputs;
+        }
         // Complexity cost of the targets just written.
         self.plan_cost = self.plan_complexity_cost(factuals, modifier);
     }
@@ -585,12 +629,14 @@ impl Job {
     ///
     /// A required factor that is missing shops one unit, and that line's
     /// other inputs stay free. An optional factor is claimed when held and
-    /// is not shopped. Other optional inputs are claimed and shopped only
-    /// when the line lists them. `None` claims what is free and does not
+    /// is not shopped. Any other optional, including capital, is claimed and
+    /// shopped only when the line lists it. A skill on that list is claimed
+    /// and is not shopped. `None` claims what is free and does not
     /// shop an open-ended amount. `Some(0.0)` skips the line.
     /// [`Self::shop_unpaid_outputs`] then shops for lines that did not pay.
     /// [`Self::note_input_feeds`] records which surviving inputs make each output.
     pub fn reserve(&mut self, property: &mut HashMap<usize, PopPRow>, factuals: &Factuals) {
+        self.attach_skills(factuals);
         self.note_input_feeds(factuals);
         if self.lines.is_empty() {
             return;
@@ -611,6 +657,7 @@ impl Job {
                 continue;
             }
             self.claim_inputs(property, process, line, iterations, factuals);
+            self.claim_skills(property, process, line, iterations);
         }
         // One output unit for each line the last plan did not score as paying.
         self.shop_unpaid_outputs(property, factuals);
@@ -648,6 +695,13 @@ impl Job {
                 if output.amount <= 0.0 || !seen.insert(output.good) {
                     continue;
                 }
+                // A skill output is not shopped. The household floor keeps the minimum.
+                if factuals
+                    .get_good(output.good)
+                    .is_some_and(|good| good.is_skill())
+                {
+                    continue;
+                }
                 if !survives_night(factuals, output.good) {
                     continue;
                 }
@@ -671,10 +725,10 @@ impl Job {
     /// and the output it makes.
     ///
     /// `factuals` supplies processes and decay. A missing process is skipped.
-    /// Optional inputs count when the line lists them. Factors and capital
-    /// stay out. A good that decays completely stays out. The same input and
-    /// output keep the smaller input-per-output. The pop reads the record
-    /// through [`Self::feeds_of`].
+    /// Optional inputs count when the line lists them. A skill stays out.
+    /// Factors and capital stay out. A good that decays completely stays
+    /// out. The same input and output keep the smaller input-per-output.
+    /// The pop reads the record through [`Self::feeds_of`].
     fn note_input_feeds(&mut self, factuals: &Factuals) {
         self.input_feeds.clear();
         for line in &self.lines {
@@ -689,6 +743,12 @@ impl Job {
             }
             for input in inputs {
                 if !matches!(input.input_type, InputType::Destroyed | InputType::Consumed) {
+                    continue;
+                }
+                if factuals
+                    .get_good(input.good)
+                    .is_some_and(|good| good.is_skill())
+                {
                     continue;
                 }
                 if input.amount <= 0.0 || !survives_night(factuals, input.good) {
@@ -740,6 +800,7 @@ impl Job {
         property: &mut HashMap<usize, PopPRow>,
         factuals: &Factuals,
     ) -> Vec<ProcessEffect> {
+        self.attach_skills(factuals);
         if self.lines.is_empty() {
             return Vec::new();
         }
@@ -772,7 +833,7 @@ impl Job {
                 continue;
             }
             let result = process.do_process(&inputs, running.target, factuals);
-            self.apply_result(property, &result);
+            self.apply_result(property, &result, factuals);
             effects.extend(result.effects);
         }
         // Factors stay reserved through the market. Everything else can be sold.
@@ -872,11 +933,11 @@ impl Job {
     ///
     /// Shops one line's inputs from the stock [`Self::settle_shopping`] can see.
     ///
-    /// Required inputs and listed optionals are visited. `iterations` `None`
-    /// only marks the free stock as spoken for. `spoken` is stock earlier
-    /// lines in this rebuild have already counted. `forthcoming` is output
-    /// those lines will make tomorrow morning, and this line's share is
-    /// taken out of it.
+    /// Required inputs and listed optionals are visited. A skill is left
+    /// out. `iterations` `None` only marks the free stock as spoken for.
+    /// `spoken` is stock earlier lines in this rebuild have already counted.
+    /// `forthcoming` is output those lines will make tomorrow morning, and
+    /// this line's share is taken out of it.
     fn settle_inputs(
         &mut self,
         property: &HashMap<usize, PopPRow>,
@@ -891,6 +952,12 @@ impl Job {
             self.settle_one(property, &input, iterations, factuals, spoken, forthcoming);
         }
         for input in process.optional_inputs() {
+            if factuals
+                .get_good(input.good)
+                .is_some_and(|good| good.is_skill())
+            {
+                continue;
+            }
             if line.inputs.contains(&input.good) {
                 self.settle_one(property, &input, iterations, factuals, spoken, forthcoming);
             }
@@ -1019,7 +1086,9 @@ impl Job {
     ///
     /// `iterations` is `None` when the line has no quota. That claims the
     /// free stock and does not shop. `Some(n)` claims up to `amount * n`
-    /// and shops the next run. `factuals` supplies each input's decay.
+    /// and shops the next run. `factuals` supplies each input's decay. A
+    /// skill is left for [`Self::claim_skills`], so listing it does not
+    /// shop it. Capital is claimed here only when the line lists it.
     fn claim_inputs(
         &mut self,
         property: &mut HashMap<usize, PopPRow>,
@@ -1032,9 +1101,44 @@ impl Job {
             self.claim_one(property, &input, iterations, factuals);
         }
         for input in process.optional_inputs() {
+            if factuals
+                .get_good(input.good)
+                .is_some_and(|good| good.is_skill())
+            {
+                continue;
+            }
             if line.inputs.contains(&input.good) {
                 self.claim_one(property, &input, iterations, factuals);
             }
+        }
+    }
+
+    /// # Claim Skills
+    ///
+    /// Claims skill inputs this line may feed, and does not shop them.
+    ///
+    /// `property` is the pop's rows. `process` supplies the optional inputs.
+    /// `line` is the on/off list. `iterations` is the line's quota. `None`
+    /// claims the free stock. `Some(n)` claims up to `amount * n`. A skill
+    /// this job does not take, or one the line leaves off, is skipped.
+    /// [`Self::claim_inputs`] leaves every skill for this claim.
+    fn claim_skills(
+        &mut self,
+        property: &mut HashMap<usize, PopPRow>,
+        process: &Process,
+        line: &JobLine,
+        iterations: Option<f64>,
+    ) {
+        for input in process.optional_inputs() {
+            if !self.skills.contains(&input.good) || !line.inputs.contains(&input.good) {
+                continue;
+            }
+            let free = self.free_above_kept(property, input.good);
+            let take = match iterations {
+                None => free,
+                Some(n) => free.min(input.amount * n),
+            };
+            claim(property, &mut self.claimed, input.good, take);
         }
     }
 
@@ -1158,8 +1262,36 @@ impl Job {
     ///
     /// A negative change is input spent. A positive change is new output,
     /// added to `quantity`, [`PopPRow::fresh`], and [`PopPRow::produced`].
-    /// `used_inputs` is capital set aside for the day.
-    fn apply_result(&mut self, property: &mut HashMap<usize, PopPRow>, result: &ProcessResult) {
+    /// `used_inputs` is capital set aside for the day. When a fed good's
+    /// net did not fall, the claim for [`ProcessResult::spent`] is released
+    /// without taking that quantity again. `factuals` distinguishes a skill.
+    /// Aged skill that was fed comes back fresh with the output, so a pile
+    /// that was fully used has nothing left to decay that night.
+    fn apply_result(
+        &mut self,
+        property: &mut HashMap<usize, PopPRow>,
+        result: &ProcessResult,
+        factuals: &Factuals,
+    ) {
+        // Aged skill fed this run. Captured before quantity moves.
+        let mut aged_fed: HashMap<usize, f64> = HashMap::new();
+        for (&good, &spent) in &result.spent {
+            if spent <= 0.0 {
+                continue;
+            }
+            if !factuals.get_good(good).is_some_and(|row| row.is_skill()) {
+                continue;
+            }
+            let (qty, fresh) = property
+                .get(&good)
+                .map(|row| (row.quantity, row.fresh))
+                .unwrap_or((0.0, 0.0));
+            let aged = (qty - fresh.max(0.0)).max(0.0);
+            let consumed_aged = spent.min(aged);
+            if consumed_aged > 0.0 {
+                aged_fed.insert(good, consumed_aged);
+            }
+        }
         for (&good, &change) in &result.changes {
             if change < 0.0 {
                 self.spend(property, good, -change, false);
@@ -1172,6 +1304,28 @@ impl Job {
         }
         for (&good, &used) in &result.used_inputs {
             self.spend(property, good, used, true);
+        }
+        // Fed units whose net did not fall stay out of the claim. Quantity
+        // already includes that net, so this does not take them again.
+        for (&good, &spent) in &result.spent {
+            if result.changes.get(&good).copied().unwrap_or(0.0) < 0.0 {
+                continue;
+            }
+            if let Some(left) = self.claimed.get_mut(&good) {
+                *left = (*left - spent).max(0.0);
+            }
+            if let Some(row) = property.get_mut(&good) {
+                row.reserved = (row.reserved - spent).max(0.0);
+            }
+        }
+        // Used skill is new stock. The aged units that were fed join fresh.
+        for (good, aged) in aged_fed {
+            if result.changes.get(&good).copied().unwrap_or(0.0) < 0.0 {
+                continue;
+            }
+            if let Some(row) = property.get_mut(&good) {
+                row.fresh = (row.fresh + aged).min(row.quantity.max(0.0));
+            }
         }
     }
 
@@ -1778,6 +1932,292 @@ fn march_target(current: f64, ideal: f64) -> f64 {
     (current + gap.clamp(-limit, limit)).max(0.0)
 }
 
+/// One run's product and its return on the cost of that run.
+struct RunWorth {
+    amv: f64,
+    roi: f64,
+}
+
+/// # Chosen Inputs
+///
+/// Optional goods `lines[index]` draws.
+///
+/// `factuals` supplies the process. `history` prices the run. Each optional
+/// is judged on its own, against the same run with no optionals. It stays
+/// when [`input_earns`] says the return holds. A missing process draws
+/// nothing. The ids are sorted.
+fn chosen_inputs(
+    lines: &[JobLine],
+    index: usize,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> Vec<usize> {
+    let Some(process) = factuals.get_process(lines[index].process) else {
+        return Vec::new();
+    };
+    let off = run_worth(process, None, lines, index, factuals, history);
+    let mut kept = Vec::new();
+    for input in process.optional_inputs() {
+        if input.amount <= 0.0 {
+            continue;
+        }
+        let on = run_worth(
+            process,
+            Some(input.good),
+            lines,
+            index,
+            factuals,
+            history,
+        );
+        if input_earns(&off, &on) {
+            kept.push(input.good);
+        }
+    }
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
+/// # Input Earns
+///
+/// Whether `on` is worth taking over `off`.
+///
+/// Both the rate and the product holding, or better, keeps it. A lower rate
+/// keeps it when the product rises by at least the same fraction the rate
+/// fell, and the run without it still earns a positive return. A product
+/// that does not rise is dropped. A rate that is not a real number, other
+/// than an unbounded return, is dropped.
+fn input_earns(off: &RunWorth, on: &RunWorth) -> bool {
+    if !roi_usable(on.roi) {
+        return false;
+    }
+    let rate_holds = on.roi >= off.roi;
+    let product_holds = on.amv + 1e-9 >= off.amv;
+    if rate_holds && product_holds {
+        return true;
+    }
+    if on.amv <= off.amv || !off.roi.is_finite() || off.roi <= 0.0 || off.amv <= 0.0 {
+        return false;
+    }
+    let drop = (off.roi - on.roi) / off.roi;
+    let gain = (on.amv - off.amv) / off.amv;
+    gain.is_finite() && drop.is_finite() && gain + 1e-9 >= drop && gain > 0.0
+}
+
+/// # ROI Usable
+///
+/// True when `roi` is a real number or an unbounded return.
+fn roi_usable(roi: f64) -> bool {
+    roi.is_finite() || roi == f64::INFINITY
+}
+
+/// # Run Worth
+///
+/// Product and return for one iteration of `process`.
+///
+/// `enabled` is the one optional good included, or none. `lines` and `index`
+/// price an output at a later line's product when that use beats holding the
+/// good. `factuals` and `history` price inputs and outputs. A good that is
+/// not consumed is costed at its decay. The return is product minus cost,
+/// divided by cost. No cost and a positive product is an unbounded return.
+fn run_worth(
+    process: &Process,
+    enabled: Option<usize>,
+    lines: &[JobLine],
+    index: usize,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> RunWorth {
+    let (input_bonus, throughput_bonus, output_bonus, extras) = run_mods(process, enabled);
+    let input_mod = input_bonus * throughput_bonus;
+    let output_mod = output_bonus * throughput_bonus;
+    let mut cost = 0.0;
+    let mut made: HashMap<usize, f64> = HashMap::new();
+    for input in process.requirements() {
+        let take = if input.fixed {
+            input.amount
+        } else {
+            input.amount * input_mod
+        };
+        if take <= 0.0 {
+            continue;
+        }
+        if matches!(input.input_type, InputType::Destroyed | InputType::Consumed) {
+            cost += take * input_holding(factuals, history, input.good);
+        }
+        if matches!(input.input_type, InputType::Consumed) {
+            add_decay_yield(factuals, input.good, take, &mut made);
+        }
+    }
+    if let Some(good) = enabled {
+        if let Some(input) = process
+            .optional_inputs()
+            .into_iter()
+            .find(|input| input.good == good)
+        {
+            match input.input_type {
+                InputType::Destroyed | InputType::Consumed => {
+                    cost += input.amount * input_holding(factuals, history, input.good);
+                    if matches!(input.input_type, InputType::Consumed) {
+                        add_decay_yield(factuals, input.good, input.amount, &mut made);
+                    }
+                }
+                InputType::Capital => {
+                    let decay = factuals
+                        .get_good(input.good)
+                        .map(|row| row.decay_rate)
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 1.0);
+                    cost += input.amount * input_holding(factuals, history, input.good) * decay;
+                }
+                InputType::Factor => {}
+            }
+        }
+    }
+    for output in &process.outputs {
+        if output.amount <= 0.0 {
+            continue;
+        }
+        let units = if output.fixed {
+            output.amount
+        } else {
+            output.amount * output_mod
+        };
+        *made.entry(output.good).or_insert(0.0) += units;
+    }
+    for (good, amount) in extras {
+        if amount > 0.0 {
+            *made.entry(good).or_insert(0.0) += amount;
+        }
+    }
+    let mut amv = 0.0;
+    for (good, units) in &made {
+        if *units <= 0.0 {
+            continue;
+        }
+        let held = history.holding_per_unit(*good);
+        let down = downstream_per_unit(lines, index, *good, factuals, history);
+        amv += units * held.max(down);
+    }
+    let roi = if cost > 1e-12 {
+        (amv - cost) / cost
+    } else if amv > 0.0 {
+        f64::INFINITY
+    } else {
+        0.0
+    };
+    RunWorth { amv, roi }
+}
+
+/// # Run Mods
+///
+/// Bonuses and extra outputs from the one optional `enabled`.
+///
+/// `None` leaves every bonus at 1 and adds no extra output. The input bonus
+/// is clamped to `0..=1`.
+fn run_mods(
+    process: &Process,
+    enabled: Option<usize>,
+) -> (f64, f64, f64, Vec<(usize, f64)>) {
+    let mut input_bonus = 1.0;
+    let mut throughput_bonus = 1.0;
+    let mut output_bonus = 1.0;
+    let mut extras = Vec::new();
+    let Some(good) = enabled else {
+        return (input_bonus, throughput_bonus, output_bonus, extras);
+    };
+    for input in process.optional_inputs() {
+        if input.good != good {
+            continue;
+        }
+        if let Some(effects) = input.optional_effects() {
+            for effect in effects {
+                match effect {
+                    InputEffect::Throughput(value) => throughput_bonus += value,
+                    InputEffect::Input(value) => input_bonus -= value,
+                    InputEffect::Output(value) => output_bonus += value,
+                    InputEffect::ExtraOutput(id, amount) => extras.push((*id, *amount)),
+                    InputEffect::BirthRate(_) | InputEffect::MortalityRate(_, _) => {}
+                }
+            }
+        }
+        break;
+    }
+    input_bonus = input_bonus.clamp(0.0, 1.0);
+    (input_bonus, throughput_bonus, output_bonus, extras)
+}
+
+/// # Add Decay Yield
+///
+/// Adds the decay products of `take` units of `good` into `made`.
+///
+/// A missing good adds nothing. A non-positive rate adds nothing.
+fn add_decay_yield(
+    factuals: &Factuals,
+    good: usize,
+    take: f64,
+    made: &mut HashMap<usize, f64>,
+) {
+    let Some(row) = factuals.get_good(good) else {
+        return;
+    };
+    for (&other, &rate) in &row.decay_result {
+        if rate > 0.0 {
+            *made.entry(other).or_insert(0.0) += take * rate;
+        }
+    }
+}
+
+/// # Downstream Per Unit
+///
+/// Holding one unit of `good` is worth when another line on `lines` consumes it.
+///
+/// `index` is the line being scored and is skipped. The worth is that line's
+/// own output holding divided by the input amount. The best such line wins.
+/// No consumer returns 0.
+fn downstream_per_unit(
+    lines: &[JobLine],
+    index: usize,
+    good: usize,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> f64 {
+    let mut best = 0.0;
+    for (other, line) in lines.iter().enumerate() {
+        if other == index {
+            continue;
+        }
+        let Some(process) = factuals.get_process(line.process) else {
+            continue;
+        };
+        for input in process.requirements() {
+            if input.good != good || input.amount <= 0.0 {
+                continue;
+            }
+            let per = direct_output_holding(process, history) / input.amount;
+            if per > best {
+                best = per;
+            }
+        }
+    }
+    best
+}
+
+/// # Direct Output Holding
+///
+/// Holding of one run of `process` with no optional bonus.
+///
+/// `history` prices each output. A non-positive amount adds nothing.
+fn direct_output_holding(process: &Process, history: &MarketHistory) -> f64 {
+    let mut sum = 0.0;
+    for output in &process.outputs {
+        if output.amount > 0.0 {
+            sum += output.amount * history.holding_per_unit(output.good);
+        }
+    }
+    sum
+}
+
 /// # Trade Score
 ///
 /// Holding gained by running `process` once, on `history`'s board.
@@ -1825,9 +2265,10 @@ fn input_holding(factuals: &Factuals, history: &MarketHistory, good: usize) -> f
 /// Extra runs left after rot and output still on hand pull `raw` back
 /// toward the output just made.
 ///
-/// `process` supplies the outputs. `property` is the pop's rows. `raw` is
-/// the input-limited surplus. An output with `amount <= 0`, or a missing
-/// row, does not change `raw`.
+/// `process` supplies the outputs. `property` is the pop's rows.
+/// `factuals` tells a skill output from the product. `raw` is the
+/// input-limited surplus. A skill output is skipped. An output with
+/// `amount <= 0`, or a missing row, does not change `raw`.
 ///
 /// `produced > 0` sets the room from `(lost + kept) / produced`. `kept` is
 /// `quantity` clamped to `0..=produced`. At [`SURPLUS_ROT_SHARE`] the room
@@ -1836,13 +2277,25 @@ fn input_holding(factuals: &Factuals, history: &MarketHistory, good: usize) -> f
 /// output is left on hand. A larger share lowers it by
 /// `SURPLUS_ROT_SHARE / share`. `produced == 0` and `lost > 0` leaves one
 /// run. The tightest output wins. Returns that many runs, never negative.
-fn paced_surplus(process: &Process, property: &HashMap<usize, PopPRow>, raw: f64) -> f64 {
+fn paced_surplus(
+    process: &Process,
+    property: &HashMap<usize, PopPRow>,
+    factuals: &Factuals,
+    raw: f64,
+) -> f64 {
     if raw <= 0.0 {
         return 0.0;
     }
     let mut paced = raw;
     for output in &process.outputs {
         if output.amount <= 0.0 {
+            continue;
+        }
+        // A skill is practice, not the product whose stock paces the line.
+        if factuals
+            .get_good(output.good)
+            .is_some_and(|good| good.is_skill())
+        {
             continue;
         }
         let Some(row) = property.get(&output.good) else {
@@ -2035,11 +2488,14 @@ mod job {
     use crate::game::actor::Actor;
     use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
-    use crate::game::good::Good;
+    use crate::game::good::{Good, GoodTag};
     use crate::game::job::{Job, JobLine};
     use crate::game::market::MarketHistory;
+    use crate::game::pop::Pop;
     use crate::game::pop_property::PopPRow;
-    use crate::game::process::{InputType, Process, ProcessEffect, ProcessInput, ProcessOutput};
+    use crate::game::process::{
+        InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessOutput,
+    };
 
     fn good(id: usize, decay_rate: f64) -> Good {
         Good {
@@ -2053,6 +2509,27 @@ mod job {
             tags: HashSet::new(),
             categories: Vec::new(),
         }
+    }
+
+    fn skill_good(id: usize) -> Good {
+        let mut row = good(id, 0.1);
+        row.tags.insert(GoodTag::Skill);
+        row.tags.insert(GoodTag::Untradeable);
+        row
+    }
+
+    /// Bake that spends 1 grain and optionally 1 of skill 40.
+    ///
+    /// This helper returns 1.1 of that skill per 1 fed, and a fixed 0.01 a run.
+    fn practiced_bake() -> Process {
+        Process::new(7, "bake", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(40, 1.0, true, InputType::Destroyed, true)
+                    .with_optional(InputEffect::ExtraOutput(40, 1.1)),
+            )
+            .with_output(ProcessOutput::new(2, 1.0, true))
+            .with_output(ProcessOutput::new(40, 0.01, true))
     }
 
     fn bake() -> Process {
@@ -3316,6 +3793,208 @@ mod job {
         assert_eq!(seasoned.shopping[&4], 1.0);
     }
 
+    /// The line does not list the tool, so the tool is neither shopped nor
+    /// fed. Listing it shops one when the rack is empty, and one run with
+    /// the tool turns two product into three.
+    #[test]
+    fn listed_capital_is_fed_and_an_unlisted_one_is_not() {
+        let process = Process::new(11, "with a tool", 0)
+            .with_input(ProcessInput::new(1, 1.0, false, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(9, 1.0, false, InputType::Capital, true)
+                    .with_optional(InputEffect::Output(0.5)),
+            )
+            .with_output(ProcessOutput::new(2, 2.0, false));
+        let factuals = Factuals::new()
+            .with_process(process)
+            .with_good(good(1, 0.0))
+            .with_good(good(9, 0.0))
+            .with_good(good(2, 0.0));
+
+        let mut bare = Job::new(1, vec![JobLine::new(11, Some(1.0), vec![])]);
+        bare.reserve(&mut HashMap::new(), &factuals);
+        assert_eq!(bare.shopping[&1], 1.0);
+        assert!(bare.shopping.get(&9).is_none());
+
+        let mut skipped = Job::new(1, vec![JobLine::new(11, Some(1.0), vec![])]);
+        let mut held = HashMap::from([(1, PopPRow::new(1.0)), (9, PopPRow::new(1.0))]);
+        skipped.reserve(&mut held, &factuals);
+        skipped.produce(&mut held, &factuals);
+        assert_eq!(held[&9].quantity, 1.0);
+        assert_eq!(held[&9].used, 0.0);
+        assert!((held[&2].quantity - 2.0).abs() < 1e-12);
+
+        let mut job = Job::new(1, vec![JobLine::new(11, Some(1.0), vec![9])]);
+        let mut property = HashMap::from([(1, PopPRow::new(1.0)), (9, PopPRow::new(1.0))]);
+        job.reserve(&mut property, &factuals);
+        job.produce(&mut property, &factuals);
+
+        assert_eq!(property[&9].quantity, 0.0);
+        assert_eq!(property[&9].used, 1.0);
+        assert!((property[&2].quantity - 3.0).abs() < 1e-12);
+    }
+
+    /// The tool's decay is its cost. Half again the product raises both the
+    /// return and the product, so the line turns the tool on.
+    #[test]
+    fn plan_lists_a_tool_whose_return_holds() {
+        let make = Process::new(1, "make", 0)
+            .with_input(ProcessInput::new(0, 0.5, false, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(9, 1.0, false, InputType::Capital, true)
+                    .with_optional(InputEffect::Output(0.5)),
+            )
+            .with_output(ProcessOutput::new(2, 8.0, false));
+        let factuals = Factuals::new()
+            .with_process(make)
+            .with_good(good(0, 1.0))
+            .with_good(good(9, 0.1));
+        let mut job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+
+        assert_eq!(job.lines[0].inputs, vec![9]);
+    }
+
+    /// The optional adds cost and no product. The line leaves it off.
+    #[test]
+    fn plan_drops_an_optional_that_does_not_raise_the_product() {
+        let make = Process::new(1, "make", 0)
+            .with_input(ProcessInput::new(0, 5.0, false, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(4, 3.0, false, InputType::Destroyed, true))
+            .with_output(ProcessOutput::new(2, 20.0, false));
+        let factuals = Factuals::new()
+            .with_process(make)
+            .with_good(good(0, 1.0))
+            .with_good(good(4, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![4])]);
+
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+
+        assert!(job.lines[0].inputs.is_empty());
+    }
+
+    /// The rate falls by less than the product rises, so the optional stays.
+    /// A smaller product rise, against the same cost, turns it off.
+    #[test]
+    fn plan_keeps_an_optional_when_the_product_gain_covers_the_rate_loss() {
+        let paid = Process::new(1, "paid", 0)
+            .with_input(ProcessInput::new(0, 5.0, false, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(4, 3.0, false, InputType::Destroyed, true)
+                    .with_optional(InputEffect::Output(0.2)),
+            )
+            .with_output(ProcessOutput::new(2, 20.0, false));
+        let thin = Process::new(1, "thin", 0)
+            .with_input(ProcessInput::new(0, 5.0, false, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(4, 3.0, false, InputType::Destroyed, true)
+                    .with_optional(InputEffect::Output(0.05)),
+            )
+            .with_output(ProcessOutput::new(2, 20.0, false));
+        let factuals = Factuals::new()
+            .with_process(paid)
+            .with_good(good(0, 1.0))
+            .with_good(good(4, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        assert_eq!(job.lines[0].inputs, vec![4]);
+
+        let factuals = Factuals::new()
+            .with_process(thin)
+            .with_good(good(0, 1.0))
+            .with_good(good(4, 0.0));
+        let mut job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        assert!(job.lines[0].inputs.is_empty());
+    }
+
+    /// Alone, the optional's cost drops a losing run further, so it stays off.
+    /// A later line that turns the product into more holding makes the same
+    /// optional pay, and the line turns it on.
+    #[test]
+    fn plan_counts_a_later_line_in_the_products_worth() {
+        let upstream = Process::new(1, "upstream", 0)
+            .with_input(ProcessInput::new(0, 50.0, false, InputType::Destroyed, false))
+            .with_input(
+                ProcessInput::new(4, 80.0, false, InputType::Destroyed, true)
+                    .with_optional(InputEffect::Output(0.5)),
+            )
+            .with_output(ProcessOutput::new(1, 10.0, false));
+        let later = Process::new(2, "later", 0)
+            .with_input(ProcessInput::new(1, 1.0, false, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 20.0, false));
+        let goods = Factuals::new()
+            .with_process(upstream.clone())
+            .with_good(good(0, 1.0))
+            .with_good(good(4, 0.0));
+        let mut alone = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        alone.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &goods,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        assert!(alone.lines[0].inputs.is_empty());
+
+        let factuals = Factuals::new()
+            .with_process(upstream)
+            .with_process(later)
+            .with_good(good(0, 1.0))
+            .with_good(good(4, 0.0));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(1, Some(1.0), vec![]),
+                JobLine::new(2, Some(1.0), vec![]),
+            ],
+        );
+        job.plan(
+            &HashMap::new(),
+            &HashMap::new(),
+            &factuals,
+            &MarketHistory::new(),
+            1.0,
+            false,
+        );
+        let feeder = job
+            .lines
+            .iter()
+            .find(|line| line.process == 1)
+            .expect("upstream");
+        assert_eq!(feeder.inputs, vec![4]);
+    }
+
     #[test]
     fn produce_sets_capital_aside_as_used() {
         let process = Process::new(10, "grind", 0)
@@ -3511,5 +4190,190 @@ mod job {
 
         assert_eq!(job.shopping[&5], 1.0);
         assert!(job.shopping.get(&1).is_none());
+    }
+
+    /// Only optional inputs tagged skill are attached. A required skill and a
+    /// plain optional stay off the list. Repeats collapse, and the ids sort.
+    #[test]
+    fn attach_skills_keeps_optional_skill_inputs() {
+        let practice = Process::new(7, "bake", 0)
+            .with_input(ProcessInput::new(41, 1.0, true, InputType::Destroyed, false))
+            .with_input(ProcessInput::new(2, 1.0, true, InputType::Destroyed, true))
+            .with_input(
+                ProcessInput::new(40, 1.0, true, InputType::Destroyed, true)
+                    .with_optional(InputEffect::ExtraOutput(40, 1.1)),
+            )
+            .with_input(
+                ProcessInput::new(28, 1.0, true, InputType::Destroyed, true)
+                    .with_optional(InputEffect::ExtraOutput(28, 1.1)),
+            );
+        let again = Process::new(8, "again", 0).with_input(
+            ProcessInput::new(40, 1.0, true, InputType::Destroyed, true)
+                .with_optional(InputEffect::ExtraOutput(40, 1.1)),
+        );
+        let factuals = Factuals::new()
+            .with_process(practice)
+            .with_process(again)
+            .with_good(skill_good(41))
+            .with_good(good(2, 0.0))
+            .with_good(skill_good(40))
+            .with_good(skill_good(28));
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(7, Some(1.0), vec![2, 40]),
+                JobLine::new(8, Some(1.0), vec![]),
+                JobLine::new(99, Some(1.0), vec![]),
+            ],
+        );
+
+        job.attach_skills(&factuals);
+
+        assert_eq!(job.skills, vec![28, 40]);
+    }
+
+    /// Two runs and one skill on hand. The line lists the skill, so it is fed
+    /// once: 1.1 comes back, and each run adds 0.01. The grain is spent. The
+    /// bread is made. The pile is all fresh, so the night takes none of it.
+    #[test]
+    fn produce_feeds_a_skill_once_and_returns_the_bonus() {
+        let mut skill = skill_good(40);
+        skill.decay_rate = 0.05;
+        let factuals = Factuals::new()
+            .with_process(practiced_bake())
+            .with_good(good(1, 0.0))
+            .with_good(skill);
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![40])]);
+        let mut property = HashMap::from([(1, PopPRow::new(2.0)), (40, PopPRow::new(1.0))]);
+        job.reserve(&mut property, &factuals);
+        assert!(job.shopping.get(&40).is_none());
+
+        job.produce(&mut property, &factuals);
+
+        assert_eq!(property[&1].quantity, 0.0);
+        assert_eq!(property[&2].quantity, 2.0);
+        assert!((property[&40].quantity - 1.12).abs() < 1e-12);
+        assert_eq!(property[&40].reserved, 0.0);
+        // The one unit on hand was fed, so the whole pile is fresh.
+        assert!((property[&40].fresh - property[&40].quantity).abs() < 1e-12);
+
+        let mut pop = Pop::new(1);
+        pop.property.insert(40, property[&40].clone());
+        pop.decay_goods(&factuals);
+        assert!(pop.property[&40].lost.abs() < 1e-12);
+        assert!((pop.property[&40].quantity - 1.12).abs() < 1e-12);
+    }
+
+    /// Half a skill, then two lines of one run. The second line feeds what
+    /// the first returned. This bake ends at 0.626, all of it fresh, so the
+    /// night takes none of it.
+    #[test]
+    fn produce_feeds_returned_skill_on_the_next_line() {
+        let mut skill = skill_good(40);
+        skill.decay_rate = 0.05;
+        let factuals = Factuals::new()
+            .with_process(practiced_bake())
+            .with_good(good(1, 0.0))
+            .with_good(skill);
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(7, Some(1.0), vec![40]),
+                JobLine::new(7, Some(1.0), vec![40]),
+            ],
+        );
+        let mut property = HashMap::from([(1, PopPRow::new(2.0)), (40, PopPRow::new(0.5))]);
+        job.reserve(&mut property, &factuals);
+        assert!(job.shopping.get(&40).is_none());
+
+        job.produce(&mut property, &factuals);
+
+        assert_eq!(property[&1].quantity, 0.0);
+        assert_eq!(property[&2].quantity, 2.0);
+        assert!((property[&40].quantity - 0.626).abs() < 1e-12);
+        assert!((property[&40].fresh - property[&40].quantity).abs() < 1e-12);
+        assert_eq!(property[&40].reserved, 0.0);
+
+        let mut pop = Pop::new(1);
+        pop.property.insert(40, property[&40].clone());
+        pop.decay_goods(&factuals);
+        assert!(pop.property[&40].lost.abs() < 1e-12);
+        assert!((pop.property[&40].quantity - 0.626).abs() < 1e-12);
+    }
+
+    /// No skill on hand. One run of this bake still makes its fixed 0.01,
+    /// and that output is fresh, so the night takes none of it.
+    #[test]
+    fn produce_makes_fresh_skill_with_none_on_hand() {
+        let mut skill = skill_good(40);
+        skill.decay_rate = 0.05;
+        let factuals = Factuals::new()
+            .with_process(practiced_bake())
+            .with_good(good(1, 0.0))
+            .with_good(skill);
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
+        let mut property = HashMap::from([(1, PopPRow::new(1.0))]);
+        job.reserve(&mut property, &factuals);
+
+        job.produce(&mut property, &factuals);
+
+        assert_eq!(property[&1].quantity, 0.0);
+        assert_eq!(property[&2].quantity, 1.0);
+        assert!((property[&40].quantity - 0.01).abs() < 1e-12);
+        assert!((property[&40].fresh - 0.01).abs() < 1e-12);
+
+        let mut pop = Pop::new(1);
+        pop.property.insert(40, property[&40].clone());
+        pop.decay_goods(&factuals);
+        assert!(pop.property[&40].lost.abs() < 1e-12);
+        assert!((pop.property[&40].quantity - 0.01).abs() < 1e-12);
+    }
+
+    /// Three on hand and a quota of two. Two are fed and come back fresh.
+    /// The one left over stays aged and decays.
+    #[test]
+    fn produce_refreshes_the_skill_it_used() {
+        let mut skill = skill_good(40);
+        skill.decay_rate = 0.05;
+        let factuals = Factuals::new()
+            .with_process(practiced_bake())
+            .with_good(good(1, 0.0))
+            .with_good(skill);
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![40])]);
+        let mut property = HashMap::from([(1, PopPRow::new(2.0)), (40, PopPRow::new(3.0))]);
+        job.reserve(&mut property, &factuals);
+
+        job.produce(&mut property, &factuals);
+
+        // Fed 2, returned 2.2, plus 0.02 flat. One aged unit remains.
+        assert!((property[&40].quantity - 3.22).abs() < 1e-12);
+        assert!((property[&40].fresh - 2.22).abs() < 1e-12);
+
+        let mut pop = Pop::new(1);
+        pop.property.insert(40, property[&40].clone());
+        pop.decay_goods(&factuals);
+        assert!((pop.property[&40].lost - 0.05).abs() < 1e-12);
+        assert!((pop.property[&40].quantity - 3.17).abs() < 1e-12);
+    }
+
+    /// The line lists the skill and does not pay. Three on hand and a quota
+    /// of two claims two, not all three. The product is shopped. The skill
+    /// is not.
+    #[test]
+    fn reserve_claims_a_skill_and_does_not_shop_it() {
+        let factuals = Factuals::new()
+            .with_process(practiced_bake())
+            .with_good(good(1, 0.0))
+            .with_good(good(2, 0.0))
+            .with_good(skill_good(40));
+        let mut job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![40])]);
+        job.lines[0].pays = false;
+        let mut property = HashMap::from([(40, PopPRow::new(3.0))]);
+
+        job.reserve(&mut property, &factuals);
+
+        assert!((property[&40].reserved - 2.0).abs() < 1e-12);
+        assert!(job.shopping.get(&40).is_none());
+        assert_eq!(job.shopping[&2], 1.0);
     }
 }

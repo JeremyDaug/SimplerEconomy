@@ -20,6 +20,7 @@ efficiency = 1
 [[religions.desires.goods]]
 good = "cabins"
 efficiency = 2
+use = true
 
 [[religions.desires.goods]]
 good = "time"

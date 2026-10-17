@@ -13,6 +13,9 @@
 #
 # Decay: Time stays 1.0. Other rates were pulled back so a few days of
 # stock actually survive; food still rots faster than metal.
+#
+# Skills start at id 28. They are weightless and decay at 0.05. A skill
+# is priced. A deal offers at most one unit of a skill.
 
 [[goods]]
 id = 0
@@ -210,3 +213,91 @@ name = "pots"
 mass = 1.5
 volume = 0.004
 decay_rate = 0.07
+
+[[goods]]
+id = 28
+name = "survival"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 29
+name = "farming"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 30
+name = "watering"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 31
+name = "baking"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 32
+name = "goldsmithing"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 33
+name = "woodworking"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 34
+name = "smithing"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 35
+name = "metalworking"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 36
+name = "mining"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 37
+name = "pottery"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+[[goods]]
+id = 38
+name = "brewing"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]

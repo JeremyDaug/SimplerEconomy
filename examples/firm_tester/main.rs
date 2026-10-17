@@ -68,7 +68,7 @@ fn main() {
 
     for day in 1..=days {
         println!("=== day {day} ===");
-        actors.start_day(&mut markets);
+        actors.start_day(&mut markets, &factuals);
         let market = markets
             .get_mut(&market_id)
             .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));

@@ -161,14 +161,16 @@ impl Actors {
     ///
     /// Gives each pop its morning goods and records them on that pop's market.
     ///
-    /// `markets` is every market, keyed by id. Each pop gains good 0 at
-    /// [`TIME_PER_LABOR`] per unit of household labor. A positive amount is
-    /// recorded with [`Market::note_supply`]. A pop listed on no market still
-    /// receives the goods.
-    pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>) {
+    /// `markets` is every market, keyed by id. `factuals` supplies the skills
+    /// [`Pop::prepare_skills`] raises to the household floor. Each pop then
+    /// gains good 0 at [`TIME_PER_LABOR`] per unit of household labor. A
+    /// positive amount is recorded with [`Market::note_supply`]. A pop listed
+    /// on no market still receives the goods. The skill floor is not supply.
+    pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>, factuals: &Factuals) {
         let homes = pop_markets(markets);
         let time_gen = [(0, ScalingFactor::Labor(TIME_PER_LABOR))];
         for (pop_id, pop) in self.pops.iter_mut() {
+            pop.prepare_skills(factuals);
             let added = pop.start_day(&time_gen);
             let Some(&market_id) = homes.get(pop_id) else {
                 continue;
@@ -206,12 +208,17 @@ fn pop_markets(markets: &HashMap<usize, Market>) -> HashMap<usize, usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::Actors;
     use crate::game::config::TIME_PER_LABOR;
+    use crate::game::factuals::Factuals;
+    use crate::game::good::{Good, GoodTag};
+    use crate::game::job::{Job, JobLine};
     use crate::game::market::{Market, MarketGood};
     use crate::game::pop::Pop;
+    use crate::game::pop_property::PopPRow;
+    use crate::game::process::{InputEffect, InputType, Process, ProcessInput};
 
     fn pop_with_adults(id: usize, adults: f64) -> Pop {
         let mut pop = Pop::new(id);
@@ -241,7 +248,7 @@ mod tests {
         markets.insert(west.id, west);
         markets.insert(east.id, east);
 
-        actors.start_day(&mut markets);
+        actors.start_day(&mut markets, &Factuals::new());
 
         let west_time = &markets[&7].goods[&0];
         assert!((west_time.production - 6.0 * TIME_PER_LABOR).abs() < 1e-12);
@@ -253,5 +260,91 @@ mod tests {
         assert!((actors.pop(4).property[&0].quantity - 3.0 * TIME_PER_LABOR).abs() < 1e-12);
         assert!(!markets[&7].goods.contains_key(&1));
         assert!(!markets[&8].pops.contains(&4));
+    }
+
+    #[test]
+    fn start_day_raises_each_skill_to_the_household_floor() {
+        let mut skill = Good {
+            id: 28,
+            name: "survival".to_string(),
+            class: None,
+            decay_rate: 0.1,
+            decay_result: HashMap::new(),
+            mass: 0.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        };
+        skill.tags.insert(GoodTag::Skill);
+        let practice = Process::new(29, "subsistence farm", 0).with_input(
+            ProcessInput::new(28, 1.0, true, InputType::Destroyed, true)
+                .with_optional(InputEffect::ExtraOutput(28, 1.1)),
+        );
+        let factuals = Factuals::new().with_good(skill).with_process(practice);
+        let mut pop = Pop::new(1);
+        pop.demographics.household.count = 5.0;
+        pop.job = Job::new(1, vec![JobLine::new(29, Some(1.0), vec![])]);
+        pop.property.insert(28, PopPRow::new(0.2));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, pop);
+        let mut markets = HashMap::new();
+
+        actors.start_day(&mut markets, &factuals);
+
+        let held = actors.pop(1).property[&28].quantity;
+        assert!((held - 0.5).abs() < 1e-12);
+    }
+
+    /// Five households, so the floor is 0.5. A pile already above that stays.
+    /// A missing skill row is created at the floor. A household count of 0
+    /// adds no skill row.
+    #[test]
+    fn start_day_keeps_a_skill_above_the_floor() {
+        let mut survival = Good {
+            id: 28,
+            name: "survival".to_string(),
+            class: None,
+            decay_rate: 0.1,
+            decay_result: HashMap::new(),
+            mass: 0.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        };
+        survival.tags.insert(GoodTag::Skill);
+        let mut farming = survival.clone().with_id(29).with_name("farming");
+        farming.tags.insert(GoodTag::Skill);
+        let practice = Process::new(29, "subsistence farm", 0)
+            .with_input(
+                ProcessInput::new(28, 1.0, true, InputType::Destroyed, true)
+                    .with_optional(InputEffect::ExtraOutput(28, 1.1)),
+            )
+            .with_input(
+                ProcessInput::new(29, 1.0, true, InputType::Destroyed, true)
+                    .with_optional(InputEffect::ExtraOutput(29, 1.1)),
+            );
+        let factuals = Factuals::new()
+            .with_good(survival)
+            .with_good(farming)
+            .with_process(practice);
+        let mut stocked = Pop::new(1);
+        stocked.demographics.household.count = 5.0;
+        stocked.job = Job::new(1, vec![JobLine::new(29, Some(1.0), vec![])]);
+        stocked.property.insert(28, PopPRow::new(0.8));
+        let mut empty = Pop::new(2);
+        empty.demographics.household.count = 0.0;
+        empty.job = stocked.job.clone();
+        let mut actors = Actors::new();
+        actors.pops.insert(1, stocked);
+        actors.pops.insert(2, empty);
+        let mut markets = HashMap::new();
+
+        actors.start_day(&mut markets, &factuals);
+
+        let pop = actors.pop(1);
+        assert!((pop.property[&28].quantity - 0.8).abs() < 1e-12);
+        assert!((pop.property[&29].quantity - 0.5).abs() < 1e-12);
+        assert!(!actors.pop(2).property.contains_key(&28));
+        assert!(!actors.pop(2).property.contains_key(&29));
     }
 }

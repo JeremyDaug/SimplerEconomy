@@ -12,20 +12,19 @@ Focus: pops, jobs, goods, processes, and one market. The cut ends when there is 
 
 The day stays on the tester and `Market::market_day`. Do not wire `PlayState` here.
 
-Still open, and still pop or job work:
+Landed pop and job work:
 
-- [ ] Close the consume trap in the handoff. A normal day counts a reserved level twice.
-- [ ] Close the satisfy trap in the handoff. Calling `satisfy` again can reserve a half-filled cap a second time.
 - [x] Savings between tiers, then between luxury levels.
 - [x] `Desire.decay`. Morning reset multiplies satisfaction by it (`0.0` clears).
-- [ ] `ordered_targets`. Satisfy picks a bucket good at random.
-- [ ] Skills as goods: priced, not traded like other goods. `Workforce.labor` is already keyed by skill or good id. No skill good exists yet.
-- [ ] Time as a good with market status, not only the morning grant. The grant sits in the tester. Leave it there unless the tester day needs it in the library. Do not move it into `PlayState`.
-- [ ] Emergent money selection, early, so it can be tested with pops. The night write already restates the card in one unit. Nothing marks a good as money. This piece may slip to a later cut. The selection test should not wait on that slip.
-- [ ] Decide how stored AMV moves, aside from the zero dead-zone. The night write exists. The rule is still open.
+- [x] Skills as goods: priced and tradeable. A job lists the skill goods its processes take. Day start raises each one to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Used skill comes back fresh. A deal offers at most one unit of a skill.
+- [x] Emergent money selection. The night write restates the card in one unit.
+- [ ] Population Growth testing. With both capped and uncapped versions.
+- [ ] Sentiments. Mostly unused in terms of wider effects but needed for Internal Migration.
+- [ ] Internal Migration. Using Sentiments and SOL, allows for pops to move between pops within our limited tester. Not a complete write up of this, just the internal version.
 
 Not this cut:
 
+- Stored AMV movement is balancing. The night write already runs, including the zero dead-zone. Changing that movement is not a Pop Tester item.
 - Stratum desires. The market is too small for stratification. That is 0.3. The stratum type is already in the tree.
 - `PlayState::advance_turn` and the phase stubs.
 - A required `init` loader. Load simulation data as a tester needs it. `examples/pop_tester/load.rs` already does that. Game save and load is 0.3, finished in 0.4.
