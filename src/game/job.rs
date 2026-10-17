@@ -1335,8 +1335,8 @@ impl Job {
     ///
     /// The take stops where [`Self::leave`] is holding a pile back, so
     /// quantity does not fall below that pile. Free units above it go first.
-    /// Reserved units and the claim are reduced only for what that free stock
-    /// did not cover. When `capital` is set, the units taken are added to
+    /// Reserved units and the claim are reduced only for what those free
+    /// units did not cover, so the pile stays free. When `capital` is set, the units taken are added to
     /// `used` so decay can return them.
     fn spend(
         &mut self,
@@ -1359,7 +1359,7 @@ impl Job {
         if take <= 0.0 {
             return;
         }
-        let free = (row.quantity - row.reserved).max(0.0);
+        let free = (row.quantity - row.reserved - floor).max(0.0);
         let from_reserved = (take - free.min(take)).max(0.0);
         row.quantity -= take;
         row.reserved = (row.reserved - from_reserved).max(0.0);
@@ -3690,6 +3690,37 @@ mod job {
 
         job.settle_shopping(&property, &factuals);
         assert!((job.shopping[&1] - 4.0).abs() < 1e-9);
+    }
+
+    /// Bake claims two grain above the three kept. Brew claimed none. After
+    /// bake spends its claim, brew finds no grain it may take, so nothing is
+    /// brewed and the pile stays free.
+    #[test]
+    fn produce_spends_a_claim_from_reserved_above_the_kept_pile() {
+        let brew = Process::new(8, "brew", 0)
+            .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(3, 1.0, true));
+        let factuals = Factuals::new().with_process(bake()).with_process(brew);
+        let mut job = Job::new(
+            1,
+            vec![
+                JobLine::new(7, Some(2.0), vec![]),
+                JobLine::new(8, Some(3.0), vec![]),
+            ],
+        );
+        let mut property = HashMap::from([(1, PopPRow::new(5.0))]);
+        job.leave(&HashMap::from([(1, 3.0)]));
+
+        job.reserve(&mut property, &factuals);
+        assert_eq!(property[&1].reserved, 2.0);
+
+        job.produce(&mut property, &factuals);
+
+        assert_eq!(property[&1].quantity, 3.0);
+        assert_eq!(property[&1].reserved, 0.0);
+        assert_eq!(property[&2].quantity, 2.0);
+        assert!(property.get(&3).is_none_or(|row| row.quantity == 0.0));
+        assert!(job.claimed.get(&1).is_none_or(|left| *left == 0.0));
     }
 
     #[test]
