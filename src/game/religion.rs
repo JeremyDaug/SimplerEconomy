@@ -38,6 +38,12 @@ pub struct Religion {
     /// Added to the species work-time fraction. `0` leaves that value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
+    /// Ease of leaving this religion and of other pops entering it.
+    ///
+    /// `0` does not convert and `1` is open. Parallel to
+    /// [`crate::game::culture::Culture::assimilation`]. Values outside `0..=1`
+    /// are clamped when the migration cap reads them.
+    pub conversion: f64,
     /// When true, pops should refresh effective demographic rates this turn.
     ///
     /// TODO: Smoother multi-turn application of large rate swings if needed.
@@ -59,8 +65,20 @@ impl Religion {
             religion_demo_eff: DemographicRates::zero(),
             birth_sentiment: BirthSentiment::zero(),
             work_time_fraction: 0.0,
+            conversion: 1.0,
             household_changed: false,
         }
+    }
+
+    /// # With Conversion
+    ///
+    /// Sets conversion ease. `0` does not convert and `1` is open.
+    ///
+    /// Returns this religion. The migration cap clamps the stored value
+    /// to `0..=1` when it reads it.
+    pub fn with_conversion(mut self, conversion: f64) -> Self {
+        self.conversion = conversion;
+        self
     }
 
     /// Sets the religion's unique ID.

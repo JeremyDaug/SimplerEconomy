@@ -1,10 +1,12 @@
 # Culture for the pop tester. Id 0 is empty and is not stored.
 # Pop::update_desires copies a desire here onto each pop of this culture.
 # Tier 1 is a common desire. The goods table shares one amount.
+# assimilation is the ease of leaving and entering. 0 is insular, 1 is open.
 
 [[cultures]]
 id = 1
 name = "village"
+assimilation = 1
 
 [[cultures.desires]]
 id = 1
@@ -19,3 +21,25 @@ efficiency = 1
 [[cultures.desires.goods]]
 good = "beer"
 efficiency = 2
+
+# Same common desire as village. Time fills a bit more, beer a bit less.
+# Half of village's assimilation.
+
+[[cultures]]
+id = 2
+name = "hamlet"
+assimilation = 0.5
+
+[[cultures.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[cultures.desires.goods]]
+good = "time"
+efficiency = 1.25
+
+[[cultures.desires.goods]]
+good = "beer"
+efficiency = 1.75

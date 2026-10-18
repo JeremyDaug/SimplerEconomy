@@ -6,6 +6,7 @@ use crate::game::deal::{matched_on, DealResponse, Meeting, MeetingOutcome, Propo
 use crate::game::marketorder::MarketOrder;
 use crate::game::factuals::Factuals;
 use crate::game::good::GoodTag;
+use crate::game::pop::MigrantGroup;
 
 /// Dead zone around zero for a stored AMV.
 ///
@@ -358,17 +359,18 @@ impl Market {
     /// Clears yesterday's exchange tape and rot, and each member's
     /// [`crate::game::deal::DealMaker::reset_day`],
     /// then reserve, produce, a second pop satisfy for what was just made,
-    /// a resettle of each pop's input buys, [`Self::match_deals`], consume, pop growth,
+    /// a resettle of each pop's input buys, [`Self::match_deals`], consume,
+    /// [`crate::game::pop::Pop::update_sentiments`], pop growth,
     /// [`Self::rebalance_population_cap`],
-    /// [`crate::game::pop::Pop::update_sentiments`], decay,
+    /// [`Self::prune_pops_below_one_household`],
+    /// [`Self::internal_migration`], decay,
     /// [`crate::game::pop::Pop::rescale_desires`], then actor
     /// record keeping and planning, then [`Self::record_keeping`].
     ///
+    /// Sentiment runs before growth, so today's mood scales this year's births.
     /// Rescale is after decay, so this day's desire effects stay at the
-    /// previous size. It also runs after the population cap, so satisfaction
-    /// and targets match the fitted size. Planning then reads those targets.
-    ///
-    /// A pop's reserve applies its craft before the job reserves inputs.
+    /// previous size. It also runs after migration, so satisfaction and
+    /// targets match the size still on the market. Planning then reads those targets.
     ///
     /// Institutions and states use the empty defaults, so their unimplemented
     /// decay and record-keeping methods stay uncalled.
@@ -410,22 +412,27 @@ impl Market {
         for actor in &members {
             actors.get_mut(*actor).consume();
         }
-        // Growth. The new size is applied to desires after decay.
-        for actor in &members {
-            if let Actor::Pop(id) = *actor {
-                actors.pop_mut(id).growth_phase(factuals);
-            }
-        }
-        // Fit capped pops back to their combined ceiling before sentiment.
-        self.rebalance_population_cap(actors);
-        // Sentiment. Consume has written today's satisfaction.
+        // Sentiment. Consume has written today's satisfaction. Growth reads it.
         let sentiment_history = self.history();
         for actor in &members {
             if let Actor::Pop(id) = *actor {
                 actors.pop_mut(id).update_sentiments(&sentiment_history);
             }
         }
-        // Decay Phase
+        // Growth. The new size is applied to desires after decay.
+        for actor in &members {
+            if let Actor::Pop(id) = *actor {
+                actors.pop_mut(id).growth_phase(factuals);
+            }
+        }
+        // Fit capped pops to their combined ceiling.
+        self.rebalance_population_cap(actors);
+        // Drop pops the year left under one household.
+        self.prune_pops_below_one_household(actors);
+        // Move households inside this market. Decay then rots the stock that remains.
+        self.internal_migration(actors, factuals);
+        // Decay Phase. Membership is whoever migration left.
+        let members = self.members();
         for actor in &members {
             for (good, (lost, volume)) in actors.get_mut(*actor).decay_goods(factuals) {
                 self.note_decay(good, lost, volume);
@@ -472,9 +479,13 @@ impl Market {
     /// have a buy, and a seller from the valid matches in proportion to the
     /// units that seller offers.
     /// The buyer sees that seller's offers and requests and either proposes
-    /// a basket or abandons. The seller accepts or rejects. An accepted
-    /// basket is finalized, freight included. The buyer pays that freight
-    /// from transport they already hold and from transport the basket buys.
+    /// a basket or abandons. A pop who cannot propose one unit against that
+    /// seller is not given a meeting. That buy stays posted, and the pair
+    /// is left unmarked, so a later meeting in this call can still match
+    /// them once the buyer's stock covers the unit. The seller accepts or
+    /// rejects. An accepted basket is finalized, freight included. The buyer
+    /// pays that freight from transport they already hold and from transport
+    /// the basket buys.
     ///
     /// After every meeting both sides reevaluate their orders. A rejected or
     /// abandoned pair is not tried again this call.
@@ -497,6 +508,11 @@ impl Market {
         let mut meetings = Vec::new();
         let mut accepted = Vec::new();
         loop {
+            let mut offers_of: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
+            for order in &sells {
+                offers_of.entry(order.origin).or_default().push(order.clone());
+            }
+            let mut seller_buys: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
             let mut candidates = Vec::new();
             for buyer in &members {
                 for buy in actors.get(*buyer).buy_orders(&history) {
@@ -506,8 +522,29 @@ impl Market {
                     let matches: Vec<MarketOrder> = sells
                         .iter()
                         .filter(|sell| {
-                            matched_on(&buy, sell)
-                                && !tried.contains(&(*buyer, sell.origin, buy.target))
+                            if !matched_on(&buy, sell)
+                                || tried.contains(&(*buyer, sell.origin, buy.target))
+                            {
+                                return false;
+                            }
+                            // A pop who cannot propose one unit against this seller is not a meeting yet.
+                            let Actor::Pop(id) = *buyer else {
+                                return true;
+                            };
+                            let requests = seller_buys.entry(sell.origin).or_insert_with(|| {
+                                actors.get(sell.origin).buy_orders(&history)
+                            });
+                            let offers = offers_of
+                                .get(&sell.origin)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]);
+                            actors.pop(id).can_propose_one(
+                                buy.target,
+                                offers,
+                                requests,
+                                &history,
+                                factuals,
+                            )
                         })
                         .cloned()
                         .collect();
@@ -717,6 +754,170 @@ impl Market {
         let factor = ceiling / people;
         for id in ids {
             actors.pop_mut(id).demographics.household.count *= factor;
+        }
+    }
+
+    /// # Prune Pops Below One Household
+    ///
+    /// Removes every member pop whose household count is under 1.
+    ///
+    /// The pop is dropped from this market and from `actors`. Its goods go
+    /// with it. Growth and [`Self::rebalance_population_cap`] can both land
+    /// a pop here. A count of 1 stays.
+    pub(crate) fn prune_pops_below_one_household(&mut self, actors: &mut Actors) {
+        let doomed: Vec<usize> = self
+            .pops
+            .iter()
+            .copied()
+            .filter(|&id| actors.pop(id).demographics.household.count < 1.0)
+            .collect();
+        for id in doomed {
+            self.pops.remove(&id);
+            actors.pops.remove(&id);
+        }
+    }
+
+    /// # Internal Migration
+    ///
+    /// Moves households between the pops on this market, then clears the pool.
+    ///
+    /// The search space is these pops. Standard of living and wealth per
+    /// household are household-weighted averages. A non-finite living standard
+    /// is left out of that average and out of the living comparison. One point
+    /// of living is the same gap at any scale. The gap is squared. Fear adds
+    /// its full share and anger adds half of its share, on top of that level.
+    /// Wealth below the average adds the square of its relative shortfall.
+    /// A pop above the average living standard pulls, squared the same way,
+    /// and hope adds its full share. The offer and the room are
+    /// [`MIGRATION_PACE`] times `score / (1 + score)` of that pop's
+    /// households. A one-point gap, with no fear or anger, is a tenth.
+    ///
+    /// An offer splits across open destinations in proportion to each one's
+    /// gated room. A destination keeps at most its room, and each pair is
+    /// also capped by that gate. Households with nowhere to sit stay home.
+    /// A move that would leave the origin under one household takes the whole
+    /// count instead, and the receivers may pass their room. The origin is
+    /// then removed. Flows into a pop that is itself leaving are dropped first.
+    ///
+    /// The gate is demographic distance times wealth. A different species is
+    /// closed. Distance otherwise counts mismatches of culture, stratum, and
+    /// religion, and a matching species is one of the four ids. A distance
+    /// of 0 is open. Otherwise [`assimilation_cap`] limits the pair. That cap
+    /// averages culture assimilation with religion conversion. Moving to a
+    /// richer pop is harder by `origin / destination` wealth. A different
+    /// craft closes once the destination is more than 10% richer. Craft `0`
+    /// is not a shared craft. An origin with wealth at or below 0 has no
+    /// upward move. A poorer destination stays open.
+    ///
+    /// Property leaves through [`Pop::take_migrants`](crate::game::pop::Pop::take_migrants).
+    /// The destination's age mix updates through
+    /// [`Pop::receive_migrants`](crate::game::pop::Pop::receive_migrants).
+    /// A pop under one household is not a participant. The pool is empty
+    /// again at the end of the pass. The net household change stays on
+    /// [`Pop::migration`](crate::game::pop::Pop::migration) until the next pass.
+    pub(crate) fn internal_migration(&mut self, actors: &mut Actors, factuals: &Factuals) {
+        let history = self.history();
+        // Clear yesterday's net on every pop. A pop that does not move this pass stays at 0.
+        let mut ids: Vec<usize> = self.pops.iter().copied().collect();
+        ids.sort_unstable();
+        for &id in &ids {
+            actors.pop_mut(id).migration = 0.0;
+        }
+        // Keep pops of at least one household. Sorted ids make the goods split stable.
+        let mut rows = Vec::new();
+        for id in ids {
+            let pop = actors.pop(id);
+            let count = pop.demographics.household.count;
+            if count < 1.0 {
+                continue;
+            }
+            rows.push(Mover {
+                id,
+                count,
+                sol: pop.standard_of_living(),
+                wealth: pop.wealth_per_household(&history),
+                fear: pop.sentiment.fear(),
+                anger: pop.sentiment.anger(),
+                hope: pop.sentiment.hope(),
+                craft: pop.job.craft,
+                species: pop.demographics.species,
+                culture: pop.demographics.culture,
+                stratum: pop.demographics.stratum,
+                religion: pop.demographics.religion,
+                offer: 0.0,
+                room: 0.0,
+            });
+        }
+        // One pop, or none, has no other pop on this market to move to.
+        if rows.len() < 2 {
+            return;
+        }
+        // Offer and room are paced shares of each pop, against the household-weighted averages.
+        let avg_sol = weighted_sol(&rows);
+        let avg_wealth = weighted_wealth(&rows);
+        for row in &mut rows {
+            let push = push_score(
+                sol_gap(row.sol, avg_sol),
+                wealth_shortfall(row.wealth, avg_wealth),
+                row.fear,
+                row.anger,
+            );
+            let pull = pull_score(sol_surplus(row.sol, avg_sol), row.hope);
+            row.offer = row.count * migration_fraction(push);
+            row.room = row.count * migration_fraction(pull);
+        }
+
+        // Weight each destination by its room and by the wealth and demographic gate.
+        let weight = pair_weights(&rows, factuals);
+        // Split each offer across those weights, then hold each destination to its room.
+        let mut flow = seat_offers(&rows, &weight);
+        // Do not deliver into a pop that would be left under one household.
+        clear_arrivals_at_leavers(&rows, &mut flow);
+        // That pop sends everyone. Receivers may pass the room just applied.
+        let leaving = expand_leavers(&rows, &mut flow);
+
+        // Take every origin before any destination receives.
+        let n = rows.len();
+        let mut parcels: Vec<(usize, MigrantGroup)> = Vec::new();
+        for i in 0..n {
+            let out = outflow(&flow, i);
+            if out <= 0.0 {
+                continue;
+            }
+            let group = {
+                let pop = actors.pop_mut(rows[i].id);
+                let group = pop.take_migrants(out);
+                pop.migration -= group.households;
+                group
+            };
+            let dests: Vec<usize> = (0..n).filter(|&j| flow[i][j] > 0.0).collect();
+            let shares: Vec<f64> = dests.iter().map(|&j| flow[i][j] / out).collect();
+            let quantities = split_stock(&group.quantity, &shares);
+            let used_parts = split_stock(&group.used, &shares);
+            for ((j, quantity), used) in dests.into_iter().zip(quantities).zip(used_parts) {
+                parcels.push((
+                    rows[j].id,
+                    MigrantGroup {
+                        households: flow[i][j],
+                        shape: group.shape,
+                        quantity,
+                        used,
+                    },
+                ));
+            }
+        }
+        // Record the gain and fold the arrivals into the destination.
+        for (dest, group) in parcels {
+            let pop = actors.pop_mut(dest);
+            pop.migration += group.households;
+            pop.receive_migrants(&group);
+        }
+        // Remove a pop that left in full. Goods that did not travel go with it.
+        for (i, row) in rows.iter().enumerate() {
+            if leaving[i] {
+                self.pops.remove(&row.id);
+                actors.pops.remove(&row.id);
+            }
         }
     }
 
@@ -1151,6 +1352,426 @@ impl MarketGood {
     }
 }
 
+/// Anger weighs this much beside fear on the way out.
+const MIGRATION_ANGER_WEIGHT: f64 = 0.5;
+/// Share of a saturated push or pull that moves in one year.
+///
+/// A one-point living gap saturates at one half, so this pace moves a
+/// tenth of the households. One year stays under this share of the pop.
+const MIGRATION_PACE: f64 = 0.2;
+/// A different craft closes above this multiple of the origin's wealth.
+const MIGRATION_WEALTH_CLOSE: f64 = 1.10;
+/// Species, culture, stratum, and religion.
+const DEMO_AXES: usize = 4;
+
+/// One pop's inputs to [`Market::internal_migration`].
+struct Mover {
+    id: usize,
+    count: f64,
+    sol: f64,
+    wealth: f64,
+    fear: f64,
+    anger: f64,
+    hope: f64,
+    craft: usize,
+    species: usize,
+    culture: usize,
+    stratum: usize,
+    religion: usize,
+    offer: f64,
+    room: f64,
+}
+
+/// # Push Score
+///
+/// Squared living gap plus squared wealth shortfall, scaled by fear and anger.
+///
+/// `sol_gap` is points of living below the market. `wealth_short` is the
+/// relative wealth shortfall. Fear adds its full share. Anger adds
+/// [`MIGRATION_ANGER_WEIGHT`] of its share. A zero level stays zero.
+fn push_score(sol_gap: f64, wealth_short: f64, fear: f64, anger: f64) -> f64 {
+    let level = sol_gap.max(0.0).powi(2) + wealth_short.max(0.0).powi(2);
+    level * (1.0 + fear + MIGRATION_ANGER_WEIGHT * anger)
+}
+
+/// # Pull Score
+///
+/// Squared living surplus, scaled by hope.
+///
+/// `sol_surplus` is points of living above the market. Hope adds its full share.
+fn pull_score(sol_surplus: f64, hope: f64) -> f64 {
+    sol_surplus.max(0.0).powi(2) * (1.0 + hope)
+}
+
+/// # Migration Fraction
+///
+/// [`MIGRATION_PACE`] times `score / (1 + score)`.
+///
+/// The result is 0 when `score` is not a positive finite number. The
+/// saturated share is at most 1, so one year stays under the pace.
+fn migration_fraction(score: f64) -> f64 {
+    if !score.is_finite() || score <= 0.0 {
+        0.0
+    } else {
+        MIGRATION_PACE * score / (1.0 + score)
+    }
+}
+
+/// # Sol Gap
+///
+/// Points of living below `avg`. A non-finite input is 0.
+fn sol_gap(sol: f64, avg: f64) -> f64 {
+    if !sol.is_finite() || !avg.is_finite() {
+        0.0
+    } else {
+        (avg - sol).max(0.0)
+    }
+}
+
+/// # Sol Surplus
+///
+/// Points of living above `avg`. A non-finite input is 0.
+fn sol_surplus(sol: f64, avg: f64) -> f64 {
+    if !sol.is_finite() || !avg.is_finite() {
+        0.0
+    } else {
+        (sol - avg).max(0.0)
+    }
+}
+
+/// # Wealth Shortfall
+///
+/// Relative shortfall of `wealth` under `avg`. Zero at or above the average,
+/// or when the average is 0.
+fn wealth_shortfall(wealth: f64, avg: f64) -> f64 {
+    if !wealth.is_finite() || !avg.is_finite() || avg == 0.0 || wealth >= avg {
+        return 0.0;
+    }
+    (avg - wealth) / avg.abs()
+}
+
+/// # Weighted Sol
+///
+/// Household-weighted living average. Non-finite rows are skipped.
+/// No finite row returns NaN.
+fn weighted_sol(rows: &[Mover]) -> f64 {
+    let mut weight = 0.0;
+    let mut sum = 0.0;
+    for row in rows {
+        if row.sol.is_finite() {
+            weight += row.count;
+            sum += row.count * row.sol;
+        }
+    }
+    if weight == 0.0 { f64::NAN } else { sum / weight }
+}
+
+/// # Weighted Wealth
+///
+/// Household-weighted wealth average over `rows`.
+///
+/// An empty weight returns 0.
+fn weighted_wealth(rows: &[Mover]) -> f64 {
+    let weight: f64 = rows.iter().map(|row| row.count).sum();
+    if weight == 0.0 {
+        return 0.0;
+    }
+    rows.iter().map(|row| row.count * row.wealth).sum::<f64>() / weight
+}
+
+/// # Is Leaving
+///
+/// Whether sending `out` households would leave `count` under one.
+///
+/// A zero outflow is not leaving. Any positive outflow that leaves fewer
+/// than one household is.
+fn is_leaving(count: f64, out: f64) -> bool {
+    out > 0.0 && count - out < 1.0
+}
+
+/// # Outflow
+///
+/// Households leaving `origin` on `flow`.
+fn outflow(flow: &[Vec<f64>], origin: usize) -> f64 {
+    flow[origin].iter().sum()
+}
+
+/// # Inflow
+///
+/// Households arriving at `dest` on `flow`.
+fn inflow(flow: &[Vec<f64>], dest: usize) -> f64 {
+    flow.iter().map(|row| row[dest]).sum()
+}
+
+/// # Pair Weights
+///
+/// Room at the destination times [`migration_gate`] from the origin.
+///
+/// The diagonal is 0. A closed gate or an empty room is 0. [`seat_offers`]
+/// splits an offer across one row of these weights.
+fn pair_weights(rows: &[Mover], factuals: &Factuals) -> Vec<Vec<f64>> {
+    let n = rows.len();
+    let mut weight = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            weight[i][j] = rows[j].room * migration_gate(&rows[i], &rows[j], factuals);
+        }
+    }
+    weight
+}
+
+/// # Seat Offers
+///
+/// Splits each offer across its open weights, then caps each destination at its room.
+///
+/// A pair is also capped by its own weight. An offer with no open weight stays
+/// put. The room scale does not run when nothing arrived.
+fn seat_offers(rows: &[Mover], weight: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = rows.len();
+    let mut flow = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        let open: f64 = weight[i].iter().sum();
+        if open <= 0.0 || rows[i].offer <= 0.0 {
+            continue;
+        }
+        for j in 0..n {
+            if weight[i][j] <= 0.0 {
+                continue;
+            }
+            let share = rows[i].offer * weight[i][j] / open;
+            flow[i][j] = share.min(weight[i][j]);
+        }
+    }
+    for j in 0..n {
+        let arrived = inflow(&flow, j);
+        if arrived > rows[j].room && arrived > 0.0 {
+            let scale = rows[j].room / arrived;
+            for row in &mut flow {
+                row[j] *= scale;
+            }
+        }
+    }
+    flow
+}
+
+/// # Clear Arrivals At Leavers
+///
+/// Zeros every flow into a pop [`is_leaving`] reports.
+///
+/// One pass is enough. Clearing those arrivals only shrinks other outflows,
+/// so a pop that was staying cannot start leaving afterward.
+fn clear_arrivals_at_leavers(rows: &[Mover], flow: &mut [Vec<f64>]) {
+    let leaving: Vec<bool> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| is_leaving(row.count, outflow(flow, i)))
+        .collect();
+    for row in flow.iter_mut() {
+        for (j, cell) in row.iter_mut().enumerate() {
+            if leaving[j] {
+                *cell = 0.0;
+            }
+        }
+    }
+}
+
+/// # Expand Leavers
+///
+/// Scales a leaving pop's row up to its whole household count.
+///
+/// Returns which rows left. Receivers are not pulled back to their room.
+/// A row with no outflow is left as it is.
+fn expand_leavers(rows: &[Mover], flow: &mut [Vec<f64>]) -> Vec<bool> {
+    let mut leaving = vec![false; rows.len()];
+    for (i, row) in rows.iter().enumerate() {
+        let out = outflow(flow, i);
+        if is_leaving(row.count, out) {
+            leaving[i] = true;
+            let scale = row.count / out;
+            for cell in &mut flow[i] {
+                *cell *= scale;
+            }
+        }
+    }
+    leaving
+}
+
+/// # Migration Gate
+///
+/// How open the move from `from` to `to` is. `0` is closed.
+///
+/// A different species returns 0 without reading wealth or culture.
+/// Otherwise wealth and assimilation each return a factor in `0..=1`.
+/// The pair is their product. A closed wealth factor returns 0 without
+/// reading culture.
+fn migration_gate(from: &Mover, to: &Mover, factuals: &Factuals) -> f64 {
+    if from.species != to.species {
+        return 0.0;
+    }
+    let wealth = wealth_factor(from, to);
+    if wealth <= 0.0 {
+        return 0.0;
+    }
+    wealth * assimilation_cap(from, to, factuals)
+}
+
+/// # Wealth Factor
+///
+/// How easily `from` may enter `to` on wealth.
+///
+/// A destination at or below the origin's wealth is `1`. A richer
+/// destination is `origin / destination`. That move closes when the origin's
+/// wealth is at or below 0, and when the crafts differ and the destination
+/// is more than [`MIGRATION_WEALTH_CLOSE`] times as rich. Craft `0` is not
+/// a shared craft.
+fn wealth_factor(from: &Mover, to: &Mover) -> f64 {
+    if to.wealth <= from.wealth {
+        return 1.0;
+    }
+    if from.wealth <= 0.0 {
+        return 0.0;
+    }
+    let same_craft = from.craft != 0 && from.craft == to.craft;
+    if !same_craft && to.wealth > from.wealth * MIGRATION_WEALTH_CLOSE {
+        return 0.0;
+    }
+    from.wealth / to.wealth
+}
+
+/// # Assimilation Cap
+///
+/// How much of a move the demographic gap allows.
+///
+/// A distance of 0 is `1`. Otherwise the ease is the mean of the two
+/// cultures' assimilation and the two religions' conversion. That ease
+/// times the share of the four ids that still match is the cap, clamped
+/// to `0..=1`. Culture id `0` and religion id `0` each have ease `1`.
+/// Stratum has no ease. A mismatch there only widens the distance.
+/// [`migration_gate`] has already closed a different species.
+fn assimilation_cap(from: &Mover, to: &Mover, factuals: &Factuals) -> f64 {
+    let distance = demo_distance(from, to);
+    if distance == 0 {
+        return 1.0;
+    }
+    let culture = culture_ease(factuals, from.culture) + culture_ease(factuals, to.culture);
+    let religion =
+        religion_conversion(factuals, from.religion) + religion_conversion(factuals, to.religion);
+    let ease = (culture + religion) / 2.0;
+    let alike = (DEMO_AXES - distance) as f64 / DEMO_AXES as f64;
+    (ease * alike).clamp(0.0, 1.0)
+}
+
+/// # Demo Distance
+///
+/// How many of species, culture, stratum, and religion differ.
+///
+/// Each mismatched id adds one. Id `0` matches id `0`. The result is `0..=4`.
+fn demo_distance(from: &Mover, to: &Mover) -> usize {
+    let mut distance = 0;
+    if from.species != to.species {
+        distance += 1;
+    }
+    if from.culture != to.culture {
+        distance += 1;
+    }
+    if from.stratum != to.stratum {
+        distance += 1;
+    }
+    if from.religion != to.religion {
+        distance += 1;
+    }
+    distance
+}
+
+/// # Culture Ease
+///
+/// Assimilation ease for this culture. Id `0` is open and is not looked up.
+///
+/// Any other id is that culture's assimilation, clamped to `0..=1`.
+fn culture_ease(factuals: &Factuals, id: usize) -> f64 {
+    if id == 0 {
+        return 1.0;
+    }
+    factuals.find_culture(id).assimilation.clamp(0.0, 1.0)
+}
+
+/// # Religion Conversion
+///
+/// Conversion ease for this religion. Id `0` is open and is not looked up.
+///
+/// Any other id is that religion's conversion, clamped to `0..=1`.
+fn religion_conversion(factuals: &Factuals, id: usize) -> f64 {
+    if id == 0 {
+        return 1.0;
+    }
+    factuals.find_religion(id).conversion.clamp(0.0, 1.0)
+}
+
+/// # Split Stock
+///
+/// Splits `source` by `shares`. The last share is whatever is left.
+///
+/// Earlier shares are that fraction of each good. A good that comes out at 0
+/// is left out. An empty `shares` returns nothing.
+fn split_stock(source: &HashMap<usize, f64>, shares: &[f64]) -> Vec<HashMap<usize, f64>> {
+    let mut sent = HashMap::new();
+    let mut parts = Vec::with_capacity(shares.len());
+    for (k, &share) in shares.iter().enumerate() {
+        if k + 1 == shares.len() {
+            parts.push(remainder_map(source, &sent));
+        } else {
+            let part = slice_map(source, share);
+            add_map(&mut sent, &part);
+            parts.push(part);
+        }
+    }
+    parts
+}
+
+/// # Slice Map
+///
+/// `fraction` of each entry in `source`.
+///
+/// A part of 0 is left out.
+fn slice_map(source: &HashMap<usize, f64>, fraction: f64) -> HashMap<usize, f64> {
+    source
+        .iter()
+        .filter_map(|(&good, &qty)| {
+            let part = qty * fraction;
+            if part == 0.0 { None } else { Some((good, part)) }
+        })
+        .collect()
+}
+
+/// # Remainder Map
+///
+/// What `source` still holds after `taken`.
+///
+/// A good left at 0 is dropped. A good missing from `taken` stays whole.
+fn remainder_map(source: &HashMap<usize, f64>, taken: &HashMap<usize, f64>) -> HashMap<usize, f64> {
+    source
+        .iter()
+        .filter_map(|(&good, &qty)| {
+            let left = qty - taken.get(&good).copied().unwrap_or(0.0);
+            if left == 0.0 { None } else { Some((good, left)) }
+        })
+        .collect()
+}
+
+/// # Add Map
+///
+/// Adds each entry of `part` into `sum`.
+///
+/// A missing good in `sum` starts at 0.
+fn add_map(sum: &mut HashMap<usize, f64>, part: &HashMap<usize, f64>) {
+    for (&good, &qty) in part {
+        *sum.entry(good).or_insert(0.0) += qty;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1163,9 +1784,17 @@ mod tests {
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
+    use crate::game::culture::Culture;
     use crate::game::deal::ProposedDeal;
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::Desire;
     use crate::game::factuals::Factuals;
+    use crate::game::job::Job;
     use crate::game::marketorder::MarketOrder;
+    use crate::game::pop::{Pop, PopPRow};
+    use crate::game::religion::Religion;
+    use crate::game::scalingfactor::ScalingFactor;
+    use crate::game::sentiment::Sentiment;
 
     /// Nine of the ten units sit on one seller. That seller is drawn most of the time.
     #[test]
@@ -1599,5 +2228,378 @@ mod tests {
                 .with_amv(1.0)
                 .with_salability(SALABILITY_MAX),
         );
+    }
+
+    /// A pop with one desire at `sol` levels, `count` households, and `qty` of good 1.
+    fn mover(id: usize, count: f64, sol: f64, qty: f64) -> Pop {
+        let mut pop = Pop::new(id);
+        pop.demographics.household.count = count;
+        pop.property.insert(1, PopPRow::new(qty));
+        pop.desires[0].push(Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: vec![],
+            amount: 1.0,
+            satisfaction: sol,
+            target_taken: vec![],
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        });
+        pop
+    }
+
+    fn seat(market: &mut Market, actors: &mut Actors, pop: Pop) {
+        market.pops.insert(pop.id);
+        actors.pops.insert(pop.id, pop);
+    }
+
+    /// One point under the average offers a tenth of the households.
+    /// A twentieth of the stock goes along.
+    #[test]
+    fn internal_migration_moves_a_tenth_for_one_point_of_living() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.household.adult = 4.0;
+        origin.demographics.household.elder = 0.0;
+        origin.demographics.household.child = 0.0;
+        origin.demographics.household.adult_mf = 1.0;
+        origin.demographics.household.adult_labor = 0.0;
+        origin.demographics.household.partnership_rate = 4.0;
+        origin.property.get_mut(&1).unwrap().used = 8.0;
+        origin.property.get_mut(&1).unwrap().fresh = 40.0;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.household.adult_mf = 0.5;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        let origin = actors.pop(1);
+        let dest = actors.pop(2);
+        assert!((origin.demographics.household.count - 9.0).abs() < 1e-9);
+        assert!((dest.demographics.household.count - 11.0).abs() < 1e-9);
+        assert!((origin.property[&1].quantity - 190.0).abs() < 1e-9);
+        assert!((dest.property[&1].quantity - 210.0).abs() < 1e-9);
+        assert!((origin.property[&1].used - 7.6).abs() < 1e-9);
+        assert!((dest.property[&1].used - 0.4).abs() < 1e-9);
+        assert!((origin.property[&1].fresh - 38.0).abs() < 1e-9);
+        assert_eq!(dest.property[&1].fresh, 0.0);
+        assert!((origin.demographics.household.adult - 4.0).abs() < 1e-9);
+        assert!((dest.demographics.household.adult - 24.0 / 11.0).abs() < 1e-9);
+        assert!((dest.demographics.household.adult_mf - 14.0 / 24.0).abs() < 1e-9);
+        assert!((dest.demographics.household.elder - 5.0 / 11.0).abs() < 1e-9);
+        assert!((dest.demographics.household.child - 25.0 / 11.0).abs() < 1e-9);
+        assert!((dest.demographics.household.adult_labor - 10.0 / 11.0).abs() < 1e-9);
+        assert!((dest.demographics.household.partnership_rate - 29.0 / 11.0).abs() < 1e-9);
+        assert!((origin.migration - -1.0).abs() < 1e-9);
+        assert!((dest.migration - 1.0).abs() < 1e-9);
+    }
+
+    /// Equal living and equal wealth sends nobody.
+    #[test]
+    fn internal_migration_stays_home_when_the_pops_match() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        seat(&mut market, &mut actors, mover(1, 10.0, 5.0, 200.0));
+        seat(&mut market, &mut actors, mover(2, 10.0, 5.0, 200.0));
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&1].quantity - 200.0).abs() < 1e-9);
+        assert_eq!(actors.pop(1).migration, 0.0);
+        assert_eq!(actors.pop(2).migration, 0.0);
+    }
+
+    /// Fear raises the offer when the destination has room for it.
+    #[test]
+    fn internal_migration_fear_sends_more_households() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 100.0);
+        origin.sentiment = Sentiment::from_parts(0.0, 0.5, 0.0, 0.5, 0.0);
+        let mut dest = mover(2, 10.0, 6.0, 100.0);
+        dest.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 8.8).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 11.2).abs() < 1e-9);
+        assert!((actors.pop(1).property[&1].quantity - 94.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 106.0).abs() < 1e-9);
+    }
+
+    /// A different craft cannot enter a pop more than 10% richer.
+    #[test]
+    fn internal_migration_closes_a_different_craft_above_ten_percent_richer() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.job = Job::new(1, vec![]);
+        let mut dest = mover(2, 10.0, 6.0, 400.0);
+        dest.job = Job::new(2, vec![]);
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&1].quantity - 200.0).abs() < 1e-9);
+    }
+
+    /// A shared craft may move up, and the room shrinks by the wealth ratio.
+    #[test]
+    fn internal_migration_shrinks_an_upward_move_by_the_wealth_ratio() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.job = Job::new(1, vec![]);
+        let mut dest = mover(2, 10.0, 6.0, 400.0);
+        dest.job = Job::new(1, vec![]);
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 9.5).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.5).abs() < 1e-9);
+        assert!((actors.pop(1).property[&1].quantity - 195.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 405.0).abs() < 1e-9);
+    }
+
+    /// An origin with no wealth does not move into a richer pop.
+    #[test]
+    fn internal_migration_blocks_upward_from_zero_wealth() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 0.0);
+        origin.job = Job::new(1, vec![]);
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.job = Job::new(1, vec![]);
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+    }
+
+    /// Two open cultures that share no demographic id do not exchange households.
+    #[test]
+    fn internal_migration_blocks_a_full_demographic_gap() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.species = 1;
+        origin.demographics.culture = 1;
+        origin.demographics.stratum = 1;
+        origin.demographics.religion = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.species = 2;
+        dest.demographics.culture = 2;
+        dest.demographics.stratum = 2;
+        dest.demographics.religion = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "open"))
+            .with_culture(Culture::new(2, "also open"))
+            .with_religion(Religion::new(1, "open"))
+            .with_religion(Religion::new(2, "also open"));
+
+        market.internal_migration(&mut actors, &factuals);
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+    }
+
+    /// Culture, stratum, and religion differ. Species matches, so the gate stays open.
+    #[test]
+    fn internal_migration_caps_a_partial_demographic_gap() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.culture = 1;
+        origin.demographics.stratum = 1;
+        origin.demographics.religion = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.culture = 2;
+        dest.demographics.stratum = 2;
+        dest.demographics.religion = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "open"))
+            .with_culture(Culture::new(2, "open"))
+            .with_religion(Religion::new(1, "open"))
+            .with_religion(Religion::new(2, "open"));
+
+        market.internal_migration(&mut actors, &factuals);
+
+        // Distance 3 of 4, species matched. Both eases are open, so the mean is 2.
+        // Cap is 2 * 1/4 = 0.5, so half of the 1-household room.
+        assert!((actors.pop(1).demographics.household.count - 9.5).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.5).abs() < 1e-9);
+    }
+
+    /// A different species stays put even when the living gap would move households.
+    #[test]
+    fn internal_migration_does_not_cross_species() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.species = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.species = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.0).abs() < 1e-9);
+    }
+
+    /// Insular cultures still move when conversion is open. The mean ease is 1,
+    /// and one mismatch leaves three of the four ids alike, so the cap is 0.75.
+    #[test]
+    fn internal_migration_open_conversion_eases_an_insular_culture() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.culture = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.culture = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "shut").with_assimilation(0.0))
+            .with_culture(Culture::new(2, "shut").with_assimilation(0.0));
+
+        market.internal_migration(&mut actors, &factuals);
+
+        assert!((actors.pop(1).demographics.household.count - 9.25).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.75).abs() < 1e-9);
+    }
+
+    /// Closed conversion shrinks a religion-only gap the same way.
+    #[test]
+    fn internal_migration_closed_conversion_shrinks_a_religion_gap() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.religion = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.religion = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+        let factuals = Factuals::new()
+            .with_religion(Religion::new(1, "shut").with_conversion(0.0))
+            .with_religion(Religion::new(2, "shut").with_conversion(0.0));
+
+        market.internal_migration(&mut actors, &factuals);
+
+        assert!((actors.pop(1).demographics.household.count - 9.25).abs() < 1e-9);
+        assert!((actors.pop(2).demographics.household.count - 10.75).abs() < 1e-9);
+    }
+
+    /// Both eases at 0 close the gate on a single mismatched id.
+    #[test]
+    fn internal_migration_insular_culture_and_religion_do_not_cross() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut origin = mover(1, 10.0, 4.0, 200.0);
+        origin.demographics.culture = 1;
+        origin.demographics.religion = 1;
+        let mut dest = mover(2, 10.0, 6.0, 200.0);
+        dest.demographics.culture = 2;
+        dest.demographics.religion = 2;
+        seat(&mut market, &mut actors, origin);
+        seat(&mut market, &mut actors, dest);
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "shut").with_assimilation(0.0))
+            .with_culture(Culture::new(2, "shut").with_assimilation(0.0))
+            .with_religion(Religion::new(1, "shut").with_conversion(0.0))
+            .with_religion(Religion::new(2, "shut").with_conversion(0.0));
+
+        market.internal_migration(&mut actors, &factuals);
+
+        assert!((actors.pop(1).demographics.household.count - 10.0).abs() < 1e-9);
+    }
+
+    /// A pop of one household that finds a seat leaves entirely, and half its goods arrive.
+    #[test]
+    fn internal_migration_sends_the_whole_pop_when_the_rest_would_be_under_one() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        seat(&mut market, &mut actors, mover(1, 1.0, 0.0, 40.0));
+        seat(&mut market, &mut actors, mover(2, 10.0, 2.0, 0.0));
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!(actors.pops.get(&1).is_none());
+        assert!(!market.pops.contains(&1));
+        assert!((actors.pop(2).demographics.household.count - 11.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 20.0).abs() < 1e-9);
+    }
+
+    /// A high-living pop that is about to be removed does not keep the people sent to it.
+    #[test]
+    fn internal_migration_does_not_deliver_into_a_pop_that_is_leaving() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut low = mover(1, 10.0, 3.0, 1000.0);
+        low.job = Job::new(1, vec![]);
+        let mut mid = mover(2, 1.0, 7.0, 2.0);
+        mid.job = Job::new(1, vec![]);
+        let mut high = mover(3, 10.0, 9.0, 1000.0);
+        high.job = Job::new(1, vec![]);
+        seat(&mut market, &mut actors, low);
+        seat(&mut market, &mut actors, mid);
+        seat(&mut market, &mut actors, high);
+
+        market.internal_migration(&mut actors, &Factuals::new());
+
+        assert!(actors.pops.get(&2).is_none());
+        let kept = actors.pop(1).demographics.household.count + actors.pop(3).demographics.household.count;
+        assert!((kept - 21.0).abs() < 1e-6);
+    }
+
+    /// Growth or the cap can leave a pop under one household. That pop is deleted.
+    #[test]
+    fn prune_removes_a_pop_under_one_household() {
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        seat(&mut market, &mut actors, mover(1, 0.4, 5.0, 80.0));
+        seat(&mut market, &mut actors, mover(2, 4.0, 5.0, 10.0));
+
+        market.prune_pops_below_one_household(&mut actors);
+
+        assert!(actors.pops.get(&1).is_none());
+        assert!(!market.pops.contains(&1));
+        assert!((actors.pop(2).property[&1].quantity - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn migration_push_squares_the_gaps_and_weights_fear_over_anger() {
+        assert!((super::push_score(1.0, 0.0, 0.0, 0.0) - 1.0).abs() < 1e-12);
+        assert!((super::push_score(1.0, 0.5, 0.0, 0.0) - 1.25).abs() < 1e-12);
+        assert!((super::push_score(1.0, 0.0, 0.5, 0.0) - 1.5).abs() < 1e-12);
+        assert!((super::push_score(1.0, 0.0, 0.0, 0.5) - 1.25).abs() < 1e-12);
+        assert!((super::pull_score(1.0, 1.0) - 2.0).abs() < 1e-12);
+    }
+
+    /// A one-point score saturates at one half, then the pace keeps a tenth.
+    #[test]
+    fn migration_fraction_stays_under_the_pace() {
+        assert!((super::migration_fraction(1.0) - 0.1).abs() < 1e-12);
+        assert!((super::migration_fraction(1.0e9) - super::MIGRATION_PACE).abs() < 1e-6);
+        assert_eq!(super::migration_fraction(0.0), 0.0);
     }
 }

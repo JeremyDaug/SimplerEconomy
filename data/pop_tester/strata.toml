@@ -23,3 +23,69 @@ efficiency = 1
 good = "wood_tools"
 efficiency = 2
 use = true
+
+# Village's second stratum. Wood fills a bit less, tools a bit less.
+# Tools stay owned.
+
+[[strata]]
+id = 2
+name = "cottager"
+culture = "village"
+
+[[strata.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[strata.desires.goods]]
+good = "wood"
+efficiency = 0.75
+
+[[strata.desires.goods]]
+good = "wood_tools"
+efficiency = 1.75
+use = true
+
+# Hamlet. Same goods as householder. Crofter fills both a bit more.
+# Tenant keeps wood and fills tools less. Tools stay owned.
+
+[[strata]]
+id = 3
+name = "crofter"
+culture = "hamlet"
+
+[[strata.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[strata.desires.goods]]
+good = "wood"
+efficiency = 1.25
+
+[[strata.desires.goods]]
+good = "wood_tools"
+efficiency = 2.25
+use = true
+
+[[strata]]
+id = 4
+name = "tenant"
+culture = "hamlet"
+
+[[strata.desires]]
+id = 1
+tier = 1
+amount = 1
+scalar = "all"
+
+[[strata.desires.goods]]
+good = "wood"
+efficiency = 1
+
+[[strata.desires.goods]]
+good = "wood_tools"
+efficiency = 1.5
+use = true

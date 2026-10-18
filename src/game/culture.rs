@@ -36,6 +36,12 @@ pub struct Culture {
     /// Added to the species work-time fraction. `0` leaves the species value alone.
     /// The stacked result is clamped to `0..=1`.
     pub work_time_fraction: f64,
+    /// Ease of leaving this culture and of other pops entering it.
+    ///
+    /// `0` is insular and `1` is open. Values outside `0..=1` are clamped
+    /// when the migration cap reads them. Religion conversion is the same
+    /// kind of ease.
+    pub assimilation: f64,
     /// Stratum ids that derive from this culture.
     ///
     /// Id `0` is the empty stratum and is not listed. [`Self::push_stratum`]
@@ -70,9 +76,21 @@ impl Culture {
             culture_demo_eff: DemographicRates::zero(),
             birth_sentiment: BirthSentiment::zero(),
             work_time_fraction: 0.0,
+            assimilation: 1.0,
             strata: Vec::new(),
             household_changed: false,
         }
+    }
+
+    /// # With Assimilation
+    ///
+    /// Sets assimilation ease. `0` is insular and `1` is open.
+    ///
+    /// Returns this culture. [`crate::game::market::Market::internal_migration`]
+    /// clamps the stored value to `0..=1` when it reads it.
+    pub fn with_assimilation(mut self, assimilation: f64) -> Self {
+        self.assimilation = assimilation;
+        self
     }
 
     /// Sets the culture's unique ID.

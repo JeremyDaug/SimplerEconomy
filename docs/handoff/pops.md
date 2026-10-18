@@ -10,8 +10,9 @@ firm tester loads its pops through the same reader. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
 copies them onto each pop. The tester prints exchanges, including the
 morning buys/sells ratio, then each pop's work, then the pop table, then
-the market board. The pop table is standard of living, size, growth, and
-the five sentiment shares. It does not choose baskets or prices. The night's
+the market board. The pop table is standard of living, size, growth,
+migration, and the five sentiment shares. Migration is the net households
+gained that day. It does not choose baskets or prices. The night's
 plan rewrites every line target and each line's optional inputs.
 `docs/handoff/desire.md` sketches how a platonic desire becomes a
 demographic desire and then a pop desire.
@@ -22,19 +23,20 @@ Cottage planning, savings, the optional-input list, and the first deal pass
 are the current stop. Seller weight is a first cut: the whole units on the
 offer. Refine that weight later. The buyer draw is still one ticket per buy.
 Owned targets are in the tester: wood tools on the householder common
-desire, and cabins on the hearth luxury desire. Population-growth testing
-and internal migration are the open 0.1 items in `TODO.md`. The pop tester
-shares one ceiling: each pop's starting size times a multiplier (default
-1000) is its share. After growth, if the capped headcount passes the sum
-of those shares, every capped pop's household count is scaled by the same
-factor. Sentiment runs on that size. Desires match it after decay.
-After the days on the command line, it asks how many more to run. Sentiment
-updates after growth from desire arms, stored effects, tier satisfaction,
+desire, and cabins on the hearth luxury desire. New pop generation is the
+open 0.1 item in `TODO.md`. The pop tester shares one ceiling: each pop's
+starting size times a multiplier (default 1000) is its share. Sentiment
+runs before growth, from desire arms, stored effects, tier satisfaction,
 wealth per household, and the change in standard of living against its
 recent average. Each other emotion moves 15 percent of its stored share
 into contentment in that same batch, and a larger stored share moves more.
-Growth scales the next day's births per woman by the demographic
-sentiment schedule. A content pop stays on the baseline. The tester desires carry no sentiment arms.
+Growth scales this year's births per woman by the demographic sentiment
+schedule. A content pop stays on the baseline. The tester desires carry no
+sentiment arms. After growth, if the capped headcount passes the sum of
+those shares, every capped pop's household count is scaled by the same
+factor. A pop left under one household is removed. Households then move
+between the pops still on the market. Desires match the size that remains,
+after decay. After the days on the command line, it asks how many more to run.
 
 A specialty line aims at its cover, its paced surplus, and the unmet buys
 it is allowed to take. It does not take the rest of the morning. Each pop's
@@ -51,12 +53,13 @@ The other pops still make and sell the same goods.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from selling and payment. The job does not spend that pile as an input. Basic, common, and the first luxury level may eat it. A further luxury level leaves it. See Savings |
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `match_deals`, consume, pop growth, `rebalance_population_cap`, sentiment, decay, `rescale_desires`, actor books and planning, then the night card. Rescale is after decay so this day's desire effects stay at the old size, and after the population cap so satisfaction and targets match the fitted size. A pop with no share is left out of the ceiling. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `settle_shopping`, `match_deals`, consume, sentiment, pop growth, `rebalance_population_cap`, prune pops under one household, internal migration, decay, `rescale_desires`, actor books and planning, then the night card. Sentiment is before growth so today's mood scales this year's births. Rescale is after decay so this day's desire effects stay at the old size, and after migration so satisfaction and targets match the size still on the market. A pop with no share is left out of the ceiling. A pop's reserve is satisfy, then the job reserve. The morning does not call `apply_craft`, so a process left off the job stays off. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
 | `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
-| Sentiment | Updated after growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment already stored, so this day's update changes the next day's births. Tester desires carry no sentiment arms |
+| Sentiment | Updated before growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment this day just wrote, so today's mood scales this year's births. Fear and anger also scale the migration offer, and hope scales the pull. Tester desires carry no sentiment arms |
+| Internal migration | After the cap and the under-one prune, before decay. Households move between pops on this market. The offer is the squared living gap plus the squared relative wealth shortfall, times fear and half of anger, then saturated and scaled by a fifth, so one calm point of living moves about a tenth of the households. A living standard above the average pulls, times hope. Demographic distance and wealth gate the destination. The distance cap averages the two cultures' assimilation with the two religions' conversion. A different species does not move. Stratum has no such ease. Half of the moving share's goods travel. A move that would leave fewer than one household takes the whole pop. The per-pop migration methods stay `todo` |
 | Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. A deal offers at most one unit of a skill. The goods still carry `untradeable`, so a meeting is not opened on a skill |
 
 ## Satisfy
@@ -104,7 +107,10 @@ walk finished, and the new output is left free. After a meeting,
 The stopped desire buys every good that can still fill that open level.
 Each amount rounds up to a whole unit and stays inside the good's remaining
 cap. A luxury desire buys as many levels as it finished last night, and at
-least one. The saved day's shortfall is added on top.
+least one. The saved day's shortfall is added on top. A desire satisfy
+did not stop on, while the pop still holds a lower-efficiency good for it,
+also buys one unit of a higher-efficiency substitute when that substitute's
+AMV per point of satisfaction is lower. The good already held stays in place.
 
 ## Consume
 
@@ -155,8 +161,8 @@ make. The morning buy adds the shortfall on the winning good.
 - `DemoDesire::create_desire` is the demo-to-pop path. It scales `amount` and
   additive effects. Birth, mortality, sentiment, and satisfaction arms stay
   at demo values.
-- `Pop::rescale_desires` runs in `market_day` after goods decay and before
-  planning. It rewrites amount, additive effects, and recorded satisfaction
+- `Pop::rescale_desires` runs in `market_day` after migration and goods decay,
+  and before planning. It rewrites amount, additive effects, and recorded satisfaction
   from the new size. `update_desires` does not. A desire with no stored
   demographic source is left alone.
 - `PlayState::phase_pop_growth` only grows. It does not fit the ceiling
@@ -174,10 +180,10 @@ lines, targets, and stock.
 
 `data/world/crafts.toml` is the open list (`origin` none). A culture-origin
 craft, then a religion-origin craft, drops and appends process ids and
-multiplies `complexity_modifier`. An omitted modifier is `1.0`. Morning `apply_craft`
-adds only processes the job does not already run, as resting lines
-(`Some(0.0)`). A line already present keeps its target, so a process added
-that morning produces on a later day, after the night's plan.
+multiplies `complexity_modifier`. An omitted modifier is `1.0`. `Pop::apply_craft`
+adds processes the job does not already run, as resting lines (`Some(0.0)`),
+when a caller attaches that craft. A line already present keeps its target.
+The morning reserve does not call it. A process left off the job stays off.
 
 `JobLine.target` is the quota. `None` runs as far as inputs on hand allow
 and does not shop. `Some(0.0)` skips the line. `Some(n)` with `n > 0` runs
@@ -242,10 +248,12 @@ stock can fill is spent, and a tie keeps the later target. A short
 desire adds the highest-efficiency target some line outputs, and only
 when that cap is at least 1. Units of one good are summed, then the
 remaining stock of that good is subtracted once. A desire no line can
-make adds nothing. A saved day this job can make is included in that gap.
-When the line that takes a gap costs more per unit than that good's
-holding, those units are also posted as a buy. The line still aims at
-the gap. A purchase on hand shrinks the next night's gap.
+make adds nothing. A saved day this job can make joins that gap when the
+line that takes the good has a positive holding score. A line at or below
+zero keeps the meal and leaves the saved day off the quota. When the line
+that takes a gap costs more per unit than that good's holding, those units
+are also posted as a buy. The line still aims at the gap it was given. A
+purchase on hand shrinks the next night's gap.
 
 `Job::plan` writes `Some` on every line. The line with the highest
 output per unit of time takes each short good. A tie keeps the earlier
@@ -302,8 +310,8 @@ open desire buy for the same good. The list is the next run's input need
 after decay, for goods that survive the night. A good that decays completely,
 such as time, is not bought. A non-factor optional is shopped only when
 the line lists it. A skill is not shopped. Morning reserve writes that list before produce.
-After produce, and after the second satisfy, the list is rebuilt from stock
-still free. An input this morning already made is not bought again.
+After produce, and after the second satisfy, `settle_shopping` rebuilds
+that list from stock still free. An input this morning already made is not bought again.
 Output an earlier line will make tomorrow morning covers the later line's
 need before a buy is posted. Capital
 set aside in `used` still counts, because it returns at decay. A line whose
@@ -321,8 +329,12 @@ Exchange, production, and consumption stay separate phases.
 who still have a buy, and a seller from the valid matches in proportion to
 the whole units that seller offers. An offer under one unit has no weight.
 When every offer has no weight, that draw is uniform. The buyer draw does
-not grow with the size of the buy. They meet because one sought good is one offered good. The buyer is
-shown the seller's whole book and either proposes a basket or abandons.
+not grow with the size of the buy. They meet because one sought good is one offered good.
+A pop who cannot propose one unit against that seller is not shown a
+book. That buy stays posted, and the pair is left unmarked, so a later
+meeting in the same call can still match them once the buyer's stock
+covers the unit. A buyer who can is shown the seller's whole book and
+either proposes a basket or abandons.
 The seller accepts or rejects. Accept moves every good in the basket.
 The basket is one map: positive units come to the buyer, negative units
 leave. Freight is not a second list. Transport the buyer receives is in
@@ -418,7 +430,7 @@ The day's exchange and rot sit on `MarketGood` with the card: `traded`,
 positive, and `production` when it is still positive. A snapshot taken
 before exchange has no sought units. `match_deals` adds `traded` and `paid`, records the print, then
 sets `sought_unmet` and `offered_unsold` from the book it left behind.
-After consumption, `market_day` calls
+After internal migration, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
 from the card is inserted at AMV `1` and salability `0.5`.
 

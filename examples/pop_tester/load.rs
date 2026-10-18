@@ -144,6 +144,12 @@ struct StratumRow {
 struct GroupRow {
     id: usize,
     name: String,
+    /// Culture only. Omitted is fully open.
+    #[serde(default = "one")]
+    assimilation: f64,
+    /// Religion only. Omitted is fully open.
+    #[serde(default = "one")]
+    conversion: f64,
     #[serde(default)]
     desires: Vec<DesireRow>,
 }
@@ -359,7 +365,8 @@ fn load_species(
 /// Reads `cultures.toml` when `dir` has one, and stores each culture on `factuals`.
 ///
 /// `goods` resolves desire goods. Returns the name-to-id map. Id `0` is
-/// rejected because a pop treats that id as no culture.
+/// rejected because a pop treats that id as no culture. Assimilation comes
+/// from the row. An omitted value is 1.
 fn load_cultures(
     dir: &Path,
     factuals: &mut Factuals,
@@ -381,8 +388,12 @@ fn load_cultures(
         if names.insert(row.name.clone(), row.id).is_some() {
             return Err(format!("culture name {} is listed twice", row.name));
         }
+        if !row.assimilation.is_finite() {
+            return Err(format!("culture {} needs a finite assimilation", row.name));
+        }
         let desires = demo_desires(&row.name, &row.desires, goods)?;
         let mut culture = Culture::new(row.id, row.name);
+        culture.assimilation = row.assimilation;
         culture.desires = desires;
         factuals.cultures.insert(culture.id, culture);
     }
@@ -433,7 +444,8 @@ fn load_strata(
 /// Reads `religions.toml` when `dir` has one, and stores each religion on `factuals`.
 ///
 /// `goods` resolves desire goods. Returns the name-to-id map. Id `0` is
-/// rejected because a pop treats that id as no religion.
+/// rejected because a pop treats that id as no religion. Conversion comes
+/// from the row. An omitted value is 1.
 fn load_religions(
     dir: &Path,
     factuals: &mut Factuals,
@@ -455,8 +467,12 @@ fn load_religions(
         if names.insert(row.name.clone(), row.id).is_some() {
             return Err(format!("religion name {} is listed twice", row.name));
         }
+        if !row.conversion.is_finite() {
+            return Err(format!("religion {} needs a finite conversion", row.name));
+        }
         let desires = demo_desires(&row.name, &row.desires, goods)?;
         let mut religion = Religion::new(row.id, row.name);
+        religion.conversion = row.conversion;
         religion.desires = desires;
         factuals.religion.insert(religion.id, religion);
     }
@@ -645,6 +661,132 @@ mod tests {
         };
         assert!(matches!(kind("wood"), Some(DesireTargetType::Consume)));
         assert!(matches!(kind("wood_tools"), Some(DesireTargetType::Use)));
+    }
+
+    /// # Tester Pops Span The Demographics
+    ///
+    /// Loads the pop tester. Grazer needs twice the food and half the water,
+    /// by efficiency. Hamlet assimilation and shrine conversion are half of
+    /// the open village and hearth. The nine pops use both of each group.
+    /// Returns nothing. A missing row, a changed rate, or a pop on the wrong
+    /// group fails.
+    #[test]
+    fn tester_pops_span_the_demographics() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+        let scenario = load_scenario(&root.join("pop_tester"), &mut factuals).expect("scenario");
+
+        let species = |name: &str| {
+            factuals
+                .species
+                .values()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("species {name}"))
+        };
+        let culture = |name: &str| {
+            factuals
+                .cultures
+                .values()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("culture {name}"))
+        };
+        let religion = |name: &str| {
+            factuals
+                .religion
+                .values()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("religion {name}"))
+        };
+        let stratum = |name: &str| {
+            factuals
+                .strata
+                .values()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("stratum {name}"))
+        };
+        let eff = |desire: &DemoDesire, good: &str| {
+            desire
+                .bucket
+                .iter()
+                .find(|target| factuals.goods[&target.good].name == good)
+                .unwrap_or_else(|| panic!("good {good}"))
+                .efficiency
+        };
+
+        let human = species("human");
+        let human_food = human.desires.get(&1).expect("human food");
+        let grazer = species("grazer");
+        let food = grazer.desires.get(&1).expect("grazer food");
+        let water = grazer.desires.get(&2).expect("grazer water");
+        assert!((food.amount - 1.0).abs() < 1e-12);
+        assert!((water.amount - 1.0).abs() < 1e-12);
+        assert!((eff(food, "grain") - eff(human_food, "grain") / 2.0).abs() < 1e-12);
+        assert!((eff(food, "bread") - eff(human_food, "bread") / 2.0).abs() < 1e-12);
+        assert!((eff(water, "water") - 2.0).abs() < 1e-12);
+
+        let hamlet = culture("hamlet").desires.get(&1).expect("hamlet common");
+        assert!((eff(hamlet, "time") - 1.25).abs() < 1e-12);
+        assert!((eff(hamlet, "beer") - 1.75).abs() < 1e-12);
+
+        let shrine = religion("shrine").desires.get(&1).expect("shrine luxury");
+        assert!((eff(shrine, "jewelry") - 1.25).abs() < 1e-12);
+        assert!((eff(shrine, "cabins") - 1.75).abs() < 1e-12);
+        assert!((eff(shrine, "time") - 0.75).abs() < 1e-12);
+        let time_cap = shrine
+            .bucket
+            .iter()
+            .find(|target| factuals.goods[&target.good].name == "time")
+            .expect("shrine time")
+            .cap;
+        assert!((time_cap - 0.5).abs() < 1e-12);
+        assert!(matches!(
+            shrine
+                .bucket
+                .iter()
+                .find(|target| factuals.goods[&target.good].name == "cabins")
+                .expect("shrine cabins")
+                .desire_type,
+            DesireTargetType::Use
+        ));
+
+        let village = culture("village");
+        let hamlet_culture = culture("hamlet");
+        let hearth = religion("hearth");
+        let shrine_row = religion("shrine");
+        let cottager = stratum("cottager");
+        let crofter = stratum("crofter");
+        let tenant = stratum("tenant");
+        assert!((village.assimilation - 1.0).abs() < 1e-12);
+        assert!((hamlet_culture.assimilation - 0.5).abs() < 1e-12);
+        assert!((hearth.conversion - 1.0).abs() < 1e-12);
+        assert!((shrine_row.conversion - 0.5).abs() < 1e-12);
+        assert_eq!(cottager.culture, village.id);
+        assert_eq!(crofter.culture, hamlet_culture.id);
+        assert_eq!(tenant.culture, hamlet_culture.id);
+        assert_eq!(village.strata.len(), 2);
+        assert_eq!(hamlet_culture.strata.len(), 2);
+        assert!((eff(cottager.desires.get(&1).expect("cottager"), "wood") - 0.75).abs() < 1e-12);
+        assert!((eff(crofter.desires.get(&1).expect("crofter"), "wood_tools") - 2.25).abs() < 1e-12);
+        assert!((eff(tenant.desires.get(&1).expect("tenant"), "wood_tools") - 1.5).abs() < 1e-12);
+
+        let groups = [
+            (1, "human", "village", "householder", "hearth"),
+            (2, "human", "village", "householder", "hearth"),
+            (3, "human", "village", "cottager", "hearth"),
+            (4, "human", "hamlet", "crofter", "hearth"),
+            (5, "human", "hamlet", "tenant", "shrine"),
+            (6, "human", "village", "householder", "shrine"),
+            (7, "human", "hamlet", "crofter", "shrine"),
+            (8, "grazer", "village", "householder", "hearth"),
+            (9, "grazer", "hamlet", "tenant", "shrine"),
+        ];
+        for (id, species_name, culture_name, stratum_name, religion_name) in groups {
+            let pop = &scenario.actors.pop(id).demographics;
+            assert_eq!(pop.species, species(species_name).id, "pop {id}");
+            assert_eq!(pop.culture, culture(culture_name).id, "pop {id}");
+            assert_eq!(pop.stratum, stratum(stratum_name).id, "pop {id}");
+            assert_eq!(pop.religion, religion(religion_name).id, "pop {id}");
+        }
     }
 
     /// # Omitted Count Is Ten Households

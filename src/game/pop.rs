@@ -28,6 +28,13 @@ pub struct Pop {
     /// Share of the market population ceiling, in people. `None` leaves this pop out.
     pub population_cap: Option<f64>,
 
+    /// Net households gained from internal migration this day.
+    ///
+    /// Negative is households that left. [`Market::internal_migration`]
+    /// writes it and clears it at the start of that pass. A pop that
+    /// stays is `0`. This is the household count, not people.
+    pub migration: f64,
+
     /// Same-day effects waiting for growth or decay.
     pub stored_effects: Vec<PopEffect>,
 
@@ -130,6 +137,41 @@ const SOL_AVERAGE_DAYS: usize = 5;
 /// Fixed for this tester.
 const SOL_CHANGE_SENTIMENT: f64 = 0.25;
 
+/// Share of a leaving household-fraction whose property travels with them.
+///
+/// Half the people take a quarter of the stock. The rest of that share is
+/// the cost of the move and stays, or is dropped when the pop is removed.
+const MIGRATION_PROPERTY_SHARE: f64 = 0.5;
+
+/// # Migrant Group
+///
+/// Households and goods taken off one pop by [`Pop::take_migrants`].
+#[derive(Debug, Clone)]
+pub(crate) struct MigrantGroup {
+    /// Households in this slice.
+    pub households: f64,
+    /// Age, sex, labor, and partnership averages of the pop they left.
+    pub shape: Household,
+    /// `quantity` taken, by good.
+    pub quantity: HashMap<usize, f64>,
+    /// `used` taken, by good. Not included in `quantity`.
+    pub used: HashMap<usize, f64>,
+}
+
+impl MigrantGroup {
+    /// # Empty
+    ///
+    /// A group with no households and no goods.
+    fn empty() -> Self {
+        Self {
+            households: 0.0,
+            shape: Household::new(),
+            quantity: HashMap::new(),
+            used: HashMap::new(),
+        }
+    }
+}
+
 /// Fraction of each other emotion moved into contentment.
 ///
 /// A larger share moves more. A content pop moves nothing. Fixed for
@@ -138,7 +180,10 @@ const CONTENTMENT_PULL: f64 = 0.15;
 
 /// Cover gaps and the savings pile for one night.
 struct NightNeeds {
+    /// Short meal, after stock. The saved day is [`Self::save_gap`].
     cover: HashMap<usize, f64>,
+    /// Short saved day this job can make, after the meal has taken its stock.
+    save_gap: HashMap<usize, f64>,
     savings: HashMap<usize, f64>,
     luxury_savings: HashMap<usize, f64>,
     /// The walk reached the luxury tier.
@@ -205,6 +250,7 @@ impl Pop {
                 religion: 0,
             },
             population_cap: None,
+            migration: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
@@ -221,16 +267,102 @@ impl Pop {
         }
     }
 
-    /// Emigration pressure. Not written yet.
+    /// # Calculate Migratory Pressure
+    ///
+    /// Emigration pressure for the later day phase.
+    ///
+    /// [`Market::internal_migration`](crate::game::market::Market::internal_migration)
+    /// moves households inside one market. This per-pop step stays unwritten.
     pub fn calculate_migratory_pressure(&mut self, factuals: &Factuals, _region: &Market) {
         let _ = (self, factuals);
         todo!("Pop calculate migratory pressure")
     }
 
-    /// Job-to-job moves inside the same market. Not written yet.
+    /// # Process Internal Migration
+    ///
+    /// Job-to-job moves for the later day phase.
+    ///
+    /// The market pass is
+    /// [`Market::internal_migration`](crate::game::market::Market::internal_migration).
+    /// This per-pop step stays unwritten.
     pub fn process_internal_migration(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Pop process internal migration")
+    }
+
+    /// # Take Migrants
+    ///
+    /// Removes `households` from this pop and the property that leaves with them.
+    ///
+    /// `households` is clamped to the count on hand. The property share is half
+    /// that fraction of the pop. `quantity` and `used` are reduced by that
+    /// share and returned in the group. `fresh`, `produced`, and `reserved`
+    /// shrink by the same share and stay. Savings shrink by that share and
+    /// stay. Averages on this pop stay. The group's household shape is those
+    /// averages from before the count dropped. A non-positive ask returns an
+    /// empty group and changes nothing.
+    pub(crate) fn take_migrants(&mut self, households: f64) -> MigrantGroup {
+        let count = self.demographics.household.count;
+        if !households.is_finite() || households <= 0.0 || count <= 0.0 {
+            return MigrantGroup::empty();
+        }
+        let households = households.min(count);
+        let goods_fraction = MIGRATION_PROPERTY_SHARE * households / count;
+        let shape = self.demographics.household;
+        self.demographics.household.count = count - households;
+        let mut quantity = HashMap::new();
+        let mut used = HashMap::new();
+        for (&good, row) in &mut self.property {
+            let take_qty = row.quantity * goods_fraction;
+            let take_used = row.used * goods_fraction;
+            row.quantity -= take_qty;
+            row.used -= take_used;
+            row.fresh *= 1.0 - goods_fraction;
+            row.produced *= 1.0 - goods_fraction;
+            row.reserved *= 1.0 - goods_fraction;
+            if take_qty != 0.0 {
+                quantity.insert(good, take_qty);
+            }
+            if take_used != 0.0 {
+                used.insert(good, take_used);
+            }
+        }
+        for amount in self.savings.values_mut() {
+            *amount *= 1.0 - goods_fraction;
+        }
+        for amount in self.luxury_savings.values_mut() {
+            *amount *= 1.0 - goods_fraction;
+        }
+        MigrantGroup {
+            households,
+            shape,
+            quantity,
+            used,
+        }
+    }
+
+    /// # Receive Migrants
+    ///
+    /// Adds `group` onto this pop.
+    ///
+    /// Household averages fold in the arrivals. `quantity` and `used` add.
+    /// Savings stay as they are. The arrivals do not bring a savings claim.
+    /// An empty group changes nothing.
+    pub(crate) fn receive_migrants(&mut self, group: &MigrantGroup) {
+        if group.households <= 0.0 {
+            return;
+        }
+        self.demographics.household.absorb(&group.shape, group.households);
+        for (&good, &qty) in &group.quantity {
+            if qty != 0.0 {
+                self.property.entry(good).or_default().quantity += qty;
+            }
+        }
+        for (&good, &qty) in &group.used {
+            if qty != 0.0 {
+                self.property.entry(good).or_default().used += qty;
+            }
+        }
     }
 
     /// Resolves a [`ScalingFactor`] against this pop's household.
@@ -347,11 +479,12 @@ impl Pop {
 
     /// # Apply Craft
     ///
-    /// Gives this pop's job the processes of its craft that it does not already run.
+    /// Adds the processes of this pop's effective craft that the job does not run.
     ///
-    /// `factuals` supplies this job's effective craft. A line already on the
-    /// job is left alone. Craft `0`, or a craft the world does not have, adds
-    /// nothing.
+    /// `factuals` supplies the craft, including a culture or religion attachment.
+    /// A line already on the job keeps its target. A process added here starts
+    /// at no iterations. This does not remove a line. A later call adds a
+    /// craft process that is missing again.
     pub fn apply_craft(&mut self, factuals: &Factuals) {
         let processes = factuals.craft_processes(
             self.job.craft,
@@ -1090,7 +1223,7 @@ impl Pop {
     /// [`Desire::tiers_satisfied`](crate::game::desire::Desire::tiers_satisfied)
     /// and [`Desire::get_bonus_satisfaction`](crate::game::desire::Desire::get_bonus_satisfaction),
     /// then each stored [`PopEffect::Satisfaction`] amount is added.
-    fn standard_of_living(&self) -> f64 {
+    pub(crate) fn standard_of_living(&self) -> f64 {
         if self.desires.iter().all(|tier| tier.is_empty()) {
             return f64::INFINITY;
         }
@@ -1117,7 +1250,7 @@ impl Pop {
     /// [`MarketHistory::holding_per_unit`](MarketHistory::holding_per_unit).
     /// Time is the day's labor and is left out. A household count at or below
     /// 0, or a non-finite result, returns 0.
-    fn wealth_per_household(&self, history: &MarketHistory) -> f64 {
+    pub(crate) fn wealth_per_household(&self, history: &MarketHistory) -> f64 {
         let households = self.demographics.household.count;
         if households <= 0.0 {
             return 0.0;
@@ -1450,14 +1583,15 @@ impl Pop {
     /// Sets the job's targets for the next morning.
     ///
     /// `factuals` supplies processes. `history` is yesterday's market board.
-    /// [`Self::night_needs`] is the units still short and the savings pile.
-    /// [`Self::planning_property`] is the stock the job spends, `produced`
-    /// and `lost` included. The modifier is [`Self::complexity_cost`].
+    /// [`Self::night_needs`] is the short meal, the short saved day, and the
+    /// savings pile. [`crate::game::job::desire_cover`] keeps the saved day
+    /// when the line that takes the good pays, and leaves it off when that
+    /// line does not. [`Self::planning_property`] is the stock the job spends,
+    /// `produced` and `lost` included. The modifier is [`Self::complexity_cost`].
     /// [`Self::desire_stamp`] differs from the last plan when the household
     /// grew into an amount or a desire was added or removed, and that night
     /// snaps the cover. Cover units [`crate::game::job::buys_cheaper_than_making`]
-    /// returns are stored for the morning order. The job still aims at the
-    /// full cover.
+    /// returns are stored for the morning order. The job aims at that cover.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
         self.luxury_reached = self.finished_luxury_levels();
         let needs = self.night_needs(factuals, history);
@@ -1469,14 +1603,22 @@ impl Pop {
         let stamp = self.desire_stamp();
         let snap_cover = stamp != self.planned_desires;
         self.planned_desires = stamp;
-        self.cheaper_cover = crate::game::job::buys_cheaper_than_making(
+        // A paying line keeps the saved day. A losing line keeps the meal.
+        let cover = crate::game::job::desire_cover(
             &self.job.lines,
             &needs.cover,
+            &needs.save_gap,
+            factuals,
+            history,
+        );
+        self.cheaper_cover = crate::game::job::buys_cheaper_than_making(
+            &self.job.lines,
+            &cover,
             factuals,
             history,
         );
         self.job
-            .plan(&needs.cover, &property, factuals, history, modifier, snap_cover);
+            .plan(&cover, &property, factuals, history, modifier, snap_cover);
     }
 
     /// # Finished Luxury Levels
@@ -1556,14 +1698,17 @@ impl Pop {
     ///
     /// Each short desire adds the highest-efficiency target some line
     /// outputs. A desire no line can make adds nothing.
-    /// [`Self::savings_piles`] then adds one saved day on each desire it
+    /// [`Self::savings_piles`] then finds one saved day on each desire it
     /// allows. That check uses the stock on hand, before tomorrow's meal is
-    /// set aside. A day this job makes is added to the gap. Units of one good
-    /// are summed, then the stock left after those meals is subtracted once.
-    /// [`Job::plan`] adds one output unit above that gap.
+    /// set aside. A day this job makes is kept apart from the meal. Stock
+    /// left after a covered meal is spent on the meal first, and what remains
+    /// shortens the saved day. [`crate::game::job::desire_cover`] decides
+    /// whether that day joins the line. [`Job::plan`] adds one output unit
+    /// above the gap it is given.
     ///
-    /// Returns the gap per good, the units to withhold, and the luxury part
-    /// of that pile. An empty gap map means every producible need is covered.
+    /// Returns the meal gap, the saved-day gap, the units to withhold, and
+    /// the luxury part of that pile. An empty meal gap means every producible
+    /// meal is covered.
     fn night_needs(&self, factuals: &Factuals, history: &MarketHistory) -> NightNeeds {
         let mut producible = HashSet::new();
         for line in &self.job.lines {
@@ -1623,24 +1768,41 @@ impl Pop {
                 *gross.entry(target.good).or_insert(0.0) += desire.amount / target.efficiency;
             }
         }
-        // A saved day this job can make joins the gap. Stock left after the
-        // meals is subtracted once, below.
+        // The saved day stays off the meal. Stock covers the meal first.
         let (savings, luxury_savings, luxury_savings_open) =
             self.savings_piles(factuals, history, &mut saving_stock);
+        let mut save_gross: HashMap<usize, f64> = HashMap::new();
         for (&good, &units) in &savings {
             if units > 0.0 && self.makes_good(factuals, good) {
-                *gross.entry(good).or_insert(0.0) += units;
+                save_gross.insert(good, units);
             }
         }
+        let mut goods: Vec<usize> = gross
+            .keys()
+            .copied()
+            .chain(save_gross.keys().copied())
+            .collect();
+        goods.sort_unstable();
+        goods.dedup();
         let mut cover = HashMap::new();
-        for (good, units) in gross {
-            let gap = units - stock.get(&good).copied().unwrap_or(0.0);
-            if gap > 0.0 {
-                cover.insert(good, gap);
+        let mut save_gap = HashMap::new();
+        for good in goods {
+            let meal = gross.get(&good).copied().unwrap_or(0.0);
+            let save = save_gross.get(&good).copied().unwrap_or(0.0);
+            let have = stock.get(&good).copied().unwrap_or(0.0);
+            let meal_short = (meal - have).max(0.0);
+            let left = (have - meal).max(0.0);
+            let save_short = (save - left).max(0.0);
+            if meal_short > 0.0 {
+                cover.insert(good, meal_short);
+            }
+            if save_short > 0.0 {
+                save_gap.insert(good, save_short);
             }
         }
         NightNeeds {
             cover,
+            save_gap,
             savings,
             luxury_savings,
             luxury_savings_open,
@@ -1961,6 +2123,126 @@ impl Pop {
                 orders.push(MarketOrder::buy(Actor::Pop(self.id), good, units));
             }
         }
+    }
+
+    /// # Add Upgrade Buys
+    ///
+    /// Posts one unit of a better substitute for a good already on hand.
+    ///
+    /// `history` is yesterday's card. `orders` is the buy already posted.
+    /// Each desire except the one [`Self::satisfy`] stopped on adds the
+    /// good from [`Self::upgrade_good`] when a lower-efficiency target is
+    /// still held. A good already listed has that one unit added. The held
+    /// good stays.
+    fn add_upgrade_buys(&self, history: &MarketHistory, orders: &mut Vec<MarketOrder>) {
+        for (tier, desires) in self.desires.iter().enumerate() {
+            for (index, desire) in desires.iter().enumerate() {
+                if self.satisfy_cursor.is_some_and(|cursor| {
+                    cursor.tier == tier && cursor.desire_index == index
+                }) {
+                    continue;
+                }
+                let Some(good) = self.upgrade_good(desire, history) else {
+                    continue;
+                };
+                if let Some(existing) = orders.iter_mut().find(|order| order.target == good) {
+                    existing.target_amount += 1.0;
+                } else {
+                    orders.push(MarketOrder::buy(Actor::Pop(self.id), good, 1.0));
+                }
+            }
+        }
+    }
+
+    /// # Upgrade Good
+    ///
+    /// One higher-efficiency substitute that is cheaper per point of satisfaction.
+    ///
+    /// `desire` is one desire. `history` prices each target that is on the
+    /// card. The pop must hold at least one unit of a target. That held
+    /// target with the lowest efficiency is the one a swap would replace. A
+    /// target of higher efficiency is chosen when its AMV divided by
+    /// efficiency is strictly lower. Among those, the lowest cost wins, then
+    /// the higher efficiency. Returns that good, or nothing when no swap is
+    /// cheaper.
+    fn upgrade_good(&self, desire: &Desire, history: &MarketHistory) -> Option<usize> {
+        if desire.amount <= 0.0 {
+            return None;
+        }
+        // The least efficient good already on hand.
+        let mut incumbent: Option<(f64, f64)> = None;
+        for target in &desire.target {
+            let Some(cost) = Self::priced_satisfaction(history, target.good, target.efficiency) else {
+                continue;
+            };
+            if !self.holds_one(target.good) {
+                continue;
+            }
+            let take = match incumbent {
+                None => true,
+                Some((efficiency, held)) => {
+                    target.efficiency < efficiency
+                        || (target.efficiency == efficiency && cost > held)
+                }
+            };
+            if take {
+                incumbent = Some((target.efficiency, cost));
+            }
+        }
+        let (floor_efficiency, floor_cost) = incumbent?;
+        // The cheaper substitute of higher efficiency.
+        let mut best: Option<(usize, f64, f64)> = None;
+        for target in &desire.target {
+            if target.efficiency <= floor_efficiency {
+                continue;
+            }
+            let Some(cost) = Self::priced_satisfaction(history, target.good, target.efficiency) else {
+                continue;
+            };
+            if cost >= floor_cost {
+                continue;
+            }
+            let take = match best {
+                None => true,
+                Some((_, efficiency, held)) => {
+                    cost < held || (cost == held && target.efficiency > efficiency)
+                }
+            };
+            if take {
+                best = Some((target.good, target.efficiency, cost));
+            }
+        }
+        best.map(|(good, _, _)| good)
+    }
+
+    /// # Priced Satisfaction
+    ///
+    /// AMV of one point of satisfaction from `good` at `efficiency`.
+    ///
+    /// `history` supplies the AMV. A good missing from the card, a
+    /// non-positive AMV, or a non-positive efficiency returns nothing.
+    fn priced_satisfaction(history: &MarketHistory, good: usize, efficiency: f64) -> Option<f64> {
+        if efficiency <= 0.0 || !efficiency.is_finite() || !history.prices.contains_key(&good) {
+            return None;
+        }
+        let amv = history.price(good);
+        if amv <= 0.0 || !amv.is_finite() {
+            return None;
+        }
+        let cost = amv / efficiency;
+        cost.is_finite().then_some(cost)
+    }
+
+    /// # Holds One
+    ///
+    /// True when `quantity` of `good` is at least one unit.
+    ///
+    /// Reserved units still count. A missing row is false.
+    fn holds_one(&self, good: usize) -> bool {
+        self.property
+            .get(&good)
+            .map(|row| row.quantity >= 1.0)
+            .unwrap_or(false)
     }
 
     /// # Add Cheaper Cover
@@ -2632,6 +2914,33 @@ impl Pop {
         }
     }
 
+    /// # Can Propose One
+    ///
+    /// Whether [`Self::propose_quantity`] accepts one unit of `good`.
+    ///
+    /// `offers` and `requests` are the seller's book. `history` prices the
+    /// goods. `factuals` supplies transport. A stored price of zero returns
+    /// false. The deal itself is discarded.
+    pub(crate) fn can_propose_one(
+        &self,
+        good: usize,
+        offers: &[MarketOrder],
+        requests: &[MarketOrder],
+        history: &MarketHistory,
+        factuals: &Factuals,
+    ) -> bool {
+        if history.price(good) == 0.0 {
+            return false;
+        }
+        let book = SellerBook {
+            seller: self.actor(),
+            offers: offers.to_vec(),
+            requests: requests.to_vec(),
+        };
+        self.propose_quantity(good, 1.0, &book, history, factuals)
+            .is_ok()
+    }
+
     /// # Add Payment
     ///
     /// Add `need` more holding value of payment. Unrequested transport keeps
@@ -3113,10 +3422,12 @@ impl DealMaker for Pop {
         orders
     }
 
-    fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+    fn buy_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
         let mut orders = self.buys_for_stopped_desire();
         self.add_savings_buys(&mut orders);
         self.add_cheaper_cover(&mut orders);
+        // One unit of a substitute that buys more satisfaction per AMV.
+        self.add_upgrade_buys(history, &mut orders);
         for order in self.job.buy_orders(self.actor()) {
             if let Some(existing) = orders.iter_mut().find(|held| held.target == order.target) {
                 existing.target_amount += order.target_amount;
@@ -3260,9 +3571,9 @@ impl DealMaker for Pop {
 
     fn reserve(&mut self, factuals: &Factuals, rng: &mut dyn rand::RngCore) {
         // Desires claim first. The job takes only what is still free, and
-        // leaves the saved day in quantity.
+        // leaves the saved day in quantity. A craft process that is not
+        // already on the job stays off.
         self.satisfy(rng);
-        self.apply_craft(factuals);
         self.job.leave(&self.savings);
         self.job.reserve(&mut self.property, factuals);
     }
@@ -3389,6 +3700,7 @@ mod pop {
                 religion: 0,
             },
             population_cap: None,
+            migration: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             records: PopRecords::default(),
@@ -4412,8 +4724,12 @@ mod pop {
         assert!(actors.pops_in_craft(6).is_empty());
     }
 
+    /// # Market Day Leaves A Craft Process Off The Job
+    ///
+    /// The craft lists bake. The job does not run it. Two market days leave
+    /// the job on the line it already had.
     #[test]
-    fn market_day_applies_the_craft_then_runs_it() {
+    fn market_day_leaves_a_craft_process_off_the_job() {
         let mut pop = make_pop();
         pop.job = Job::new(1, vec![JobLine::new(4, Some(1.0), vec![])]);
         pop.demographics.culture = 2;
@@ -4448,22 +4764,44 @@ mod pop {
         let mut rng = StdRng::seed_from_u64(1);
 
         market.market_day(&mut actors, &factuals, &mut rng);
-
-        let pop = actors.pop(1);
-        let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
-        assert_eq!(processes, vec![7, 4, 9, 8]);
-        // Four bread to eat, four to save, plus one unit. No bread is on hand.
-        assert_eq!(pop.job.lines[0].target, Some(9.0));
-        assert_eq!(pop.property.get(&2).map(|row| row.quantity).unwrap_or(0.0), 0.0);
-
         market.market_day(&mut actors, &factuals, &mut rng);
 
         let pop = actors.pop(1);
-        assert_eq!(pop.property[&1].quantity, 0.0);
-        assert_eq!(pop.property[&2].quantity, 0.0);
-        assert_eq!(pop.property[&2].fresh, 4.0);
-        assert_eq!(pop.property[&2].produced, 4.0);
-        assert_eq!(pop.desires[0][0].satisfaction, 4.0);
+        let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
+        assert_eq!(processes, vec![4]);
+        assert_eq!(pop.job.lines[0].target, Some(1.0));
+    }
+
+    /// # Apply Craft Adds The Attached Processes Once
+    ///
+    /// Calling [`Pop::apply_craft`] adds the culture and religion lists behind
+    /// the line the job already runs. New lines start at no iterations.
+    #[test]
+    fn apply_craft_adds_the_attached_processes_once() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(4, Some(1.0), vec![])]);
+        pop.demographics.culture = 2;
+        pop.demographics.religion = 3;
+        let factuals = Factuals::new()
+            .with_craft(Craft::new(1, "subsistence").with_process(7).with_process(8))
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Culture(2)))
+                    .with_remove(8)
+                    .with_process(9),
+            )
+            .with_craft(
+                Craft::new(1, "subsistence")
+                    .with_origin(Some(DemographicSource::Religion(3)))
+                    .with_process(8),
+            );
+
+        pop.apply_craft(&factuals);
+
+        let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
+        assert_eq!(processes, vec![4, 7, 9, 8]);
+        assert_eq!(pop.job.lines[0].target, Some(1.0));
+        assert!(pop.job.lines[1..].iter().all(|line| line.target == Some(0.0)));
     }
 
     fn bake() -> Process {
@@ -4971,6 +5309,170 @@ mod pop {
         assert!((market.goods[&2].traded - 4.0).abs() < 1e-9);
         assert_eq!(market.goods[&2].paid, 0.0);
         assert!((market.goods[&9].paid - 9.0).abs() < 1e-9);
+    }
+
+    /// The buyer wants four bread and holds nothing that can pay for one.
+    /// Two sellers offer bread. No meeting is opened. The buy stays sought.
+    #[test]
+    fn match_deals_skips_a_buyer_who_cannot_pay() {
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        do_satisfy(&mut buyer).expect("buyer wants bread");
+
+        let mut seller_a = make_pop();
+        seller_a.id = 2;
+        seller_a.property.insert(2, PopPRow::new(10.0));
+        let mut seller_b = make_pop();
+        seller_b.id = 3;
+        seller_b.property.insert(2, PopPRow::new(10.0));
+
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        market.pops.insert(3);
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, seller_a);
+        actors.pops.insert(3, seller_b);
+
+        let mut rng = StdRng::seed_from_u64(1);
+        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
+
+        assert!(meetings.is_empty());
+        assert!((market.goods[&2].sought_unmet - 4.0).abs() < 1e-9);
+        assert!((actors.pops[&2].property[&2].quantity - 10.0).abs() < 1e-9);
+        assert!((actors.pops[&3].property[&2].quantity - 10.0).abs() < 1e-9);
+    }
+
+    /// One seller will only take a single coin, which does not cover the
+    /// bread. The other seller asks for nothing. The coin sits on a later
+    /// desire, so it is not offered for sale, and it can still pay for
+    /// bread. The buyer meets the open seller and does not open an empty
+    /// meeting with the capped one.
+    #[test]
+    fn match_deals_skips_a_seller_whose_request_blocks_payment() {
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        buyer.property.insert(9, PopPRow::new(3.0));
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        buyer.desires[1].push(desire(
+            3,
+            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
+            3.0,
+        ));
+        do_satisfy(&mut buyer).expect("buyer wants bread");
+
+        let mut capped = make_pop();
+        capped.id = 2;
+        capped.property.insert(2, PopPRow::new(10.0));
+        capped.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        do_satisfy(&mut capped).expect("capped seller wants one coin");
+
+        let mut open = make_pop();
+        open.id = 3;
+        open.property.insert(2, PopPRow::new(10.0));
+
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        market.pops.insert(3);
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(0.4).with_salability(1.0));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, capped);
+        actors.pops.insert(3, open);
+
+        let mut rng = StdRng::seed_from_u64(1);
+        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
+
+        assert!(meetings.iter().all(|meeting| meeting.outcome == MeetingOutcome::Accepted));
+        assert!(meetings.iter().any(|meeting| {
+            meeting.buyer == Actor::Pop(1)
+                && meeting.seller == Actor::Pop(3)
+                && meeting.match_good == 2
+        }));
+        assert!(meetings.iter().all(|meeting| meeting.seller != Actor::Pop(2)));
+        assert!((actors.pops[&1].property[&2].quantity - 1.0).abs() < 1e-9);
+        assert!(actors.pops[&1].property.get(&9).is_none_or(|row| row.quantity < 1e-9));
+    }
+
+    /// The bread buyer holds one wood, and wood's holding does not cover one
+    /// bread. They sell that wood for a good that does cover it, then buy
+    /// the bread from the other seller in the same call.
+    #[test]
+    fn match_deals_retries_a_buyer_after_they_are_paid() {
+        let mut buyer = make_pop();
+        buyer.id = 1;
+        buyer.property.insert(7, PopPRow::new(1.0));
+        buyer.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        do_satisfy(&mut buyer).expect("buyer wants bread");
+
+        let mut wood_buyer = make_pop();
+        wood_buyer.id = 2;
+        wood_buyer.property.insert(9, PopPRow::new(4.0));
+        wood_buyer.desires[0].push(desire(
+            2,
+            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        do_satisfy(&mut wood_buyer).expect("wood buyer wants wood");
+
+        let mut bread_seller = make_pop();
+        bread_seller.id = 3;
+        bread_seller.property.insert(2, PopPRow::new(5.0));
+
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        market.pops.insert(3);
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(7, MarketGood::new().with_amv(0.5).with_salability(1.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.5).with_salability(1.0));
+        let mut actors = Actors::new();
+        actors.pops.insert(1, buyer);
+        actors.pops.insert(2, wood_buyer);
+        actors.pops.insert(3, bread_seller);
+
+        let mut rng = StdRng::seed_from_u64(1);
+        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
+
+        assert!(meetings.iter().all(|meeting| meeting.outcome == MeetingOutcome::Accepted));
+        assert_eq!(meetings.len(), 2);
+        assert!((actors.pops[&1].property[&2].quantity - 1.0).abs() < 1e-9);
+        assert!(actors.pops[&1].property.get(&9).is_none_or(|row| row.quantity < 1e-9));
+        assert!((actors.pops[&3].property[&2].quantity - 4.0).abs() < 1e-9);
+        assert!((actors.pops[&3].property[&9].quantity - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -6629,6 +7131,28 @@ mod pop {
         assert!((pop.desires[0][0].amount - 2.0 * count).abs() < 1e-9);
     }
 
+    /// Half the leaving share's savings stay on the origin. The destination
+    /// keeps the claim it already had.
+    #[test]
+    fn take_migrants_shrinks_savings_and_the_destination_keeps_its_own() {
+        let mut origin = make_pop();
+        origin.demographics.household.count = 10.0;
+        origin.savings.insert(1, 40.0);
+        origin.luxury_savings.insert(2, 20.0);
+        let mut dest = make_pop();
+        dest.id = 2;
+        dest.demographics.household.count = 10.0;
+        dest.savings.insert(1, 8.0);
+
+        let group = origin.take_migrants(4.0);
+        dest.receive_migrants(&group);
+
+        assert!((origin.savings[&1] - 32.0).abs() < 1e-9);
+        assert!((origin.luxury_savings[&2] - 16.0).abs() < 1e-9);
+        assert!((dest.savings[&1] - 8.0).abs() < 1e-9);
+        assert!(dest.luxury_savings.is_empty());
+    }
+
     #[test]
     fn market_day_matches_desires_to_the_fitted_population() {
         let demo = DemoDesire::new(1)
@@ -6638,6 +7162,8 @@ mod pop {
         let factuals = Factuals::new()
             .with_species(Species::new(0, "human").with_desire(demo));
         let mut pop = make_pop();
+        // One household fitted back under 1 is pruned. Two stay above that line.
+        pop.demographics.household.count = 2.0;
         let start = pop.demographics.total_population();
         pop.population_cap = Some(start);
         let linked = factuals.species[&0]
@@ -6659,6 +7185,26 @@ mod pop {
         let count = pop.demographics.household.count;
         assert!((pop.demographics.total_population() - start).abs() < 1e-6);
         assert!((pop.desires[0][0].amount - 2.0 * count).abs() < 1e-9);
+    }
+
+    /// Growth raises people per household. The cap then scales that one
+    /// household under 1, and the pop is removed.
+    #[test]
+    fn market_day_removes_a_one_household_pop_the_cap_leaves_under_one() {
+        let factuals = Factuals::new().with_species(Species::new(0, "human"));
+        let mut pop = make_pop();
+        let start = pop.demographics.total_population();
+        pop.population_cap = Some(start);
+        let mut market = Market::new(1);
+        market.pops.insert(pop.id);
+        let mut actors = Actors::new();
+        actors.pops.insert(pop.id, pop);
+        let mut rng = StdRng::seed_from_u64(1);
+
+        market.market_day(&mut actors, &factuals, &mut rng);
+
+        assert!(actors.pops.get(&1).is_none());
+        assert!(!market.pops.contains(&1));
     }
 
     #[test]
@@ -6908,6 +7454,76 @@ mod pop {
         assert_eq!(orders[0].target_amount, 8.0);
     }
 
+    /// Grain fills the meal. Bread satisfies twice as much per unit, and both
+    /// prices are 1, so one bread is the cheaper satisfaction. The buy is
+    /// that one bread. The grain stays.
+    #[test]
+    fn buy_orders_asks_for_one_unit_of_a_cheaper_substitute() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+            ],
+            4.0,
+        ));
+        pop.property.insert(1, PopPRow::new(4.0));
+        do_satisfy(&mut pop);
+        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
+
+        let orders = pop.buy_orders(&history);
+
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].target, 2);
+        assert_eq!(orders[0].target_amount, 1.0);
+        assert_eq!(pop.property[&1].quantity, 4.0);
+    }
+
+    /// The meal is not filled yet. Grain is still on hand, and bread at the
+    /// same AMV buys twice the satisfaction, so the buy is one bread.
+    #[test]
+    fn buy_orders_asks_for_one_bread_while_the_meal_is_still_short() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+            ],
+            8.0,
+        ));
+        pop.property.insert(1, PopPRow::new(4.0));
+        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
+
+        let orders = pop.buy_orders(&history);
+
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].target, 2);
+        assert_eq!(orders[0].target_amount, 1.0);
+        assert_eq!(pop.property[&1].quantity, 4.0);
+    }
+
+    /// Bread at 3 against grain at 1 costs more per point of satisfaction
+    /// (1.5 against 1). The meal stays on the grain, and nothing is posted.
+    #[test]
+    fn buy_orders_keeps_grain_when_bread_costs_more_satisfaction() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+            ],
+            4.0,
+        ));
+        pop.property.insert(1, PopPRow::new(4.0));
+        do_satisfy(&mut pop);
+        let history = card(&[(1, 1.0, 1.0), (2, 3.0, 1.0)]);
+
+        assert!(pop.buy_orders(&history).is_empty());
+    }
+
     #[test]
     fn buy_orders_skip_a_saved_day_already_free() {
         let mut pop = make_pop();
@@ -7055,7 +7671,8 @@ mod pop {
         assert_eq!(pop.luxury_savings, HashMap::from([(8, 4.0)]));
     }
 
-    /// Ten time makes two grain, and the board prices grain at 1. The cover
+    /// Ten time makes two grain, and the board prices grain at 1. The line
+    /// loses money, so the quota is the meal and not the saved day. The meal
     /// is bought and still made. Once that grain is on hand, the buy stops
     /// and the farm target steps down.
     #[test]
@@ -7079,22 +7696,24 @@ mod pop {
 
         pop.plan(&factuals, &history);
 
-        assert_eq!(pop.cheaper_cover, HashMap::from([(1, 8.0)]));
+        // Meal of 4, plus one grain. The saved day of 4 stays off the quota.
+        assert_eq!(pop.cheaper_cover, HashMap::from([(1, 4.0)]));
         let farm = pop
             .job
             .lines
             .iter()
             .find(|line| line.process == 29)
             .expect("farm line");
-        assert!((farm.target.expect("farm target") - 4.5).abs() < 1e-9);
+        assert!((farm.target.expect("farm target") - 2.5).abs() < 1e-9);
         let orders = pop.buy_orders(&history);
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].target, 1);
-        assert_eq!(orders[0].target_amount, 8.0);
+        assert_eq!(orders[0].target_amount, 4.0);
 
-        pop.property.insert(1, PopPRow::new(8.0));
+        pop.property.insert(1, PopPRow::new(4.0));
         pop.plan(&factuals, &history);
 
+        // The meal is on hand. The line does not pay, so 2.5 steps toward one run.
         assert!(pop.cheaper_cover.is_empty());
         let farm = pop
             .job
@@ -7102,7 +7721,7 @@ mod pop {
             .iter()
             .find(|line| line.process == 29)
             .expect("farm line");
-        assert!((farm.target.expect("farm target") - 3.375).abs() < 1e-9);
+        assert!((farm.target.expect("farm target") - 1.875).abs() < 1e-9);
     }
 
     /// Half a time makes six grain. That costs less than the board, so the
@@ -7146,7 +7765,9 @@ mod pop {
             .iter()
             .find(|line| line.process == 1)
             .expect("specialty line");
-        // Cover is (8 + 1) / 6. A paying line may step surplus on top of it.
+        // Meal of 4 plus the saved day of 4, plus one grain, over six grain a run.
+        // A paying line may step surplus on top of that cover.
+        assert!((specialty.cover - 1.5).abs() < 1e-9);
         assert!(specialty.target.expect("specialty target") + 1e-9 >= 1.5);
         let farm = pop
             .job

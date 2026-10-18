@@ -2,10 +2,12 @@
 # Pop::update_desires copies a desire here onto each pop of this religion.
 # Tier 2 is a luxury desire. The goods table shares one amount.
 # cap is the share of that amount one good can fill. It defaults to 1.
+# conversion is the ease of leaving and entering. 0 does not convert, 1 is open.
 
 [[religions]]
 id = 1
 name = "hearth"
+conversion = 1
 
 [[religions.desires]]
 id = 1
@@ -25,4 +27,33 @@ use = true
 [[religions.desires.goods]]
 good = "time"
 efficiency = 1
+cap = 0.5
+
+# Same luxury desire as hearth. Jewelry fills a bit more. Cabins and
+# time fill a bit less. Time still caps at half the desire. Cabins stay
+# owned. Half of hearth's conversion.
+
+[[religions]]
+id = 2
+name = "shrine"
+conversion = 0.5
+
+[[religions.desires]]
+id = 1
+tier = 2
+amount = 1
+scalar = "all"
+
+[[religions.desires.goods]]
+good = "jewelry"
+efficiency = 1.25
+
+[[religions.desires.goods]]
+good = "cabins"
+efficiency = 1.75
+use = true
+
+[[religions.desires.goods]]
+good = "time"
+efficiency = 0.75
 cap = 0.5

@@ -34,3 +34,35 @@ scalar = "all"
 [[species.desires.goods]]
 good = "water"
 efficiency = 1
+
+# Twice the food and half the water of human, by efficiency. A desire
+# amount stays at least 1. Bread is still twice grain. A different species
+# does not migrate onto another species.
+
+[[species]]
+id = 1
+name = "grazer"
+
+[[species.desires]]
+id = 1
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "grain"
+efficiency = 0.5
+
+[[species.desires.goods]]
+good = "bread"
+efficiency = 1
+
+[[species.desires]]
+id = 2
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "water"
+efficiency = 2

@@ -1576,6 +1576,41 @@ fn make_cost_per_unit(
     Some(cost / output.amount)
 }
 
+/// # Desire Cover
+///
+/// The gap a job plans, in units of each good.
+///
+/// `consumption` is the short meal. `savings` is the short saved day.
+/// `lines` and `factuals` pick the line that would take each saved good,
+/// by the same yield rule as [`assign_cover`]. `history` prices
+/// [`trade_score`]. A score above zero adds that saved day onto the meal.
+/// A score at or below zero leaves the meal alone.
+pub(crate) fn desire_cover(
+    lines: &[JobLine],
+    consumption: &HashMap<usize, f64>,
+    savings: &HashMap<usize, f64>,
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> HashMap<usize, f64> {
+    let mut cover = consumption.clone();
+    if savings.is_empty() {
+        return cover;
+    }
+    for (good, index) in cover_winners(lines, savings, factuals) {
+        let Some(process) = factuals.get_process(lines[index].process) else {
+            continue;
+        };
+        if trade_score(process, factuals, history) <= 0.0 {
+            continue;
+        }
+        let units = savings.get(&good).copied().unwrap_or(0.0);
+        if units > 0.0 {
+            *cover.entry(good).or_insert(0.0) += units;
+        }
+    }
+    cover
+}
+
 /// # Add Input Needs
 ///
 /// Adds the inputs `iterations` will consume to `cover`, when this job makes them.

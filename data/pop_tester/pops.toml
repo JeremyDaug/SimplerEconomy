@@ -9,8 +9,13 @@
 # Their extra process is on the job: make wood, make beer, make
 # wood_tools, make cabins, make gold, or make jewelry. Digging gold and
 # making jewelry are separate pops. Gold is not a desire. The jeweler
-# starts with 4 gold so the first morning can run. Each pop wants 50 of
-# its basic desire.
+# starts with 4 gold so the first morning can run. A human pop wants 50
+# of its basic desire. Grazer food efficiencies are half of human, and
+# its water efficiency is double.
+# Farmer and water stay human, village, householder, hearth. The others
+# use grazer, hamlet, cottager, crofter, tenant, or shrine. Hamlet
+# assimilation and shrine conversion are half of the open pair. A
+# different species does not take households from the other species.
 # Opening targets are the line targets in this file. Later nights step
 # from there.
 # A missing count is 10 households. Each household is 2 adults, 2.5
@@ -69,7 +74,7 @@ id = 3
 craft = "subsistence baking"
 species = "human"
 culture = "village"
-stratum = "householder"
+stratum = "cottager"
 religion = "hearth"
 
 [[pops.stock]]
@@ -100,8 +105,8 @@ target = 4.2
 id = 4
 craft = "subsistence"
 species = "human"
-culture = "village"
-stratum = "householder"
+culture = "hamlet"
+stratum = "crofter"
 religion = "hearth"
 
 [[pops.lines]]
@@ -124,9 +129,9 @@ target = 10
 id = 5
 craft = "subsistence"
 species = "human"
-culture = "village"
-stratum = "householder"
-religion = "hearth"
+culture = "hamlet"
+stratum = "tenant"
+religion = "shrine"
 
 [[pops.stock]]
 good = "grain"
@@ -158,7 +163,7 @@ craft = "subsistence"
 species = "human"
 culture = "village"
 stratum = "householder"
-religion = "hearth"
+religion = "shrine"
 
 [[pops.stock]]
 good = "wood"
@@ -184,9 +189,9 @@ target = 5
 id = 7
 craft = "subsistence"
 species = "human"
-culture = "village"
-stratum = "householder"
-religion = "hearth"
+culture = "hamlet"
+stratum = "crofter"
+religion = "shrine"
 
 [[pops.stock]]
 good = "wood"
@@ -211,7 +216,7 @@ target = 5
 [[pops]]
 id = 8
 craft = "subsistence"
-species = "human"
+species = "grazer"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
@@ -235,10 +240,10 @@ target = 5
 [[pops]]
 id = 9
 craft = "subsistence"
-species = "human"
-culture = "village"
-stratum = "householder"
-religion = "hearth"
+species = "grazer"
+culture = "hamlet"
+stratum = "tenant"
+religion = "shrine"
 
 [[pops.stock]]
 good = "gold"

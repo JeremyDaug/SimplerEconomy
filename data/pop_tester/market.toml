@@ -3,7 +3,7 @@
 
 [[market]]
 good = "time"
-amv = 1
+amv = 0.1
 
 [[market]]
 good = "grain"

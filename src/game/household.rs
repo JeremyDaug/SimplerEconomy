@@ -197,6 +197,42 @@ impl Household {
         self.adult + self.elder + self.child
     }
 
+    /// # Absorb
+    ///
+    /// Folds `households` of `from` into this group.
+    ///
+    /// Count adds. Adult, elder, and child averages rebuild from the two
+    /// totals. Female fractions rebuild from the people in that age band.
+    /// Partnership rate and the three labor rates blend by household count.
+    /// `households` at or below 0 leaves this group unchanged.
+    pub fn absorb(&mut self, from: &Household, households: f64) {
+        if !households.is_finite() || households <= 0.0 {
+            return;
+        }
+        let old = self.count;
+        let new_count = old + households;
+        let (adult, adult_mf) = blend_band(
+            old, self.adult, self.adult_mf, households, from.adult, from.adult_mf, new_count,
+        );
+        let (elder, elder_mf) = blend_band(
+            old, self.elder, self.elder_mf, households, from.elder, from.elder_mf, new_count,
+        );
+        let (child, child_mf) = blend_band(
+            old, self.child, self.child_mf, households, from.child, from.child_mf, new_count,
+        );
+        self.adult_labor = blend_rate(old, self.adult_labor, households, from.adult_labor, new_count);
+        self.elder_labor = blend_rate(old, self.elder_labor, households, from.elder_labor, new_count);
+        self.child_labor = blend_rate(old, self.child_labor, households, from.child_labor, new_count);
+        self.partnership_rate = blend_rate(old, self.partnership_rate, households, from.partnership_rate, new_count);
+        self.count = new_count;
+        self.adult = adult;
+        self.elder = elder;
+        self.child = child;
+        self.adult_mf = adult_mf;
+        self.elder_mf = elder_mf;
+        self.child_mf = child_mf;
+    }
+
     /// # Update
     ///
     /// Advance this household group by one turn (one year) under `rates`.
@@ -334,6 +370,47 @@ impl Household {
         self.debug_assert_member_sizes_valid();
         self.debug_assert_sex_ratios_valid();
     }
+}
+
+/// # Blend Band
+///
+/// People-weighted average and female fraction for one age band.
+///
+/// `old_count` households at `old_avg` and `old_mf`, plus `add_count`
+/// households at `add_avg` and `add_mf`. The average is those people over
+/// `new_count`. An empty band keeps `old_mf`.
+fn blend_band(
+    old_count: f64,
+    old_avg: f64,
+    old_mf: f64,
+    add_count: f64,
+    add_avg: f64,
+    add_mf: f64,
+    new_count: f64,
+) -> (f64, f64) {
+    let old_people = old_count * old_avg;
+    let add_people = add_count * add_avg;
+    let people = old_people + add_people;
+    let avg = if new_count > 0.0 { people / new_count } else { old_avg };
+    let mf = if people > 0.0 {
+        (old_people * old_mf + add_people * add_mf) / people
+    } else {
+        old_mf
+    };
+    (avg, mf)
+}
+
+/// # Blend Rate
+///
+/// Household-weighted blend of one rate.
+///
+/// `old_count` households at `old_rate`, plus `add_count` at `add_rate`.
+/// `new_count` at or below 0 returns `old_rate`.
+fn blend_rate(old_count: f64, old_rate: f64, add_count: f64, add_rate: f64, new_count: f64) -> f64 {
+    if new_count <= 0.0 {
+        return old_rate;
+    }
+    (old_count * old_rate + add_count * add_rate) / new_count
 }
 
 /// True when `v` is a valid female-fraction sex ratio: finite and in `0.0..=1.0`.

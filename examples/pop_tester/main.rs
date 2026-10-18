@@ -270,10 +270,11 @@ fn amv_exchange_ratio(history: &MarketHistory, proposal: &ProposedDeal) -> Strin
 /// line, so a long row does not run off the screen.
 ///
 /// The pop table is one row each: id, standard of living, size, growth,
-/// and the five sentiment shares. Size is people
+/// migration, and the five sentiment shares. Size is people
 /// (`DemoRow::total_population`). Growth is that size minus `sizes`, the
 /// population before this market day. A pop missing from `sizes` prints
-/// `none`. Standard of living is today's satisfaction, including desire
+/// `none`. Migration is [`Pop::migration`], net households gained this day.
+/// Standard of living is today's satisfaction, including desire
 /// bonuses. The shares are the partition after this day's sentiment update.
 fn print_pops(
     factuals: &Factuals,
@@ -296,6 +297,7 @@ fn print_pops(
             qty_text(sol),
             qty_text(size),
             growth,
+            growth_text(pop.migration),
             qty_text(pop.sentiment.happiness()),
             qty_text(pop.sentiment.contentment()),
             qty_text(pop.sentiment.anger()),
@@ -313,7 +315,7 @@ fn print_pops(
     print_table(
         "pops",
         &[
-            "pop", "sol", "size", "growth", "happy", "content", "anger", "fear", "hope",
+            "pop", "sol", "size", "growth", "migration", "happy", "content", "anger", "fear", "hope",
         ],
         &pops,
     );
@@ -330,10 +332,11 @@ fn pop_sizes(actors: &Actors, ids: &[usize]) -> HashMap<usize, f64> {
 
 /// # Growth Text
 ///
-/// `delta` people, with a leading plus when the pop grew.
+/// `delta` with a leading plus when it is positive.
 ///
-/// A change that prints as zero has no sign. That is the headcount sitting
-/// on a population cap, where the leftover is smaller than the print.
+/// A change that prints as zero has no sign. Growth uses this for people,
+/// including a capped headcount whose leftover is smaller than the print.
+/// Migration uses it for net households.
 fn growth_text(delta: f64) -> String {
     let text = qty_text(delta);
     if text == "0" || text == "-0" {
