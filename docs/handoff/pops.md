@@ -20,7 +20,46 @@ demographic desire and then a pop desire.
 ## Where this stopped
 
 Cottage planning, savings, the optional-input list, and the first deal pass
-are the current stop. Seller weight is a first cut: the whole units on the
+are in. `match_deals` builds the buy list, the sell list, and the requests
+once. After a meeting, only the buyer and the seller rewrite their orders.
+A pop posts a raw accept price, and equality clears. Salability does not
+scale it. A basket is accepted when satisfaction gained is strictly greater
+than satisfaction given up, summed across every tier, even when raw AMV
+falls. When both sides are zero, raw AMV received has to cover raw AMV
+given. A worse recipe posts that day's meal, including after the bin holds
+it, and the line keeps making the gap until those units are in quantity.
+The best known recipe keeps the meal and takes the sought shortfall. A
+paying snap writes the new cover whole, steps the surplus above the old
+cover, and steps sought from that whole line.
+
+A 15-day `pop_tester` on the current process list is the board this pass
+leaves. Every non-subsistence time input is ten times the previous amount.
+Subsistence farm, water, and forage spend 50 time and return 4. Make grain
+finished at 41.75 and was still rising, and that pop's subsistence farm
+stayed at 0. Grain moved 1223 units in 33 accepted deals. Make water
+finished at 53, wood at 30, bread at 11.4, wood tools at 8.3, cabins at
+6.8, and beer at 15.5. The baker's standard of living was 4.49 at a size
+of 47 and was growing. That pop held grain and water. No bread was sold.
+The two grazers stayed at 3.32 and 3.44. Each still ran a grain meal of
+about 35 subsistence-farm iterations. Gold stayed at 1 and jewelry at 0,
+and those pops bought time rather than grain. The run accepted 470
+meetings, rejected 9, and abandoned none. The world loader still requires
+a non-subsistence time input of at most 1, so `cargo test --lib` fails on
+`make grain time 5 exceeds 1`.
+
+The next pass resets the market, buying, selling, planning, and scheduling.
+These trials are already judged and stay out of that reset: interlacing
+consumption with production and trading, a price floor on the most
+efficient process, a mid-day price recalc, an NxN meeting matrix, an
+internal price or time as the numeraire, a rewrite of the peg or the print,
+dropping a bought meal on the night it is posted, a shared time pool across
+lines, and marching every costly line, including the only maker, down to
+the floor. `offered_unsold` is stored on the good after the match, and the
+plan does not read it. Process cost compares a recipe with the card and
+does not choose the desire. The day in this commit still produces, then
+trades, then plans.
+
+Seller weight is a first cut: the whole units on the
 offer. Refine that weight later. The buyer draw is still one ticket per buy.
 Owned targets are in the tester: wood tools on the householder common
 desire, and cabins on the hearth luxury desire. New pop generation is the
@@ -55,7 +94,7 @@ The other pops still make and sell the same goods.
 | `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
 | `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `settle_shopping`, `match_deals`, consume, sentiment, pop growth, `rebalance_population_cap`, prune pops under one household, internal migration, decay, `rescale_desires`, actor books and planning, then the night card. Sentiment is before growth so today's mood scales this year's births. Rescale is after decay so this day's desire effects stay at the old size, and after migration so satisfaction and targets match the size still on the market. A pop with no share is left out of the ceiling. A pop's reserve is satisfy, then the job reserve. The morning does not call `apply_craft`, so a process left off the job stays off. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Covers every short desire tier the job can make. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
+| `Pop::plan` | Covers every short desire tier the job can make. A worse line that makes a good for more than a positive holding buys that day's meal, including after those units are in quantity, and keeps making the gap until then. The best known recipe keeps the meal. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A worse line the card already beats adds none of that shortfall. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
 | Sentiment | Updated before growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment this day just wrote, so today's mood scales this year's births. Fear and anger also scale the migration offer, and hope scales the pull. Tester desires carry no sentiment arms |
@@ -107,10 +146,14 @@ walk finished, and the new output is left free. After a meeting,
 The stopped desire buys every good that can still fill that open level.
 Each amount rounds up to a whole unit and stays inside the good's remaining
 cap. A luxury desire buys as many levels as it finished last night, and at
-least one. The saved day's shortfall is added on top. A desire satisfy
-did not stop on, while the pop still holds a lower-efficiency good for it,
-also buys one unit of a higher-efficiency substitute when that substitute's
-AMV per point of satisfaction is lower. The good already held stays in place.
+least one. When a higher-efficiency target in that bucket has a strictly
+lower AMV per point of satisfaction than a good already held, the level's
+buy moves to that target. The units are one level of it, or the luxury
+levels already reached, minus units of it already on hand. The other
+targets of that desire come off the buy. The held good stays in the bucket.
+A desire the morning did not stop on posts the same level when it holds
+the worse good. A substitute that costs as much or more per point of
+satisfaction is not bought. The saved day's shortfall is added on top.
 
 ## Consume
 
@@ -250,10 +293,16 @@ when that cap is at least 1. Units of one good are summed, then the
 remaining stock of that good is subtracted once. A desire no line can
 make adds nothing. A saved day this job can make joins that gap when the
 line that takes the good has a positive holding score. A line at or below
-zero keeps the meal and leaves the saved day off the quota. When the line
-that takes a gap costs more per unit than that good's holding, those units
-are also posted as a buy. The line still aims at the gap it was given. A
-purchase on hand shrinks the next night's gap.
+zero keeps the meal and leaves the saved day off the quota. When that
+line is a worse process than one the world knows, and it costs more per
+unit than that good's positive holding, the buy posted is that day's meal,
+including after the bin already holds it. The line keeps making the gap
+until those units are in quantity. A
+purchase on hand shrinks the next night's gap, and the line then steps
+down. A line already running steps toward one run. A line at 0 stays at
+0. The best known recipe keeps the meal. When that holding rises above
+the make cost, the line is no longer buying the good. A holding at or
+below zero keeps the meal on the line.
 
 `Job::plan` writes `Some` on every line. The line with the highest
 output per unit of time takes each short good. A tie keeps the earlier
@@ -277,7 +326,11 @@ Unmet buys of an output, plus units downstream production used, above
 stock on hand, add runs on the best line for that good. That line takes
 the whole shortfall above stock when its yield matches the best process
 known. A worse process adds no more than its cover. One that costs
-more to make than the good's holding adds none of that shortfall. The cover plus the
+more to make than the good's positive holding adds none of that shortfall.
+The best known recipe still takes it. The cover and those runs stop at
+the iterations this morning can finish. Stock on hand counts, including
+the morning time grant, and so does output an earlier line will make
+after the time it holds for a later higher-yield line it feeds. The cover plus the
 surplus plus those runs is the ideal for a line that pays. A line that
 does not pay aims at the cover and those runs. A line already running
 keeps one run when that aim is gone. A line at 0 stays at 0. The stored
@@ -290,9 +343,9 @@ short good and does not feed one that is, it moves to the back of the list.
 A line that makes an input runs before the line that consumes it. A new or removed desire, or a
 growth change of a desire amount,
 snaps that night. A paying line with a stored cover writes the new cover
-whole and steps only the surplus above the old cover. A paying line whose
-stored cover is still 0 steps its current target toward the new cover
-plus the surplus and those runs.
+whole and steps the surplus above the old cover. Sought runs then step
+from that whole line. A paying line whose stored cover is still 0 steps
+its current target toward the new cover plus the surplus and those runs.
 
 `Job::complexity_cost` is the modifier `(complexity_modifier +
 craft_distance)`, capped at `1.0`. Each process id counts once. The
@@ -325,16 +378,19 @@ list. The next morning's reset drops that shopping list and the claim book. Targ
 
 Exchange, production, and consumption stay separate phases.
 
-`Market::match_deals` collects sells, then picks a buyer at random from those
-who still have a buy, and a seller from the valid matches in proportion to
-the whole units that seller offers. An offer under one unit has no weight.
-When every offer has no weight, that draw is uniform. The buyer draw does
-not grow with the size of the buy. They meet because one sought good is one offered good.
+`Market::match_deals` builds the buy list, the sell list, and each actor's
+requests once. It then keeps one opening per buy that can meet a sell.
+It picks an opening at random, and a seller from that opening's matches
+in proportion to the whole units that seller offers. An offer under one
+unit has no weight. When every offer has no weight, that draw is uniform.
+The buyer draw does not grow with the size of the buy. They meet because
+one sought good is one offered good.
 A pop who cannot propose one unit against that seller is not shown a
 book. That buy stays posted, and the pair is left unmarked, so a later
 meeting in the same call can still match them once the buyer's stock
-covers the unit. A buyer who can is shown the seller's whole book and
-either proposes a basket or abandons.
+covers the unit. A buyer who can is shown the seller's offers and
+requests already stored on the book, and either proposes a basket or
+abandons.
 The seller accepts or rejects. Accept moves every good in the basket.
 The basket is one map: positive units come to the buyer, negative units
 leave. Freight is not a second list. Transport the buyer receives is in
@@ -344,9 +400,11 @@ it, the buyer abandons before a proposal exists.
 Reject and abandon move nothing.
 
 After every meeting both sides `reevaluate`. A pop with a satisfaction
-bookmark runs `satisfy_continue`, so goods just received get reserved. Offers
-are read from free stock the next time they are asked, so a spent offer
-shrinks or disappears, and a surplus left by the trade is offered.
+bookmark runs `satisfy_continue`, so goods just received get reserved.
+Only the buyer and the seller then rewrite their buy and sell orders
+from the free stock that remains. A spent offer shrinks or disappears,
+and a surplus left by the trade is offered. Openings that name those
+two actors are patched. Every other actor's orders stay as posted.
 A rejected or abandoned pair is not retried in that
 call. `match_deals` returns every `Meeting`. Only `Accepted` moves goods.
 
@@ -355,20 +413,26 @@ call. `match_deals` returns every `Meeting`. Only `Accepted` moves goods.
 Meeting order is unchanged. `Pop::propose` and `Pop::evaluate` judge a pop's
 own ends. A firm still uses `seller_can_accept` only: match good present,
 stock on hand, and absolute AMV of payment covering absolute AMV given.
+A firm sell is stamped with the card's raw AMV.
 
 `Pop::propose` (`src/game/pop.rs`) builds one `ProposedDeal`:
 
 - `goods` is the buyer's change. Positive units come from the seller.
   Negative units go to the seller. A good is only on one side.
 - The positive match good starts at `min(units still needed, seller's listed offer)`,
-  whole units. A basket that cannot be paid steps down to the largest whole
-  quantity that can. Below 1, the buyer abandons.
-- Payment is sized in holding value against a seller who has no desire for
-  the goods. Holding value of a positive AMV is `amv * amv_scale(salability)`.
-  A negative AMV is not scaled. Exact holding parity is a tie, so the buyer
-  adds one more whole unit. The buyer allows that holding loss when the
-  purchase feeds no open desire. The seller still requires a gain.
-- Sell orders offer the free units above what still feeds a desire and above the savings pile.
+  whole units. A buy whose posted raw price is below the seller's posted
+  raw price does not meet. A stored price of `0` means the card's raw AMV.
+  Salability does not scale either price. A basket that cannot be paid
+  steps down to the largest whole quantity that can. Below 1, the buyer abandons.
+- Payment is sized in raw AMV. Each payment good counts at the card's raw
+  price. The whole unit that crosses the seller's price is the last unit.
+  The buyer offers that basket when satisfaction gained exceeds satisfaction
+  given up, or when both are zero and the raw price is met, or when the only
+  miss is that last whole unit paying more raw AMV than it received.
+  The seller does not allow that overshoot. The seller needs the satisfaction
+  gain, or raw payment at least equal to the raw cost.
+- Sell orders offer the free units above what still feeds a desire and above the savings pile,
+  at the card's raw AMV. Buy orders are stamped with that same raw AMV.
   Payment offers that surplus, and also units that feed only a later
   tier than the good being bought. Same-tier goods are not spent on each
   other. A purchase that feeds nothing spends the surplus alone. That room is the target's cap, `amount * cap`, minus what that
@@ -376,7 +440,7 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   than the gap to one level, `amount - satisfaction`.
   An input the job consumes to make a desired output counts as that desire,
   except a good that decays completely. Units already reserved are not free.
-  The market reads sell orders again after every meeting.
+  The market does not read every actor's orders again after a meeting.
 - Seller requests come first. Then the buyer's other free goods, highest
   monetary rating first, lowest id on a tie. Reserved stock is already out
   of `available`. Unrequested transport is spent last, and only above the
@@ -398,12 +462,11 @@ stock on hand, and absolute AMV of payment covering absolute AMV given.
   good feeds that desire. Units given are taken from the surplus first, so
   a gift inside that surplus has no end use. Coin does not buy a unit that
   still feeds a desire.
-- On the tier of the best end received, satisfaction gained must exceed
-  satisfaction given up. Lower tiers are not subtracted.
-- With no satisfaction gain, holding-value credit must exceed holding-value
-  cost. With a satisfaction gain, cost may run up to `credit * LOSS_LIMIT`
-  (`4`). A good that feeds a desire is credited at face AMV. A good that
-  feeds nothing is credited at holding value.
+- Satisfaction is one total, across every tier. Satisfaction gained must
+  strictly exceed satisfaction given up. That accepts the trade even when
+  raw AMV falls. A satisfaction loss is not saved by an AMV gain.
+- When both sides have zero satisfaction, raw AMV received must be at least
+  raw AMV given. Equality meets the price. Salability does not scale it.
 
 Propose does not see the seller's desires. The listed offer already leaves
 out units that still feed a desire. Giving those units away is rejected

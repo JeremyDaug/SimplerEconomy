@@ -487,8 +487,11 @@ impl Market {
     /// pays that freight from transport they already hold and from transport
     /// the basket buys.
     ///
-    /// After every meeting both sides reevaluate their orders. A rejected or
-    /// abandoned pair is not tried again this call.
+    /// The book of buys, sells, and each actor's requests is built once. A
+    /// meeting reads the seller's stored offers and requests. After a meeting
+    /// only the buyer and the seller rewrite their own orders, and the
+    /// openings that name those orders are patched. A rejected or abandoned
+    /// pair is not tried again this call.
     ///
     /// Returns every meeting. Only [`MeetingOutcome::Accepted`] moves goods.
     pub fn match_deals(
@@ -500,77 +503,61 @@ impl Market {
         let history = self.history();
         let members = self.members();
         let mut sells = Vec::new();
+        let mut buys: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
+        let mut requests: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
         for actor in &members {
             sells.extend(listed_sells(actors, *actor, &history, factuals));
+            let orders = actors.get(*actor).buy_orders(&history);
+            buys.insert(*actor, whole_buys(&orders, factuals));
+            requests.insert(*actor, orders);
         }
 
         let mut tried: HashSet<(Actor, Actor, usize)> = HashSet::new();
+        let mut openings = openings_for(
+            &buys, &sells, &requests, &tried, actors, &history, factuals,
+        );
         let mut meetings = Vec::new();
         let mut accepted = Vec::new();
         loop {
-            let mut offers_of: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
-            for order in &sells {
-                offers_of.entry(order.origin).or_default().push(order.clone());
-            }
-            let mut seller_buys: HashMap<Actor, Vec<MarketOrder>> = HashMap::new();
-            let mut candidates = Vec::new();
-            for buyer in &members {
-                for buy in actors.get(*buyer).buy_orders(&history) {
-                    if buy.target_amount < 1.0 || !tradeable(factuals, buy.target) {
-                        continue;
-                    }
-                    let matches: Vec<MarketOrder> = sells
-                        .iter()
-                        .filter(|sell| {
-                            if !matched_on(&buy, sell)
-                                || tried.contains(&(*buyer, sell.origin, buy.target))
-                            {
-                                return false;
-                            }
-                            // A pop who cannot propose one unit against this seller is not a meeting yet.
-                            let Actor::Pop(id) = *buyer else {
-                                return true;
-                            };
-                            let requests = seller_buys.entry(sell.origin).or_insert_with(|| {
-                                actors.get(sell.origin).buy_orders(&history)
-                            });
-                            let offers = offers_of
-                                .get(&sell.origin)
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[]);
-                            actors.pop(id).can_propose_one(
-                                buy.target,
-                                offers,
-                                requests,
-                                &history,
-                                factuals,
-                            )
-                        })
-                        .cloned()
-                        .collect();
-                    if !matches.is_empty() {
-                        candidates.push((*buyer, buy, matches));
-                    }
-                }
-            }
-            if candidates.is_empty() {
+            openings.retain(|opening| !opening.matches.is_empty());
+            if openings.is_empty() {
                 break;
             }
-            let pick = crate::game::util::random_index(rng, candidates.len());
-            let (buyer, buy, matches) = candidates.swap_remove(pick);
+            let pick = crate::game::util::random_index(rng, openings.len());
+            let opening = openings.swap_remove(pick);
             // A larger offer is drawn more often, in proportion to its units.
-            let sell = pick_seller(&matches, rng).clone();
-            tried.insert((buyer, sell.origin, buy.target));
-            let meeting = self.meet(actors, buyer, &sell, &history, factuals, rng);
+            let sell = pick_seller(&opening.matches, rng).clone();
+            let buyer = opening.buyer;
+            tried.insert((buyer, sell.origin, opening.buy.target));
+            let meeting = self.meet(
+                actors, buyer, &sell, &sells, &requests, &history, factuals, rng,
+            );
             if meeting.outcome == MeetingOutcome::Accepted {
                 if let Some(deal) = meeting.proposal.clone() {
                     accepted.push(deal);
                 }
             }
             meetings.push(meeting);
-            // Both piles may have changed. Read sell orders again so a new surplus is offered.
-            replace_sells(&mut sells, actors, buyer, &history, factuals);
-            replace_sells(&mut sells, actors, sell.origin, &history, factuals);
+            let seller = sell.origin;
+            // Only these two actors rewrite their orders. The rest of the book stays.
+            refresh_actor(
+                &mut sells, &mut buys, &mut requests, actors, buyer, &history, factuals,
+            );
+            refresh_actor(
+                &mut sells, &mut buys, &mut requests, actors, seller, &history, factuals,
+            );
+            patch_openings(
+                &mut openings,
+                &buys,
+                &sells,
+                &requests,
+                &tried,
+                actors,
+                &history,
+                factuals,
+                buyer,
+                seller,
+            );
         }
         self.record_match_tape(actors, factuals, &history, &accepted);
         meetings
@@ -665,13 +652,20 @@ impl Market {
         }
     }
 
-    /// One meeting. The buyer proposes from the seller's book. The seller
-    /// accepts or rejects. Both sides then rewrite their orders.
+    /// # Meet
+    ///
+    /// One meeting. The buyer proposes from the seller's orders on the book.
+    ///
+    /// `sells` and `requests` are that book. The seller accepts or rejects.
+    /// Both sides then reevaluate. Returns the meeting. The caller rewrites
+    /// the two actors' orders after this returns.
     fn meet(
         &self,
         actors: &mut Actors,
         buyer: Actor,
         sell: &MarketOrder,
+        sells: &[MarketOrder],
+        requests: &HashMap<Actor, Vec<MarketOrder>>,
         history: &MarketHistory,
         factuals: &Factuals,
         rng: &mut impl rand::RngCore,
@@ -680,8 +674,12 @@ impl Market {
         let match_good = sell.target;
         let book = SellerBook {
             seller,
-            offers: listed_sells(actors, seller, history, factuals),
-            requests: actors.get(seller).buy_orders(history),
+            offers: sells
+                .iter()
+                .filter(|order| order.origin == seller)
+                .cloned()
+                .collect(),
+            requests: requests.get(&seller).cloned().unwrap_or_default(),
         };
         let mut proposal = actors.get(buyer).propose(match_good, &book, history, factuals);
         if let Some(deal) = &mut proposal {
@@ -1021,8 +1019,133 @@ fn is_valid_exchange(actors: &Actors, proposal: &ProposedDeal) -> bool {
     })
 }
 
-fn replace_sells(
+/// # Whole Buys
+///
+/// Buy orders in `orders` that name a whole tradeable unit.
+///
+/// `factuals` supplies the tradeable tag. Returns those orders.
+fn whole_buys(orders: &[MarketOrder], factuals: &Factuals) -> Vec<MarketOrder> {
+    orders
+        .iter()
+        .filter(|order| order.target_amount >= 1.0 && tradeable(factuals, order.target))
+        .cloned()
+        .collect()
+}
+
+/// # Opening
+///
+/// One buy still able to meet at least one sell.
+///
+/// `matches` are the sell orders that clear [`pair_can_meet`]. The book
+/// keeps this list and patches it when the buyer or a matched seller rewrites.
+struct Opening {
+    buyer: Actor,
+    buy: MarketOrder,
+    matches: Vec<MarketOrder>,
+}
+
+/// # Openings For
+///
+/// One [`Opening`] for each buy in `buys` that can meet a sell in `sells`.
+///
+/// `requests` are the sellers' stored buy orders. `tried` pairs are left
+/// out. A pop who cannot propose one unit is left out, and that pair is
+/// not marked tried. Returns the openings.
+fn openings_for(
+    buys: &HashMap<Actor, Vec<MarketOrder>>,
+    sells: &[MarketOrder],
+    requests: &HashMap<Actor, Vec<MarketOrder>>,
+    tried: &HashSet<(Actor, Actor, usize)>,
+    actors: &Actors,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Vec<Opening> {
+    let mut openings = Vec::new();
+    let mut actors_in_order: Vec<Actor> = buys.keys().copied().collect();
+    actors_in_order.sort_unstable_by_key(|actor| actor_sort_key(*actor));
+    for actor in actors_in_order {
+        for buy in buys.get(&actor).into_iter().flatten() {
+            let matches = matching_sells(buy, sells, requests, tried, actors, history, factuals);
+            if !matches.is_empty() {
+                openings.push(Opening {
+                    buyer: actor,
+                    buy: buy.clone(),
+                    matches,
+                });
+            }
+        }
+    }
+    openings
+}
+
+/// # Matching Sells
+///
+/// Sell orders in `sells` that [`pair_can_meet`] against `buy`.
+///
+/// `requests` are the sellers' stored buy orders. `tried` pairs are
+/// skipped. Returns those sells, in `sells` order.
+fn matching_sells(
+    buy: &MarketOrder,
+    sells: &[MarketOrder],
+    requests: &HashMap<Actor, Vec<MarketOrder>>,
+    tried: &HashSet<(Actor, Actor, usize)>,
+    actors: &Actors,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> Vec<MarketOrder> {
+    sells
+        .iter()
+        .filter(|sell| pair_can_meet(buy, sell, sells, requests, tried, actors, history, factuals))
+        .cloned()
+        .collect()
+}
+
+/// # Pair Can Meet
+///
+/// Whether `buy` and `sell` can open a meeting.
+///
+/// They must name the same good and different actors, and the pair must be
+/// absent from `tried`. A pop buyer must be able to propose one unit against
+/// that seller's stored offers and requests. A buyer who cannot is skipped
+/// and left unmarked. Returns that answer.
+fn pair_can_meet(
+    buy: &MarketOrder,
+    sell: &MarketOrder,
+    sells: &[MarketOrder],
+    requests: &HashMap<Actor, Vec<MarketOrder>>,
+    tried: &HashSet<(Actor, Actor, usize)>,
+    actors: &Actors,
+    history: &MarketHistory,
+    factuals: &Factuals,
+) -> bool {
+    if !matched_on(buy, sell) || tried.contains(&(buy.origin, sell.origin, buy.target)) {
+        return false;
+    }
+    let Actor::Pop(id) = buy.origin else {
+        return true;
+    };
+    let offers: Vec<MarketOrder> = sells
+        .iter()
+        .filter(|order| order.origin == sell.origin)
+        .cloned()
+        .collect();
+    let empty = Vec::new();
+    let seller_requests = requests.get(&sell.origin).unwrap_or(&empty);
+    actors
+        .pop(id)
+        .can_propose_one(buy.target, &offers, seller_requests, history, factuals)
+}
+
+/// # Refresh Actor
+///
+/// Replaces `actor`'s sells, buys, and requests from their current stock.
+///
+/// Other actors' orders stay. `sells`, `buys`, and `requests` are the book.
+/// Buys and requests come from one read of that actor's orders.
+fn refresh_actor(
     sells: &mut Vec<MarketOrder>,
+    buys: &mut HashMap<Actor, Vec<MarketOrder>>,
+    requests: &mut HashMap<Actor, Vec<MarketOrder>>,
     actors: &Actors,
     actor: Actor,
     history: &MarketHistory,
@@ -1030,6 +1153,77 @@ fn replace_sells(
 ) {
     sells.retain(|order| order.origin != actor);
     sells.extend(listed_sells(actors, actor, history, factuals));
+    let orders = actors.get(actor).buy_orders(history);
+    buys.insert(actor, whole_buys(&orders, factuals));
+    requests.insert(actor, orders);
+}
+
+/// # Patch Openings
+///
+/// Rewrites openings that name `buyer` or `seller`, and no others.
+///
+/// Openings of those two actors are dropped and built again from their
+/// current buys. Every other opening drops sells from those two actors and
+/// puts their current sells back when the pair can still meet. An opening
+/// with no sell left is dropped. `requests` are the stored buy orders.
+fn patch_openings(
+    openings: &mut Vec<Opening>,
+    buys: &HashMap<Actor, Vec<MarketOrder>>,
+    sells: &[MarketOrder],
+    requests: &HashMap<Actor, Vec<MarketOrder>>,
+    tried: &HashSet<(Actor, Actor, usize)>,
+    actors: &Actors,
+    history: &MarketHistory,
+    factuals: &Factuals,
+    buyer: Actor,
+    seller: Actor,
+) {
+    openings.retain(|opening| opening.buyer != buyer && opening.buyer != seller);
+    for opening in openings.iter_mut() {
+        opening
+            .matches
+            .retain(|sell| sell.origin != buyer && sell.origin != seller);
+        for sell in sells
+            .iter()
+            .filter(|sell| sell.origin == buyer || sell.origin == seller)
+        {
+            if pair_can_meet(
+                &opening.buy,
+                sell,
+                sells,
+                requests,
+                tried,
+                actors,
+                history,
+                factuals,
+            ) {
+                opening.matches.push(sell.clone());
+            }
+        }
+    }
+    openings.retain(|opening| !opening.matches.is_empty());
+    let mut fresh = HashMap::new();
+    if let Some(orders) = buys.get(&buyer) {
+        fresh.insert(buyer, orders.clone());
+    }
+    if seller != buyer {
+        if let Some(orders) = buys.get(&seller) {
+            fresh.insert(seller, orders.clone());
+        }
+    }
+    openings.extend(openings_for(
+        &fresh, sells, requests, tried, actors, history, factuals,
+    ));
+}
+
+/// Sort key so the book walks actors in a stable order.
+fn actor_sort_key(actor: Actor) -> (u8, usize) {
+    match actor {
+        Actor::Pop(id) => (0, id),
+        Actor::Firm(id) => (1, id),
+        Actor::Institution(id) => (2, id),
+        Actor::State(id) => (3, id),
+    }
 }
 
 fn tradeable(factuals: &Factuals, good: usize) -> bool {

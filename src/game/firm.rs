@@ -226,12 +226,13 @@ impl DealMaker for Firm {
     }
 
     /// Free stock (`quantity - reserve`) listed with no named payment good.
-    fn sell_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
+    fn sell_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
         let mut orders = Vec::new();
         for (&good, row) in &self.property {
             let units = (row.quantity - row.reserve).floor();
             if units >= 1.0 {
-                orders.push(MarketOrder::sell(self.actor(), good, units));
+                let price = history.price(good);
+                orders.push(MarketOrder::sell(self.actor(), good, units).with_accept_price(price));
             }
         }
         orders

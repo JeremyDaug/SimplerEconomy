@@ -31,7 +31,7 @@
 id = 1
 name = "make grain"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 2, amount = 0.5, optional = true, optional_effects = [{ output = 0.25 }] },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 29, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 29, amount = 1.1 } }, { output = 0.5 }] },
@@ -45,7 +45,7 @@ outputs = [
 id = 2
 name = "make water"
 inputs = [
-    { good = 0, amount = 0.2 },
+    { good = 0, amount = 2.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 30, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 30, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -58,7 +58,7 @@ outputs = [
 id = 3
 name = "make bread"
 inputs = [
-    { good = 0, amount = 0.2 },
+    { good = 0, amount = 2.0 },
     { good = 1, amount = 1.0 },
     { good = 2, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
@@ -73,7 +73,7 @@ outputs = [
 id = 4
 name = "make gold"
 inputs = [
-    { good = 0, amount = 1.0 },
+    { good = 0, amount = 10.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -86,7 +86,7 @@ outputs = [
 id = 5
 name = "make gold_token"
 inputs = [
-    { good = 0, amount = 0.1 },
+    { good = 0, amount = 1.0 },
     { good = 4, amount = 1.0 },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -99,7 +99,7 @@ outputs = [
 id = 6
 name = "make jewelry"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 4, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
@@ -113,7 +113,7 @@ outputs = [
 id = 7
 name = "make wood"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -126,7 +126,7 @@ outputs = [
 id = 8
 name = "make cabins"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 7, amount = 3.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
@@ -140,7 +140,7 @@ outputs = [
 id = 9
 name = "make wood_tools"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 7, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
@@ -154,7 +154,7 @@ outputs = [
 id = 10
 name = "make buckets"
 inputs = [
-    { good = 0, amount = 0.2 },
+    { good = 0, amount = 2.0 },
     { good = 7, amount = 1.0 },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -167,7 +167,7 @@ outputs = [
 id = 11
 name = "make iron"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -179,7 +179,7 @@ outputs = [
 id = 12
 name = "make iron_tools"
 inputs = [
-    { good = 0, amount = 0.4 },
+    { good = 0, amount = 4.0 },
     { good = 11, amount = 1.0 },
     { good = 7, amount = 1.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
@@ -193,7 +193,7 @@ outputs = [
 id = 13
 name = "make copper"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -205,7 +205,7 @@ outputs = [
 id = 14
 name = "make tin"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -217,7 +217,7 @@ outputs = [
 id = 15
 name = "make bronze"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -229,7 +229,7 @@ outputs = [
 id = 16
 name = "make bronze_tools"
 inputs = [
-    { good = 0, amount = 0.4 },
+    { good = 0, amount = 4.0 },
     { good = 15, amount = 1.0 },
     { good = 7, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
@@ -243,7 +243,7 @@ outputs = [
 id = 17
 name = "make blades"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 11, amount = 1.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -256,7 +256,7 @@ outputs = [
 id = 18
 name = "make bronze_mirror"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 15, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -269,7 +269,7 @@ outputs = [
 id = 19
 name = "make bronze_token"
 inputs = [
-    { good = 0, amount = 0.1 },
+    { good = 0, amount = 1.0 },
     { good = 15, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -282,7 +282,7 @@ outputs = [
 id = 20
 name = "make iron_token"
 inputs = [
-    { good = 0, amount = 0.1 },
+    { good = 0, amount = 1.0 },
     { good = 11, amount = 1.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -295,7 +295,7 @@ outputs = [
 id = 21
 name = "make copper_token"
 inputs = [
-    { good = 0, amount = 0.1 },
+    { good = 0, amount = 1.0 },
     { good = 13, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -308,7 +308,7 @@ outputs = [
 id = 22
 name = "make tin_token"
 inputs = [
-    { good = 0, amount = 0.1 },
+    { good = 0, amount = 1.0 },
     { good = 14, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -321,7 +321,7 @@ outputs = [
 id = 23
 name = "make coal"
 inputs = [
-    { good = 0, amount = 0.5 },
+    { good = 0, amount = 5.0 },
     { good = 36, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 36, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -333,7 +333,7 @@ outputs = [
 id = 24
 name = "make charcoal"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 7, amount = 1.0 },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -346,7 +346,7 @@ outputs = [
 id = 25
 name = "make beer"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 1, amount = 1.0 },
     { good = 2, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
@@ -361,7 +361,7 @@ outputs = [
 id = 26
 name = "make clay"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -373,7 +373,7 @@ outputs = [
 id = 27
 name = "make pots"
 inputs = [
-    { good = 0, amount = 0.3 },
+    { good = 0, amount = 3.0 },
     { good = 26, amount = 1.0 },
     { good = 23, amount = 1.0 },
     { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
@@ -387,7 +387,7 @@ outputs = [
 id = 28
 name = "make time"
 inputs = [
-    { good = 0, amount = 1.0 },
+    { good = 0, amount = 10.0 },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
@@ -400,12 +400,12 @@ id = 29
 name = "subsistence farm"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 10.0 },
+    { good = 0, amount = 50.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 1, amount = 2.0 },
+    { good = 1, amount = 4.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]
 
@@ -414,12 +414,12 @@ id = 30
 name = "subsistence water"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 15.0 },
+    { good = 0, amount = 50.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 2, amount = 2.0 },
+    { good = 2, amount = 4.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]
 
@@ -428,11 +428,11 @@ id = 31
 name = "subsistence forage"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 20.0 },
+    { good = 0, amount = 50.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 7, amount = 2.0 },
+    { good = 7, amount = 4.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]

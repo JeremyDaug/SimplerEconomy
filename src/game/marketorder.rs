@@ -17,6 +17,12 @@ pub struct MarketOrder {
     pub counter_offer: Option<usize>,
     /// How much of `counter_offer` they want, when set.
     pub counter_offer_amount: Option<f64>,
+    /// Raw AMV per unit of `target` this actor will trade at.
+    ///
+    /// A sell will not take less. A buy will not pay more. `0` means this
+    /// order has not dictated one, and the card's raw AMV is the price.
+    /// Salability does not scale it.
+    pub accept_price: f64,
 }
 
 impl MarketOrder {
@@ -29,6 +35,7 @@ impl MarketOrder {
             target_amount: amount,
             counter_offer: None,
             counter_offer_amount: None,
+            accept_price: 0.0,
         }
     }
 
@@ -42,7 +49,20 @@ impl MarketOrder {
             target_amount: -amount,
             counter_offer: None,
             counter_offer_amount: None,
+            accept_price: 0.0,
         }
+    }
+
+    /// # With Accept Price
+    ///
+    /// Sets the raw AMV per unit this order will trade at.
+    ///
+    /// `price` is that AMV. A sell refuses less. A buy refuses more.
+    /// Salability is not applied. Returns the order.
+    pub fn with_accept_price(mut self, price: f64) -> Self {
+        debug_assert!(price.is_finite(), "accept price must be finite");
+        self.accept_price = price;
+        self
     }
 
     /// Names a return good and, when `amount` is `Some`, how much of it.
