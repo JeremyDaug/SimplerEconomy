@@ -293,6 +293,16 @@ impl DealMaker for Firm {
         }
     }
 
+    /// # Pay Transport
+    ///
+    /// Spends `amount` of transport cover from free stock.
+    ///
+    /// `factuals` names the transport goods. The spend is [`Self::pay_freight`].
+    /// Nothing is returned.
+    fn pay_transport(&mut self, amount: f64, factuals: &Factuals) {
+        self.pay_freight(amount, factuals);
+    }
+
     fn reset_day(&mut self) {
         Firm::reset_day(self);
     }

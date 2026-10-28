@@ -15,12 +15,11 @@ amount = 1
 scalar = "all"
 
 [[cultures.desires.goods]]
-good = "time"
+good = "bread"
 efficiency = 1
 
 [[cultures.desires.goods]]
 good = "beer"
-efficiency = 2
 
 # Same common desire as village. Time fills a bit more, beer a bit less.
 # Half of village's assimilation.
@@ -37,7 +36,7 @@ amount = 1
 scalar = "all"
 
 [[cultures.desires.goods]]
-good = "time"
+good = "bread"
 efficiency = 1.25
 
 [[cultures.desires.goods]]

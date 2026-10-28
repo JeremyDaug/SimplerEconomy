@@ -11,7 +11,7 @@ use simpler_economy::game::desire::{DemoDesire, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::household::Household;
 use simpler_economy::game::job::{Job, JobLine};
-use simpler_economy::game::market::{Market, MarketGood};
+use simpler_economy::game::market::{Market, MarketGood, CURRENCY_SLOTS};
 use simpler_economy::game::pop::{Pop, PopPRow};
 use simpler_economy::game::religion::Religion;
 use simpler_economy::game::scalingfactor::ScalingFactor;
@@ -30,6 +30,9 @@ pub struct Scenario {
 struct MarketFile {
     #[serde(default)]
     market: Vec<MarketRow>,
+    /// Tender names, first slot first. Empty keeps the opening tender.
+    #[serde(default)]
+    currencies: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,12 +208,49 @@ fn fixed_scalar() -> String {
     "fixed".to_string()
 }
 
+/// # Apply Currencies
+///
+/// Fills `market`'s tender slots from `names`.
+///
+/// `goods` maps a world name to its id. An empty list leaves the slots
+/// [`Market::new`] filled. A list longer than [`CURRENCY_SLOTS`], a repeated
+/// good, or an unknown name is an error. Returns that error, or nothing
+/// when the slots are set.
+fn apply_currencies(
+    market: &mut Market,
+    goods: &HashMap<String, usize>,
+    names: &[String],
+) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    if names.len() > CURRENCY_SLOTS {
+        return Err(format!(
+            "market lists {} currencies and has {CURRENCY_SLOTS} slots",
+            names.len()
+        ));
+    }
+    let mut slots = [None; CURRENCY_SLOTS];
+    let mut seen = HashSet::new();
+    for (index, name) in names.iter().enumerate() {
+        let id = lookup(goods, "good", name)?;
+        if !seen.insert(id) {
+            return Err(format!("currency {name} is listed twice"));
+        }
+        slots[index] = Some(id);
+    }
+    market.currencies = slots;
+    Ok(())
+}
+
 /// # Load Scenario
 ///
 /// Reads `dir` against `factuals` and returns the opening market and pops.
 ///
-/// `market.toml` is the opening board. `pops.toml` is each pop's craft,
-/// household count, stock, and first-morning lines. A missing count is
+/// `market.toml` is the opening board. A `currencies` list fills the
+/// tender slots in that order. An omitted list keeps the opening tender.
+/// `pops.toml` is each pop's craft, household count, stock, and
+/// first-morning lines. A missing count is
 /// [`ten_households`]. A household table overrides the adult, elder, and
 /// child averages. `species.toml`,
 /// `cultures.toml`, `strata.toml`, and `religions.toml` are read when
@@ -253,6 +293,7 @@ pub fn load_scenario(dir: &Path, factuals: &mut Factuals) -> Result<Scenario, St
                 .with_salability(row.salability),
         );
     }
+    apply_currencies(&mut market, &goods, &market_file.currencies)?;
 
     let pop_file: PopFile = read_toml(&dir.join("pops.toml"))?;
     let mut actors = Actors::new();
@@ -823,6 +864,37 @@ mod tests {
         assert_eq!(row.household.adult, 3.0);
         assert_eq!(row.household.elder, 0.5);
         assert_eq!(row.household.child, 2.5);
+    }
+
+    /// # Pop Tester Pays With Grain Then Gold
+    ///
+    /// Loads both testers. The pop tester's tender slots are grain, then
+    /// gold. The firm tester keeps the opening gold-token slot. Returns
+    /// nothing. A missing good or a different slot fails.
+    #[test]
+    fn pop_tester_pays_with_grain_then_gold() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let id_of = |factuals: &Factuals, name: &str| {
+            factuals
+                .goods
+                .values()
+                .find(|good| good.name == name)
+                .unwrap_or_else(|| panic!("good {name}"))
+                .id
+        };
+        let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+        let pop = load_scenario(&root.join("pop_tester"), &mut factuals).expect("pop_tester");
+        let grain = id_of(&factuals, "grain");
+        let gold = id_of(&factuals, "gold");
+        assert_eq!(
+            pop.market.currencies(),
+            [Some(grain), Some(gold), None, None]
+        );
+
+        let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+        let firm = load_scenario(&root.join("firm_tester"), &mut factuals).expect("firm_tester");
+        let token = id_of(&factuals, "gold_token");
+        assert_eq!(firm.market.currencies(), [Some(token), None, None, None]);
     }
 
     /// # Loaded Pops Default To Ten Households

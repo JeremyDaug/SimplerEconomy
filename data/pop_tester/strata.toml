@@ -41,11 +41,13 @@ scalar = "all"
 [[strata.desires.goods]]
 good = "wood"
 efficiency = 0.75
+cap = 0.75
 
 [[strata.desires.goods]]
 good = "wood_tools"
 efficiency = 1.75
 use = true
+cap = 0.75
 
 # Hamlet. Same goods as householder. Crofter fills both a bit more.
 # Tenant keeps wood and fills tools less. Tools stay owned.
@@ -64,11 +66,13 @@ scalar = "all"
 [[strata.desires.goods]]
 good = "wood"
 efficiency = 1.25
+cap = 0.75
 
 [[strata.desires.goods]]
 good = "wood_tools"
 efficiency = 2.25
 use = true
+cap = 0.75
 
 [[strata]]
 id = 4
@@ -84,8 +88,10 @@ scalar = "all"
 [[strata.desires.goods]]
 good = "wood"
 efficiency = 1
+cap = 0.75
 
 [[strata.desires.goods]]
 good = "wood_tools"
 efficiency = 1.5
 use = true
+cap = 0.75

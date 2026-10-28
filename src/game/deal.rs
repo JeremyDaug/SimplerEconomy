@@ -105,7 +105,7 @@ pub struct Meeting {
 
 /// An actor the market can match, ask for a basket, and settle.
 ///
-/// `sell_orders`, `buy_orders`, `propose`, and `evaluate` do not move stock.
+/// `sell_orders`, `buy_orders`, `prepare_mass_buys`, `mass_order`, `propose`, and `evaluate` do not move stock.
 /// [`DealMaker::finalize`] does. [`DealMaker::reevaluate`] runs after every
 /// meeting, accepted or not. [`DealMaker::reset_day`] runs at the start of
 /// [`crate::game::market::Market::market_day`].
@@ -115,6 +115,42 @@ pub trait DealMaker {
     fn sell_orders(&self, history: &MarketHistory) -> Vec<MarketOrder>;
 
     fn buy_orders(&self, history: &MarketHistory) -> Vec<MarketOrder>;
+
+    /// # Prepare Mass Buys
+    ///
+    /// Lays out this actor's mass-market buys before the clear.
+    ///
+    /// `history` is the card. `currencies` are the tender slots, empty
+    /// entries included. `factuals` names goods and processes. The default
+    /// has nothing to buy.
+    fn prepare_mass_buys(
+        &mut self,
+        history: &MarketHistory,
+        currencies: &[Option<usize>],
+        factuals: &Factuals,
+    ) {
+        let _ = (self, history, currencies, factuals);
+    }
+
+    /// # Mass Market Order
+    ///
+    /// One mass-market order for `good`, or `None` when this actor sits out.
+    ///
+    /// `history` is the standing AMVs. `currencies` are the market's tender
+    /// slots, empty entries included. `factuals` names goods and processes.
+    /// A returned order is a buy when its amount is positive and a sell when
+    /// negative. Its accept price is the most a buy will pay, or the least a
+    /// sell will take. The default sits out.
+    fn mass_order(
+        &self,
+        good: usize,
+        history: &MarketHistory,
+        currencies: &[Option<usize>],
+        factuals: &Factuals,
+    ) -> Option<MarketOrder> {
+        let _ = (self, good, history, currencies, factuals);
+        None
+    }
 
     /// Units of `good` this actor can give up without touching a reserve.
     fn free_units(&self, good: usize) -> f64;
@@ -158,6 +194,16 @@ pub trait DealMaker {
     /// Move this actor's stock for an accepted proposal.
     fn finalize(&mut self, proposal: &ProposedDeal, factuals: &Factuals) {
         let _ = (self, proposal, factuals);
+    }
+
+    /// # Pay Transport
+    ///
+    /// Spends `amount` of transport cover this actor already holds.
+    ///
+    /// `factuals` names the transport goods. The default spends nothing.
+    /// Nothing is returned.
+    fn pay_transport(&mut self, amount: f64, factuals: &Factuals) {
+        let _ = (self, amount, factuals);
     }
 
     /// Rewrite orders after a meeting. Pops reserve goods they just received.

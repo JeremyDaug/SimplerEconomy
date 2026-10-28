@@ -2,10 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::game::actor::Actor;
 use crate::game::actors::Actors;
-use crate::game::deal::{matched_on, DealResponse, Meeting, MeetingOutcome, ProposedDeal, SellerBook};
+use crate::game::deal::{
+    freight_bill, matched_on, DealMaker, DealResponse, Meeting, MeetingOutcome, ProposedDeal,
+    SellerBook,
+};
 use crate::game::marketorder::MarketOrder;
 use crate::game::factuals::Factuals;
-use crate::game::good::GoodTag;
+use crate::game::good::Good;
 use crate::game::pop::MigrantGroup;
 
 /// Dead zone around zero for a stored AMV.
@@ -45,10 +48,26 @@ const AMV_FLOW_CAP: f64 = 0.005;
 /// Flat share of the payment scale added when buy orders were still open.
 const AMV_UNMET_NUDGE: f64 = 0.01;
 
-/// Physical rot is divided by this before it cuts absolute AMV.
+/// Share of absolute AMV a mass book that did not trade adds or removes.
+///
+/// Surplus subtracts it. Shortage adds it.
+const MASS_IDLE_STEP: f64 = 0.03;
+
+/// Share of the gap a refused mass ask closes toward the card in one night.
+///
+/// A fill steps the same share back toward the cost floor.
+const ASK_WALK: f64 = 0.25;
+
+/// Meetings one buyer may open in a single barter pass.
+///
+/// The call market is where a good's volume moves. Barter is the remainder,
+/// so each buyer stops after this many meetings.
+const BARTER_ATTEMPTS: usize = 4;
+
+/// Physical rot is divided by this before [`decay_cut`] applies it.
 const AMV_ROT_DIVISOR: f64 = 4.0;
 
-/// Largest share of absolute AMV that one night of rot may remove.
+/// Largest share of a positive price that one night of rot may remove.
 const AMV_ROT_CAP: f64 = 1.0;
 
 /// One night's salability step when AMV did not fall.
@@ -70,6 +89,14 @@ pub fn monetary_rating(salability: f64) -> f64 {
     (salability - 1.0).max(0.0)
 }
 
+/// Tender slots on one market.
+pub const CURRENCY_SLOTS: usize = 4;
+
+/// Good id in the first tender slot of a new market.
+///
+/// This is the world good `gold_token`.
+const OPENING_CURRENCY: usize = 5;
+
 /// A local market. Member ids point at actors. Goods hold the stored price.
 #[derive(Debug, Clone)]
 pub struct Market {
@@ -85,10 +112,24 @@ pub struct Market {
     pub goods: HashMap<usize, MarketGood>,
     /// Distance / size multiplier on deal bulk. 0 on a one-hex market.
     pub friction: f64,
+    /// Tender goods. [`CURRENCY_SLOTS`] entries. `None` is an empty slot.
+    pub currencies: [Option<usize>; CURRENCY_SLOTS],
+    /// One row per good the mass market quoted today, in the order cleared.
+    mass_closes: Vec<MassClose>,
+    /// Refused-ask fraction per good. [`step_ask_walk`] writes it.
+    ask_walk: HashMap<usize, f64>,
+    /// Goods a seller priced below zero today. [`Self::reset_day`] clears them.
+    negative_value: HashSet<usize>,
 }
 
 impl Market {
+    /// # New
+    ///
     /// Empty market with this id.
+    ///
+    /// `id` is the market id. The tender list is [`CURRENCY_SLOTS`] long.
+    /// The first slot holds [`OPENING_CURRENCY`]. The other three are empty.
+    /// Returns that market.
     pub fn new(id: usize) -> Self {
         Self {
             id,
@@ -97,7 +138,33 @@ impl Market {
             institution_ids: HashSet::new(),
             goods: HashMap::new(),
             friction: 0.0,
+            currencies: [Some(OPENING_CURRENCY), None, None, None],
+            mass_closes: Vec::new(),
+            ask_walk: HashMap::new(),
+            negative_value: HashSet::new(),
         }
+    }
+
+    /// # Mass Closes
+    ///
+    /// The mass-market rows recorded today.
+    ///
+    /// Each row is one good that drew a quote. `offered` and `requested`
+    /// are the whole units on that book. `exchanged` is what changed hands.
+    /// `price` is the clearing AMV when at least one unit traded. Returns
+    /// the rows in clear order.
+    pub fn mass_closes(&self) -> &[MassClose] {
+        &self.mass_closes
+    }
+
+    /// # Currencies
+    ///
+    /// The tender slots on this market.
+    ///
+    /// Each entry is a good id, or `None` when that slot is empty. Returns
+    /// the four slots.
+    pub fn currencies(&self) -> [Option<usize>; CURRENCY_SLOTS] {
+        self.currencies
     }
 
     /// Sets the market friction factor. Must be `>= 0.0`.
@@ -110,20 +177,28 @@ impl Market {
     /// # Record Keeping
     ///
     /// Writes tomorrow's AMV and salability from each good's day record, then
-    /// clears the exchange and flow counters and restates the card in the
-    /// unit good ([`Self::peg_unit`]). [`MarketGood::decayed`] and `volume`
+    /// clears the exchange and flow counters and restates the card so the
+    /// filled currencies average 1 ([`Self::peg_currencies`]).
+    /// [`MarketGood::decayed`] and `volume`
     /// stay until the next morning's reset. Stock is left as it stands.
     /// The print move is [`print_push`], applied in holding space.
-    /// Production flow is a share of [`Self::payment_scale`]. When
-    /// `sought_unmet` is positive, that night's rot is added back and
-    /// [`AMV_UNMET_NUDGE`] times the payment scale is added on top.
-    /// `factuals` is unused: rot is added through [`Self::note_decay`]
-    /// before this runs.
+    /// Production flow is a share of [`Self::payment_scale`]. Decay is
+    /// [`decay_cut`]: a positive price falls, and it stops at
+    /// [`AMV_EPSILON`]. When `sought_unmet` is positive, that night's rot
+    /// is added back and [`AMV_UNMET_NUDGE`] times the payment scale is
+    /// added on top.
+    /// A mass book that did not trade, and that [`mass_book_can_move`]
+    /// allows, then moves by [`MASS_IDLE_STEP`] of the absolute AMV this
+    /// card opened at: down when more was offered, up when more was
+    /// requested. [`valued_price`] then keeps the result at
+    /// [`AMV_EPSILON`] unless a seller priced that good below zero today.
+    /// `factuals` is that tradeable check. Rot itself was added
+    /// through [`Self::note_decay`] before this runs.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = factuals;
         let history = self.history();
         let scale = self.payment_scale();
-        let mut paid = Vec::new();
+        let currencies = self.currencies();
+        let idle = mass_idle_by_good(&self.mass_closes, &currencies, factuals, &history);
         let mut ids: Vec<usize> = self.goods.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
@@ -148,13 +223,19 @@ impl Market {
             let mut rot_cut = 0.0;
             if decay_base > 0.0 && decayed > 0.0 {
                 let fraction = (decayed / decay_base / AMV_ROT_DIVISOR).clamp(0.0, AMV_ROT_CAP);
-                rot_cut = next.abs() * fraction;
+                rot_cut = decay_cut(next, fraction);
                 next -= rot_cut;
             }
             // Open buys. That rot goes back on, then the unmet step.
             if good.sought_unmet > 0.0 {
                 next += rot_cut + scale * AMV_UNMET_NUDGE;
             }
+            // Mass book that did not trade. Surplus down, shortage up.
+            if let Some(step) = idle.get(&id) {
+                next += old.abs() * step;
+            }
+            // A positive ask keeps the stored price positive.
+            next = valued_price(self.negative_value.contains(&id), next);
             // Store the new AMV.
             good.set_amv(next);
             // Salability. A fall lowers it. Payment without a fall raises it,
@@ -172,14 +253,15 @@ impl Market {
                 let next = (good.salability + SALABILITY_UP_STEP).min(1.0);
                 good.set_salability(next);
             }
-            if paid_units > 0.0 {
-                paid.push((id, paid_units));
-            }
             // Clear today's exchange and flow.
             good.clear_exchange();
         }
-        // Restate every AMV in the unit good.
-        self.peg_unit(&paid, &history);
+        // Restate every AMV so the filled currencies average 1.
+        self.peg_currencies();
+        // The peg can shrink a positive price into the dead zone.
+        self.keep_positive_asks();
+        // Refused-ask walk, from today's mass rows.
+        step_ask_walk(&mut self.ask_walk, &self.mass_closes);
     }
 
     /// # Note Supply
@@ -242,100 +324,99 @@ impl Market {
         }
     }
 
-    /// # Peg Unit
+    /// # Peg Currencies
     ///
-    /// Divides every stored AMV by [`Self::unit_good`]'s AMV.
+    /// Divides every stored AMV so the filled currencies average 1.
     ///
-    /// `paid` and `history` are passed through to that choice. The unit lands
-    /// on 1. Every other AMV, including a negative one, is divided by that
-    /// same price. Salability is unchanged. No positive AMV leaves the card
-    /// as written.
-    fn peg_unit(&mut self, paid: &[(usize, f64)], history: &MarketHistory) {
-        let Some(unit) = self.unit_good(paid, history) else {
+    /// Each filled slot counts once. A slot whose good is missing, or whose
+    /// AMV is not finite, is left out of the mean. The mean has to be finite
+    /// and above [`AMV_EPSILON`]. Every stored AMV, including a negative one,
+    /// is then divided by that mean. Salability is unchanged. No such mean
+    /// leaves the card as written.
+    fn peg_currencies(&mut self) {
+        let mut seen = HashSet::new();
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for slot in self.currencies {
+            let Some(id) = slot else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(good) = self.goods.get(&id) else {
+                continue;
+            };
+            if !good.amv.is_finite() {
+                continue;
+            }
+            sum += good.amv;
+            count += 1.0;
+        }
+        if count == 0.0 {
             return;
-        };
-        let divisor = self.goods[&unit].amv;
+        }
+        let mean = sum / count;
+        if !mean.is_finite() || mean <= AMV_EPSILON {
+            return;
+        }
         let mut ids: Vec<usize> = self.goods.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
             let good = self.goods.get_mut(&id).expect("id was just copied from goods");
-            good.set_amv(good.amv / divisor);
+            good.set_amv(good.amv / mean);
         }
     }
 
-    /// # Unit Good
+    /// # Keep Positive Asks
     ///
-    /// The good [`Self::peg_unit`] restates at 1.
+    /// Lifts each stored AMV that no seller valued below zero.
     ///
-    /// `paid` is `(good id, units paid)` from before the tape clear.
-    /// `history` is the card from before this night's AMV write. A good with
-    /// a negative or zero AMV cannot be the unit. Payment value is units paid
-    /// times [`MarketHistory::holding_per_unit`] on `history`. Ranking is
-    /// [`Self::outranks_as_unit`]. Returns `None` when no AMV is positive.
-    fn unit_good(&self, paid: &[(usize, f64)], history: &MarketHistory) -> Option<usize> {
-        let mut paid_value: HashMap<usize, f64> = HashMap::new();
-        for &(id, units) in paid {
-            if units <= 0.0 {
-                continue;
-            }
-            let holding = history.holding_per_unit(id);
-            if holding <= 0.0 {
-                continue;
-            }
-            paid_value.insert(id, holding * units);
+    /// [`Self::peg_currencies`] has already divided the card.
+    /// [`valued_price`] decides the floor. A good a seller priced below
+    /// zero is left as stored.
+    fn keep_positive_asks(&mut self) {
+        let mut ids: Vec<usize> = self.goods.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let below = self.negative_value.contains(&id);
+            let good = self.goods.get_mut(&id).expect("id was just copied from goods");
+            good.set_amv(valued_price(below, good.amv));
         }
-        let mut best: Option<usize> = None;
-        for (&id, good) in &self.goods {
-            if good.amv <= 0.0 {
-                continue;
-            }
-            let replace = match best {
-                None => true,
-                Some(best_id) => self.outranks_as_unit(id, best_id, &paid_value),
-            };
-            if replace {
-                best = Some(id);
-            }
-        }
-        best
     }
 
-    /// # Outranks As Unit
+    /// # Note Sells Below Zero
     ///
-    /// Whether `id` wins over `other` inside [`Self::unit_good`].
+    /// Records `good` when a sell's minimum is below zero.
     ///
-    /// Higher salability wins. Equal salability goes to the larger
-    /// `paid_value`. A remaining tie goes to the lower id.
-    fn outranks_as_unit(
-        &self,
-        id: usize,
-        other: usize,
-        paid_value: &HashMap<usize, f64>,
-    ) -> bool {
-        let salability = self.goods[&id].salability;
-        let other_salability = self.goods[&other].salability;
-        match salability.partial_cmp(&other_salability) {
-            Some(std::cmp::Ordering::Greater) => true,
-            Some(std::cmp::Ordering::Equal) => {
-                let value = paid_value.get(&id).copied().unwrap_or(0.0);
-                let other_value = paid_value.get(&other).copied().unwrap_or(0.0);
-                match value.partial_cmp(&other_value) {
-                    Some(std::cmp::Ordering::Greater) => true,
-                    Some(std::cmp::Ordering::Equal) => id < other,
-                    _ => false,
-                }
-            }
-            _ => false,
+    /// `orders` are that good's mass quotes. A negative
+    /// [`MarketOrder::accept_price`] on a sell is that minimum. A buy
+    /// limit is not.
+    fn note_sells_below_zero(&mut self, good: usize, orders: &[MarketOrder]) {
+        let below = orders.iter().any(|order| {
+            order.target == good && order.target_amount < 0.0 && order.accept_price < 0.0
+        });
+        if below {
+            self.negative_value.insert(good);
         }
+    }
+
+    /// # Note Negative Value
+    ///
+    /// Records that a seller valued `good` below zero today.
+    fn note_negative_value(&mut self, good: usize) {
+        self.negative_value.insert(good);
     }
 
     /// # History
     ///
-    /// Snapshot of stored AMV, salability, units still sought, and production.
+    /// Snapshot of stored AMV, salability, units still sought, production,
+    /// and the refused-ask walk.
     ///
-    /// Sought is copied from [`MarketGood::sought_unmet`]. Production is
-    /// copied from [`MarketGood::production`]. A snapshot taken before
-    /// exchange has no sought units. The night plan reads it.
+    /// Sought starts from [`MarketGood::sought_unmet`]. An unfilled mass
+    /// request replaces that count when it is larger. Production is copied
+    /// from [`MarketGood::production`]. A snapshot taken before exchange
+    /// has no sought units. The night plan reads it.
     pub fn history(&self) -> MarketHistory {
         let mut history = MarketHistory::new();
         for (&good_id, good) in &self.goods {
@@ -348,7 +429,19 @@ impl Market {
                 history.produced.insert(good_id, good.production);
             }
         }
+        // The mass book is the larger want when barter left less of it open.
+        for close in &self.mass_closes {
+            let left = (close.requested - close.exchanged).max(0.0);
+            if left <= 0.0 {
+                continue;
+            }
+            let entry = history.sought.entry(close.good).or_insert(0.0);
+            if left > *entry {
+                *entry = left;
+            }
+        }
         history.friction = self.friction;
+        history.ask_walk = self.ask_walk.clone();
         history
     }
 
@@ -359,7 +452,8 @@ impl Market {
     /// Clears yesterday's exchange tape and rot, and each member's
     /// [`crate::game::deal::DealMaker::reset_day`],
     /// then reserve, produce, a second pop satisfy for what was just made,
-    /// a resettle of each pop's input buys, [`Self::match_deals`], consume,
+    /// a resettle of each pop's input buys, [`Self::mass_market`],
+    /// [`Self::match_deals`], consume,
     /// [`crate::game::pop::Pop::update_sentiments`], pop growth,
     /// [`Self::rebalance_population_cap`],
     /// [`Self::prune_pops_below_one_household`],
@@ -406,7 +500,9 @@ impl Market {
                 actors.pop_mut(id).settle_shopping(factuals);
             }
         }
-        // Exchange Phase
+        // Mass market. One good at a time, paid in the tender. Barter follows.
+        self.mass_market(actors, factuals, rng);
+        // Barter phase.
         let meetings = self.match_deals(actors, factuals, rng);
         // Consumption Phase
         for actor in &members {
@@ -459,7 +555,9 @@ impl Market {
     /// Clears this market's day tape and each member's yesterday.
     ///
     /// `actors` supplies the members. AMV, salability, stock, and production
-    /// stay. Production stays so [`crate::game::actors::Actors::start_day`],
+    /// stay. Today's mass-market rows are dropped, and so is any sell
+    /// priced below zero. The refused-ask walk stays. Production stays so
+    /// [`crate::game::actors::Actors::start_day`],
     /// which runs before this, still counts at the night write. Pop
     /// satisfaction and reserves go to zero. Firms run
     /// [`crate::game::firm::Firm::reset_day`]. Institutions keep the empty
@@ -468,16 +566,365 @@ impl Market {
         for good in self.goods.values_mut() {
             good.clear_day();
         }
+        self.mass_closes.clear();
+        self.negative_value.clear();
         for actor in self.members() {
             actors.get_mut(actor).reset_day();
         }
     }
 
+    /// # Mass Market
+    ///
+    /// Currency pass for this day. Runs before [`Self::match_deals`].
+    ///
+    /// `actors` holds the members. `factuals` names goods. `rng` draws the
+    /// fill when one side is short. Goods on the board are visited in id
+    /// order, and every filled tender slot is visited with them. Payment
+    /// for each good is [`payment_tender`]. Each member lays out its buys
+    /// through [`crate::game::deal::DealMaker::prepare_mass_buys`] before any
+    /// good is visited, then may sit out through
+    /// [`crate::game::deal::DealMaker::mass_order`]. A returned order sets
+    /// the units and the price limit. The working price starts at yesterday's
+    /// AMV, which may be negative. Stock moves only for actors who accept
+    /// the clearing price. Each quoted good is stored on [`Self::mass_closes`].
+    /// Nothing is returned.
+    fn mass_market(
+        &mut self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        rng: &mut impl rand::RngCore,
+    ) {
+        let history = self.history();
+        let currencies = self.currencies();
+        let filled: Vec<usize> = currencies.into_iter().flatten().collect();
+        if filled.is_empty() {
+            return;
+        }
+        let members = self.members();
+        let mut goods: Vec<usize> = self.goods.keys().copied().collect();
+        for tender in &filled {
+            if !goods.contains(tender) {
+                goods.push(*tender);
+            }
+        }
+        goods.sort_unstable();
+        // Price every buy against the tender on hand before any good spends it.
+        for actor in &members {
+            actors
+                .get_mut(*actor)
+                .prepare_mass_buys(&history, &currencies, factuals);
+        }
+        for good in goods {
+            // No second tender means this good would be paid with itself.
+            let Some(tender) = payment_tender(&currencies, good) else {
+                continue;
+            };
+            let mut orders = Vec::new();
+            for actor in &members {
+                let Some(order) = actors
+                    .get(*actor)
+                    .mass_order(good, &history, &currencies, factuals)
+                else {
+                    continue;
+                };
+                orders.push(order);
+            }
+            if orders.is_empty() {
+                continue;
+            }
+            self.clear_mass_good(actors, factuals, &history, good, tender, &orders, rng);
+        }
+    }
+
+    /// # Clear Mass Good
+    ///
+    /// Clears one good's mass-market book and moves the stock.
+    ///
+    /// `orders` are the quotes for `good`. `history` is yesterday's card.
+    /// `tender` is the currency that pays, and it is not `good`. `rng`
+    /// shuffles a side that is long. The working price starts at the good's
+    /// AMV. A negative price means the seller pays to have the good taken.
+    /// Actors who accept that price trade whole units, and the tender paid
+    /// is the whole amount closest to that value. The payer who cannot cover
+    /// it takes fewer units. One row is stored on [`Self::mass_closes`].
+    /// A clear that moves at least one unit also writes that price and the
+    /// totals onto the tape, in [`Self::note_mass_exchange`]. A side short
+    /// of its freight half buys that haul from the other side. A non-positive
+    /// transport card still has a token price, so the haul is not refused
+    /// for a crashed time AMV. A fill neither side can haul shrinks to the
+    /// largest quantity that does, and is skipped when one unit still does
+    /// not fit. A book whose limits do not cross, and a book whose fills
+    /// all die on the haul, records that miss. Nothing is returned.
+    fn clear_mass_good(
+        &mut self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        good: usize,
+        tender: usize,
+        orders: &[MarketOrder],
+        rng: &mut impl rand::RngCore,
+    ) {
+        if good == tender {
+            return;
+        }
+        self.note_sells_below_zero(good, orders);
+        let amv = history.price(good);
+        let (buys, sells) = mass_quotes(orders, good, amv);
+        let offered: f64 = sells.iter().map(|quote| quote.units).sum();
+        let requested: f64 = buys.iter().map(|quote| quote.units).sum();
+        if offered < 1.0 && requested < 1.0 {
+            return;
+        }
+        let currency_amv = history.price(tender);
+        let price = clearing_price(&buy_limits(&buys), &sell_limits(&sells), amv)
+            .filter(|price| price.is_finite() && *price != 0.0);
+        let Some(price) = price else {
+            let miss = both_sides_miss(offered, requested, MassMiss::NoCross);
+            self.remember_mass_close(good, offered, requested, 0.0, None, miss);
+            return;
+        };
+        if !currency_amv.is_finite() || currency_amv <= 0.0 {
+            self.remember_mass_close(good, offered, requested, 0.0, None, None);
+            return;
+        }
+        let open_buys: Vec<(Actor, f64)> = buys
+            .iter()
+            .filter(|quote| quote.limit >= price)
+            .map(|quote| (quote.origin, quote.units))
+            .collect();
+        let open_sells: Vec<(Actor, f64)> = sells
+            .iter()
+            .filter(|quote| quote.limit <= price)
+            .map(|quote| (quote.origin, quote.units))
+            .collect();
+        let volume = open_buys
+            .iter()
+            .map(|(_, units)| *units)
+            .sum::<f64>()
+            .min(open_sells.iter().map(|(_, units)| *units).sum());
+        if volume < 1.0 {
+            let miss = both_sides_miss(offered, requested, MassMiss::NoCross);
+            self.remember_mass_close(good, offered, requested, 0.0, None, miss);
+            return;
+        }
+        // The long side is shuffled. Whole units stop where the short side stops.
+        let mut buy_fill = ration(&open_buys, volume, rng);
+        let mut sell_fill = ration(&open_sells, volume, rng);
+        let mut buy_at = 0;
+        let mut sell_at = 0;
+        let mut steps = 0;
+        let mut exchanged = 0.0;
+        let mut tender_paid = 0.0;
+        let mut haul_blocked = false;
+        while buy_at < buy_fill.len() && sell_at < sell_fill.len() {
+            steps += 1;
+            if steps > 1_000_000 {
+                break;
+            }
+            let buyer = buy_fill[buy_at].0;
+            let seller = sell_fill[sell_at].0;
+            let seller_free = actors.get(seller).free_units(good).floor();
+            // A negative price is a disposal fee. The seller pays it.
+            let payer_free = if price > 0.0 {
+                actors.get(buyer).free_units(tender).floor()
+            } else {
+                actors.get(seller).free_units(tender).floor()
+            };
+            let units = buy_fill[buy_at]
+                .1
+                .min(sell_fill[sell_at].1)
+                .min(seller_free);
+            let transport_amv = haul_good(factuals)
+                .map(|(id, _)| history.price(id))
+                .unwrap_or(0.0);
+            let fit = mass_units_that_fit(
+                actors,
+                factuals,
+                history.friction,
+                buyer,
+                seller,
+                good,
+                tender,
+                units,
+                price,
+                currency_amv,
+                transport_amv,
+                payer_free,
+            );
+            if fit.moved >= 1.0 && fit.pay >= 1.0 {
+                let signed = if price > 0.0 { fit.pay } else { -fit.pay };
+                let half = mass_freight_half(factuals, history.friction, good, fit.moved, tender, fit.pay);
+                self.settle_mass_trade(
+                    actors, factuals, buyer, seller, good, tender, fit.moved, signed, half, fit.haul,
+                    fit.haul_pay, fit.seller_advances,
+                );
+                exchanged += fit.moved;
+                tender_paid += fit.pay + fit.haul_pay;
+                buy_fill[buy_at].1 -= fit.moved;
+                sell_fill[sell_at].1 -= fit.moved;
+            } else if buy_fill[buy_at].1 >= 1.0
+                && sell_fill[sell_at].1 >= 1.0
+                && seller_free >= 1.0
+                && make_change(1.0, price, currency_amv, payer_free).0 >= 1.0
+            {
+                // One unit was payable and still could not be hauled.
+                haul_blocked = true;
+            }
+            let buyer_open = buy_fill[buy_at].1 >= 1.0
+                && (price < 0.0 || actors.get(buyer).free_units(tender).floor() >= 1.0);
+            let seller_open = sell_fill[sell_at].1 >= 1.0
+                && actors.get(seller).free_units(good).floor() >= 1.0
+                && (price > 0.0 || actors.get(seller).free_units(tender).floor() >= 1.0);
+            if !buyer_open {
+                buy_at += 1;
+            } else if !seller_open || fit.moved < 1.0 || sell_fill[sell_at].1 < 1.0 {
+                sell_at += 1;
+            }
+        }
+        let taken = if exchanged >= 1.0 { Some(price) } else { None };
+        if taken.is_some() {
+            self.note_mass_exchange(good, tender, price, exchanged, tender_paid);
+        }
+        let miss = if taken.is_none() && haul_blocked {
+            both_sides_miss(offered, requested, MassMiss::Haul)
+        } else {
+            None
+        };
+        self.remember_mass_close(good, offered, requested, exchanged, taken, miss);
+    }
+
+    /// # Remember Mass Close
+    ///
+    /// Stores one mass-market row for `good`.
+    ///
+    /// `offered` and `requested` are the whole units quoted. `exchanged` is
+    /// what changed hands. `price` is the clearing AMV when that exchange
+    /// happened. `miss` is why both sides quoted and nothing moved. Nothing
+    /// is returned.
+    fn remember_mass_close(
+        &mut self,
+        good: usize,
+        offered: f64,
+        requested: f64,
+        exchanged: f64,
+        price: Option<f64>,
+        miss: Option<MassMiss>,
+    ) {
+        self.mass_closes.push(MassClose {
+            good,
+            offered,
+            requested,
+            exchanged,
+            price,
+            miss,
+        });
+    }
+
+    /// # Note Mass Exchange
+    ///
+    /// Writes one mass clear onto the tape the night prices from.
+    ///
+    /// `price` is the clearing AMV of `good`. `exchanged` is the units that
+    /// moved, and `tender_paid` is the tender that paid for them. The
+    /// good's print target is the holding value of `price`, so the night
+    /// steps its card toward that AMV. `traded` takes `exchanged`. The
+    /// tender's `traded` and `paid` take `tender_paid`. Nothing is returned.
+    fn note_mass_exchange(
+        &mut self,
+        good: usize,
+        tender: usize,
+        price: f64,
+        exchanged: f64,
+        tender_paid: f64,
+    ) {
+        let row = self.goods.entry(good).or_insert_with(MarketGood::new);
+        let holding = if price > 0.0 {
+            price * amv_scale(row.salability)
+        } else {
+            price
+        };
+        row.print_units += exchanged;
+        row.print_holding += holding * exchanged;
+        row.traded += exchanged;
+        if tender_paid >= 1.0 {
+            let pay = self.goods.entry(tender).or_insert_with(MarketGood::new);
+            pay.traded += tender_paid;
+            pay.paid += tender_paid;
+        }
+    }
+
+    /// # Settle Mass Trade
+    ///
+    /// Moves one mass-market fill. The tape is written once for the good.
+    ///
+    /// `moved` units of `good` go to `buyer`. `pay` is tender from the buyer
+    /// when positive, and tender from the seller when negative. `half` is
+    /// that side's freight from [`mass_freight_half`]. `haul` is transport
+    /// advanced first so the short side can pay `half`. `seller_advances`
+    /// means the seller hands that transport over and the buyer pays
+    /// `haul_pay` for it. Otherwise the buyer hands it over and the seller
+    /// pays. The buyer pays the half before the good arrives, and the
+    /// seller pays it after the good leaves, so neither side spends units
+    /// this fill is moving. The deal's freight stays 0 so finalize does not
+    /// charge it again. Nothing is returned.
+    fn settle_mass_trade(
+        &mut self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        buyer: Actor,
+        seller: Actor,
+        good: usize,
+        tender: usize,
+        moved: f64,
+        pay: f64,
+        half: f64,
+        haul: f64,
+        haul_pay: f64,
+        seller_advances: bool,
+    ) {
+        if let Some((transport, _)) = haul_good(factuals) {
+            if haul >= 1.0 && haul_pay >= 1.0 {
+                let (transport_qty, tender_qty) = if seller_advances {
+                    (haul, -haul_pay)
+                } else {
+                    (-haul, haul_pay)
+                };
+                let mut advance = ProposedDeal {
+                    buyer,
+                    seller,
+                    match_good: transport,
+                    goods: HashMap::from([(transport, transport_qty), (tender, tender_qty)]),
+                    fresh: HashMap::new(),
+                    freight: 0.0,
+                };
+                advance.stamp_fresh_shares(|actor, held| actors.get(actor).fresh_share(held));
+                actors.get_mut(buyer).finalize(&advance, factuals);
+                actors.get_mut(seller).finalize(&advance, factuals);
+            }
+        }
+        let mut deal = ProposedDeal {
+            buyer,
+            seller,
+            match_good: good,
+            goods: HashMap::from([(good, moved), (tender, -pay)]),
+            fresh: HashMap::new(),
+            freight: 0.0,
+        };
+        deal.stamp_fresh_shares(|actor, held| actors.get(actor).fresh_share(held));
+        // The arrival is not cover. Take the buyer's half from stock already free.
+        actors.get_mut(buyer).pay_transport(half, factuals);
+        actors.get_mut(buyer).finalize(&deal, factuals);
+        actors.get_mut(seller).finalize(&deal, factuals);
+        actors.get_mut(seller).pay_transport(half, factuals);
+    }
+
     /// # Match Deals
     ///
-    /// Collects sell orders, then picks a buyer at random from those who still
-    /// have a buy, and a seller from the valid matches in proportion to the
-    /// units that seller offers.
+    /// Collects sell orders, then opens a meeting for the buy whose largest
+    /// remaining offer is the biggest. Ties keep the earlier actor and the
+    /// lower good id. That seller is the largest of the buy's matches, and
+    /// a tie there keeps the earlier actor.
     /// The buyer sees that seller's offers and requests and either proposes
     /// a basket or abandons. A pop who cannot propose one unit against that
     /// seller is not given a meeting. That buy stays posted, and the pair
@@ -489,9 +936,11 @@ impl Market {
     ///
     /// The book of buys, sells, and each actor's requests is built once. A
     /// meeting reads the seller's stored offers and requests. After a meeting
-    /// only the buyer and the seller rewrite their own orders, and the
-    /// openings that name those orders are patched. A rejected or abandoned
-    /// pair is not tried again this call.
+    /// only the buyer and the seller rewrite their own orders. Their openings
+    /// are built again. Every other opening drops a sell that is no longer
+    /// listed and does not search the book again. A buyer stops after
+    /// [`BARTER_ATTEMPTS`] meetings. A rejected or abandoned pair is not
+    /// tried again this call.
     ///
     /// Returns every meeting. Only [`MeetingOutcome::Accepted`] moves goods.
     pub fn match_deals(
@@ -518,16 +967,21 @@ impl Market {
         );
         let mut meetings = Vec::new();
         let mut accepted = Vec::new();
+        let mut attempts: HashMap<Actor, usize> = HashMap::new();
         loop {
-            openings.retain(|opening| !opening.matches.is_empty());
+            openings.retain(|opening| {
+                !opening.matches.is_empty()
+                    && attempts.get(&opening.buyer).copied().unwrap_or(0) < BARTER_ATTEMPTS
+            });
             if openings.is_empty() {
                 break;
             }
-            let pick = crate::game::util::random_index(rng, openings.len());
+            // The biggest remaining pile is the counterparty. The buyer stops after the budget.
+            let pick = best_opening_index(&openings);
             let opening = openings.swap_remove(pick);
-            // A larger offer is drawn more often, in proportion to its units.
-            let sell = pick_seller(&opening.matches, rng).clone();
+            let sell = best_seller(&opening.matches).clone();
             let buyer = opening.buyer;
+            *attempts.entry(buyer).or_insert(0) += 1;
             tried.insert((buyer, sell.origin, opening.buy.target));
             let meeting = self.meet(
                 actors, buyer, &sell, &sells, &requests, &history, factuals, rng,
@@ -937,6 +1391,54 @@ impl Market {
     }
 }
 
+/// # Best Opening Index
+///
+/// The index of the opening with the largest remaining offer.
+///
+/// The weight is the most [`offered_units`] among that opening's matches.
+/// A tie keeps the earlier actor, then the lower good id. `openings` is
+/// not empty. Returns that index.
+fn best_opening_index(openings: &[Opening]) -> usize {
+    let mut best = 0;
+    let mut best_units = -1.0;
+    let mut best_key = (u8::MAX, usize::MAX, usize::MAX);
+    for (index, opening) in openings.iter().enumerate() {
+        let units = opening
+            .matches
+            .iter()
+            .map(offered_units)
+            .fold(0.0_f64, f64::max);
+        let key = (
+            actor_sort_key(opening.buyer).0,
+            actor_sort_key(opening.buyer).1,
+            opening.buy.target,
+        );
+        if units > best_units || (units == best_units && key < best_key) {
+            best = index;
+            best_units = units;
+            best_key = key;
+        }
+    }
+    best
+}
+
+/// # Best Seller
+///
+/// The match that offers the most units.
+///
+/// `matches` is not empty. [`offered_units`] is the size. A tie keeps the
+/// earlier actor. Returns that order.
+fn best_seller(matches: &[MarketOrder]) -> &MarketOrder {
+    matches
+        .iter()
+        .max_by(|left, right| {
+            offered_units(left).total_cmp(&offered_units(right)).then_with(|| {
+                actor_sort_key(right.origin).cmp(&actor_sort_key(left.origin))
+            })
+        })
+        .unwrap_or(&matches[0])
+}
+
 /// # Pick Seller
 ///
 /// One order from `matches`, drawn in proportion to the units it offers.
@@ -1160,12 +1662,14 @@ fn refresh_actor(
 
 /// # Patch Openings
 ///
-/// Rewrites openings that name `buyer` or `seller`, and no others.
+/// Rewrites openings that name `buyer` or `seller`, and drops dead sells.
 ///
 /// Openings of those two actors are dropped and built again from their
-/// current buys. Every other opening drops sells from those two actors and
-/// puts their current sells back when the pair can still meet. An opening
-/// with no sell left is dropped. `requests` are the stored buy orders.
+/// current buys, so a payment just received can open the next good. Every
+/// other opening keeps a match only while that seller still lists the good.
+/// It does not propose against the rewritten book, and it does not gain a
+/// sell those two actors just posted. An opening with no sell left is
+/// dropped. `requests` are the stored buy orders.
 fn patch_openings(
     openings: &mut Vec<Opening>,
     buys: &HashMap<Actor, Vec<MarketOrder>>,
@@ -1180,26 +1684,7 @@ fn patch_openings(
 ) {
     openings.retain(|opening| opening.buyer != buyer && opening.buyer != seller);
     for opening in openings.iter_mut() {
-        opening
-            .matches
-            .retain(|sell| sell.origin != buyer && sell.origin != seller);
-        for sell in sells
-            .iter()
-            .filter(|sell| sell.origin == buyer || sell.origin == seller)
-        {
-            if pair_can_meet(
-                &opening.buy,
-                sell,
-                sells,
-                requests,
-                tried,
-                actors,
-                history,
-                factuals,
-            ) {
-                opening.matches.push(sell.clone());
-            }
-        }
+        opening.matches.retain(|sell| sell_still_listed(sell, sells));
     }
     openings.retain(|opening| !opening.matches.is_empty());
     let mut fresh = HashMap::new();
@@ -1216,6 +1701,20 @@ fn patch_openings(
     ));
 }
 
+/// # Sell Still Listed
+///
+/// True when `sells` still offers at least one unit of `sell`'s good.
+///
+/// The origin and the good both have to match. A sell that was filled is
+/// not listed.
+fn sell_still_listed(sell: &MarketOrder, sells: &[MarketOrder]) -> bool {
+    sells.iter().any(|live| {
+        live.origin == sell.origin
+            && live.target == sell.target
+            && offered_units(live) >= 1.0
+    })
+}
+
 /// Sort key so the book walks actors in a stable order.
 fn actor_sort_key(actor: Actor) -> (u8, usize) {
     match actor {
@@ -1226,11 +1725,35 @@ fn actor_sort_key(actor: Actor) -> (u8, usize) {
     }
 }
 
-fn tradeable(factuals: &Factuals, good: usize) -> bool {
-    factuals
-        .goods
-        .get(&good)
-        .is_none_or(|row| !row.tags.contains(&GoodTag::Untradeable))
+/// # Tradeable
+///
+/// True when `good` may be bought and sold.
+///
+/// A good missing from `factuals` is tradeable. A stored good is tradeable
+/// when [`crate::game::good::Good::is_buyable`] says so.
+pub(crate) fn tradeable(factuals: &Factuals, good: usize) -> bool {
+    factuals.get_good(good).is_none_or(Good::is_buyable)
+}
+
+/// # Payment Tender
+///
+/// The tender that pays for `good`, or `None` when this pass skips `good`.
+///
+/// `currencies` are the market slots, empty entries included. The first
+/// filled slot pays for an ordinary good. A tender is skipped when no
+/// other slot is filled, because the pass would trade that tender for
+/// itself. When another tender is filled, the first of those others pays,
+/// so the two can be swapped. No filled slot returns `None`.
+pub(crate) fn payment_tender(currencies: &[Option<usize>], good: usize) -> Option<usize> {
+    let filled: Vec<usize> = currencies.iter().copied().flatten().collect();
+    let first = *filled.first()?;
+    if filled.len() == 1 {
+        if first == good { None } else { Some(first) }
+    } else if filled.contains(&good) {
+        filled.into_iter().find(|id| *id != good)
+    } else {
+        Some(first)
+    }
 }
 
 /// A saved price snapshot for one market.
@@ -1240,9 +1763,9 @@ pub struct MarketHistory {
     pub prices: HashMap<usize, f64>,
     /// Last known salability per good.
     pub salability: HashMap<usize, f64>,
-    /// Units still on buy orders after the day's meetings.
+    /// Units the night plan still treats as wanted.
     ///
-    /// Empty on a snapshot taken before exchange.
+    /// [`Market::history`] fills this. Empty on a snapshot taken before exchange.
     pub sought: HashMap<usize, f64>,
     /// Units produced today, per good.
     ///
@@ -1252,6 +1775,8 @@ pub struct MarketHistory {
     pub friction: f64,
     /// Used when a good has no recorded salability.
     pub default_salability: f64,
+    /// Refused-ask fraction per good, copied from the market.
+    pub ask_walk: HashMap<usize, f64>,
 }
 
 impl Default for MarketHistory {
@@ -1269,7 +1794,17 @@ impl MarketHistory {
             produced: HashMap::new(),
             friction: 0.0,
             default_salability: SALABILITY_DEFAULT,
+            ask_walk: HashMap::new(),
         }
+    }
+
+    /// # Ask Walk
+    ///
+    /// How far `good_id`'s refused sell floor has walked toward the card.
+    ///
+    /// A good with no stored fraction returns 0.
+    pub fn ask_walk(&self, good_id: usize) -> f64 {
+        self.ask_walk.get(&good_id).copied().unwrap_or(0.0)
     }
 
     /// # Sought
@@ -1354,6 +1889,129 @@ impl MarketLookups {
     }
 }
 
+/// # Mass Idle By Good
+///
+/// The AMV fraction each mass book that did not trade applies.
+///
+/// `closes` are today's rows. `currencies` are the tender slots.
+/// `factuals` and `history` are the inputs of [`mass_book_can_move`].
+/// A book that traded, a balanced book, and a good that cannot trade are
+/// left out. Surplus is `-[MASS_IDLE_STEP]`. Shortage is [`MASS_IDLE_STEP`].
+/// Returns that fraction per good.
+fn mass_idle_by_good(
+    closes: &[MassClose],
+    currencies: &[Option<usize>],
+    factuals: &Factuals,
+    history: &MarketHistory,
+) -> HashMap<usize, f64> {
+    let mut steps = HashMap::new();
+    for close in closes {
+        let step = mass_idle_fraction(close);
+        if step == 0.0 || !mass_book_can_move(factuals, currencies, history, close.good) {
+            continue;
+        }
+        steps.insert(close.good, step);
+    }
+    steps
+}
+
+/// # Both Sides Miss
+///
+/// `miss` when both sides quoted at least one unit, otherwise nothing.
+///
+/// A one-sided book still takes the idle step. A book with both an offer
+/// and a bid records why it did not trade.
+fn both_sides_miss(offered: f64, requested: f64, miss: MassMiss) -> Option<MassMiss> {
+    if offered >= 1.0 && requested >= 1.0 {
+        Some(miss)
+    } else {
+        None
+    }
+}
+
+/// # Mass Idle Fraction
+///
+/// The AMV fraction one mass book applies when it does not trade.
+///
+/// `close` is that book. At least one unit exchanged returns 0. A book
+/// with both sides quoted that missed on [`MassMiss::NoCross`] or
+/// [`MassMiss::Haul`] also returns 0: those days did not show the good
+/// unwanted, and [`step_ask_walk`] is what pulls the ask to the card.
+/// A one-sided surplus returns `-[MASS_IDLE_STEP]`. A one-sided shortage,
+/// including bids with nothing offered, returns [`MASS_IDLE_STEP`].
+/// Equal sides return 0.
+fn mass_idle_fraction(close: &MassClose) -> f64 {
+    if close.exchanged >= 1.0 {
+        return 0.0;
+    }
+    let both = close.offered >= 1.0 && close.requested >= 1.0;
+    if both && matches!(close.miss, Some(MassMiss::NoCross | MassMiss::Haul)) {
+        return 0.0;
+    }
+    if close.offered > close.requested {
+        -MASS_IDLE_STEP
+    } else if close.requested > close.offered {
+        MASS_IDLE_STEP
+    } else {
+        0.0
+    }
+}
+
+/// # Step Ask Walk
+///
+/// Moves each quoted good's sell-floor walk after today's mass book.
+///
+/// `walk` is the stored fraction per good. `closes` are today's rows.
+/// A good that exchanged at least one unit steps toward 0 by [`ASK_WALK`].
+/// A good that was offered and exchanged nothing steps toward 1 by the
+/// same share, including a book whose limits did not cross and a book
+/// whose fills died on the haul. That walk is what brings the ask to the
+/// card while [`mass_idle_fraction`] leaves the card where it is. A good
+/// with no offer is left as it stands. The fraction stays in 0..=1. A
+/// fraction that lands on 0 is dropped.
+fn step_ask_walk(walk: &mut HashMap<usize, f64>, closes: &[MassClose]) {
+    for close in closes {
+        let toward = if close.exchanged >= 1.0 {
+            0.0
+        } else if close.offered >= 1.0 {
+            1.0
+        } else {
+            continue;
+        };
+        let current = walk.get(&close.good).copied().unwrap_or(0.0);
+        let next = current + (toward - current) * ASK_WALK;
+        if next <= 0.0 {
+            walk.remove(&close.good);
+        } else {
+            walk.insert(close.good, next.clamp(0.0, 1.0));
+        }
+    }
+}
+
+/// # Mass Book Can Move
+///
+/// True when a mass book for `good` is allowed to move the card.
+///
+/// `factuals` says the good is buyable. A good missing there is buyable.
+/// `currencies` and `history` pick the tender in [`payment_tender`] and
+/// price it. No tender, or a tender AMV that is not finite and positive,
+/// leaves the book where it is.
+fn mass_book_can_move(
+    factuals: &Factuals,
+    currencies: &[Option<usize>],
+    history: &MarketHistory,
+    good: usize,
+) -> bool {
+    if !tradeable(factuals, good) {
+        return false;
+    }
+    let Some(tender) = payment_tender(currencies, good) else {
+        return false;
+    };
+    let currency_amv = history.price(tender);
+    currency_amv.is_finite() && currency_amv > 0.0
+}
+
 /// # Print Push
 ///
 /// Holding-space move from today's print and from an unsold offer.
@@ -1398,6 +2056,41 @@ fn amv_from_holding_move(old: f64, salability: f64, move_holding: f64) -> f64 {
     }
 }
 
+/// # Valued Price
+///
+/// `price` kept above zero unless `below_zero` is set.
+///
+/// `below_zero` means a seller's minimum for this good was negative.
+/// The night's decline may then cross zero. That minimum does not become
+/// the price. Every other `price` below [`AMV_EPSILON`] is returned as
+/// [`AMV_EPSILON`].
+fn valued_price(below_zero: bool, price: f64) -> f64 {
+    if below_zero || price >= AMV_EPSILON {
+        price
+    } else {
+        AMV_EPSILON
+    }
+}
+
+/// # Decay Cut
+///
+/// How far rot pulls `price` down tonight.
+///
+/// `fraction` is the capped rot share. A positive `price` loses that share
+/// of itself, and the result stays at [`AMV_EPSILON`]. A non-positive
+/// `price` loses nothing: decay is waste, and a negative card means the
+/// good is harmful to hold. Returns the amount subtracted.
+fn decay_cut(price: f64, fraction: f64) -> f64 {
+    debug_assert!(price.is_finite(), "price must be finite");
+    debug_assert!(fraction.is_finite(), "fraction must be finite");
+    if price <= 0.0 || fraction <= 0.0 {
+        return 0.0;
+    }
+    let raw = price * fraction.min(1.0);
+    let room = (price - AMV_EPSILON).max(0.0);
+    raw.min(room)
+}
+
 /// If `new` is inside the AMV dead zone, land [`AMV_EPSILON`] on the other
 /// side of 0 from `old`. Otherwise return `new`.
 fn bounce_away_from_zero(old: f64, new: f64) -> f64 {
@@ -1409,6 +2102,32 @@ fn bounce_away_from_zero(old: f64, new: f64) -> f64 {
     } else {
         AMV_EPSILON
     }
+}
+
+/// Why a mass book that quoted both sides moved nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MassMiss {
+    /// No price had a buyer and a seller.
+    NoCross,
+    /// A clearing price was found and every fill died on the haul.
+    Haul,
+}
+
+/// One good's mass-market book for the day.
+///
+/// `offered` and `requested` are whole units quoted. `exchanged` is the
+/// units that changed hands. `price` is the clearing AMV when `exchanged`
+/// is at least one, and missing when the book did not trade. `miss` is
+/// why both sides quoted and nothing moved. A one-sided book leaves it
+/// empty, and so does a book that traded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MassClose {
+    pub good: usize,
+    pub offered: f64,
+    pub requested: f64,
+    pub exchanged: f64,
+    pub price: Option<f64>,
+    pub miss: Option<MassMiss>,
 }
 
 /// Stored price and quantity for one good in a market.
@@ -1940,6 +2659,699 @@ fn slice_map(source: &HashMap<usize, f64>, fraction: f64) -> HashMap<usize, f64>
         .collect()
 }
 
+/// One side of a mass-market quote. `units` are whole. `limit` is the price.
+struct MassQuote {
+    origin: Actor,
+    units: f64,
+    limit: f64,
+}
+
+/// # Mass Quotes
+///
+/// Splits `orders` for `good` into buys and sells.
+///
+/// `amv` replaces a zero accept price. A quote for another good, a
+/// non-finite amount, a zero limit, or less than one whole unit is dropped.
+/// A negative limit stays: the seller pays to be rid of the good, or the
+/// buyer must be paid to take it. The first order from an actor is kept.
+/// Returns `(buys, sells)`.
+fn mass_quotes(orders: &[MarketOrder], good: usize, amv: f64) -> (Vec<MassQuote>, Vec<MassQuote>) {
+    let mut seen = HashSet::new();
+    let mut buys = Vec::new();
+    let mut sells = Vec::new();
+    for order in orders {
+        if order.target != good || !seen.insert(order.origin) {
+            continue;
+        }
+        if !order.target_amount.is_finite() || order.target_amount == 0.0 {
+            continue;
+        }
+        let units = order.target_amount.abs().floor();
+        if units < 1.0 {
+            continue;
+        }
+        let Some(limit) = order_limit(order, amv) else {
+            continue;
+        };
+        let quote = MassQuote {
+            origin: order.origin,
+            units,
+            limit,
+        };
+        if order.target_amount > 0.0 {
+            buys.push(quote);
+        } else {
+            sells.push(quote);
+        }
+    }
+    (buys, sells)
+}
+
+/// # Order Limit
+///
+/// Raw AMV per unit `order` will trade at.
+///
+/// A non-zero [`MarketOrder::accept_price`] is that price. Otherwise `amv`
+/// is the card. A missing, zero, or non-finite price is `None`. A negative
+/// price is kept.
+fn order_limit(order: &MarketOrder, amv: f64) -> Option<f64> {
+    let price = if order.accept_price != 0.0 && order.accept_price.is_finite() {
+        order.accept_price
+    } else {
+        amv
+    };
+    if price.is_finite() && price != 0.0 {
+        Some(price)
+    } else {
+        None
+    }
+}
+
+/// # Buy Limits
+///
+/// `(units, max price)` for each buy quote.
+fn buy_limits(quotes: &[MassQuote]) -> Vec<(f64, f64)> {
+    quotes.iter().map(|quote| (quote.units, quote.limit)).collect()
+}
+
+/// # Sell Limits
+///
+/// `(units, min price)` for each sell quote.
+fn sell_limits(quotes: &[MassQuote]) -> Vec<(f64, f64)> {
+    quotes.iter().map(|quote| (quote.units, quote.limit)).collect()
+}
+
+/// # Book At
+///
+/// Demand and supply willing to trade at `price`.
+///
+/// A buy counts when its max is at least `price`. A sell counts when its
+/// min is at most `price`. Returns `(demand, supply)`.
+fn book_at(buys: &[(f64, f64)], sells: &[(f64, f64)], price: f64) -> (f64, f64) {
+    let demand = buys
+        .iter()
+        .filter(|(_, limit)| *limit >= price)
+        .map(|(units, _)| *units)
+        .sum();
+    let supply = sells
+        .iter()
+        .filter(|(_, limit)| *limit <= price)
+        .map(|(units, _)| *units)
+        .sum();
+    (demand, supply)
+}
+
+/// # Clearing Price
+///
+/// Uniform price where supply meets demand, starting from `amv`.
+///
+/// Buys are `(units, max price)`. Sells are `(units, min price)`. An exact
+/// match at `amv` is that price. Otherwise the order limit closest to `amv`
+/// that matches is the price. When no limit matches, the adjacent limits
+/// whose excess demand changes sign, and whose span sits closest to `amv`,
+/// are interpolated. When the excess never changes sign, the limit closest
+/// to `amv` at which both sides are positive is the price. A negative limit
+/// is a real price. Returns `None` when a side is empty or no non-zero
+/// price has both sides.
+fn clearing_price(buys: &[(f64, f64)], sells: &[(f64, f64)], amv: f64) -> Option<f64> {
+    if buys.is_empty() || sells.is_empty() {
+        return None;
+    }
+    // Yesterday's AMV is the working price. An exact book there stops the search.
+    if amv.is_finite() && amv != 0.0 {
+        let (demand, supply) = book_at(buys, sells, amv);
+        if demand > 0.0 && demand == supply {
+            return Some(amv);
+        }
+    }
+    let mut prices = Vec::new();
+    if amv.is_finite() && amv != 0.0 {
+        prices.push(amv);
+    }
+    for (_, limit) in buys.iter().chain(sells.iter()) {
+        if limit.is_finite() && *limit != 0.0 {
+            prices.push(*limit);
+        }
+    }
+    prices.sort_by(|left, right| left.total_cmp(right));
+    prices.dedup_by(|later, earlier| (*later - *earlier).abs() <= 1e-9);
+    if prices.is_empty() {
+        return None;
+    }
+    let mut books = Vec::new();
+    let mut exact: Option<f64> = None;
+    for price in &prices {
+        let (demand, supply) = book_at(buys, sells, *price);
+        books.push((demand, supply));
+        if demand > 0.0 && demand == supply {
+            exact = Some(nearer(exact, *price, amv));
+        }
+    }
+    if let Some(price) = exact {
+        return Some(price);
+    }
+    // No quoted price balances. Interpolate the two that bracket the cross.
+    let mut crossed: Option<(f64, f64)> = None;
+    for index in 0..prices.len().saturating_sub(1) {
+        let excess_low = books[index].0 - books[index].1;
+        let excess_high = books[index + 1].0 - books[index + 1].1;
+        let changes = (excess_low > 0.0 && excess_high < 0.0)
+            || (excess_low < 0.0 && excess_high > 0.0);
+        if !changes {
+            continue;
+        }
+        let share = excess_low / (excess_low - excess_high);
+        let price = crate::game::util::lerp(prices[index], prices[index + 1], share);
+        if !price.is_finite() {
+            continue;
+        }
+        let span = span_gap(amv, prices[index], prices[index + 1]);
+        let rank = span + (price - amv).abs() * 1e-9;
+        if crossed.map(|(old, _)| rank < old).unwrap_or(true) {
+            crossed = Some((rank, price));
+        }
+    }
+    if let Some((_, price)) = crossed {
+        return Some(price);
+    }
+    let mut fallback: Option<f64> = None;
+    for (index, price) in prices.iter().enumerate() {
+        let (demand, supply) = books[index];
+        if demand > 0.0 && supply > 0.0 {
+            fallback = Some(nearer(fallback, *price, amv));
+        }
+    }
+    fallback
+}
+
+/// # Nearer
+///
+/// `next` when it sits closer to `amv` than `current` does.
+///
+/// A missing `current` is `next`. An equal distance keeps `current`.
+fn nearer(current: Option<f64>, next: f64, amv: f64) -> f64 {
+    match current {
+        None => next,
+        Some(old) if (next - amv).abs() < (old - amv).abs() => next,
+        Some(old) => old,
+    }
+}
+
+/// # Span Gap
+///
+/// How far `point` sits from the closed span `low..=high`.
+///
+/// A point inside the span is `0`.
+fn span_gap(point: f64, low: f64, high: f64) -> f64 {
+    if point < low {
+        low - point
+    } else if point > high {
+        point - high
+    } else {
+        0.0
+    }
+}
+
+/// # Ration
+///
+/// Whole units of `volume` dealt across `orders`.
+///
+/// `orders` are `(actor, units)`. `rng` shuffles them first, so a short
+/// volume does not always fill the earliest actor. Each take is at most
+/// that actor's units. Returns the actors who received at least one unit.
+fn ration(
+    orders: &[(Actor, f64)],
+    volume: f64,
+    rng: &mut impl rand::RngCore,
+) -> Vec<(Actor, f64)> {
+    let mut rows = orders.to_vec();
+    shuffle(&mut rows, rng);
+    let mut left = volume.floor();
+    let mut filled = Vec::new();
+    for (actor, units) in rows {
+        if left < 1.0 {
+            break;
+        }
+        let take = units.min(left).floor();
+        if take >= 1.0 {
+            filled.push((actor, take));
+            left -= take;
+        }
+    }
+    filled
+}
+
+/// # Shuffle
+///
+/// Reorders `items` from `rng`.
+///
+/// An empty list or a single entry is unchanged. Nothing is returned.
+fn shuffle<T>(items: &mut [T], rng: &mut impl rand::RngCore) {
+    let mut index = items.len();
+    while index > 1 {
+        index -= 1;
+        let pick = crate::game::util::random_index(rng, index + 1);
+        items.swap(index, pick);
+    }
+}
+
+/// # Make Change
+///
+/// Whole units of the good and of the tender whose values sit closest.
+///
+/// `units` is the good quantity wanted. `price` is AMV per unit of that
+/// good. A negative price uses its magnitude: the caller passes the
+/// payer's free tender, which is the seller when the price is negative.
+/// `currency_amv` is AMV per unit of the tender. `currency_free` is the
+/// tender that payer can spend. The tender paid is the whole amount
+/// nearest the good's value. A tie keeps the smaller payment. A larger
+/// quantity never becomes payable once a smaller one is not, so the search
+/// halves the range. Returns `(good units, tender units)`, or `(0, 0)` when
+/// no whole payment fits.
+pub(crate) fn make_change(units: f64, price: f64, currency_amv: f64, currency_free: f64) -> (f64, f64) {
+    if !price.is_finite() || price == 0.0 || !currency_amv.is_finite() || currency_amv <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let price = price.abs();
+    let mut low = 1.0;
+    let mut high = units.floor();
+    if !high.is_finite() || high < 1.0 {
+        return (0.0, 0.0);
+    }
+    let mut best = (0.0, 0.0);
+    while low <= high {
+        let mid = ((low + high) / 2.0).floor();
+        if mid < 1.0 {
+            break;
+        }
+        let pay = tender_for(mid * price, currency_amv, currency_free);
+        if pay >= 1.0 {
+            best = (mid, pay);
+            low = mid + 1.0;
+        } else if mid <= 1.0 {
+            break;
+        } else {
+            high = mid - 1.0;
+        }
+    }
+    best
+}
+
+/// # Tender For
+///
+/// Whole tender units that pay `value`.
+///
+/// `currency_amv` prices one tender unit. `currency_free` is what the payer
+/// can spend. The pay is the whole unit at or beside `value / currency_amv`,
+/// and a tie keeps the smaller one. A pay under 1 does not count. Returns
+/// that pay, or 0 when none fits.
+fn tender_for(value: f64, currency_amv: f64, currency_free: f64) -> f64 {
+    if !value.is_finite() || value <= 0.0 || !currency_amv.is_finite() || currency_amv <= 0.0 {
+        return 0.0;
+    }
+    let ideal = value / currency_amv;
+    if !ideal.is_finite() || ideal <= 0.0 {
+        return 0.0;
+    }
+    let affordable = currency_free.floor();
+    let mut best: Option<(f64, f64)> = None;
+    for pay in [ideal.floor(), ideal.ceil()] {
+        if pay < 1.0 || pay > affordable {
+            continue;
+        }
+        let gap = (pay * currency_amv - value).abs();
+        let closer = best.map(|(_, old)| gap < old).unwrap_or(true);
+        if closer {
+            best = Some((pay, gap));
+        }
+    }
+    best.map(|(pay, _)| pay).unwrap_or(0.0)
+}
+
+/// # Mass Freight Half
+///
+/// One side's share of the freight bill for a mass fill.
+///
+/// `moved` units of `good` and `pay` units of `tender` are what changes
+/// hands. `friction` is the market's bulk multiplier. The bill is
+/// [`freight_bill`], which is 0 when the world has no transport good.
+/// Each side pays half of that bill. Returns that half.
+fn mass_freight_half(
+    factuals: &Factuals,
+    friction: f64,
+    good: usize,
+    moved: f64,
+    tender: usize,
+    pay: f64,
+) -> f64 {
+    let basket = HashMap::from([(good, moved), (tender, pay.abs())]);
+    freight_bill(factuals, friction, &basket) / 2.0
+}
+
+/// # Transport Spare
+///
+/// Transport cover `actor` still has after `leaving` units are given away.
+///
+/// `factuals` names goods. Cover is free units times transport efficiency.
+/// `leaving` is `(good, units)` this actor is about to give, and those
+/// units are not cover. Goods they are about to receive are not added.
+/// Returns that cover, floored at zero.
+fn transport_spare(actor: &dyn DealMaker, factuals: &Factuals, leaving: &[(usize, f64)]) -> f64 {
+    let mut cover = 0.0;
+    for (&id, good) in &factuals.goods {
+        cover += actor.free_units(id) * good.transport_efficiency();
+    }
+    for &(id, qty) in leaving {
+        if qty <= 0.0 {
+            continue;
+        }
+        let efficiency = factuals
+            .get_good(id)
+            .map(Good::transport_efficiency)
+            .unwrap_or(0.0);
+        let free = actor.free_units(id);
+        cover -= qty.min(free) * efficiency;
+    }
+    cover.max(0.0)
+}
+
+/// One mass fill that fits both purses and the freight split.
+struct MassFit {
+    /// Whole units of the good.
+    moved: f64,
+    /// Tender for those units. The haul is not included.
+    pay: f64,
+    /// Transport units advanced so the short side can pay their half.
+    haul: f64,
+    /// Tender paid for `haul` by the side that receives it.
+    haul_pay: f64,
+    /// The seller hands `haul` to the buyer. False means the buyer hands it over.
+    seller_advances: bool,
+}
+
+/// # Haul Good
+///
+/// The transport good a mass fill buys when a buyer is short of their half.
+///
+/// The lowest id with a positive transport efficiency wins. A world with
+/// none returns `None`. Returns that id and its efficiency.
+fn haul_good(factuals: &Factuals) -> Option<(usize, f64)> {
+    let mut ids: Vec<usize> = factuals.goods.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        let efficiency = factuals
+            .get_good(id)
+            .map(Good::transport_efficiency)
+            .unwrap_or(0.0);
+        if efficiency > 0.0 {
+            return Some((id, efficiency));
+        }
+    }
+    None
+}
+
+/// # Mass Units That Fit
+///
+/// Whole units of `good` this pair can exchange, and the tender that pays.
+///
+/// `units` is the overlap still open. `price` is the clearing AMV.
+/// `currency_amv` prices `tender`. `transport_amv` prices [`haul_good`].
+/// `payer_free` is the tender the payer holds. [`make_change`] picks the
+/// payment for the good. Each side owes [`mass_freight_half`]. A side
+/// short of that half, on a positive price, buys whole transport units
+/// from the other at `transport_amv`. A transport card that is not a
+/// positive finite price is priced at [`AMV_EPSILON`], so a crashed time
+/// AMV does not veto the fill. The giver must still cover their own half
+/// after handing those units over, and the receiver must have tender left
+/// for them. The flat fee does not shrink with the quantity, so a pair
+/// that still cannot haul fits no fill. A larger quantity never hauls
+/// once a smaller one does not, so the search halves the range below the
+/// payable size. Returns that fit, with zeros when nothing fits.
+fn mass_units_that_fit(
+    actors: &Actors,
+    factuals: &Factuals,
+    friction: f64,
+    buyer: Actor,
+    seller: Actor,
+    good: usize,
+    tender: usize,
+    units: f64,
+    price: f64,
+    currency_amv: f64,
+    transport_amv: f64,
+    payer_free: f64,
+) -> MassFit {
+    let none = MassFit {
+        moved: 0.0,
+        pay: 0.0,
+        haul: 0.0,
+        haul_pay: 0.0,
+        seller_advances: true,
+    };
+    // A crashed transport card still buys the haul. The token price is one step off zero.
+    let transport_amv = if transport_amv.is_finite() && transport_amv > 0.0 {
+        transport_amv
+    } else {
+        AMV_EPSILON
+    };
+    let (payable, _) = make_change(units, price, currency_amv, payer_free);
+    if payable < 1.0 {
+        return none;
+    }
+    let mut low = 1.0;
+    let mut high = payable;
+    let mut best = none;
+    while low <= high {
+        let mid = ((low + high) / 2.0).floor();
+        if mid < 1.0 {
+            break;
+        }
+        let (moved, pay) = make_change(mid, price, currency_amv, payer_free);
+        let fit = if moved == mid && pay >= 1.0 {
+            mass_fit_of(
+                actors,
+                factuals,
+                friction,
+                buyer,
+                seller,
+                good,
+                tender,
+                moved,
+                pay,
+                price,
+                currency_amv,
+                transport_amv,
+                payer_free,
+            )
+        } else {
+            None
+        };
+        if let Some(fit) = fit {
+            best = fit;
+            low = mid + 1.0;
+        } else if mid <= 1.0 {
+            break;
+        } else {
+            high = mid - 1.0;
+        }
+    }
+    best
+}
+
+/// # Mass Fit Of
+///
+/// The fill for exactly `moved` units paying `pay`, when that size hauls.
+///
+/// The arguments match [`mass_units_that_fit`]. Both sides must cover
+/// [`mass_freight_half`]. A buyer short of that half buys it from the
+/// seller through [`buyer_haul`]. A seller short of it buys it from the
+/// buyer through [`seller_haul`]. Returns that fill, or `None` when this
+/// size does not haul.
+fn mass_fit_of(
+    actors: &Actors,
+    factuals: &Factuals,
+    friction: f64,
+    buyer: Actor,
+    seller: Actor,
+    good: usize,
+    tender: usize,
+    moved: f64,
+    pay: f64,
+    price: f64,
+    currency_amv: f64,
+    transport_amv: f64,
+    payer_free: f64,
+) -> Option<MassFit> {
+    let half = mass_freight_half(factuals, friction, good, moved, tender, pay);
+    let buyer_leave: Vec<(usize, f64)> = if price > 0.0 {
+        vec![(tender, pay)]
+    } else {
+        Vec::new()
+    };
+    let mut seller_leave = vec![(good, moved)];
+    if price < 0.0 {
+        seller_leave.push((tender, pay));
+    }
+    let buyer_cover = transport_spare(actors.get(buyer), factuals, &buyer_leave);
+    let seller_cover = transport_spare(actors.get(seller), factuals, &seller_leave);
+    if buyer_cover >= half && seller_cover >= half {
+        return Some(MassFit {
+            moved,
+            pay,
+            haul: 0.0,
+            haul_pay: 0.0,
+            seller_advances: true,
+        });
+    }
+    if price > 0.0 && buyer_cover < half {
+        return buyer_haul(
+            actors,
+            factuals,
+            seller,
+            good,
+            moved,
+            pay,
+            half,
+            seller_cover,
+            buyer_cover,
+            currency_amv,
+            transport_amv,
+            payer_free,
+            tender,
+        );
+    }
+    if price > 0.0 && seller_cover < half {
+        return seller_haul(
+            actors,
+            factuals,
+            buyer,
+            seller,
+            moved,
+            pay,
+            half,
+            seller_cover,
+            buyer_cover,
+            currency_amv,
+            transport_amv,
+            tender,
+        );
+    }
+    None
+}
+
+/// # Buyer Haul
+///
+/// Transport the seller advances so the buyer can pay `half`.
+///
+/// `buyer_cover` is the buyer's spare. `seller_cover` is the seller's spare
+/// after giving `moved` of `good`. The advance is the whole transport units
+/// that close the gap, priced at `transport_amv` and paid from the tender
+/// left after `pay`. The seller's remaining spare has to cover `half`.
+/// Returns that fit, or `None` when the seller cannot spare it or the buyer
+/// cannot pay for it.
+fn buyer_haul(
+    actors: &Actors,
+    factuals: &Factuals,
+    seller: Actor,
+    good: usize,
+    moved: f64,
+    pay: f64,
+    half: f64,
+    seller_cover: f64,
+    buyer_cover: f64,
+    currency_amv: f64,
+    transport_amv: f64,
+    payer_free: f64,
+    tender: usize,
+) -> Option<MassFit> {
+    let (transport, efficiency) = haul_good(factuals)?;
+    if transport == tender || efficiency <= 0.0 || !transport_amv.is_finite() || transport_amv <= 0.0
+    {
+        return None;
+    }
+    let gap = half - buyer_cover;
+    let haul = (gap / efficiency).ceil();
+    if !haul.is_finite() || haul < 1.0 {
+        return None;
+    }
+    let selling = if good == transport { moved } else { 0.0 };
+    let free = actors.get(seller).free_units(transport);
+    if free < selling + haul {
+        return None;
+    }
+    let seller_after = seller_cover - haul * efficiency;
+    if seller_after < half {
+        return None;
+    }
+    let haul_pay = tender_for(haul * transport_amv, currency_amv, (payer_free - pay).max(0.0));
+    if haul_pay < 1.0 {
+        return None;
+    }
+    Some(MassFit {
+        moved,
+        pay,
+        haul,
+        haul_pay,
+        seller_advances: true,
+    })
+}
+
+/// # Seller Haul
+///
+/// Transport the buyer advances so the seller can pay `half`.
+///
+/// `seller_cover` is the seller's spare after giving `moved`. `buyer_cover`
+/// is the buyer's spare. The advance is the whole transport units that
+/// close the seller's gap, priced at `transport_amv` and paid from the
+/// tender the seller already holds. The buyer's remaining spare has to
+/// cover `half`. Returns that fit, or `None` when the buyer cannot spare
+/// it or the seller cannot pay for it.
+fn seller_haul(
+    actors: &Actors,
+    factuals: &Factuals,
+    buyer: Actor,
+    seller: Actor,
+    moved: f64,
+    pay: f64,
+    half: f64,
+    seller_cover: f64,
+    buyer_cover: f64,
+    currency_amv: f64,
+    transport_amv: f64,
+    tender: usize,
+) -> Option<MassFit> {
+    let (transport, efficiency) = haul_good(factuals)?;
+    if transport == tender || efficiency <= 0.0 || !transport_amv.is_finite() || transport_amv <= 0.0
+    {
+        return None;
+    }
+    let gap = half - seller_cover;
+    let haul = (gap / efficiency).ceil();
+    if !haul.is_finite() || haul < 1.0 {
+        return None;
+    }
+    let free = actors.get(buyer).free_units(transport);
+    if free < haul {
+        return None;
+    }
+    let buyer_after = buyer_cover - haul * efficiency;
+    if buyer_after < half {
+        return None;
+    }
+    let seller_tender = actors.get(seller).free_units(tender);
+    let haul_pay = tender_for(haul * transport_amv, currency_amv, seller_tender);
+    if haul_pay < 1.0 {
+        return None;
+    }
+    Some(MassFit {
+        moved,
+        pay,
+        haul,
+        haul_pay,
+        seller_advances: false,
+    })
+}
+
 /// # Remainder Map
 ///
 /// What `source` still holds after `taken`.
@@ -1968,21 +3380,24 @@ fn add_map(sum: &mut HashMap<usize, f64>, part: &HashMap<usize, f64>) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{
-        amv_scale, monetary_rating, pick_seller, Market, MarketGood, MarketHistory, AMV_EPSILON,
-        SALABILITY_DEFAULT, SALABILITY_MAX, SALABILITY_MIN,
+        amv_scale, clearing_price, make_change, monetary_rating, payment_tender, pick_seller, ration,
+        Market, MassClose, MassMiss,
+        MarketGood, MarketHistory, AMV_EPSILON, CURRENCY_SLOTS, OPENING_CURRENCY, SALABILITY_DEFAULT,
+        SALABILITY_MAX, SALABILITY_MIN,
     };
     use rand::SeedableRng;
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
     use crate::game::culture::Culture;
-    use crate::game::deal::ProposedDeal;
+    use crate::game::deal::{DealMaker, ProposedDeal};
     use crate::game::demographic_source::DemographicSource;
-    use crate::game::desire::Desire;
+    use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
     use crate::game::factuals::Factuals;
+    use crate::game::good::{Good, GoodTag};
     use crate::game::job::Job;
     use crate::game::marketorder::MarketOrder;
     use crate::game::pop::{Pop, PopPRow};
@@ -2056,6 +3471,665 @@ mod tests {
         assert!((history.holding_per_unit(1) - -2.0).abs() < 1e-12);
     }
 
+    /// A new market has four tender slots. The first holds the opening good.
+    #[test]
+    fn new_market_fills_one_currency_slot() {
+        let market = Market::new(1);
+        assert_eq!(market.currencies().len(), CURRENCY_SLOTS);
+        let filled: Vec<usize> = market.currencies().into_iter().flatten().collect();
+        assert_eq!(filled, vec![OPENING_CURRENCY]);
+    }
+
+    /// The mass-market quote sits out until an actor posts one.
+    #[test]
+    fn mass_order_sits_out() {
+        let pop = Pop::new(1);
+        let history = MarketHistory::new();
+        assert!(pop
+            .mass_order(
+                1,
+                &history,
+                &[Some(OPENING_CURRENCY), None, None, None],
+                &Factuals::new(),
+            )
+            .is_none());
+    }
+
+    /// No quote means the mass pass leaves stock where it is.
+    #[test]
+    fn mass_market_leaves_stock_while_actors_sit_out() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(2.0));
+        let mut actors = Actors::new();
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(10.0));
+        seat(&mut market, &mut actors, seller);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.mass_market(&mut actors, &Factuals::new(), &mut rng);
+        assert!((actors.pop(2).property[&1].quantity - 10.0).abs() < 1e-9);
+    }
+
+    /// A balanced book clears at yesterday's AMV.
+    #[test]
+    fn clearing_price_stays_on_the_amv_when_the_book_balances() {
+        let price = clearing_price(&[(4.0, 5.0)], &[(4.0, 1.0)], 2.0);
+        assert!((price.expect("price") - 2.0).abs() < 1e-9);
+    }
+
+    /// The cross between two limits is the interpolated price.
+    #[test]
+    fn clearing_price_interpolates_between_the_bracketing_limits() {
+        let buys = [(9.0, 10.0), (9.0, 4.0)];
+        let sells = [(5.0, 2.0), (5.0, 8.0)];
+        let price = clearing_price(&buys, &sells, 6.0).expect("price");
+        assert!((price - 7.6).abs() < 1e-9);
+    }
+
+    /// A book that never balances keeps the limit closest to yesterday's AMV.
+    #[test]
+    fn clearing_price_keeps_the_limit_closest_to_the_amv() {
+        let price = clearing_price(&[(10.0, 3.0)], &[(4.0, 1.0)], 2.0);
+        assert!((price.expect("price") - 2.0).abs() < 1e-9);
+    }
+
+    /// No overlapping limit leaves the good uncleared.
+    #[test]
+    fn clearing_price_is_missing_when_the_limits_do_not_overlap() {
+        assert!(clearing_price(&[(4.0, 1.0)], &[(4.0, 5.0)], 3.0).is_none());
+    }
+
+    /// A tie in the tender amount keeps the smaller whole payment.
+    #[test]
+    fn make_change_keeps_the_smaller_payment_on_a_tie() {
+        assert_eq!(make_change(1.0, 1.5, 1.0, 10.0), (1.0, 1.0));
+    }
+
+    /// The nearer whole tender is the one that pays.
+    #[test]
+    fn make_change_pays_the_nearer_whole_tender() {
+        assert_eq!(make_change(1.0, 1.6, 1.0, 10.0), (1.0, 2.0));
+    }
+
+    /// A buyer short of tender takes fewer units of the good.
+    #[test]
+    fn make_change_steps_the_good_down_when_the_tender_is_short() {
+        assert_eq!(make_change(5.0, 1.0, 1.0, 2.0), (2.0, 2.0));
+    }
+
+    /// A long quote stops at the largest whole quantity the tender can pay.
+    #[test]
+    fn make_change_jumps_to_the_payable_quantity() {
+        assert_eq!(make_change(10_000.0, 1.0, 1.0, 4.0), (4.0, 4.0));
+        // Three units at 3 against a tender of 2 want 4.5. The tie at 4 and 5
+        // keeps 4, and four units want 6, which is past the five on hand.
+        assert_eq!(make_change(10_000.0, 3.0, 2.0, 5.0), (3.0, 4.0));
+    }
+
+    /// The short side is filled. The long side stops at that volume.
+    #[test]
+    fn ration_stops_at_the_shorter_side() {
+        let orders = [(Actor::Pop(1), 5.0), (Actor::Pop(2), 5.0)];
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let mut filled = ration(&orders, 6.0, &mut rng);
+        filled.sort_by_key(|(_, units)| *units as i64);
+        assert_eq!(filled.len(), 2);
+        assert!((filled[0].1 - 1.0).abs() < 1e-9);
+        assert!((filled[1].1 - 5.0).abs() < 1e-9);
+    }
+
+    /// One unit at 1.5 AMV pays one tender when the two whole payments tie.
+    #[test]
+    fn clear_mass_good_pays_the_closer_tender() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &Factuals::new(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 9.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 1.0).abs() < 1e-9);
+        assert!((market.goods[&1].traded - 1.0).abs() < 1e-9);
+        assert!((market.goods[&OPENING_CURRENCY].paid - 1.0).abs() < 1e-9);
+        // Salability 0.5 scales the 1.5 clear to a holding print of 0.75.
+        assert!((market.goods[&1].print_units - 1.0).abs() < 1e-9);
+        assert!((market.goods[&1].print_holding - 0.75).abs() < 1e-9);
+        let close = &market.mass_closes()[0];
+        assert_eq!(close.good, 1);
+        assert!((close.offered - 1.0).abs() < 1e-9);
+        assert!((close.requested - 1.0).abs() < 1e-9);
+        assert!((close.exchanged - 1.0).abs() < 1e-9);
+        assert!((close.price.expect("price") - 1.5).abs() < 1e-9);
+    }
+
+    /// Time covers freight at one per unit. Bulk is zero, so the bill is the flat fee.
+    fn freight_world() -> Factuals {
+        let mut time = Good {
+            id: 0,
+            name: "time".to_string(),
+            class: None,
+            decay_rate: 1.0,
+            decay_result: HashMap::new(),
+            mass: 0.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        };
+        time.tags.insert(GoodTag::transport(1.0));
+        let grain = Good {
+            id: 1,
+            name: "grain".to_string(),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: Vec::new(),
+        };
+        Factuals::new().with_good(time).with_good(grain)
+    }
+
+    /// Each side pays half of the flat fee. One time covers that half.
+    #[test]
+    fn clear_mass_good_splits_the_freight() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        buyer.property.insert(0, PopPRow::new(1.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller.property.insert(0, PopPRow::new(1.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let mut world = freight_world();
+        world.goods.get_mut(&1).expect("grain").mass = 0.0;
+        market.clear_mass_good(
+            &mut actors,
+            &world,
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 9.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 1.0).abs() < 1e-9);
+        // Flat fee 1, split. Each side spends 0.5 time.
+        assert!((actors.pop(1).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((actors.pop(2).property[&0].quantity - 0.5).abs() < 1e-9);
+    }
+
+    /// A buyer with no transport does not take the fill.
+    #[test]
+    fn clear_mass_good_skips_a_buyer_who_cannot_haul() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller.property.insert(0, PopPRow::new(1.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!(actors.pop(1).property.get(&1).is_none());
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 10.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 4.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&0].quantity - 1.0).abs() < 1e-9);
+        assert_eq!(market.mass_closes()[0].exchanged, 0.0);
+        assert!(market.mass_closes()[0].price.is_none());
+    }
+
+    /// The buyer holds no time. The seller has enough to advance one unit and
+    /// still pay their own half, so the fill goes through. Time is priced at 1.
+    #[test]
+    fn clear_mass_good_buys_the_buyers_haul_from_the_seller() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        market.goods.insert(0, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller.property.insert(0, PopPRow::new(2.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        // Grain takes 1 tender. The one time advanced takes another.
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 8.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((market.mass_closes()[0].exchanged - 1.0).abs() < 1e-9);
+    }
+
+    /// A negative time card still buys the haul. The payment is one tender.
+    #[test]
+    fn clear_mass_good_buys_the_haul_when_time_is_not_positive() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        market.goods.insert(0, MarketGood::new().with_amv(-1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller.property.insert(0, PopPRow::new(2.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 8.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((market.mass_closes()[0].exchanged - 1.0).abs() < 1e-9);
+    }
+
+    /// The seller holds no time. The buyer has enough to advance one unit and
+    /// still pay their own half, so the fill goes through.
+    #[test]
+    fn clear_mass_good_buys_the_sellers_haul_from_the_buyer() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(1.5));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        market.goods.insert(0, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        buyer.property.insert(0, PopPRow::new(2.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(5.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(3.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(1.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        // Grain costs 1. The seller pays 1 back for the time the buyer advanced.
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 10.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 5.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&0].quantity - 0.5).abs() < 1e-9);
+        assert!((market.mass_closes()[0].exchanged - 1.0).abs() < 1e-9);
+    }
+
+    /// Bulk plus the flat fee is more than one time can haul. The fill steps down to one.
+    #[test]
+    fn clear_mass_good_steps_the_fill_down_to_the_haul() {
+        let mut market = Market::new(1).with_friction(1.0);
+        market.goods.insert(1, MarketGood::new().with_amv(1.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        buyer.property.insert(0, PopPRow::new(1.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller.property.insert(0, PopPRow::new(1.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 4.0).with_accept_price(2.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 4.0).with_accept_price(0.5),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        // One grain is bulk 1. The bill is 2, and each side can haul 1.
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 9.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 1.0).abs() < 1e-9);
+        assert_eq!(actors.pop(1).property[&0].quantity, 0.0);
+        assert_eq!(actors.pop(2).property[&0].quantity, 0.0);
+        assert!((market.mass_closes()[0].exchanged - 1.0).abs() < 1e-9);
+    }
+
+    /// A long quote still stops at the one unit both sides can haul.
+    #[test]
+    fn clear_mass_good_jumps_the_fill_down_to_the_haul() {
+        let mut market = Market::new(1).with_friction(1.0);
+        market.goods.insert(1, MarketGood::new().with_amv(1.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(400.0));
+        buyer.property.insert(0, PopPRow::new(1.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(200.0));
+        seller.property.insert(0, PopPRow::new(1.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 200.0).with_accept_price(2.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 200.0).with_accept_price(0.5),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &freight_world(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 399.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 199.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 1.0).abs() < 1e-9);
+        assert_eq!(actors.pop(1).property[&0].quantity, 0.0);
+        assert_eq!(actors.pop(2).property[&0].quantity, 0.0);
+        assert!((market.mass_closes()[0].exchanged - 1.0).abs() < 1e-9);
+    }
+
+    /// A negative price uses the same whole tender as its magnitude.
+    #[test]
+    fn make_change_uses_the_magnitude_of_a_negative_price() {
+        assert_eq!(make_change(1.0, -1.5, 1.0, 10.0), (1.0, 1.0));
+    }
+
+    /// The only filled tender is skipped. A second tender pays for the first.
+    #[test]
+    fn payment_tender_skips_the_only_tender_and_swaps_the_rest() {
+        let one = [Some(5usize), None, None, None];
+        assert_eq!(payment_tender(&one, 5), None);
+        assert_eq!(payment_tender(&one, 1), Some(5));
+        let two = [Some(5), Some(7), None, None];
+        assert_eq!(payment_tender(&two, 1), Some(5));
+        assert_eq!(payment_tender(&two, 5), Some(7));
+        assert_eq!(payment_tender(&two, 7), Some(5));
+    }
+
+    /// Both sides accept the negative card, so the clear stays there.
+    #[test]
+    fn clearing_price_stays_on_a_negative_amv() {
+        let price = clearing_price(&[(1.0, -0.5)], &[(1.0, -3.0)], -2.0);
+        assert!((price.expect("price") - -2.0).abs() < 1e-9);
+    }
+
+    /// The seller pays two tender to move one unit of a good priced at -2.
+    #[test]
+    fn clear_mass_good_charges_the_seller_for_a_negative_price() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(-2.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let mut actors = Actors::new();
+        let buyer = Pop::new(1);
+        let mut seller = Pop::new(2);
+        seller.property.insert(1, PopPRow::new(4.0));
+        seller
+            .property
+            .insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 1.0).with_accept_price(-0.5),
+            MarketOrder::sell(Actor::Pop(2), 1, 1.0).with_accept_price(-3.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &Factuals::new(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        assert!((actors.pop(1).property[&1].quantity - 1.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&1].quantity - 3.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 8.0).abs() < 1e-9);
+        assert!((market.goods[&OPENING_CURRENCY].paid - 2.0).abs() < 1e-9);
+        // A negative clear is its own holding value.
+        assert!((market.goods[&1].print_units - 1.0).abs() < 1e-9);
+        assert!((market.goods[&1].print_holding - -2.0).abs() < 1e-9);
+        assert!((market.mass_closes()[0].price.expect("price") - -2.0).abs() < 1e-9);
+    }
+
+    /// A sell priced below zero lets that night's decline cross zero.
+    ///
+    /// Rot leaves the positive step. The unsold surplus then takes 3 percent
+    /// of the opening 0.02. The ask of -1 is not written as the price.
+    #[test]
+    fn clear_mass_good_lets_a_negative_sell_cross_zero_at_night() {
+        let mut market = Market::new(1);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(0.02).with_salability(1.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        let orders = [MarketOrder::sell(Actor::Pop(2), 1, 4.0).with_accept_price(-1.0)];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut Actors::new(),
+            &Factuals::new(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        market.note_decay(1, 40.0, 10.0);
+        market.record_keeping(&Factuals::new());
+        let expected = AMV_EPSILON - 0.03 * 0.02;
+        assert!((market.goods[&1].amv - expected).abs() < 1e-12);
+        assert!((market.goods[&OPENING_CURRENCY].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// Limits that do not meet still leave the book on the mass row, with no price.
+    #[test]
+    fn clear_mass_good_records_a_book_that_does_not_trade() {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_amv(3.0));
+        let mut actors = Actors::new();
+        let orders = [
+            MarketOrder::buy(Actor::Pop(1), 1, 4.0).with_accept_price(1.0),
+            MarketOrder::sell(Actor::Pop(2), 1, 4.0).with_accept_price(5.0),
+        ];
+        let history = market.history();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.clear_mass_good(
+            &mut actors,
+            &Factuals::new(),
+            &history,
+            1,
+            OPENING_CURRENCY,
+            &orders,
+            &mut rng,
+        );
+        let close = &market.mass_closes()[0];
+        assert!((close.offered - 4.0).abs() < 1e-9);
+        assert!((close.requested - 4.0).abs() < 1e-9);
+        assert_eq!(close.exchanged, 0.0);
+        assert!(close.price.is_none());
+        assert_eq!(market.goods[&1].print_units, 0.0);
+        assert_eq!(market.goods[&1].traded, 0.0);
+    }
+
+    /// Good 7 is a second tender. It is bought with good 5, and good 5 is not sold for itself.
+    #[test]
+    fn mass_market_swaps_the_second_tender() {
+        let mut market = Market::new(1);
+        market.currencies = [Some(OPENING_CURRENCY), Some(7), None, None];
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0));
+        market.goods.insert(7, MarketGood::new().with_amv(2.0));
+        let mut actors = Actors::new();
+        let mut buyer = Pop::new(1);
+        buyer.property.insert(OPENING_CURRENCY, PopPRow::new(10.0));
+        buyer.desires[0].push(Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
+            amount: 2.0,
+            satisfaction: 0.0,
+            target_taken: vec![0.0],
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        });
+        let mut seller = Pop::new(2);
+        seller.property.insert(7, PopPRow::new(4.0));
+        seat(&mut market, &mut actors, buyer);
+        seat(&mut market, &mut actors, seller);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        market.mass_market(&mut actors, &Factuals::new(), &mut rng);
+        assert!((actors.pop(1).property[&7].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&OPENING_CURRENCY].quantity - 6.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&7].quantity - 2.0).abs() < 1e-9);
+        assert!((actors.pop(2).property[&OPENING_CURRENCY].quantity - 4.0).abs() < 1e-9);
+    }
+
     /// Production on the card is the night's produced snapshot. A good that
     /// was not made reads as zero.
     #[test]
@@ -2069,7 +4143,41 @@ mod tests {
         assert_eq!(history.produced(1), 0.0);
     }
 
-    /// Good 0 is already the unit, so the unsold good's step stays on the card.
+    /// Barter left four tools open. The mass book still wants nine, so the
+    /// plan sees nine. A smaller mass remainder does not shrink the barter book.
+    #[test]
+    fn history_keeps_the_larger_unfilled_want() {
+        let mut market = Market::new(1);
+        let mut tools = MarketGood::new();
+        tools.sought_unmet = 4.0;
+        market.goods.insert(9, tools);
+        market.mass_closes.push(MassClose {
+            good: 9,
+            offered: 0.0,
+            requested: 10.0,
+            exchanged: 1.0,
+            price: None,
+            miss: None,
+        });
+        market.mass_closes.push(MassClose {
+            good: 1,
+            offered: 8.0,
+            requested: 3.0,
+            exchanged: 3.0,
+            price: Some(1.0),
+            miss: None,
+        });
+        let mut grain = MarketGood::new();
+        grain.sought_unmet = 12.0;
+        market.goods.insert(1, grain);
+
+        let history = market.history();
+
+        assert!((history.sought(9) - 9.0).abs() < 1e-12);
+        assert!((history.sought(1) - 12.0).abs() < 1e-12);
+    }
+
+    /// No currency is stored, so the unsold good's step stays on the card.
     #[test]
     fn record_keeping_lowers_an_unsold_good_and_clears_the_tape() {
         let mut market = Market::new(1);
@@ -2086,7 +4194,158 @@ mod tests {
         assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
     }
 
-    /// Payment without a fall raises salability. That good is then the unit.
+    /// A mass surplus that did not trade cuts the opening AMV by 3 percent.
+    /// No currency is stored, so the step stays on good 1.
+    #[test]
+    fn record_keeping_lowers_a_mass_surplus_that_did_not_trade() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(1, 10.0, 0.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - 1.94).abs() < 1e-9);
+        assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// A mass shortage that did not trade raises the opening AMV by 3 percent.
+    /// Good 2 was valued below zero, so its negative card moves up by the
+    /// same share of its magnitude.
+    #[test]
+    fn record_keeping_raises_a_mass_shortage_that_did_not_trade() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(-4.0).with_salability(1.0));
+        market.note_negative_value(2);
+        market.mass_closes.push(idle_close(1, 0.0, 8.0, 0.0));
+        market.mass_closes.push(idle_close(2, 1.0, 6.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - 2.06).abs() < 1e-9);
+        assert!((market.goods[&2].amv - -3.88).abs() < 1e-9);
+    }
+
+    /// Both sides quoted and never shared a price. The card stays, and the
+    /// ask walks a quarter of the way toward it.
+    #[test]
+    fn record_keeping_holds_the_card_when_the_sides_do_not_cross() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        let mut close = idle_close(1, 10.0, 4.0, 0.0);
+        close.miss = Some(MassMiss::NoCross);
+        market.mass_closes.push(close);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.history().ask_walk(1) - 0.25).abs() < 1e-12);
+    }
+
+    /// Both sides quoted and the haul blocked every fill. The card stays.
+    #[test]
+    fn record_keeping_holds_the_card_when_the_haul_blocks_the_book() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        let mut close = idle_close(1, 10.0, 4.0, 0.0);
+        close.miss = Some(MassMiss::Haul);
+        market.mass_closes.push(close);
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.history().ask_walk(1) - 0.25).abs() < 1e-12);
+    }
+
+    /// A trade, a balanced book, an untradeable good, and the only tender
+    /// do not take the idle step.
+    #[test]
+    fn record_keeping_leaves_a_mass_book_that_cannot_move_the_price() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(4.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(4.0).with_salability(1.0));
+        market
+            .goods
+            .insert(3, MarketGood::new().with_amv(4.0).with_salability(1.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(4.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(1, 9.0, 1.0, 2.0));
+        market.mass_closes.push(idle_close(2, 4.0, 4.0, 0.0));
+        market.mass_closes.push(idle_close(3, 6.0, 0.0, 0.0));
+        market
+            .mass_closes
+            .push(idle_close(OPENING_CURRENCY, 6.0, 0.0, 0.0));
+        let mut tags = HashSet::new();
+        tags.insert(GoodTag::Untradeable);
+        let factuals = Factuals::new().with_good(Good {
+            id: 3,
+            name: "sealed".to_string(),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 1.0,
+            tags,
+            categories: Vec::new(),
+        });
+        market.record_keeping(&factuals);
+        // The currency opened at 4, so the restatement divides by that mean.
+        // None of these books took the idle step, so each 4 lands on 1.
+        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&3].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&OPENING_CURRENCY].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// A tender with no positive price means the book cannot trade.
+    /// Nobody valued that tender below zero, so it sits at [`AMV_EPSILON`].
+    /// That mean is not above the dead zone, and the card is not restated.
+    #[test]
+    fn record_keeping_skips_a_mass_book_whose_tender_cannot_pay() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(-1.0));
+        market.mass_closes.push(idle_close(1, 5.0, 0.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&OPENING_CURRENCY].amv - AMV_EPSILON).abs() < 1e-15);
+    }
+
+    /// # Idle Close
+    ///
+    /// One mass row with no clearing price.
+    ///
+    /// `offered`, `requested`, and `exchanged` are the book. Returns that row.
+    fn idle_close(good: usize, offered: f64, requested: f64, exchanged: f64) -> MassClose {
+        MassClose {
+            good,
+            offered,
+            requested,
+            exchanged,
+            price: None,
+            miss: None,
+        }
+    }
+
+    /// Payment without a fall raises salability. No currency is stored,
+    /// so the AMV stays where the night wrote it.
     #[test]
     fn record_keeping_raises_salability_when_payment_does_not_drop_amv() {
         let mut market = Market::new(1);
@@ -2095,7 +4354,7 @@ mod tests {
         good.paid = 4.0;
         market.goods.insert(1, good);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&1].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 2.0).abs() < 1e-9);
         assert!((market.goods[&1].salability - 0.55).abs() < 1e-9);
     }
 
@@ -2140,20 +4399,86 @@ mod tests {
         assert!((market.goods[&1].salability - 1.49).abs() < 1e-9);
     }
 
-    /// Rot that takes the whole price bounces through zero.
+    /// Rot that would take the whole price stops on the positive side of zero.
     ///
-    /// `40 / 10 / 4` is 1, and the rot cap is the whole price. The dead zone
-    /// stores `-AMV_EPSILON`. Salability loses only the loss cap.
+    /// `40 / 10 / 4` is 1, so the rot share is the whole price. Decay leaves
+    /// [`AMV_EPSILON`]. Salability loses only the loss cap.
     #[test]
-    fn record_keeping_total_rot_bounces_through_zero() {
+    fn record_keeping_total_rot_stops_at_epsilon() {
         let mut market = Market::new(1);
         insert_salability_anchor(&mut market);
         market.goods.insert(1, MarketGood::new().with_amv(2.0).with_salability(1.5));
         market.note_decay(1, 40.0, 10.0);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&1].amv - -AMV_EPSILON).abs() < 1e-15);
+        assert!((market.goods[&1].amv - AMV_EPSILON).abs() < 1e-15);
         assert!((market.goods[&1].salability - 1.49).abs() < 1e-9);
         assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// A seller valued this good below zero, so decay leaves the negative price.
+    #[test]
+    fn record_keeping_leaves_a_negative_price_when_the_pile_rots() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(-2.0).with_salability(1.5));
+        market.note_negative_value(1);
+        market.note_decay(1, 40.0, 10.0);
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - -2.0).abs() < 1e-9);
+        assert!((market.goods[&1].salability - 1.5).abs() < 1e-9);
+        assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// Nobody valued the good below zero, so a stored negative is lifted.
+    #[test]
+    fn record_keeping_lifts_a_negative_price_no_one_valued_below_zero() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(-2.0).with_salability(1.5));
+        market.record_keeping(&crate::game::factuals::Factuals::new());
+        assert!((market.goods[&1].amv - AMV_EPSILON).abs() < 1e-15);
+        assert!((market.goods[&1].salability - 1.5).abs() < 1e-9);
+        assert!((market.goods[&0].amv - 1.0).abs() < 1e-9);
+    }
+
+    /// Full rot plus an unsold surplus stops on the positive side of zero.
+    ///
+    /// The rot share is the whole price, then the idle step takes 3 percent
+    /// of the opening 0.02. No seller priced the good below zero.
+    #[test]
+    fn record_keeping_stops_a_rotted_surplus_at_epsilon() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(0.02).with_salability(1.0));
+        market.note_decay(1, 40.0, 10.0);
+        market.mass_closes.push(idle_close(1, 10.0, 0.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        assert!((market.goods[&1].amv - AMV_EPSILON).abs() < 1e-15);
+    }
+
+    /// The same rot and surplus cross zero when a seller priced below zero.
+    ///
+    /// The decline is the idle step, `0.03 * 0.02`, taken after rot has
+    /// left [`AMV_EPSILON`]. The negative minimum is not the new price.
+    #[test]
+    fn record_keeping_lets_a_rotted_surplus_cross_after_a_negative_value() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(0.02).with_salability(1.0));
+        market.note_negative_value(1);
+        market.note_decay(1, 40.0, 10.0);
+        market.mass_closes.push(idle_close(1, 10.0, 0.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        let expected = AMV_EPSILON - 0.03 * 0.02;
+        assert!((market.goods[&1].amv - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -2202,15 +4527,16 @@ mod tests {
         assert_eq!(market.goods[&1].traded, 0.0);
     }
 
-    /// Open buys rise by the unmet step. Salability still picks the unit.
+    /// Open buys rise by the unmet step, then the currency mean restates the card.
     ///
-    /// The coin was paid, so its salability rises, and a negative-AMV payment
-    /// cannot be the unit. The unpaid good at the salability cap is restated
-    /// at 1. The payment scale is 4, so each sought good gains 0.04 before
-    /// that restatement.
+    /// The coin is the only currency. It was paid, so its salability rises.
+    /// The payment scale is 4, so each sought good gains 0.04 before that
+    /// restatement. Dividing by the coin's 4 puts the coin at 1. Good 8
+    /// was valued below zero, so the restatement keeps its sign.
     #[test]
-    fn record_keeping_raises_unmet_buys_and_pegs_the_unit() {
+    fn record_keeping_raises_unmet_buys_and_restates_the_currency() {
         let mut market = Market::new(1);
+        market.currencies = [Some(9), None, None, None];
         let mut dear = MarketGood::new().with_amv(32.0).with_salability(1.0);
         dear.sought_unmet = 10.0;
         let mut cheap = MarketGood::new().with_amv(0.2).with_salability(1.0);
@@ -2219,6 +4545,7 @@ mod tests {
         coin.paid = 3.0;
         let mut debt = MarketGood::new().with_amv(-2.0).with_salability(1.0);
         debt.paid = 100.0;
+        market.note_negative_value(8);
         let jewel = MarketGood::new().with_amv(8.0).with_salability(SALABILITY_MAX);
         market.goods.insert(1, dear);
         market.goods.insert(2, cheap);
@@ -2226,11 +4553,12 @@ mod tests {
         market.goods.insert(9, coin);
         market.goods.insert(8, debt);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&1].amv - 4.005).abs() < 1e-9);
-        assert!((market.goods[&2].amv - 0.03).abs() < 1e-9);
-        assert!((market.goods[&3].amv - 1.0).abs() < 1e-9);
-        assert!((market.goods[&9].amv - 0.5).abs() < 1e-9);
-        assert!((market.goods[&8].amv - -0.25).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 8.01).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 0.06).abs() < 1e-9);
+        assert!((market.goods[&3].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&9].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&8].amv - -0.5).abs() < 1e-9);
+        assert!((market.goods[&9].salability - 1.05).abs() < 1e-9);
     }
 
     /// Open buys put the night's rot back and add a step of the payment scale.
@@ -2303,11 +4631,12 @@ mod tests {
 
     /// The print step cannot exceed 0.05 of the payment scale.
     ///
-    /// The coin's holding value is 4, so the cap is 0.2. The coin is then
-    /// the unit, and the bread step is restated in that coin.
+    /// The coin's holding value is 4, so the cap is 0.2. The coin is the
+    /// currency, and the bread step is restated by that mean.
     #[test]
     fn record_keeping_caps_the_print_step_at_the_payment_scale() {
         let mut market = Market::new(1);
+        market.currencies = [Some(9), None, None, None];
         let mut bread = MarketGood::new().with_amv(1.0).with_salability(1.0);
         bread.traded = 1.0;
         bread.print_units = 1.0;
@@ -2357,9 +4686,10 @@ mod tests {
         assert!((market.goods[&2].traded - 4.0).abs() < 1e-9);
     }
 
-    /// Nothing was paid, so the highest salability is restated at 1.
+    /// Nothing was paid and no currency is stored, so a high salability
+    /// does not restate the card. The unsold good still takes its ease.
     #[test]
-    fn record_keeping_pegs_the_highest_salability_when_nothing_was_paid() {
+    fn record_keeping_does_not_restate_a_high_salability_good() {
         let mut market = Market::new(1);
         let mut grain = MarketGood::new().with_amv(2.0).with_salability(1.0);
         grain.offered_unsold = 10.0;
@@ -2368,15 +4698,15 @@ mod tests {
             .goods
             .insert(2, MarketGood::new().with_amv(4.0).with_salability(1.5));
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 4.0).abs() < 1e-9);
         assert!((market.goods[&2].salability - 1.5).abs() < 1e-9);
-        assert!((market.goods[&1].amv - 0.49875).abs() < 1e-9);
+        assert!((market.goods[&1].amv - 1.995).abs() < 1e-9);
         assert!((market.goods[&1].salability - 0.9975).abs() < 1e-9);
     }
 
-    /// Equal salability and no payment goes to the lower id.
+    /// The stored currency is restated at 1. The other good keeps the ratio.
     #[test]
-    fn record_keeping_breaks_an_unpaid_tie_toward_the_lower_id() {
+    fn record_keeping_restates_the_card_in_the_stored_currency() {
         let mut market = Market::new(1);
         market
             .goods
@@ -2385,18 +4715,15 @@ mod tests {
             .goods
             .insert(2, MarketGood::new().with_amv(4.0).with_salability(1.0));
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
-        assert!((market.goods[&5].amv - 2.0).abs() < 1e-9);
+        assert!((market.goods[&5].amv - 1.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 0.5).abs() < 1e-9);
     }
 
-    /// Equal salability goes to the good that was paid for more.
-    ///
-    /// Both are paid and neither price falls, so both salabilities rise by
-    /// the same step and stay tied. The higher id carries the larger
-    /// payment value and is restated at 1.
+    /// Two currencies average 1. Payment still raises both salabilities.
     #[test]
-    fn record_keeping_breaks_a_salability_tie_toward_the_paid_value() {
+    fn record_keeping_restates_the_card_so_the_currencies_average_one() {
         let mut market = Market::new(1);
+        market.currencies = [Some(5), Some(2), None, None];
         let mut small = MarketGood::new().with_amv(4.0).with_salability(1.0);
         small.paid = 1.0;
         let mut large = MarketGood::new().with_amv(8.0).with_salability(1.0);
@@ -2404,17 +4731,46 @@ mod tests {
         market.goods.insert(2, small);
         market.goods.insert(5, large);
         market.record_keeping(&crate::game::factuals::Factuals::new());
-        assert!((market.goods[&5].amv - 1.0).abs() < 1e-9);
-        assert!((market.goods[&2].amv - 0.5).abs() < 1e-9);
+        assert!((market.goods[&5].amv - 8.0 / 6.0).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 4.0 / 6.0).abs() < 1e-9);
         assert!((market.goods[&5].salability - 1.05).abs() < 1e-9);
         assert!((market.goods[&2].salability - 1.05).abs() < 1e-9);
+        let mean = (market.goods[&5].amv + market.goods[&2].amv) / 2.0;
+        assert!((mean - 1.0).abs() < 1e-9);
+    }
+
+    /// An offered book that does not trade walks the ask a quarter of the way
+    /// toward the card. A later fill walks a quarter of the way back.
+    /// A book with no offer does not walk.
+    #[test]
+    fn record_keeping_walks_a_refused_ask_and_eases_a_fill() {
+        let mut market = Market::new(1);
+        market
+            .goods
+            .insert(OPENING_CURRENCY, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(2.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(1, 10.0, 0.0, 0.0));
+        market.mass_closes.push(idle_close(2, 0.0, 5.0, 0.0));
+        market.record_keeping(&Factuals::new());
+        assert!((market.history().ask_walk(1) - 0.25).abs() < 1e-12);
+        assert_eq!(market.history().ask_walk(2), 0.0);
+
+        market.mass_closes = vec![idle_close(1, 10.0, 4.0, 4.0)];
+        market.record_keeping(&Factuals::new());
+        assert!((market.history().ask_walk(1) - 0.1875).abs() < 1e-12);
     }
 
     /// # Insert Salability Anchor
     ///
     /// Inserts good 0 at AMV 1 and [`SALABILITY_MAX`].
     ///
-    /// The other good then keeps the AMV this night's step wrote.
+    /// Good 0 is not a currency. With no currency stored, the peg does not
+    /// restate the card, so the other good keeps the AMV this night's step wrote.
     fn insert_salability_anchor(market: &mut Market) {
         market.goods.insert(
             0,

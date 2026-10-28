@@ -1,5 +1,7 @@
 # Opening board for examples/pop_tester. Good names are world names.
 # An omitted amv or salability is 1.0.
+# Tender slots, in order. The first pays for an ordinary good.
+currencies = ["grain", "gold"]
 
 [[market]]
 good = "time"
@@ -15,6 +17,10 @@ amv = 1
 
 [[market]]
 good = "bread"
+amv = 1
+
+[[market]]
+good = "gold"
 amv = 1
 
 [[market]]

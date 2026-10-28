@@ -50,8 +50,6 @@ fn main() {
             eprintln!("{err}");
             std::process::exit(1);
         });
-    let mut pop_ids: Vec<usize> = scenario.market.pops.iter().copied().collect();
-    pop_ids.sort_unstable();
     let mut firm_ids: Vec<usize> = scenario.market.firms.iter().copied().collect();
     firm_ids.sort_unstable();
     let market_id = scenario.market.id;
@@ -75,7 +73,7 @@ fn main() {
         let meetings = market.market_day(&mut actors, &factuals, &mut rng);
         print_exchanges(&factuals, &meetings);
         print_firms(&factuals, &actors, &firm_ids, "firms");
-        print_pops(&factuals, &mut actors, &pop_ids);
+        print_pops(&factuals, &mut actors);
         print_market_board(&factuals, market);
     }
 }
@@ -210,11 +208,13 @@ fn stock(factuals: &Factuals, firm: &Firm) -> String {
 
 /// # Print Pops
 ///
-/// Prints each pop's standard of living and what they still hold.
+/// Prints each pop still stored: standard of living and what they hold.
 ///
-/// `ids` is the pop order. Standard of living is today's satisfaction,
-/// including desire bonuses. Holdings skip goods whose quantity is 0.
-fn print_pops(factuals: &Factuals, actors: &mut Actors, ids: &[usize]) {
+/// Standard of living is today's satisfaction, including desire bonuses.
+/// Holdings skip goods whose quantity is 0. A pop removed during the day
+/// is absent. Rows are lowest id first.
+fn print_pops(factuals: &Factuals, actors: &mut Actors) {
+    let ids = living_pops(actors);
     let rows = ids
         .iter()
         .map(|id| {
@@ -239,6 +239,17 @@ fn print_pops(factuals: &Factuals, actors: &mut Actors, ids: &[usize]) {
         })
         .collect::<Vec<_>>();
     print_table("pops", &["pop", "sol", "holdings"], &rows);
+}
+
+/// # Living Pops
+///
+/// Pop ids still stored on `actors`, lowest id first.
+///
+/// The opening scenario list is not consulted. A pruned pop is absent.
+fn living_pops(actors: &Actors) -> Vec<usize> {
+    let mut ids: Vec<usize> = actors.pops.keys().copied().collect();
+    ids.sort_unstable();
+    ids
 }
 
 /// # Print Market Board

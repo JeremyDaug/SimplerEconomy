@@ -61,6 +61,7 @@ inputs = [
     { good = 0, amount = 2.0 },
     { good = 1, amount = 1.0 },
     { good = 2, amount = 1.0 },
+    { good = 7, amount = 0.2 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 31, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 31, amount = 1.1 } }, { output = 0.5 }] },
 ]

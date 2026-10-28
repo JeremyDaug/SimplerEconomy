@@ -194,8 +194,8 @@ pub enum GoodTag {
     /// A skill. Priced like any other good, and tradeable.
     Skill,
     /// Pays intramarket friction (time, cargo, shipping). The value is
-    /// friction cover per unit (1.0 = time baseline). Spent by the buyer
-    /// after a completed deal, and on a washed meeting for the flat fee.
+    /// friction cover per unit (1.0 = time baseline). Barter spends it from
+    /// the buyer. A mass fill spends it from both sides.
     Transport(f64),
 }
 
