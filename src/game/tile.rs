@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use hexx::Hex;
 
 /// # Hex
-/// 
-/// Hex is our smallest unit of concrete spacial data. Everything beneath this is 
-/// abstracted. 
+///
+/// Hex is our smallest unit of concrete spacial data. Everything beneath this is
+/// abstracted.
 #[derive(Debug, Clone)]
 pub struct Tile {
     /// The Hex location of the tile, effectively the tile's unique ID.
@@ -14,7 +14,7 @@ pub struct Tile {
     pub region: Option<usize>,
     pub claims: HashMap<usize, f32>,
     /// The current owner, regardless of claims.
-    /// If this is set to empty, then it is either unowned or 
+    /// If this is set to empty, then it is either unowned or
     /// owned by whoever has the highest claim on it.
     pub occupier: Option<usize>,
 }

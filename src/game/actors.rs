@@ -137,17 +137,14 @@ impl Actors {
 
         rayon::scope(|s| {
             s.spawn(|_| {
-                pops.par_iter_mut()
-                    .for_each(|(_, pop)| {
-                        let _ = pop.decay_goods(factuals);
-                    });
+                pops.par_iter_mut().for_each(|(_, pop)| {
+                    let _ = pop.decay_goods(factuals);
+                });
             });
             s.spawn(|_| {
-                firms
-                    .par_iter_mut()
-                    .for_each(|(_, firm)| {
-                        let _ = firm.decay_goods(factuals);
-                    });
+                firms.par_iter_mut().for_each(|(_, firm)| {
+                    let _ = firm.decay_goods(factuals);
+                });
             });
             s.spawn(|_| {
                 institutions
@@ -156,7 +153,7 @@ impl Actors {
             });
         });
     }
-    
+
     /// # Day Start
     ///
     /// Gives each pop its morning goods and records them on that pop's market.
@@ -175,9 +172,9 @@ impl Actors {
             let Some(&market_id) = homes.get(pop_id) else {
                 continue;
             };
-            let market = markets.get_mut(&market_id).unwrap_or_else(|| {
-                panic!("market {market_id} is not in the day-start set")
-            });
+            let market = markets
+                .get_mut(&market_id)
+                .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
             for (good_id, amount) in added {
                 if amount > 0.0 {
                     market.note_supply(good_id, amount);

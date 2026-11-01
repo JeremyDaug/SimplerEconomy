@@ -67,15 +67,9 @@ pub enum SentimentKind {
 pub enum SentimentMod {
     /// Absolute share of the whole pop into (positive) or out of (negative) `kind`.
     /// Other axes scale proportionally — no donor named.
-    Flat {
-        kind: SentimentKind,
-        delta: f64,
-    },
+    Flat { kind: SentimentKind, delta: f64 },
     /// Relative change to `kind`'s current share, then renormalize.
-    Relative {
-        kind: SentimentKind,
-        relative: f64,
-    },
+    Relative { kind: SentimentKind, relative: f64 },
     /// Transfer a share from one mood to another.
     Transfer {
         from: SentimentKind,
@@ -130,13 +124,7 @@ impl Sentiment {
     ///
     /// Debug-asserts each part is **finite and ≥ 0**, and that the total is
     /// **positive**. Does not accept negatives or an all-zero vector.
-    pub fn from_parts(
-        happiness: f64,
-        contentment: f64,
-        anger: f64,
-        fear: f64,
-        hope: f64,
-    ) -> Self {
+    pub fn from_parts(happiness: f64, contentment: f64, anger: f64, fear: f64, hope: f64) -> Self {
         let s = Self {
             happiness,
             contentment,
@@ -275,7 +263,10 @@ impl Sentiment {
     ///
     /// Requires a valid [`Sentiment`].
     pub fn adjust_global_share(&mut self, kind: SentimentKind, delta: f64) {
-        debug_assert!(self.is_valid(), "adjust_global_share requires a valid Sentiment.");
+        debug_assert!(
+            self.is_valid(),
+            "adjust_global_share requires a valid Sentiment."
+        );
         debug_assert!(delta.is_finite(), "Delta must be finite.");
         if delta == 0.0 {
             return;
@@ -286,7 +277,10 @@ impl Sentiment {
             self.shift_out(kind, -delta);
         }
         self.renormalize();
-        debug_assert!(self.is_valid(), "Sentiment shares must form a unit partition.");
+        debug_assert!(
+            self.is_valid(),
+            "Sentiment shares must form a unit partition."
+        );
     }
 
     /// # Add Share
@@ -301,17 +295,17 @@ impl Sentiment {
     }
 
     /// # Apply Mods Simultaniously
-    /// 
+    ///
     /// Given a list of mods, it applies all of them to the sentiment at once.
-    /// 
+    ///
     /// - `Flat` are added to to the base.
     /// - `Relative` multiply against the base then applies that to the output.
-    /// 
+    ///
     /// After modifiers are collected and applied, negative shares are clamped to 0.
     /// If the result is all 0s, then we return `Self::Content` as a fallback.
     /// Otherwise, it renormalizes the sentiment.
-    /// 
-    /// This is intended for batch applications of modifications, as applying 
+    ///
+    /// This is intended for batch applications of modifications, as applying
     /// sequentially can lead to unintended interactions.
     pub fn apply_mods_simultaniously(&mut self, mods: impl IntoIterator<Item = SentimentMod>) {
         debug_assert!(
@@ -373,12 +367,10 @@ impl Sentiment {
     pub fn apply_mod(&mut self, m: SentimentMod) {
         match m {
             SentimentMod::Flat { kind, delta } => self.adjust_global_share(kind, delta),
-            SentimentMod::Relative { kind, relative } => {
-                self.adjust_part_relative(kind, relative)
-            }
+            SentimentMod::Relative { kind, relative } => self.adjust_part_relative(kind, relative),
             SentimentMod::Transfer { from, to, amount } => {
                 self.transfer(from, to, amount);
-            },
+            }
         }
     }
 
@@ -403,7 +395,10 @@ impl Sentiment {
     ///
     /// Requires a valid [`Sentiment`].
     pub fn adjust_part_relative(&mut self, kind: SentimentKind, relative: f64) {
-        debug_assert!(self.is_valid(), "adjust_part_relative requires a valid Sentiment.");
+        debug_assert!(
+            self.is_valid(),
+            "adjust_part_relative requires a valid Sentiment."
+        );
         debug_assert!(relative.is_finite(), "Relative must be finite.");
         let current = self.get(kind);
         // Full wipe and beyond: clamp to 0 rather than rejecting the call.
@@ -415,7 +410,10 @@ impl Sentiment {
         } else {
             self.renormalize();
         }
-        debug_assert!(self.is_valid(), "Sentiment shares must form a unit partition.");
+        debug_assert!(
+            self.is_valid(),
+            "Sentiment shares must form a unit partition."
+        );
     }
 
     /// # Adjust By People
@@ -451,7 +449,10 @@ impl Sentiment {
         self.set_raw(from, self.get(from) - take);
         self.set_raw(to, self.get(to) + take);
         self.renormalize();
-        debug_assert!(self.is_valid(), "Sentiment shares must form a unit partition.");
+        debug_assert!(
+            self.is_valid(),
+            "Sentiment shares must form a unit partition."
+        );
     }
 
     /// # Transfer People
@@ -518,7 +519,13 @@ impl Sentiment {
         debug_assert!(any, "Blend requires at least one (Sentiment, weight) pair.");
         debug_assert!(wsum > f64::EPSILON, "Blend weight sum must be positive.");
         // Weighted average of unit partitions is unit; construct via from_parts path.
-        Self::from_parts(acc_h / wsum, acc_c / wsum, acc_a / wsum, acc_f / wsum, acc_p / wsum)
+        Self::from_parts(
+            acc_h / wsum,
+            acc_c / wsum,
+            acc_a / wsum,
+            acc_f / wsum,
+            acc_p / wsum,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -526,12 +533,12 @@ impl Sentiment {
     // -----------------------------------------------------------------------
 
     /// # Shift In
-    /// 
+    ///
     /// Shifts percentage `amount` of the total weight into the given `kind`.
-    /// 
-    /// Does this by adding `amount` to the given kind, then scaling the rest down 
+    ///
+    /// Does this by adding `amount` to the given kind, then scaling the rest down
     /// relative to their current weight. While it should be close to 1.0 total, it may
-    /// be off due to floating point error, so it is recommended to call 
+    /// be off due to floating point error, so it is recommended to call
     /// [`Self::renormalize`] after this.
     fn shift_in(&mut self, kind: SentimentKind, amount: f64) {
         debug_assert!(amount.is_finite(), "shift_in amount must be finite.");
@@ -556,12 +563,12 @@ impl Sentiment {
     }
 
     /// # Shift Out
-    /// 
+    ///
     /// Shifts percentage `amount` of the total weight out of the given `kind`.
-    /// 
-    /// Does this by subtracting `amount` from the given kind, then scaling the rest up 
+    ///
+    /// Does this by subtracting `amount` from the given kind, then scaling the rest up
     /// relative to their current weight. While it should be close to 1.0 total, it may
-    /// be off due to floating point error, so it is recommended to call 
+    /// be off due to floating point error, so it is recommended to call
     /// [`Self::renormalize`] after this.
     fn shift_out(&mut self, kind: SentimentKind, amount: f64) {
         debug_assert!(amount.is_finite(), "shift_out amount must be finite.");

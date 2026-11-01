@@ -58,9 +58,9 @@ const PARTNERSHIP_TREND: f64 = 0.13;
 
 impl Household {
     /// # New
-    /// 
-    /// Creates a new household with default values. 
-    /// 
+    ///
+    /// Creates a new household with default values.
+    ///
     /// 1 Household of 2 adults, 2.5 Children, 0.5 elders. All 50% male/female.
     /// Adult labor is 1.0, elder labor is 0.7, and child labor is 0.3.
     pub fn new() -> Self {
@@ -153,21 +153,21 @@ impl Household {
     }
 
     /// # Total Adults
-    /// 
+    ///
     /// Returns the total number of adults in the household.
     pub fn total_adults(&self) -> f64 {
         self.count * self.adult
     }
 
     /// # Total Elders
-    /// 
+    ///
     /// Returns the total numbers of elders in the household.
     pub fn total_elders(&self) -> f64 {
         self.count * self.elder
     }
 
     /// # Total Children
-    /// 
+    ///
     /// Returns the total numbers of children in the household.
     pub fn total_children(&self) -> f64 {
         self.count * self.child
@@ -212,18 +212,60 @@ impl Household {
         let old = self.count;
         let new_count = old + households;
         let (adult, adult_mf) = blend_band(
-            old, self.adult, self.adult_mf, households, from.adult, from.adult_mf, new_count,
+            old,
+            self.adult,
+            self.adult_mf,
+            households,
+            from.adult,
+            from.adult_mf,
+            new_count,
         );
         let (elder, elder_mf) = blend_band(
-            old, self.elder, self.elder_mf, households, from.elder, from.elder_mf, new_count,
+            old,
+            self.elder,
+            self.elder_mf,
+            households,
+            from.elder,
+            from.elder_mf,
+            new_count,
         );
         let (child, child_mf) = blend_band(
-            old, self.child, self.child_mf, households, from.child, from.child_mf, new_count,
+            old,
+            self.child,
+            self.child_mf,
+            households,
+            from.child,
+            from.child_mf,
+            new_count,
         );
-        self.adult_labor = blend_rate(old, self.adult_labor, households, from.adult_labor, new_count);
-        self.elder_labor = blend_rate(old, self.elder_labor, households, from.elder_labor, new_count);
-        self.child_labor = blend_rate(old, self.child_labor, households, from.child_labor, new_count);
-        self.partnership_rate = blend_rate(old, self.partnership_rate, households, from.partnership_rate, new_count);
+        self.adult_labor = blend_rate(
+            old,
+            self.adult_labor,
+            households,
+            from.adult_labor,
+            new_count,
+        );
+        self.elder_labor = blend_rate(
+            old,
+            self.elder_labor,
+            households,
+            from.elder_labor,
+            new_count,
+        );
+        self.child_labor = blend_rate(
+            old,
+            self.child_labor,
+            households,
+            from.child_labor,
+            new_count,
+        );
+        self.partnership_rate = blend_rate(
+            old,
+            self.partnership_rate,
+            households,
+            from.partnership_rate,
+            new_count,
+        );
         self.count = new_count;
         self.adult = adult;
         self.elder = elder;
@@ -235,25 +277,30 @@ impl Household {
 
     /// # Update
     ///
-    /// Advance this household group by one turn (one year) under `rates`.
+    /// Advance this household group by one turn under `rates`.
     ///
-    /// `rates` is the **final** rate bundle for this tick: baseline demographic rates
-    /// plus any modifiers (desires, institutions, events, stored effects, etc.) already
-    /// folded in by the caller. This method does not apply a second modifier pass.
-    /// 
-    /// All rates are allowed to be negative, but negative values go to zero. 
-    /// Some rates are capped at 1.0 to ensure no funny overflow occurs, infant 
-    /// mortality, 
+    /// `rates` is the annual bundle for this tick: baseline demographic rates
+    /// plus modifiers already folded in by the caller. This method does not
+    /// apply a second modifier pass. `turn_length` is how many turns make one
+    /// year. Births per woman, age-band mortality, aging, and the partnership
+    /// step are those annual rates divided by `turn_length`. Infant mortality
+    /// and maternal mortality stay fractions of the births in this turn. The
+    /// partnership target is not divided.
+    ///
+    /// Negative rates go to zero where they are applied. Infant mortality is
+    /// capped at 1.
     ///
     /// Flow (start-of-turn composition is non-negative by invariant):
     /// 1. Live births from adult women, reduced by infant mortality; newborns 50/50 sex.
     /// 2. Age-band deaths (rate = total + sex, stacked), then maternal deaths on remaining women.
-    /// 3. Aging from **survivors** (children/20, adults/40) so bands cannot go negative.
+    /// 3. Aging from survivors (children over 20 years, adults over 40), scaled by
+    ///    `turn_length`, so bands cannot go negative.
     /// 4. `count = (total_adults + total_elders) / partnership_rate` when adults+elders remain;
     ///    averages and female fractions are rebuilt from end-of-turn totals.
     ///
-    /// Labor rates are not modified. Empty / dead groups zero out composition and count.
-    pub fn update(&mut self, rates: &DemographicRates) {
+    /// Labor rates are not modified. Empty groups zero out composition and count.
+    /// Nothing is returned.
+    pub fn update(&mut self, rates: &DemographicRates, turn_length: f64) {
         debug_assert!(
             self.count >= 1.0,
             "Household must have 1 or more households at the start."
@@ -262,6 +309,10 @@ impl Household {
             rates.partnership_rate > 0.0 && rates.partnership_rate.is_finite(),
             "partnership_rate must be finite and > 0, got {}",
             rates.partnership_rate
+        );
+        debug_assert!(
+            turn_length.is_finite() && turn_length >= 1.0,
+            "turn_length must be finite and >= 1, got {turn_length}"
         );
         self.debug_assert_sex_ratios_valid();
         self.debug_assert_member_sizes_valid();
@@ -279,10 +330,13 @@ impl Household {
         let curr_children_f = curr_children * self.child_mf;
         let curr_children_m = curr_children - curr_children_f;
 
-        // --- Rate floors (modifiers may push stored rates negative) ----------
-        let birth_per_woman = rates.birth_per_woman.max(0.0);
+        // One turn is 1/turn_length of the annual stock rates. Infant and maternal stay whole.
+        let birth_per_woman = (rates.birth_per_woman / turn_length).max(0.0);
         let infant_mortality = rates.infant_mortality.clamp(0.0, 1.0);
-        let maternal_mortality = rates.maternal_mortality.clamp(0.0, 1.0); 
+        let maternal_mortality = rates.maternal_mortality.clamp(0.0, 1.0);
+        let child_mortality = band_per_turn(rates.child_mortality, turn_length);
+        let adult_mortality = band_per_turn(rates.adult_mortality, turn_length);
+        let elder_mortality = band_per_turn(rates.elder_mortality, turn_length);
 
         // --- 1. Births ------------------------------------------------------
         let live_births = curr_adults_f * birth_per_woman * (1.0 - infant_mortality);
@@ -291,13 +345,13 @@ impl Household {
 
         // --- 2. Deaths, then maternal on remaining adult women --------------
         let (child_death_m, child_death_f) =
-            sex_band_deaths(curr_children_m, curr_children_f, rates.child_mortality);
+            sex_band_deaths(curr_children_m, curr_children_f, child_mortality);
         let (adult_death_m, adult_death_f) =
-            sex_band_deaths(curr_adults_m, curr_adults_f, rates.adult_mortality);
+            sex_band_deaths(curr_adults_m, curr_adults_f, adult_mortality);
         let (elder_death_m, elder_death_f) =
-            sex_band_deaths(curr_elders_m, curr_elders_f, rates.elder_mortality);
+            sex_band_deaths(curr_elders_m, curr_elders_f, elder_mortality);
 
-        let remain_children_m = curr_children_m - child_death_m; 
+        let remain_children_m = curr_children_m - child_death_m;
         let remain_children_f = curr_children_f - child_death_f;
         let remain_adults_m = curr_adults_m - adult_death_m;
         let mut remain_adults_f = curr_adults_f - adult_death_f;
@@ -308,10 +362,12 @@ impl Household {
         remain_adults_f -= maternal_deaths;
 
         // --- 3. Aging from survivors (keeps end bands non-negative) ---------
-        let child_aging_m = remain_children_m / CHILDHOOD_YEARS;
-        let child_aging_f = remain_children_f / CHILDHOOD_YEARS;
-        let adult_aging_m = remain_adults_m / ADULTHOOD_YEARS;
-        let adult_aging_f = remain_adults_f / ADULTHOOD_YEARS;
+        let childhood = CHILDHOOD_YEARS * turn_length;
+        let adulthood = ADULTHOOD_YEARS * turn_length;
+        let child_aging_m = remain_children_m / childhood;
+        let child_aging_f = remain_children_f / childhood;
+        let adult_aging_m = remain_adults_m / adulthood;
+        let adult_aging_f = remain_adults_f / adulthood;
 
         let end_children_m = remain_children_m + births_m - child_aging_m;
         let end_children_f = remain_children_f + births_f - child_aging_f;
@@ -339,7 +395,11 @@ impl Household {
         }
 
         // 4. Tug household parntership factor and size to be closer to the parntership rate given.
-        let new_partnership = lerp(curr_partnership, rates.partnership_rate, PARTNERSHIP_TREND);
+        let new_partnership = lerp(
+            curr_partnership,
+            rates.partnership_rate,
+            PARTNERSHIP_TREND / turn_length,
+        );
         let partners = end_adults + end_elders;
         if partners > 0.0 {
             self.count = partners / new_partnership;
@@ -391,7 +451,11 @@ fn blend_band(
     let old_people = old_count * old_avg;
     let add_people = add_count * add_avg;
     let people = old_people + add_people;
-    let avg = if new_count > 0.0 { people / new_count } else { old_avg };
+    let avg = if new_count > 0.0 {
+        people / new_count
+    } else {
+        old_avg
+    };
     let mf = if people > 0.0 {
         (old_people * old_mf + add_people * add_mf) / people
     } else {
@@ -425,6 +489,21 @@ fn nonneg_finite(v: f64) -> bool {
     v.is_finite() && v >= 0.0
 }
 
+/// # Band Per Turn
+///
+/// Age-band mortality for one turn.
+///
+/// `rates` is the annual `(total, male, female)` triple. `turn_length` is
+/// how many turns make a year. Each part is divided by that length. Returns
+/// the turn's triple.
+fn band_per_turn(rates: (f64, f64, f64), turn_length: f64) -> (f64, f64, f64) {
+    (
+        rates.0 / turn_length,
+        rates.1 / turn_length,
+        rates.2 / turn_length,
+    )
+}
+
 /// Deaths for one age band: each sex uses stacked `total + sex` rate (floored at 0).
 /// Rate above 1.0 wipes that sex in the band. Callers pass non-negative headcounts.
 fn sex_band_deaths(males: f64, females: f64, rates: (f64, f64, f64)) -> (f64, f64) {
@@ -440,7 +519,10 @@ fn sex_band_deaths(males: f64, females: f64, rates: (f64, f64, f64)) -> (f64, f6
 /// Female fraction from female headcount and band total; `0.5` if the band is empty.
 fn female_fraction(females: f64, total: f64) -> f64 {
     let result = females / total;
-    debug_assert!(0.0 <= result && result <= 1.0, "Female Fraction somehow left bounds!");
+    debug_assert!(
+        0.0 <= result && result <= 1.0,
+        "Female Fraction somehow left bounds!"
+    );
     result
 }
 
@@ -521,6 +603,7 @@ impl BirthSentiment {
 /// # Demographic Rates
 ///
 /// Birth, mortality, and household-formation parameters for [`Household::update`].
+/// Stock rates are per year, and that update divides them by the turn length.
 /// Values may be stored uncapped from modifiers; [`Household::update`] clamps
 /// infant mortality to `0..=1` and floors other rates at 0 where needed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -637,8 +720,7 @@ impl DemographicRates {
         }
 
         let has_age = target.intersects(HouseholdTarget::ANY_AGE);
-        let has_special =
-            target.intersects(HouseholdTarget::INFANTS | HouseholdTarget::MATERNAL);
+        let has_special = target.intersects(HouseholdTarget::INFANTS | HouseholdTarget::MATERNAL);
         // Pure infant/maternal: leave age-band triples alone.
         // Otherwise (any age bit, or neither age nor special) apply to ages.
         let apply_ages = has_age || !has_special;
@@ -665,11 +747,7 @@ impl DemographicRates {
 }
 
 /// Route a mortality delta into a `(total, male, female)` triple from sex flags.
-fn apply_sex_band_mortality(
-    band: &mut (f64, f64, f64),
-    target: HouseholdTarget,
-    rate: f64,
-) {
+fn apply_sex_band_mortality(band: &mut (f64, f64, f64), target: HouseholdTarget, rate: f64) {
     let male = target.contains(HouseholdTarget::MALE);
     let female = target.contains(HouseholdTarget::FEMALE);
     match (male, female) {
@@ -720,7 +798,7 @@ mod household_new_update_should {
     #[should_panic(expected = "Household must have 1 or more households")]
     fn update_requires_count_at_least_one() {
         let mut h = Household::with_count(0.0);
-        h.update(&DemographicRates::baseline());
+        h.update(&DemographicRates::baseline(), 1.0);
     }
 
     #[test]
@@ -740,7 +818,7 @@ mod household_new_update_should {
         let mut h = Household::with_count(10.0);
         let rates = DemographicRates::baseline();
         let before = h.total_count();
-        h.update(&rates);
+        h.update(&rates, 1.0);
         assert_finite_household(&h);
         assert!(h.count > 0.0);
         assert!(h.total_count() > 0.0);
@@ -766,7 +844,7 @@ mod household_new_update_should {
         rates.adult_mortality = (0.0, 0.0, 0.5);
         rates.birth_per_woman = 0.0;
         rates.maternal_mortality = 0.0;
-        h.update(&rates);
+        h.update(&rates, 1.0);
         assert!(
             h.adult_mf < 0.5,
             "female-heavy adult mortality should lower adult female fraction, got {}",
@@ -791,7 +869,7 @@ mod household_new_update_should {
             elder_mortality: (2.0, 0.0, 0.0),
             partnership_rate: 2.5,
         };
-        h.update(&rates);
+        h.update(&rates, 1.0);
         assert_eq!(h.count, 0.0);
         assert_eq!(h.adult, 0.0);
         assert_eq!(h.elder, 0.0);
@@ -811,12 +889,50 @@ mod household_new_update_should {
         rates.maternal_mortality = 0.0;
         rates.infant_mortality = 0.0;
         rates.birth_per_woman = 1.0; // one birth per woman
-        h.update(&rates);
+        h.update(&rates, 1.0);
         assert!(h.child > 0.0);
         assert!(
             (h.child_mf - 0.5).abs() < 1e-9,
             "newborns should be 50/50, child_mf={}",
             h.child_mf
+        );
+    }
+
+    #[test]
+    fn update_splits_the_year_and_keeps_infant_mortality() {
+        let mut h = Household::with_members(2.0, 0.0, 0.0);
+        h.adult_mf = 0.5;
+        let mut rates = DemographicRates::zero();
+        rates.birth_per_woman = 0.30;
+        rates.infant_mortality = 0.10;
+        rates.partnership_rate = 2.0;
+        h.update(&rates, 12.0);
+        // One woman. Births are 0.30/12. A tenth of those births die.
+        assert!(
+            (h.child * h.count - 0.0225).abs() < 1e-9,
+            "live births {}",
+            h.child * h.count
+        );
+        assert!(
+            (h.elder * h.count - 2.0 / 480.0).abs() < 1e-9,
+            "elders {}",
+            h.elder * h.count
+        );
+    }
+
+    #[test]
+    fn update_splits_the_partnership_step() {
+        let mut h = Household::new();
+        h.partnership_rate = 4.0;
+        let mut rates = DemographicRates::zero();
+        rates.partnership_rate = 2.5;
+        h.update(&rates, 12.0);
+        // The step sets adults+elders per household. The stored rate stays.
+        let expected = 4.0 + (2.5 - 4.0) * (0.13 / 12.0);
+        assert!(
+            (h.adult + h.elder - expected).abs() < 1e-9,
+            "adults+elders {}",
+            h.adult + h.elder
         );
     }
 }

@@ -140,11 +140,7 @@ impl PaymentTerm {
     /// Whole-unit quantity owed at `hours`.
     pub fn promised_qty(&self, hours: f64) -> f64 {
         let raw = self.quantity_for(hours);
-        if raw <= 0.0 {
-            0.0
-        } else {
-            whole_units_up(raw)
-        }
+        if raw <= 0.0 { 0.0 } else { whole_units_up(raw) }
     }
 }
 

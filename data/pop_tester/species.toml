@@ -35,6 +35,13 @@ scalar = "all"
 good = "water"
 efficiency = 1
 
+# Leftover stock, after desires. Not reserved, shopped, or planned.
+# One household consuming one unit adds this much to its standard of living.
+
+[[species.sinks]]
+good = "time"
+efficiency = 0.01
+
 # Twice the food and half the water of human, by efficiency. A desire
 # amount stays at least 1. Bread is still twice grain. A different species
 # does not migrate onto another species.
@@ -66,3 +73,9 @@ scalar = "all"
 [[species.desires.goods]]
 good = "water"
 efficiency = 2
+
+# Same rest as human.
+
+[[species.sinks]]
+good = "time"
+efficiency = 0.01

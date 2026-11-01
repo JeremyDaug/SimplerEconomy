@@ -114,18 +114,17 @@ fn owned(firm: Firm, row: &FirmRow, pops: &HashSet<usize>) -> Result<Firm, Strin
         return Ok(firm);
     }
     if !pops.contains(&row.owner) {
-        return Err(format!("firm {} owner pop {} is not in pops.toml", row.id, row.owner));
+        return Err(format!(
+            "firm {} owner pop {} is not in pops.toml",
+            row.id, row.owner
+        ));
     }
     let firm = firm.with_owner(Actor::Pop(row.owner));
     match (row.profit_share, row.liable) {
-        (Some(_), true) => Err(format!(
-            "firm {} sets both profit_share and liable",
-            row.id
-        )),
-        (Some(share), false) if !(0.0..=1.0).contains(&share) => Err(format!(
-            "firm {} needs a profit_share from 0 to 1",
-            row.id
-        )),
+        (Some(_), true) => Err(format!("firm {} sets both profit_share and liable", row.id)),
+        (Some(share), false) if !(0.0..=1.0).contains(&share) => {
+            Err(format!("firm {} needs a profit_share from 0 to 1", row.id))
+        }
         (Some(share), false) => Ok(firm.with_owner_profit_share(share)),
         (None, true) => Ok(firm.with_owner_liability()),
         (None, false) => Ok(firm),
@@ -138,7 +137,10 @@ fn owned(firm: Firm, row: &FirmRow, pops: &HashSet<usize>) -> Result<Firm, Strin
 ///
 /// `goods` resolves each name. Quantity must be `>= 0`. Reserve must be
 /// `>= 0` and no more than that quantity.
-fn stock(row: &FirmRow, goods: &HashMap<String, usize>) -> Result<HashMap<usize, FirmPRow>, String> {
+fn stock(
+    row: &FirmRow,
+    goods: &HashMap<String, usize>,
+) -> Result<HashMap<usize, FirmPRow>, String> {
     let mut property = HashMap::new();
     for stock in &row.stock {
         if !stock.quantity.is_finite() || stock.quantity < 0.0 {

@@ -22,6 +22,10 @@ pub const TIME_PER_LABOR: f64 = 64.0;
 pub mod pop_constants {
     /// Full weight of one extra process in [`crate::game::craft::Craft::craft_distance`].
     pub const CRAFT_DISTANCE: f64 = 0.1;
+    /// Turns in one demographic year when config does not say. One turn is one year.
+    pub const TURN_LENGTH: f64 = 1.0;
+    /// Currency AMV set aside per household at each savings level.
+    pub const SAVINGS_AMV: f64 = 1.0;
 }
 
 /// Transport bill pieces. Not prices.
@@ -30,6 +34,10 @@ pub mod market_constants {
     pub const TRANSACTION_COST: f64 = 1.0;
     /// Multiplier on deal bulk. `transport = TRANSACTION_COST + bulk * FRICTION`.
     pub const FRICTION: f64 = 1.0;
+    /// Share of working currency surplus a holder lists.
+    pub const CURRENCY_HOLDER_SHARE: f64 = 0.5;
+    /// Share of working currency surplus a producer of that currency lists.
+    pub const CURRENCY_PRODUCER_SHARE: f64 = 1.0;
 }
 
 /// Failed to load gameplay config from a world-data file.
@@ -108,12 +116,23 @@ pub struct PopConfig {
     ///
     /// Must be `>= 0`.
     pub craft_distance: f64,
+    /// Turns in one demographic year.
+    ///
+    /// [`crate::game::household::Household::update`] divides the annual stock
+    /// rates by this. Must be `>= 1`.
+    pub turn_length: f64,
+    /// Currency AMV saved per household at each savings level. Must be `>= 0`.
+    ///
+    /// The levels add. [`crate::game::ladder`] is the buyer.
+    pub savings_amv: f64,
 }
 
 impl Default for PopConfig {
     fn default() -> Self {
         Self {
             craft_distance: pop_constants::CRAFT_DISTANCE,
+            turn_length: pop_constants::TURN_LENGTH,
+            savings_amv: pop_constants::SAVINGS_AMV,
         }
     }
 }
@@ -121,9 +140,13 @@ impl Default for PopConfig {
 impl PopConfig {
     /// # Validate
     ///
-    /// Appends a problem when `craft_distance` is non-finite or below 0.
+    /// Appends a problem when `craft_distance` is non-finite or below 0,
+    /// when `turn_length` is non-finite or below 1, or when `savings_amv`
+    /// is non-finite or below 0.
     fn validate(&self, problems: &mut Vec<String>) {
         at_least(problems, "pop.craft_distance", self.craft_distance, 0.0);
+        at_least(problems, "pop.turn_length", self.turn_length, 1.0);
+        at_least(problems, "pop.savings_amv", self.savings_amv, 0.0);
     }
 }
 
@@ -141,6 +164,13 @@ pub struct MarketConfig {
     pub transaction_cost: f64,
     /// Multiplier on deal bulk for the wagon bill. Must be `>= 0`.
     pub friction: f64,
+    /// Share of working currency surplus a holder lists. Must be from 0 to 1.
+    pub currency_holder_share: f64,
+    /// Share of working currency surplus a producer of that currency lists.
+    ///
+    /// Must be from 0 to 1. A producer lists this instead of
+    /// [`Self::currency_holder_share`].
+    pub currency_producer_share: f64,
 }
 
 impl Default for MarketConfig {
@@ -148,14 +178,31 @@ impl Default for MarketConfig {
         Self {
             transaction_cost: market_constants::TRANSACTION_COST,
             friction: market_constants::FRICTION,
+            currency_holder_share: market_constants::CURRENCY_HOLDER_SHARE,
+            currency_producer_share: market_constants::CURRENCY_PRODUCER_SHARE,
         }
     }
 }
 
 impl MarketConfig {
     fn validate(&self, problems: &mut Vec<String>) {
-        at_least(problems, "market.transaction_cost", self.transaction_cost, 0.0);
+        at_least(
+            problems,
+            "market.transaction_cost",
+            self.transaction_cost,
+            0.0,
+        );
         at_least(problems, "market.friction", self.friction, 0.0);
+        unit_share(
+            problems,
+            "market.currency_holder_share",
+            self.currency_holder_share,
+        );
+        unit_share(
+            problems,
+            "market.currency_producer_share",
+            self.currency_producer_share,
+        );
     }
 }
 
@@ -186,6 +233,15 @@ fn finite(problems: &mut Vec<String>, name: &str, value: f64) -> bool {
     } else {
         problems.push(format!("{name} must be finite"));
         false
+    }
+}
+
+fn unit_share(problems: &mut Vec<String>, name: &str, value: f64) {
+    if !finite(problems, name, value) {
+        return;
+    }
+    if !(0.0..=1.0).contains(&value) {
+        problems.push(format!("{name} must be from 0 to 1, got {value}"));
     }
 }
 
@@ -226,7 +282,10 @@ mod config_should {
     fn load_from_toml_reads_market_transport() {
         let cfg = GameConfig::load_from_toml("[market]\nfriction = 2.0\n").expect("toml");
         assert_eq!(cfg.market.friction, 2.0);
-        assert_eq!(cfg.market.transaction_cost, market_constants::TRANSACTION_COST);
+        assert_eq!(
+            cfg.market.transaction_cost,
+            market_constants::TRANSACTION_COST
+        );
     }
 
     #[test]
@@ -237,14 +296,33 @@ mod config_should {
     }
 
     #[test]
+    fn load_from_toml_reads_turn_length() {
+        let cfg = GameConfig::load_from_toml("[pop]\nturn_length = 12\n").expect("toml");
+        assert_eq!(cfg.pop.turn_length, 12.0);
+        assert_eq!(cfg.pop.craft_distance, pop_constants::CRAFT_DISTANCE);
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_turn_length_below_one() {
+        let err = GameConfig::load_from_toml("[pop]\nturn_length = 0.5\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.turn_length"), "{msg}");
+    }
+
+    #[test]
     fn load_from_path_reads_world_config_file() {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/config.toml");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/config.toml");
         let cfg = GameConfig::load_from_path(&path).expect("world config");
-        assert_eq!(cfg, GameConfig::default());
+        let mut expected = GameConfig::default();
+        expected.pop.turn_length = 4.0;
+        assert_eq!(cfg, expected);
     }
 
     #[test]
     fn default_config_passes_validate() {
-        GameConfig::default().validate().expect("defaults are in bounds");
+        GameConfig::default()
+            .validate()
+            .expect("defaults are in bounds");
     }
 }

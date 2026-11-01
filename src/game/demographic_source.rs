@@ -21,10 +21,7 @@ impl DemographicSource {
     /// The demographic id this source names.
     pub fn id(self) -> usize {
         match self {
-            Self::Species(id)
-            | Self::Culture(id)
-            | Self::Stratum(id)
-            | Self::Religion(id) => id,
+            Self::Species(id) | Self::Culture(id) | Self::Stratum(id) | Self::Religion(id) => id,
         }
     }
 

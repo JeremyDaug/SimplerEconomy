@@ -1,13 +1,7 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    actor::Actor,
-    deal::DealMaker,
-    factuals::Factuals,
-    firm::Firm,
-    market::{Market, MarketHistory},
-    marketorder::MarketOrder,
-    pop::Pop,
+    actor::Actor, deal::DealMaker, factuals::Factuals, firm::Firm, market::Market, pop::Pop,
 };
 
 pub use crate::game::effects::{EffectScope, InstitutionEffect};
@@ -173,14 +167,6 @@ impl Institution {
 impl DealMaker for Institution {
     fn actor(&self) -> Actor {
         Actor::Institution(self.id)
-    }
-
-    fn sell_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
-        Vec::new()
-    }
-
-    fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
-        Vec::new()
     }
 
     fn free_units(&self, _good: usize) -> f64 {

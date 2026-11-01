@@ -7,15 +7,15 @@
 # sold the next day. Farming, watering, and baking use the subsistence
 # variant of that craft. The other pops use the base subsistence craft.
 # Their extra process is on the job: make wood, make beer, make
-# wood_tools, make cabins, make gold, or make jewelry. Digging gold and
+# wood_tools, make cabins, make gold, make jewelry, or make buckets.
+# The potter also runs make clay and make coal. Digging gold and
 # making jewelry are separate pops. Gold is not a desire. The jeweler
-# starts with 4 gold so the first morning can run. A human pop wants 50
+# starts with 4 gold so the first morning can run. The bucket maker
+# starts with wood. The potter starts with clay and coal. A human pop wants 50
 # of its basic desire. Grazer food efficiencies are half of human, and
 # its water efficiency is double.
-# Farmer and water stay human, village, householder, hearth. The others
-# use grazer, hamlet, cottager, crofter, tenant, or shrine. Hamlet
-# assimilation and shrine conversion are half of the open pair. A
-# different species does not take households from the other species.
+# Every pop is human, village, householder, hearth. Grazer, hamlet,
+# cottager, crofter, tenant, and shrine stay defined and unused here.
 # Opening targets are the line targets in this file. Later nights step
 # from there.
 # A missing count is 10 households. Each household is 2 adults, 2.5
@@ -74,7 +74,7 @@ id = 3
 craft = "subsistence baking"
 species = "human"
 culture = "village"
-stratum = "cottager"
+stratum = "householder"
 religion = "hearth"
 
 [[pops.stock]]
@@ -105,8 +105,8 @@ target = 4.2
 id = 4
 craft = "subsistence"
 species = "human"
-culture = "hamlet"
-stratum = "crofter"
+culture = "village"
+stratum = "householder"
 religion = "hearth"
 
 [[pops.lines]]
@@ -129,9 +129,9 @@ target = 10
 id = 5
 craft = "subsistence"
 species = "human"
-culture = "hamlet"
-stratum = "tenant"
-religion = "shrine"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
 
 [[pops.stock]]
 good = "grain"
@@ -163,7 +163,7 @@ craft = "subsistence"
 species = "human"
 culture = "village"
 stratum = "householder"
-religion = "shrine"
+religion = "hearth"
 
 [[pops.stock]]
 good = "wood"
@@ -189,9 +189,9 @@ target = 5
 id = 7
 craft = "subsistence"
 species = "human"
-culture = "hamlet"
-stratum = "crofter"
-religion = "shrine"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
 
 [[pops.stock]]
 good = "wood"
@@ -216,7 +216,7 @@ target = 5
 [[pops]]
 id = 8
 craft = "subsistence"
-species = "grazer"
+species = "human"
 culture = "village"
 stratum = "householder"
 religion = "hearth"
@@ -240,10 +240,10 @@ target = 5
 [[pops]]
 id = 9
 craft = "subsistence"
-species = "grazer"
-culture = "hamlet"
-stratum = "tenant"
-religion = "shrine"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
 
 [[pops.stock]]
 good = "gold"
@@ -264,3 +264,71 @@ target = 12.5
 [[pops.lines]]
 process = "make jewelry"
 target = 20
+
+[[pops]]
+id = 10
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[[pops.stock]]
+good = "wood"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make buckets"
+target = 5
+
+[[pops]]
+id = 11
+craft = "subsistence"
+species = "human"
+culture = "village"
+stratum = "householder"
+religion = "hearth"
+
+[[pops.stock]]
+good = "clay"
+quantity = 4
+
+[[pops.stock]]
+good = "coal"
+quantity = 4
+
+[[pops.lines]]
+process = "subsistence farm"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence water"
+target = 12.5
+
+[[pops.lines]]
+process = "subsistence forage"
+target = 12.5
+
+[[pops.lines]]
+process = "make clay"
+target = 5
+
+[[pops.lines]]
+process = "make coal"
+target = 5
+
+[[pops.lines]]
+process = "make pots"
+target = 5

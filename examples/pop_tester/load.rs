@@ -11,11 +11,11 @@ use simpler_economy::game::desire::{DemoDesire, DesireTarget, DesireTargetType};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::household::Household;
 use simpler_economy::game::job::{Job, JobLine};
-use simpler_economy::game::market::{Market, MarketGood, CURRENCY_SLOTS};
+use simpler_economy::game::market::{CURRENCY_SLOTS, Market, MarketGood};
 use simpler_economy::game::pop::{Pop, PopPRow};
 use simpler_economy::game::religion::Religion;
 use simpler_economy::game::scalingfactor::ScalingFactor;
-use simpler_economy::game::species::Species;
+use simpler_economy::game::species::{Species, SpeciesSink};
 use simpler_economy::game::stratum::Stratum;
 
 /// # Loaded Scenario
@@ -155,6 +155,15 @@ struct GroupRow {
     conversion: f64,
     #[serde(default)]
     desires: Vec<DesireRow>,
+    /// Species only. Culture and religion rows leave this empty.
+    #[serde(default)]
+    sinks: Vec<SinkRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SinkRow {
+    good: String,
+    efficiency: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,7 +293,10 @@ pub fn load_scenario(dir: &Path, factuals: &mut Factuals) -> Result<Scenario, St
             return Err(format!("market lists {} twice", row.good));
         }
         if !row.amv.is_finite() || !row.salability.is_finite() {
-            return Err(format!("market good {} needs a finite amv and salability", row.good));
+            return Err(format!(
+                "market good {} needs a finite amv and salability",
+                row.good
+            ));
         }
         market.goods.insert(
             id,
@@ -372,9 +384,10 @@ pub fn load_scenario(dir: &Path, factuals: &mut Factuals) -> Result<Scenario, St
 ///
 /// Reads `species.toml` when `dir` has one, and stores each species on `factuals`.
 ///
-/// `goods` resolves desire goods. Returns the name-to-id map. A missing file
-/// leaves species empty. A repeated id or name is an error. Culture,
-/// stratum, and religion use the same desire rows.
+/// `goods` resolves desire goods and sink goods. Returns the name-to-id map.
+/// A missing file leaves species empty. A repeated id or name is an error.
+/// Culture, stratum, and religion use the same desire rows. Only a species
+/// row's sinks are stored.
 fn load_species(
     dir: &Path,
     factuals: &mut Factuals,
@@ -394,8 +407,12 @@ fn load_species(
             return Err(format!("species name {} is listed twice", row.name));
         }
         let desires = demo_desires(&row.name, &row.desires, goods)?;
+        let sinks = species_sinks(&row.name, &row.sinks, goods)?;
         let mut species = Species::new(row.id, row.name);
         species.desires = desires;
+        for sink in sinks {
+            species = species.with_sink(sink.good, sink.efficiency);
+        }
         factuals.species.insert(species.id, species);
     }
     Ok(names)
@@ -520,6 +537,36 @@ fn load_religions(
     Ok(names)
 }
 
+/// # Species Sinks
+///
+/// Builds the bottomless goods for one species.
+///
+/// `owner` is that species' name, used in errors. `rows` is the file order.
+/// `goods` resolves each good. A repeated good, or an efficiency that is not
+/// above 0, is an error. Returns the sinks in file order.
+fn species_sinks(
+    owner: &str,
+    rows: &[SinkRow],
+    goods: &HashMap<String, usize>,
+) -> Result<Vec<SpeciesSink>, String> {
+    let mut sinks = Vec::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        if !row.efficiency.is_finite() || row.efficiency <= 0.0 {
+            return Err(format!("{owner} sink {} needs an efficiency > 0", row.good));
+        }
+        let good = lookup(goods, "good", &row.good)?;
+        if !seen.insert(good) {
+            return Err(format!("{owner} lists {} as a sink twice", row.good));
+        }
+        sinks.push(SpeciesSink {
+            good,
+            efficiency: row.efficiency,
+        });
+    }
+    Ok(sinks)
+}
+
 /// # Demo Desires
 ///
 /// Builds the desire map for one species, culture, stratum, or religion.
@@ -538,14 +585,16 @@ fn demo_desires(
     let mut desires = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         if row.tier > 2 {
-            return Err(format!("{owner} desire {} tier {} is past luxury", row.id, row.tier));
+            return Err(format!(
+                "{owner} desire {} tier {} is past luxury",
+                row.id, row.tier
+            ));
         }
         if !row.amount.is_finite() || row.amount <= 0.0 {
             return Err(format!("{owner} desire {} needs an amount > 0", row.id));
         }
-        let scalar = scaling(&row.scalar, row.scale).map_err(|err| {
-            format!("{owner} desire {} {err}", row.id)
-        })?;
+        let scalar = scaling(&row.scalar, row.scale)
+            .map_err(|err| format!("{owner} desire {} {err}", row.id))?;
         let mut desire = DemoDesire::new(row.id)
             .with_tier(row.tier)
             .with_amount(row.amount)
@@ -568,16 +617,18 @@ fn demo_desires(
             }
             let good = lookup(goods, "good", &target.good)?;
             if !seen.insert(good) {
-                return Err(format!("{owner} desire {} lists {} twice", row.id, target.good));
+                return Err(format!(
+                    "{owner} desire {} lists {} twice",
+                    row.id, target.good
+                ));
             }
             let kind = if target.own {
                 DesireTargetType::Use
             } else {
                 DesireTargetType::Consume
             };
-            desire = desire.with_good(
-                DesireTarget::new(good, kind, target.efficiency).with_cap(target.cap),
-            );
+            desire = desire
+                .with_good(DesireTarget::new(good, kind, target.efficiency).with_cap(target.cap));
         }
         if desires.insert(row.id, desire).is_some() {
             return Err(format!("{owner} lists desire {} twice", row.id));
@@ -643,7 +694,8 @@ fn scaling(name: &str, scale: f64) -> Result<ScalingFactor, String> {
 ///
 /// A read or parse failure is an error that names the path.
 pub fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let text = std::fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     toml::from_str(&text).map_err(|err| format!("parse {}: {err}", path.display()))
 }
 
@@ -704,15 +756,15 @@ mod tests {
         assert!(matches!(kind("wood_tools"), Some(DesireTargetType::Use)));
     }
 
-    /// # Tester Pops Span The Demographics
+    /// # Tester Pops Use The First Demographic
     ///
     /// Loads the pop tester. Grazer needs twice the food and half the water,
     /// by efficiency. Hamlet assimilation and shrine conversion are half of
-    /// the open village and hearth. The nine pops use both of each group.
-    /// Returns nothing. A missing row, a changed rate, or a pop on the wrong
-    /// group fails.
+    /// the open village and hearth. Every pop sits on human, village,
+    /// householder, and hearth. Returns nothing. A missing row, a changed
+    /// rate, or a pop on another group fails.
     #[test]
-    fn tester_pops_span_the_demographics() {
+    fn tester_pops_use_the_first_demographic() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
         let scenario = load_scenario(&root.join("pop_tester"), &mut factuals).expect("scenario");
@@ -764,9 +816,18 @@ mod tests {
         assert!((eff(food, "grain") - eff(human_food, "grain") / 2.0).abs() < 1e-12);
         assert!((eff(food, "bread") - eff(human_food, "bread") / 2.0).abs() < 1e-12);
         assert!((eff(water, "water") - 2.0).abs() < 1e-12);
+        let rest = |row: &Species| {
+            row.sinks()
+                .iter()
+                .find(|sink| factuals.goods[&sink.good].name == "time")
+                .unwrap_or_else(|| panic!("{} rest", row.name))
+                .efficiency
+        };
+        assert!((rest(human) - 0.01).abs() < 1e-12);
+        assert!((rest(grazer) - 0.01).abs() < 1e-12);
 
         let hamlet = culture("hamlet").desires.get(&1).expect("hamlet common");
-        assert!((eff(hamlet, "time") - 1.25).abs() < 1e-12);
+        assert!((eff(hamlet, "bread") - 1.25).abs() < 1e-12);
         assert!((eff(hamlet, "beer") - 1.75).abs() < 1e-12);
 
         let shrine = religion("shrine").desires.get(&1).expect("shrine luxury");
@@ -779,7 +840,7 @@ mod tests {
             .find(|target| factuals.goods[&target.good].name == "time")
             .expect("shrine time")
             .cap;
-        assert!((time_cap - 0.5).abs() < 1e-12);
+        assert!((time_cap - 1.0).abs() < 1e-12);
         assert!(matches!(
             shrine
                 .bucket
@@ -807,19 +868,23 @@ mod tests {
         assert_eq!(village.strata.len(), 2);
         assert_eq!(hamlet_culture.strata.len(), 2);
         assert!((eff(cottager.desires.get(&1).expect("cottager"), "wood") - 0.75).abs() < 1e-12);
-        assert!((eff(crofter.desires.get(&1).expect("crofter"), "wood_tools") - 2.25).abs() < 1e-12);
+        assert!(
+            (eff(crofter.desires.get(&1).expect("crofter"), "wood_tools") - 2.25).abs() < 1e-12
+        );
         assert!((eff(tenant.desires.get(&1).expect("tenant"), "wood_tools") - 1.5).abs() < 1e-12);
 
         let groups = [
             (1, "human", "village", "householder", "hearth"),
             (2, "human", "village", "householder", "hearth"),
-            (3, "human", "village", "cottager", "hearth"),
-            (4, "human", "hamlet", "crofter", "hearth"),
-            (5, "human", "hamlet", "tenant", "shrine"),
-            (6, "human", "village", "householder", "shrine"),
-            (7, "human", "hamlet", "crofter", "shrine"),
-            (8, "grazer", "village", "householder", "hearth"),
-            (9, "grazer", "hamlet", "tenant", "shrine"),
+            (3, "human", "village", "householder", "hearth"),
+            (4, "human", "village", "householder", "hearth"),
+            (5, "human", "village", "householder", "hearth"),
+            (6, "human", "village", "householder", "hearth"),
+            (7, "human", "village", "householder", "hearth"),
+            (8, "human", "village", "householder", "hearth"),
+            (9, "human", "village", "householder", "hearth"),
+            (10, "human", "village", "householder", "hearth"),
+            (11, "human", "village", "householder", "hearth"),
         ];
         for (id, species_name, culture_name, stratum_name, religion_name) in groups {
             let pop = &scenario.actors.pop(id).demographics;

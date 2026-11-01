@@ -1,7 +1,7 @@
 /// # Technology
-/// 
-/// A node in our technology tree. 
-/// 
+///
+/// A node in our technology tree.
+///
 /// Unlocks processes, goods, and many other things.
 #[derive(Debug, Clone)]
 pub struct Technology {
@@ -12,7 +12,7 @@ pub struct Technology {
     pub parents: Vec<usize>,
     pub children: Vec<usize>,
     pub tier: usize,
-    
+
     // unlocks
     pub processes: Vec<usize>,
     pub goods: Vec<usize>,

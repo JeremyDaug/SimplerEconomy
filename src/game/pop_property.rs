@@ -53,6 +53,10 @@ pub struct PopPRow {
     pub fresh: f64,
     /// Units a process put out today.
     pub produced: f64,
+    /// Units a process destroyed today. Capital set aside is `used`, not this.
+    ///
+    /// [`crate::game::pop::Pop::reset_day`] clears it.
+    pub spent: f64,
     /// Units lost to rot tonight.
     ///
     /// [`crate::game::pop::Pop::decay_goods`] writes this.
@@ -127,9 +131,9 @@ impl PopPRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PopRecords {
     /// The total satisfaction for the pop.
-    /// 
-    /// This value should never be negative, but may be +inf. 
-    /// 
+    ///
+    /// This value should never be negative, but may be +inf.
+    ///
     /// If it is +inf, then the pop has no desires and is always satisfied.
     pub satisfaction: f64,
 }

@@ -9,16 +9,16 @@ use crate::game::market::{MarketHistory, MarketLookups};
 use crate::game::players::Players;
 
 /// # Play State
-/// 
+///
 /// This is the highest level of our game, overseeing a the state of the current game.
-/// 
+///
 /// It stores all active data for one game.
 #[derive(Debug)]
 pub struct PlayState {
-    pub factuals: Factuals,           // Highly static, Arc or & for sharing/multithreading
-    pub map_data: MapData,            // Environmental + spatial
-    pub actors: Actors,               // Active pops, firms, institutions, …
-    pub players: Players,             // Human/AI players, resources, etc.
+    pub factuals: Factuals, // Highly static, Arc or & for sharing/multithreading
+    pub map_data: MapData,  // Environmental + spatial
+    pub actors: Actors,     // Active pops, firms, institutions, …
+    pub players: Players,   // Human/AI players, resources, etc.
 
     // Optional: turn metadata, game clock, etc.
     pub turn: u64,
@@ -37,9 +37,9 @@ impl PlayState {
     // --- Turn phase stubs (fill in from advance_turn) ---------------------------
 
     /// # Phase Start of Day
-    /// 
+    ///
     /// Add turn start resources. Like time and environmental resources.
-    /// Goes through 
+    /// Goes through
     fn phase_start_of_day(&mut self) {
         // environmental refresh, create new plants, animals, and regenerating natural features
         // plot updating and and environmental factor disbursment.
@@ -89,7 +89,7 @@ impl PlayState {
     }
 
     /// # Phase Pop Consumption
-    /// 
+    ///
     /// At this point, pops consume all goods they have reserved and planned.
     fn phase_pop_consumption(&mut self) {
         todo!()
@@ -147,8 +147,7 @@ impl PlayState {
     /// TODO: Route each yield to the owning state's player-resource pool.
     /// Pop-count vs pop-size scaling belongs here, not on the pop
     /// (1M size-1 pops vs 1 size-1M pop).
-    fn phase_extract_special_resources(&mut self) {
-    }
+    fn phase_extract_special_resources(&mut self) {}
 
     /// One history per market and pop-id -> market-id. Prices are day-static.
     fn rebuild_market_lookups(&mut self) {
@@ -156,43 +155,43 @@ impl PlayState {
     }
 
     /// # Phase Pop Migration
-    /// 
+    ///
     /// This covers and deals with the movement of pops.
-    /// 
+    ///
     /// This happens in a phased stage.
-    /// 
-    /// 1. Calculate Migratory Pressure on each pop. 
+    ///
+    /// 1. Calculate Migratory Pressure on each pop.
     ///    Unhappiness * Pop Size * Pop Mobility Factor ~= Emmigration Pressure.
-    ///    Hiring Pressure also exists, pulling pops into the 
-    /// 2. Sum and calculate Migratory pressure on the Market Region. 
+    ///    Hiring Pressure also exists, pulling pops into the
+    /// 2. Sum and calculate Migratory pressure on the Market Region.
     ///    Will need to keep Positive, negative, and sum in mind.
     /// 3. Process Organized Migration Efforts (Migratory Firms, Institutions, Player Driven Efforts)
     /// 4. Process Internal Migration (between jobs in the same market).
     /// 5. Process Inter-Market Migration (Personal, long distance migration).
-    /// 
+    ///
     /// ### High Level Explanation
-    /// 
+    ///
     /// The idea is that all pops have a desire to move based on their mood and ability
     /// to move (which is tied to their mobile wealth and cultural inclinations).
     /// This is counteracted by Hiring/Expansion pressure, other pops who are wealthy(er)
     /// and thus people wish to join, or employers wish to hire more employees.
-    /// 
+    ///
     /// These two combined in a market define the overall migratory pressure. Negative
-    /// pressure wants to draw people in while positive wants two push them out. 
-    /// It also creates a pool of potential migrants who will be available for moving 
+    /// pressure wants to draw people in while positive wants two push them out.
+    /// It also creates a pool of potential migrants who will be available for moving
     /// today. This group should be preserved over the days.
-    /// 
+    ///
     /// After this calculation and summation, organized methods of migration occur first.
     /// These are organize, intelligent, and mass migration patters that occur. These can
-    /// be created by pops with the right culture or institutions as well as by some 
-    /// firms which seek out workers from far and wide. They tend to move pops quickly 
+    /// be created by pops with the right culture or institutions as well as by some
+    /// firms which seek out workers from far and wide. They tend to move pops quickly
     /// and in large numbers, but only after building up enough internal and resources.
-    /// 
-    /// Second is internal migration, where pops move between jobs in the same market. 
+    ///
+    /// Second is internal migration, where pops move between jobs in the same market.
     /// This is where most pops move about, but should be relatively quick to do.
     ///  
     /// Lastly, Intermarket Migration takes the pool created in the previous steps and
-    /// opens up a portion of it to migration, attenuating it further by mobile 
+    /// opens up a portion of it to migration, attenuating it further by mobile
     /// wealth. The Longer the distance and the more expensive it is to move and
     /// the more mobile their wealth needs or the more powerful the desire to leave
     /// needs to be.
@@ -221,16 +220,16 @@ impl PlayState {
 
         // 2. Sum pressures onto each market region (markets independent; MT).
         let actors = &self.actors;
-        self.map_data.markets.par_iter_mut().for_each(|(_, market)| {
-            market.sum_migratory_pressure(actors, factuals);
-        });
+        self.map_data
+            .markets
+            .par_iter_mut()
+            .for_each(|(_, market)| {
+                market.sum_migratory_pressure(actors, factuals);
+            });
 
         // 3. Organized / mass migration (cross-market; sequential).
-        self.map_data.process_organized_migration(
-            &mut self.actors,
-            &self.players,
-            factuals,
-        );
+        self.map_data
+            .process_organized_migration(&mut self.actors, &self.players, factuals);
 
         // 4. Internal migration within each market (pops/firms independent; MT).
         let pops = &mut self.actors.pops;
@@ -249,14 +248,12 @@ impl PlayState {
         );
 
         // 5. Inter-market personal migration (cross-market; sequential).
-        self.map_data.process_inter_market_migration(
-            &mut self.actors,
-            factuals,
-        );
+        self.map_data
+            .process_inter_market_migration(&mut self.actors, factuals);
     }
 
     /// # Phase Record Keeping
-    /// 
+    ///
     /// End-of-day bookkeeping for each independent actor/store. Only shared input is
     /// `factuals` (read-only). Markets, pops, firms, institutions, and player states
     /// do not need each other and can run in parallel.
@@ -303,28 +300,28 @@ impl PlayState {
     }
 
     /// # Phase Map Changes
-    /// 
+    ///
     /// Alters the map, completing claims, altering market regions, moving units on the
     /// map, and doing any slow terrain alterations that otherwise occur.
     fn phase_map_changes(&mut self) {
         todo!("12. Map Changes. ")
         // 1. First, go through the players and add any new claims they placed this turn,
         //    noting any conflicts that arise from this.
-        // 2. Shift Tiles between market regions and consolidate/create. Be sure to 
-        //    record what was in the tile before moving and keep track of it for at 
+        // 2. Shift Tiles between market regions and consolidate/create. Be sure to
+        //    record what was in the tile before moving and keep track of it for at
         //    least a little bit.
         // 3. Complete any unit movements (troops, traders, workers, etc)
         // 4. Any procedural (non-event driven) map changes are processed and arise here.
     }
 
     /// # Phase Good Decay
-    /// 
+    ///
     /// Goes through Markets and Actors, decaying goods in their storage as is
     /// appropriate.
-    /// 
+    ///
     /// All goods that are stored or have been used (captial goods) are decayed at their
     /// default rate.
-    /// 
+    ///
     /// Goods that were consumed should decay entirely.
     fn phase_good_decay(&mut self) {
         self.map_data.decay_goods(&self.factuals);

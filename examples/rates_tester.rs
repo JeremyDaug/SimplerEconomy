@@ -33,7 +33,7 @@ fn main() {
     // One-step growth from the default household.
     let mut one = start;
     let total0 = one.total_count();
-    one.update(&rates);
+    one.update(&rates, 1.0);
     let total1 = one.total_count();
     let step_g = if total0 > 0.0 {
         total1 / total0 - 1.0
@@ -67,7 +67,7 @@ fn main() {
             println!("  stopped: household count fell below 1.0 (update requires count >= 1)");
             break;
         }
-        h.update(&rates);
+        h.update(&rates, 1.0);
         let total = h.total_count();
         let g = if prev_total > 0.0 {
             total / prev_total - 1.0
@@ -93,10 +93,7 @@ fn main() {
     println!();
     println!("--- Summary after {years} years ---");
     print_household("final averages", &h);
-    println!(
-        "  total people: {:.6} -> {:.6}",
-        total0, final_total
-    );
+    println!("  total people: {:.6} -> {:.6}", total0, final_total);
     println!(
         "  annualized total growth: {:+.4}%  ({})",
         annualized * 100.0,
@@ -128,12 +125,8 @@ fn main() {
         sign_label(g_intr)
     );
     println!();
-    println!(
-        "Note: one-step g depends on the starting pyramid; intrinsic g is the"
-    );
-    println!(
-        "long-run sign of these rates if held fixed (stable-population growth)."
-    );
+    println!("Note: one-step g depends on the starting pyramid; intrinsic g is the");
+    println!("long-run sign of these rates if held fixed (stable-population growth).");
 }
 
 fn print_rates(r: &DemographicRates) {

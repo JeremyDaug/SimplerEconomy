@@ -4,7 +4,17 @@
 
 [pop]
 craft_distance = 0.1
+# Turns in one demographic year. 4 is a season, 12 is a month.
+# Births per woman, age-band deaths, aging, and the partnership step
+# use the annual rates divided by this. Infant and maternal mortality
+# stay fractions of the births in the turn.
+turn_length = 4
+# Currency AMV set aside per household at each savings level. The levels add.
+savings_amv = 1.0
 
 [market]
 transaction_cost = 1.0
 friction = 1.0
+# Working currency surplus listed by a holder, and by a pop who produces it.
+currency_holder_share = 0.5
+currency_producer_share = 1.0

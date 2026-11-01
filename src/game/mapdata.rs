@@ -1,20 +1,14 @@
 use std::collections::HashMap;
 
-use crate::game::{
-    actors::Actors,
-    factuals::Factuals,
-    map::Map,
-    market::Market,
-    players::Players,
-};
+use crate::game::{actors::Actors, factuals::Factuals, map::Map, market::Market, players::Players};
 
 /// # Map Data
-/// 
+///
 /// Contains and manages the data for map and environmental data.
 #[derive(Debug)]
 pub struct MapData {
-    pub map: Map,                     // Core hexgrid, tiles, navigation
-    pub markets: HashMap<usize, Market>,             // Tile-linked or global markets
+    pub map: Map,                        // Core hexgrid, tiles, navigation
+    pub markets: HashMap<usize, Market>, // Tile-linked or global markets
     // Secondary environmental: weather, pollution, resources regen, etc.
     pub environment: EnvironmentData,
 }
@@ -39,18 +33,14 @@ impl MapData {
 
     /// Personal long-distance migration between markets from the migrant pool.
     /// Cross-market; must run sequentially.
-    pub fn process_inter_market_migration(
-        &mut self,
-        actors: &mut Actors,
-        factuals: &Factuals,
-    ) {
+    pub fn process_inter_market_migration(&mut self, actors: &mut Actors, factuals: &Factuals) {
         let _ = (self, actors, factuals);
         todo!("Process inter-market personal migration")
     }
 }
 
 /// # Environmental Data
-/// 
-/// Stores overarching environmental data, like 
+///
+/// Stores overarching environmental data, like
 #[derive(Debug)]
-pub struct EnvironmentData { /* weather, resources, etc. */ }
+pub struct EnvironmentData {/* weather, resources, etc. */}

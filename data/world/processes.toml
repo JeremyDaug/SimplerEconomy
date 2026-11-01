@@ -396,17 +396,21 @@ outputs = [
     { good = 28, amount = 0.01, fixed = true },
 ]
 
+# One human level is 5 units of grain, water, and wood. At 3 a run and
+# 36 time, the three meals are 180 time. A household's grant is 198, so
+# they fit with a little left to trade.
+
 [[processes]]
 id = 29
 name = "subsistence farm"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 50.0 },
+    { good = 0, amount = 36.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 1, amount = 4.0 },
+    { good = 1, amount = 3.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]
 
@@ -415,12 +419,12 @@ id = 30
 name = "subsistence water"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 50.0 },
+    { good = 0, amount = 36.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 2, amount = 4.0 },
+    { good = 2, amount = 3.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]
 
@@ -429,11 +433,11 @@ id = 31
 name = "subsistence forage"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 50.0 },
+    { good = 0, amount = 36.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 7, amount = 4.0 },
+    { good = 7, amount = 3.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]

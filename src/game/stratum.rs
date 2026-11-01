@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    desire::DemoDesire, effects::DemographicEffect, household::{BirthSentiment, DemographicRates},
+    desire::DemoDesire,
+    effects::DemographicEffect,
+    household::{BirthSentiment, DemographicRates},
 };
 
 /// # Stratum

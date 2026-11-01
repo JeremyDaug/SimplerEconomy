@@ -26,3 +26,22 @@ amv = 1
 [[market]]
 good = "gold_token"
 amv = 1
+
+# Opening rows so the first day's bids can clear. A good left off the
+# board waits until supply or decay notes it.
+
+[[market]]
+good = "buckets"
+amv = 1
+
+[[market]]
+good = "pots"
+amv = 1
+
+[[market]]
+good = "clay"
+amv = 1
+
+[[market]]
+good = "coal"
+amv = 1

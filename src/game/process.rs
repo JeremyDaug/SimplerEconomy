@@ -1,4 +1,3 @@
-
 use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
@@ -7,14 +6,14 @@ use crate::game::household::HouseholdTarget;
 pub use crate::game::effects::ProcessEffect;
 
 /// # Process
-/// 
+///
 /// Proccesses are how one set of goods is transformed into another set of goods.
-/// 
+///
 /// It has a list of inputs and separate list of outputs to keep things simple.
-/// 
+///
 /// ## Current Logical Restrictions
-/// 
-/// 1. No process can have more than one of the same good as an input, this keeps 
+///
+/// 1. No process can have more than one of the same good as an input, this keeps
 /// things simple, allowing us to skip dealing with balancing inputs.
 #[derive(Debug, Clone)]
 pub struct Process {
@@ -30,22 +29,22 @@ pub struct Process {
     pub effects: Vec<ProcessEffect>,
     /// The technology that unlockes the process.
     pub tech_source: usize,
-    /// The complexity of the process, used for complexty cost 
+    /// The complexity of the process, used for complexty cost
     /// calculations which adds management/organizational overhead to
     /// a job or firm which does the process.
-    /// 
+    ///
     /// This can be thought of as a combo of internal friction and
-    /// organizational complexity. Values < 1.0 lean toward 
+    /// organizational complexity. Values < 1.0 lean toward
     /// subsistence/cottage processes, values > 1.0 lean industrial
     /// processes.
-    /// 
+    ///
     /// Defaults to 1.0. Below 1.0 the process is subsistence.
     pub complexity: f64,
 }
 
 impl Process {
-    /// # New 
-    /// 
+    /// # New
+    ///
     /// Create a new process with the given id, name, and technology source.
     /// Inputs, outputs, and effects start empty. Complexity starts at 1.0.
     pub fn new(id: usize, name: impl Into<String>, tech_source: usize) -> Self {
@@ -68,13 +67,16 @@ impl Process {
     ///
     /// Complexity must be finite and > 0.
     pub fn with_complexity(mut self, complexity: f64) -> Self {
-        debug_assert!(complexity > 0.0 && complexity.is_finite(), "complexity must be > 0");
+        debug_assert!(
+            complexity > 0.0 && complexity.is_finite(),
+            "complexity must be > 0"
+        );
         self.complexity = complexity;
         self
     }
 
     /// # Is Subsistence
-    /// 
+    ///
     /// Check that a process is considered subsistence which is defined as
     /// a complexity value of < 1.0.
     pub fn is_subsistence(&self) -> bool {
@@ -95,37 +97,35 @@ impl Process {
         for row in &self.outputs {
             output += row.amount.max(0.0) * price(row.good).max(0.0);
         }
-        if cost > 1e-12 {
-            output / cost
-        } else {
-            output
-        }
+        if cost > 1e-12 { output / cost } else { output }
     }
 
     /// # With Input
-    /// 
+    ///
     /// Add an input good to the process definition.
-    /// 
+    ///
     /// ## Asserts
-    /// 
+    ///
     /// Does not allow for repeated goods as inputs.
     pub fn with_input(mut self, input: ProcessInput) -> Self {
-        debug_assert!(!self.inputs.iter().any(|i| i.good == input.good), 
-            "Process cannot have more than one of the same good as an input.");
+        debug_assert!(
+            !self.inputs.iter().any(|i| i.good == input.good),
+            "Process cannot have more than one of the same good as an input."
+        );
         self.inputs.push(input);
         self
     }
 
     /// # With Output
-    /// 
+    ///
     /// Add an output good to the process definition.
     pub fn with_output(mut self, output: ProcessOutput) -> Self {
         self.outputs.push(output);
         self
     }
-    
+
     /// # With Effect
-    /// 
+    ///
     /// Add an extra effect this process produces when executed.
     pub fn with_effect(mut self, effect: ProcessEffect) -> Self {
         self.effects.push(effect);
@@ -133,53 +133,62 @@ impl Process {
     }
 
     /// # Factors
-    /// 
+    ///
     /// Gets the factor inputs of the process.
     pub fn factors(&self) -> Vec<ProcessInput> {
-        self.inputs.iter()
+        self.inputs
+            .iter()
             .filter(|input| matches!(input.input_type, InputType::Factor))
             .cloned()
             .collect()
     }
 
     /// # Requirements
-    /// 
-    /// Gets the required inputs of the process. 
+    ///
+    /// Gets the required inputs of the process.
     /// Excludes Factors.
     pub fn requirements(&self) -> Vec<ProcessInput> {
-        self.inputs.iter()
+        self.inputs
+            .iter()
             .filter(|input| !matches!(input.input_type, InputType::Factor) && !input.is_optional())
             .cloned()
             .collect()
     }
 
     /// # Optional Inputs
-    /// 
+    ///
     /// Gets the optional inputs of the process, excluding factors.
     pub fn optional_inputs(&self) -> Vec<ProcessInput> {
-        self.inputs.iter()
+        self.inputs
+            .iter()
             .filter(|input| input.is_optional() && !matches!(input.input_type, InputType::Factor))
             .cloned()
             .collect()
     }
 
     /// # Has Requirements
-    /// 
+    ///
     /// Gets the required input goods of the process for quick validity checking.
     pub fn has_requirements(&self) -> HashMap<usize, f64> {
-        self.requirements().iter().map(|input| (input.good, input.amount)).collect()
+        self.requirements()
+            .iter()
+            .map(|input| (input.good, input.amount))
+            .collect()
     }
 
     /// # Has Factors
-    /// 
+    ///
     /// Gets a summary of factors needed for the process, a bool attached to them to define them as
     /// required or optional. (true is optional)
     pub fn has_factors(&self) -> HashMap<usize, bool> {
-        self.factors().iter().map(|input| (input.good, input.is_optional())).collect()
+        self.factors()
+            .iter()
+            .map(|input| (input.good, input.is_optional()))
+            .collect()
     }
 
     /// # Get Input
-    /// 
+    ///
     /// Helper which gets an input of a specific good. Returns None if no input
     /// uses that good.
     pub fn get_input(&self, good: usize) -> Option<&ProcessInput> {
@@ -187,12 +196,12 @@ impl Process {
     }
 
     /// # Is Valid
-    /// 
-    /// A helper function that checks if a process is valid, or more accurately if 
+    ///
+    /// A helper function that checks if a process is valid, or more accurately if
     /// it's invalid.
-    /// 
-    /// It checks for repeated goods as inputs, or if it has factors that bring input 
-    /// down to zero but have no fixed required inputs to keep the process from going 
+    ///
+    /// It checks for repeated goods as inputs, or if it has factors that bring input
+    /// down to zero but have no fixed required inputs to keep the process from going
     /// infinitely.
     pub fn is_valid(&self) -> bool {
         // check for repeated goods as inputs.
@@ -221,48 +230,48 @@ impl Process {
                 return false;
             }
         }
-        // if there are required inputs that are fixed, we don't need to work about 
+        // if there are required inputs that are fixed, we don't need to work about
         // infinite runs.
         true
     }
 
     /// # Do Process
-    /// 
-    /// Given Inputs, an optional target, and the factuals of the world, attempt to do 
+    ///
+    /// Given Inputs, an optional target, and the factuals of the world, attempt to do
     /// as many iterations as possible, up to the given target.
-    /// 
+    ///
     /// Target is always scaled with fixed inputs, not variable inputs, so throughput
     /// bonuses do allow for overshooting the target.
-    /// 
+    ///
     /// ## Additional Notes and rules
-    /// 
-    /// Fixed inputs and optional inputs never gain bonuses with throughput or input 
+    ///
+    /// Fixed inputs and optional inputs never gain bonuses with throughput or input
     /// bonuses to keep wierd scaling interactions from occurring.
-    /// 
-    /// Factors and capital are never consumed or destroyed, just used. They are not 
+    ///
+    /// Factors and capital are never consumed or destroyed, just used. They are not
     /// added to changed or used.
-    /// 
-    /// Due to the way the logic works out, doing a process that can reach over 100% 
+    ///
+    /// Due to the way the logic works out, doing a process that can reach over 100%
     /// input reduction is lossy. It's not smart enough to conserve bonuses and ensure
-    /// maximum benefit. So, when you make a process be aware that a greater than 100% 
+    /// maximum benefit. So, when you make a process be aware that a greater than 100%
     /// input bonus will end up being lost. Either cap input efficiency at 100%, or
     /// break up that process into variants to keep it under the cap.
-    /// 
+    ///
     /// ## Functional Logic
-    /// 
-    /// 1. Check and record Factors, as they don't scale or get consumed anyway and a 
+    ///
+    /// 1. Check and record Factors, as they don't scale or get consumed anyway and a
     /// missing required factor stops the whole process.
     /// 2. Work on optional inputs next, getting any bonuses and effects they have.
-    /// 3. With all bonuses calculated, check how many iterations can be done with 
+    /// 3. With all bonuses calculated, check how many iterations can be done with
     /// required inputs. Shifting goods from optional inputs to required as needed.
     /// 4. Only do this for as many as we can guarantee the current coverage.
     /// 5. Collect results adn return to step 2 until we can't make any more iterations.
-    /// 
+    ///
     /// ## On End and Failure
-    /// 
-    /// Regardless of success or failure, the ProcessResult includes the last required 
-    /// good(s) that ran out, giving a hint to show what would be needed to do more 
-    /// iterations. Useful for both totally new processes, and processes that didn't 
+    ///
+    /// Regardless of success or failure, the ProcessResult includes the last required
+    /// good(s) that ran out, giving a hint to show what would be needed to do more
+    /// iterations. Useful for both totally new processes, and processes that didn't
     /// reach their target.
     pub fn do_process(
         &self,
@@ -270,12 +279,16 @@ impl Process {
         target: Option<f64>,
         factuals: &Factuals,
     ) -> ProcessResult {
-        debug_assert!(target.is_none() || target.unwrap() > 0.0, "Target must be greater than 0 if provided.");
+        debug_assert!(
+            target.is_none() || target.unwrap() > 0.0,
+            "Target must be greater than 0 if provided."
+        );
 
         // first, check factors and get bonuses.
         let bonuses = match self.check_factors(inputs) {
             Some(bonuses) => bonuses,
-            None => { // if missing a required factor, return an empty result.
+            None => {
+                // if missing a required factor, return an empty result.
                 let mut result = ProcessResult::empty();
                 for factor in self.factors() {
                     if inputs.get(&factor.good).unwrap_or(&0.0) <= &0.0 {
@@ -283,7 +296,7 @@ impl Process {
                     }
                 }
                 return result;
-            },
+            }
         };
 
         // loop through legs of the process until we get 0 iterations in return.
@@ -291,8 +304,12 @@ impl Process {
         let mut working_target = target.unwrap_or(f64::INFINITY);
         let mut result_acc = ProcessResult::empty();
         loop {
-            let result = self.do_process_leg(&working_inputs, Some(working_target), 
-                (bonuses.0, bonuses.1, bonuses.2), factuals);
+            let result = self.do_process_leg(
+                &working_inputs,
+                Some(working_target),
+                (bonuses.0, bonuses.1, bonuses.2),
+                factuals,
+            );
             if result.iterations <= 0.0 {
                 // we ran out of inputs, so find which inputs
                 for req in self.requirements() {
@@ -344,14 +361,16 @@ impl Process {
     }
 
     /// # Check Factors
-    /// 
+    ///
     /// Takes the inputs and returns the bonuses the facotrs give.
-    /// 
+    ///
     /// Result is Some(Input, Throughput, Output).
-    /// 
+    ///
     /// If None is returned, then it is missing a required factor.
-    pub(crate) fn check_factors(&self, inputs: &HashMap<usize, f64>) 
-    -> Option<(f64, f64, f64, Vec<ProcessEffect>)> {
+    pub(crate) fn check_factors(
+        &self,
+        inputs: &HashMap<usize, f64>,
+    ) -> Option<(f64, f64, f64, Vec<ProcessEffect>)> {
         let mut input_mult: f64 = 1.0;
         let mut output_mult: f64 = 1.0;
         let mut throughput_mult: f64 = 1.0;
@@ -386,11 +405,11 @@ impl Process {
     }
 
     /// # Do Process Leg
-    /// 
-    /// A helper which does a single leg of a process. In simplified terms, it takes 
-    /// the inputs (minus prior legs), a target it will stop at, and the bonuses 
+    ///
+    /// A helper which does a single leg of a process. In simplified terms, it takes
+    /// the inputs (minus prior legs), a target it will stop at, and the bonuses
     /// gained from factuals (we don't recalculate them for each step)
-    /// 
+    ///
     /// This is public for testing purposes, but should not actually be called.
     pub fn do_process_leg(
         &self,
@@ -399,7 +418,10 @@ impl Process {
         bonuses: (f64, f64, f64),
         factuals: &Factuals,
     ) -> ProcessResult {
-        debug_assert!(target.is_none() || target.unwrap() > 0.0, "Target must be greater than 0 if provided.");
+        debug_assert!(
+            target.is_none() || target.unwrap() > 0.0,
+            "Target must be greater than 0 if provided."
+        );
         // copy over our bonuses for modding.
         let (mut input_bonus, mut throughput_bonus, mut output_bonus) = bonuses;
         // Go through optionals, finding the shortest possible and collecting bonuses along
@@ -409,7 +431,8 @@ impl Process {
         let mut other_bonuses = vec![];
         for optional in self.optional_inputs() {
             let available = *inputs.get(&optional.good).unwrap_or(&0.0);
-            if available > 0.0 { // Skip if none available, otherwise, add and check.
+            if available > 0.0 {
+                // Skip if none available, otherwise, add and check.
                 let iters = available / optional.amount;
                 optional_iters.insert(optional.good, iters);
                 shortest = shortest.min(iters);
@@ -442,7 +465,7 @@ impl Process {
             let effective_cost = if required.fixed {
                 required.amount
             } else {
-                required.amount * final_input_mod 
+                required.amount * final_input_mod
             };
             if effective_cost > 0.0 {
                 let iters = available / effective_cost;
@@ -472,21 +495,26 @@ impl Process {
                 input.amount * shortest
             } else {
                 input.amount * final_input_mod * shortest
-            }.min(*inputs.get(&input.good).unwrap_or(&0.0));
+            }
+            .min(*inputs.get(&input.good).unwrap_or(&0.0));
             // println!("Processing input good {}, change {}, type {:?}", input.good, change, input.input_type);
-            if change <= 0.0 { continue; }
+            if change <= 0.0 {
+                continue;
+            }
             // then record the change to where it belongs
             match input.input_type {
-                InputType::Factor => {}, // skip factors
+                InputType::Factor => {} // skip factors
                 // capital goes to used.
-                InputType::Capital => { result.used_inputs.insert(input.good, change); },
+                InputType::Capital => {
+                    result.used_inputs.insert(input.good, change);
+                }
                 // Destroyed is subtracted from changes. Spent is the gross take,
                 // so a later leg does not feed the same units when this good
                 // is also produced.
                 InputType::Destroyed => {
                     result.changes.insert(input.good, -change);
                     result.spent.insert(input.good, change);
-                },
+                }
                 // Consumed is subtracted and it's decay added to changes
                 InputType::Consumed => {
                     result.changes.insert(input.good, -change);
@@ -496,20 +524,19 @@ impl Process {
                     if let Some(good) = factuals.goods.get(&input.good) {
                         for (&decay_good, &decay_rate) in &good.decay_result {
                             let decay_amount = change * decay_rate;
-                            *result.changes
-                                .entry(decay_good)
-                                .or_insert(0.0) += decay_amount;
+                            *result.changes.entry(decay_good).or_insert(0.0) += decay_amount;
                         }
-                    } else { assert!(false, "Good '{}' not found!", input.good)}
-                },
+                    } else {
+                        assert!(false, "Good '{}' not found!", input.good)
+                    }
+                }
             }
             // lastly, add any extra effects from the input to the process result.
             if let Some(effects) = input.optional_effects() {
                 for effect in effects {
                     match effect {
                         InputEffect::ExtraOutput(good_id, amt) => {
-                            *result.changes.entry(*good_id)
-                                .or_insert(0.0) += amt * shortest;
+                            *result.changes.entry(*good_id).or_insert(0.0) += amt * shortest;
                         }
                         InputEffect::BirthRate(v) => {
                             result.effects.push(ProcessEffect::BirthRate(v * shortest));
@@ -557,14 +584,14 @@ impl Process {
 }
 
 /// # Process Result
-/// 
+///
 /// A helper to return the results of doing a process.
-/// 
+///
 /// Includes:
 /// - Iterations completed
-/// - Changes to goods from the process, including outputs and decay results of 
+/// - Changes to goods from the process, including outputs and decay results of
 /// destroyed inputs.
-/// - Used inputs, including factors and capital, which are not consumed but are still 
+/// - Used inputs, including factors and capital, which are not consumed but are still
 /// important to record.
 /// - Effects produced by the process, such as research or culture.
 #[derive(Debug, Clone)]
@@ -584,7 +611,7 @@ pub struct ProcessResult {
     /// Any addititional effects produced by the process.
     pub effects: Vec<ProcessEffect>,
     /// The goods that caused us to stop.
-    /// 
+    ///
     /// Should only be empty if the process ends by running out of goods, not because
     /// of reaching it's target.
     pub missing_goods: Vec<usize>,
@@ -592,7 +619,7 @@ pub struct ProcessResult {
 
 impl ProcessResult {
     /// # Empty
-    /// 
+    ///
     /// An empty process result, with 0 iterations, no changes, no used inputs, and no effects.
     pub fn empty() -> Self {
         Self {
@@ -607,7 +634,7 @@ impl ProcessResult {
 }
 
 /// # Process Input
-/// 
+///
 /// The data for an input good for a process.
 #[derive(Debug, Clone)]
 pub struct ProcessInput {
@@ -621,16 +648,22 @@ pub struct ProcessInput {
     pub input_type: InputType,
     /// Defines the input as optional if this is Some().
     /// Additional Effects can be added to to the vector contained.
-    /// 
+    ///
     /// Optional goods are never effected by input or throughput bonuses.
     optional_and_effects: Option<Vec<InputEffect>>,
 }
 
 impl ProcessInput {
     /// # New
-    /// 
+    ///
     /// Create a new process input with the given good, amount, fixed status, input type, and optional status.
-    pub fn new(good: usize, amount: f64, fixed: bool, input_type: InputType, optional: bool) -> Self {
+    pub fn new(
+        good: usize,
+        amount: f64,
+        fixed: bool,
+        input_type: InputType,
+        optional: bool,
+    ) -> Self {
         debug_assert!(amount > 0.0, "Input amount must be greater than 0.");
         ProcessInput {
             good,
@@ -642,7 +675,7 @@ impl ProcessInput {
     }
 
     /// # With Optional
-    /// 
+    ///
     /// Make this input optional and add the given effect to the vector of effects produced by this input.
     pub fn with_optional(mut self, effect: InputEffect) -> Self {
         if let Some(effects) = &mut self.optional_and_effects {
@@ -654,14 +687,14 @@ impl ProcessInput {
     }
 
     /// # Is Optional
-    /// 
+    ///
     /// Returns true if this input is optional, false otherwise.
     pub fn is_optional(&self) -> bool {
         self.optional_and_effects.is_some()
     }
 
     /// # Optional Effects
-    /// 
+    ///
     /// Returns the vector of effects produced by this input if it is optional, None otherwise.
     pub fn optional_effects(&self) -> Option<&Vec<InputEffect>> {
         self.optional_and_effects.as_ref()
@@ -669,7 +702,7 @@ impl ProcessInput {
 }
 
 /// # Input Type
-/// 
+///
 /// Defines how the good interacts with input and it's consumption.
 #[derive(Debug, Clone)]
 pub enum InputType {
@@ -682,22 +715,22 @@ pub enum InputType {
     Capital,
     /// Good is not destroyed and it's amount does not matter. Any amount of this good
     /// covers all processes that could possibly be done.
-    /// 
+    ///
     /// Used for environmental factors typically.
     Factor,
 }
 
 /// # Input Effect
-/// 
+///
 /// Additional Effects produced by a specific input when included in a process.
 #[derive(Debug, Clone)]
 pub enum InputEffect {
     /// An additive percent increase in both input and output goods produced by the process.
-    /// 
+    ///
     /// Does not effect Fixed Goods.
     Throughput(f64),
     /// An additive precent reduction to the number of input goods needed.
-    /// 
+    ///
     /// Does not effect fixed goods.
     Input(f64),
     /// An additive percent bonuse to all goods of the process.
@@ -712,7 +745,7 @@ pub enum InputEffect {
 }
 
 /// # Process Output
-/// 
+///
 /// The details of a process's outputs.
 #[derive(Debug, Clone)]
 pub struct ProcessOutput {
@@ -726,14 +759,22 @@ pub struct ProcessOutput {
 
 impl ProcessOutput {
     pub fn new(good: usize, amount: f64, fixed: bool) -> Self {
-        ProcessOutput { good, amount, fixed }
+        ProcessOutput {
+            good,
+            amount,
+            fixed,
+        }
     }
 }
 
 #[cfg(test)]
 mod processes {
-    use crate::game::{factuals::Factuals, good::Good, process::{InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessOutput}};
-    use std::{collections::HashMap};
+    use crate::game::{
+        factuals::Factuals,
+        good::Good,
+        process::{InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessOutput},
+    };
+    use std::collections::HashMap;
     // --- Minimal helpers to keep tests readable ---
 
     static REQ_GOOD: usize = 10;
@@ -821,8 +862,8 @@ mod processes {
 
         #[test]
         fn test_with_required_factors() {
-            let process = make_process()
-                .with_input(make_input(FACTOR_GOOD, 1.0, false, InputType::Factor));
+            let process =
+                make_process().with_input(make_input(FACTOR_GOOD, 1.0, false, InputType::Factor));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -851,12 +892,27 @@ mod processes {
         #[test]
         fn test_with_optional_factors() {
             let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, 
-                    InputType::Factor, vec![OPTIN_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, false, 
-                    InputType::Factor, vec![OPTTHROUGH_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTOUT_GOOD, 1.0, false, 
-                    InputType::Factor, vec![OPTOUT_EFFECT.clone()]));
+                .with_input(make_optional_input(
+                    OPTIN_GOOD,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![OPTIN_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTTHROUGH_GOOD,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![OPTTHROUGH_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTOUT_GOOD,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![OPTOUT_EFFECT.clone()],
+                ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -893,7 +949,7 @@ mod processes {
             } else {
                 assert!(false, "Did not return Correct value.");
             }
-            
+
             available.insert(OPTOUT_GOOD, 1.0);
 
             let result = process.check_factors(&available);
@@ -945,8 +1001,8 @@ mod processes {
 
         #[test]
         fn return_complete_success_with_capital() {
-            let process = make_process()
-                .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
+            let process =
+                make_process().with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -966,17 +1022,23 @@ mod processes {
 
         #[test]
         fn return_complete_success_with_consumed_input() {
-            let process = make_process()
-                .with_input(make_input(CONSUMED_GOOD, 1.0, false, InputType::Consumed));
+            let process = make_process().with_input(make_input(
+                CONSUMED_GOOD,
+                1.0,
+                false,
+                InputType::Consumed,
+            ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
             available.insert(CONSUMED_GOOD, 100.0);
 
-            let factuals = make_factuals(vec![make_good(CONSUMED_GOOD, 
-                "Consumed", vec![(DECAY_OUTPUT, 1.0)].into_iter().collect())]);
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let factuals = make_factuals(vec![make_good(
+                CONSUMED_GOOD,
+                "Consumed",
+                vec![(DECAY_OUTPUT, 1.0)].into_iter().collect(),
+            )]);
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 4);
@@ -990,8 +1052,12 @@ mod processes {
 
         #[test]
         fn return_partial_success() {
-            let process = make_process()
-                .with_input(make_input(CAPITAL_GOOD, 1.0, false, InputType::Destroyed));
+            let process = make_process().with_input(make_input(
+                CAPITAL_GOOD,
+                1.0,
+                false,
+                InputType::Destroyed,
+            ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 50.0);
@@ -1011,9 +1077,13 @@ mod processes {
 
         #[test]
         fn return_success_with_optional_input_but_none_given() {
-            let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+            let process = make_process().with_input(make_optional_input(
+                OPTIN_GOOD,
+                1.0,
+                false,
+                InputType::Destroyed,
+                vec![OPTIN_EFFECT.clone()],
+            ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -1042,8 +1112,7 @@ mod processes {
             let factuals = make_factuals(vec![]);
 
             // Input Bonus
-            let result = process.do_process_leg(&available, None, 
-                (0.5, 1.0, 1.0), &factuals);
+            let result = process.do_process_leg(&available, None, (0.5, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 4);
@@ -1055,8 +1124,7 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // Throughput Bonus
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 2.0, 1.0), &factuals);
+            let result = process.do_process_leg(&available, None, (1.0, 2.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 50.0);
             assert_eq!(result.changes.len(), 4);
@@ -1068,8 +1136,7 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // Output Bonus
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 2.0), &factuals);
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 2.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 4);
@@ -1081,8 +1148,7 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // Overlapping Bonii
-            let result = process.do_process_leg(&available, None, 
-                (0.5, 4.0, 2.0), &factuals);
+            let result = process.do_process_leg(&available, None, (0.5, 4.0, 2.0), &factuals);
 
             assert_eq!(result.iterations, 50.0);
             assert_eq!(result.changes.len(), 4);
@@ -1110,11 +1176,14 @@ mod processes {
             let factuals = make_factuals(vec![]);
 
             // Input Bonus
-            let process = og_process.clone()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let process = og_process.clone().with_input(make_optional_input(
+                OPTIN_GOOD,
+                1.0,
+                true,
+                InputType::Destroyed,
+                vec![OPTIN_EFFECT.clone()],
+            ));
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 5);
@@ -1127,11 +1196,14 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // Throughput Bonus
-            let process = og_process.clone()
-                .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]));
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let process = og_process.clone().with_input(make_optional_input(
+                OPTTHROUGH_GOOD,
+                1.0,
+                true,
+                InputType::Destroyed,
+                vec![OPTTHROUGH_EFFECT.clone()],
+            ));
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 80.0);
             assert_eq!(result.changes.len(), 5);
@@ -1144,11 +1216,14 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // Output Bonus
-            let process = og_process.clone()
-                .with_input(make_optional_input(OPTOUT_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTOUT_EFFECT.clone()]));
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let process = og_process.clone().with_input(make_optional_input(
+                OPTOUT_GOOD,
+                1.0,
+                true,
+                InputType::Destroyed,
+                vec![OPTOUT_EFFECT.clone()],
+            ));
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 5);
@@ -1161,16 +1236,31 @@ mod processes {
             assert_eq!(result.effects.len(), 0);
 
             // overlapping Bonii
-            let process = og_process.clone()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTOUT_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTOUT_EFFECT.clone()]));
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
-            
+            let process = og_process
+                .clone()
+                .with_input(make_optional_input(
+                    OPTIN_GOOD,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![OPTIN_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTTHROUGH_GOOD,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![OPTTHROUGH_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTOUT_GOOD,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![OPTOUT_EFFECT.clone()],
+                ));
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 7);
             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-100.0));
@@ -1183,14 +1273,24 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0);
             assert_eq!(result.effects.len(), 0);
         }
-    
+
         #[test]
         fn process_other_effects_correctly() {
             let process = make_process()
-                .with_input(make_optional_input(CONSUMED_GOOD, 1.0, false, 
-                    InputType::Destroyed, vec![InputEffect::ExtraOutput(DECAY_OUTPUT, 1.0)]))
-                .with_input(make_optional_input(FACTOR_GOOD, 1.0, false, 
-                    InputType::Destroyed, vec![InputEffect::BirthRate(0.5)]))
+                .with_input(make_optional_input(
+                    CONSUMED_GOOD,
+                    1.0,
+                    false,
+                    InputType::Destroyed,
+                    vec![InputEffect::ExtraOutput(DECAY_OUTPUT, 1.0)],
+                ))
+                .with_input(make_optional_input(
+                    FACTOR_GOOD,
+                    1.0,
+                    false,
+                    InputType::Destroyed,
+                    vec![InputEffect::BirthRate(0.5)],
+                ))
                 .with_effect(ProcessEffect::Research(100.0));
 
             let mut available = HashMap::new();
@@ -1199,8 +1299,7 @@ mod processes {
             available.insert(FACTOR_GOOD, 100.0);
 
             let factuals = make_factuals(vec![]);
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 100.0);
             assert_eq!(result.changes.len(), 5);
@@ -1220,12 +1319,27 @@ mod processes {
             let process = make_process()
                 .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital))
                 .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed))
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTOUT_GOOD, 1.0, true, 
-                    InputType::Consumed, vec![OPTOUT_EFFECT.clone()]))
+                .with_input(make_optional_input(
+                    OPTIN_GOOD,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![OPTIN_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTTHROUGH_GOOD,
+                    1.0,
+                    true,
+                    InputType::Destroyed,
+                    vec![OPTTHROUGH_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTOUT_GOOD,
+                    1.0,
+                    true,
+                    InputType::Consumed,
+                    vec![OPTOUT_EFFECT.clone()],
+                ))
                 .with_output(ProcessOutput::new(FACTOR_GOOD, 1.0, true));
 
             let mut available = HashMap::new();
@@ -1236,13 +1350,15 @@ mod processes {
             available.insert(OPTTHROUGH_GOOD, 50.0);
             available.insert(OPTOUT_GOOD, 80.0);
 
-            let factuals = make_factuals(vec![make_good(OPTOUT_GOOD, "Consumed", 
-                vec![(DECAY_OUTPUT, 1.0)].into_iter().collect())]);
+            let factuals = make_factuals(vec![make_good(
+                OPTOUT_GOOD,
+                "Consumed",
+                vec![(DECAY_OUTPUT, 1.0)].into_iter().collect(),
+            )]);
 
             // First Pass
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
-            
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
             assert_eq!(result.iterations, 30.0);
             assert_eq!(result.changes.len(), 8);
             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
@@ -1265,9 +1381,8 @@ mod processes {
                 *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
             }
 
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
-            
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
             assert_eq!(result.iterations, 20.0);
             assert_eq!(result.changes.len(), 7);
             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-25.0));
@@ -1289,9 +1404,8 @@ mod processes {
                 *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
             }
 
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
-            
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
             assert_eq!(result.iterations, 30.0);
             assert_eq!(result.changes.len(), 6);
             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-30.0));
@@ -1312,9 +1426,8 @@ mod processes {
                 *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
             }
 
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
-            
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
+
             assert_eq!(result.iterations, 60.0);
             assert_eq!(result.changes.len(), 4);
             assert_eq!(result.changes.get(&REQ_GOOD), Some(&-60.0));
@@ -1333,8 +1446,7 @@ mod processes {
                 *available.entry(CAPITAL_GOOD).or_insert(0.0) -= *capital_used;
             }
 
-            let result = process.do_process_leg(&available, None, 
-                (1.0, 1.0, 1.0), &factuals);
+            let result = process.do_process_leg(&available, None, (1.0, 1.0, 1.0), &factuals);
 
             assert_eq!(result.iterations, 0.0);
             assert_eq!(result.changes.len(), 0);
@@ -1389,8 +1501,8 @@ mod processes {
             assert_eq!(result.missing_goods.len(), 0);
 
             // Repeat, but with Capital good.
-            let process = process
-                .with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
+            let process =
+                process.with_input(make_input(CAPITAL_GOOD, 1.0, true, InputType::Capital));
 
             available.insert(CAPITAL_GOOD, 100.0);
 
@@ -1421,8 +1533,8 @@ mod processes {
             assert_eq!(result.missing_goods.len(), 0);
 
             // === Include Fixed Good
-            let process = process
-                .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
+            let process =
+                process.with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed));
 
             available.insert(FIXED_GOOD, 100.0);
 
@@ -1459,8 +1571,8 @@ mod processes {
         #[test]
         fn process_with_factor() {
             // === Incluide Factor (and check it's exclusion cause failure)
-            let process = make_process()
-                .with_input(make_input(FACTOR_GOOD, 1.0, true, InputType::Factor));
+            let process =
+                make_process().with_input(make_input(FACTOR_GOOD, 1.0, true, InputType::Factor));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -1475,7 +1587,10 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&FACTOR_GOOD), "Factor input should be missing");
+            assert!(
+                result.missing_goods.contains(&FACTOR_GOOD),
+                "Factor input should be missing"
+            );
 
             // Actually add the factor in.
             available.insert(FACTOR_GOOD, 1.0);
@@ -1490,7 +1605,10 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&REQ_GOOD), "Required Good should be missing");
+            assert!(
+                result.missing_goods.contains(&REQ_GOOD),
+                "Required Good should be missing"
+            );
 
             let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -1506,16 +1624,22 @@ mod processes {
 
         #[test]
         fn process_with_consumed_good() {
-            let process = make_process()
-                .with_input(make_input(CONSUMED_GOOD, 1.0, true, InputType::Consumed));
+            let process = make_process().with_input(make_input(
+                CONSUMED_GOOD,
+                1.0,
+                true,
+                InputType::Consumed,
+            ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
             available.insert(CONSUMED_GOOD, 100.0);
 
-            let factuals = make_factuals(vec![
-                make_good(CONSUMED_GOOD, "Consumed", HashMap::from([(DECAY_OUTPUT, 1.0)])),
-            ]);
+            let factuals = make_factuals(vec![make_good(
+                CONSUMED_GOOD,
+                "Consumed",
+                HashMap::from([(DECAY_OUTPUT, 1.0)]),
+            )]);
             let result = process.do_process(&available, None, &factuals);
 
             // Check Results
@@ -1543,13 +1667,17 @@ mod processes {
 
         #[test]
         fn process_with_optional_with_no_optionals_given() {
-            let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+            let process = make_process().with_input(make_optional_input(
+                OPTIN_GOOD,
+                1.0,
+                true,
+                InputType::Destroyed,
+                vec![OPTIN_EFFECT.clone()],
+            ));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
-                
+
             let factuals = make_factuals(vec![]);
             let result = process.do_process(&available, None, &factuals);
 
@@ -1561,7 +1689,10 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&REQ_GOOD), "Missing required good.");
+            assert!(
+                result.missing_goods.contains(&REQ_GOOD),
+                "Missing required good."
+            );
 
             let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -1599,7 +1730,10 @@ mod processes {
             assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0)); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&CAPITAL_GOOD), "Missing required good.");
+            assert!(
+                result.missing_goods.contains(&CAPITAL_GOOD),
+                "Missing required good."
+            );
 
             let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -1613,14 +1747,21 @@ mod processes {
             assert_eq!(result.used_inputs.get(&CAPITAL_GOOD), Some(&30.0)); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&CAPITAL_GOOD), "Missing required good.");
+            assert!(
+                result.missing_goods.contains(&CAPITAL_GOOD),
+                "Missing required good."
+            );
         }
 
         #[test]
         fn optional_input_gives_proportional_bonus() {
-            let process = make_process()
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, true, 
-                    InputType::Destroyed, vec![OPTIN_EFFECT.clone()]));
+            let process = make_process().with_input(make_optional_input(
+                OPTIN_GOOD,
+                1.0,
+                true,
+                InputType::Destroyed,
+                vec![OPTIN_EFFECT.clone()],
+            ));
             let mut available = HashMap::new();
 
             available.insert(REQ_GOOD, 100.0);
@@ -1638,7 +1779,10 @@ mod processes {
             assert_eq!(result.used_inputs.len(), 0); // confirm capital used
             assert!(result.effects.is_empty()); // confirm no stray effects.
             assert_eq!(result.missing_goods.len(), 1);
-            assert!(result.missing_goods.contains(&REQ_GOOD), "Missing required good.");
+            assert!(
+                result.missing_goods.contains(&REQ_GOOD),
+                "Missing required good."
+            );
 
             let result = process.do_process(&available, Some(50.0), &factuals);
 
@@ -1692,14 +1836,48 @@ mod processes {
             // Base process (no bonuses)
             let base = make_process()
                 .with_input(make_input(FIXED_GOOD, 1.0, true, InputType::Destroyed))
-                .with_input(make_optional_input(OPTIN_GOOD, 1.0, false, InputType::Destroyed, vec![OPTIN_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTOUT_GOOD, 1.0, false, InputType::Destroyed, vec![OPTOUT_EFFECT.clone()]))
-                .with_input(make_optional_input(OPTTHROUGH_GOOD, 1.0, false, InputType::Destroyed, vec![OPTTHROUGH_EFFECT.clone()]))
-
-                .with_input(make_optional_input(FACTOR_GOOD, 1.0, false, InputType::Factor, vec![InputEffect::Input(0.2)]))
-                .with_input(make_optional_input(throughput_factor, 1.0, false, InputType::Factor, vec![InputEffect::Throughput(factor_throughput_bonus)]))
-                .with_input(make_optional_input(output_factor, 1.0, false, InputType::Factor, vec![InputEffect::Output(factor_output_bonus)]))
-
+                .with_input(make_optional_input(
+                    OPTIN_GOOD,
+                    1.0,
+                    false,
+                    InputType::Destroyed,
+                    vec![OPTIN_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTOUT_GOOD,
+                    1.0,
+                    false,
+                    InputType::Destroyed,
+                    vec![OPTOUT_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    OPTTHROUGH_GOOD,
+                    1.0,
+                    false,
+                    InputType::Destroyed,
+                    vec![OPTTHROUGH_EFFECT.clone()],
+                ))
+                .with_input(make_optional_input(
+                    FACTOR_GOOD,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![InputEffect::Input(0.2)],
+                ))
+                .with_input(make_optional_input(
+                    throughput_factor,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![InputEffect::Throughput(factor_throughput_bonus)],
+                ))
+                .with_input(make_optional_input(
+                    output_factor,
+                    1.0,
+                    false,
+                    InputType::Factor,
+                    vec![InputEffect::Output(factor_output_bonus)],
+                ))
                 .with_output(ProcessOutput::new(DECAY_OUTPUT, 1.0, true));
 
             let mut available = HashMap::new();
@@ -1707,7 +1885,7 @@ mod processes {
             available.insert(FIXED_GOOD, 100.0);
 
             let factuals = make_factuals(vec![]);
-            
+
             // baseline, no bonuses
             let result = base.do_process(&available, None, &factuals);
 
@@ -1796,7 +1974,7 @@ mod processes {
             assert_eq!(result.changes.get(&OPTIN_GOOD), Some(&-100.0));
             assert_eq!(result.changes.get(&OPTTHROUGH_GOOD), Some(&-100.0));
             assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
-            assert!((result.changes.get(&OUT_GOOD).unwrap() -180.0).abs() < 0.01);
+            assert!((result.changes.get(&OUT_GOOD).unwrap() - 180.0).abs() < 0.01);
             assert_eq!(result.used_inputs.len(), 0);
             assert_eq!(result.effects.len(), 0);
             assert_eq!(result.missing_goods.len(), 1);

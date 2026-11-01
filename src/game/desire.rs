@@ -1,4 +1,3 @@
-
 use std::debug_assert;
 
 use itertools::Itertools;
@@ -9,10 +8,10 @@ use crate::game::{pop::Pop, scalingfactor::ScalingFactor};
 pub use crate::game::effects::DesireEffect;
 
 /// # Platonic Desire
-/// 
+///
 /// Platonic Desires are the 'maximalist' form of pre-existing desires that can be
 /// used by Cultures, Religions, Strata, and Species to generate their own variants.
-/// 
+///
 /// These should be defined at game start and never changed.
 #[derive(Debug, Clone)]
 pub struct PlatonicDesire {
@@ -25,30 +24,30 @@ pub struct PlatonicDesire {
     /// What part of a household this scales with.
     pub scalar: ScalingFactor,
     /// The rate that satisfaction is converted into the end effect(s).
-    /// 
+    ///
     /// This always assumes that 1.0 satisfaction => 1.0 effects.
     pub effect_rate: DesireEffectRate,
     /// The rate of decay for this desire once satisfied.
-    /// 0.0 means total decay between days, 1.0 would mean none. 
+    /// 0.0 means total decay between days, 1.0 would mean none.
     /// Bounded between [0.0, 1.0), decay likely shouldn't go above 0.8 or so.
     pub decay: f64,
     /// What category(s) of goods should go into this desire.
-    /// 
+    ///
     /// Currently not in use.
     pub categories: Vec<String>,
     /// What class(es) of goods should go into this desire.
     pub classes: Vec<usize>,
     /// What Tiers this desire may go into. (Few go into 0, most will be 1 or 2)
-    /// 
+    ///
     /// This should Never be empty.
     pub tiers: Vec<usize>,
     /// The demographics which may use this platonic desire.
-    pub users: Vec<DemographicSource>
+    pub users: Vec<DemographicSource>,
 }
 
 impl PlatonicDesire {
     /// Creates new Platonic Desire with the given id.
-    /// 
+    ///
     /// Bucket, Effects, Categories, Class, and User are all empty.
     /// Scalar is set to a factor of All(1.0)
     /// effect rate is set to Linear(1.0)
@@ -123,8 +122,10 @@ impl PlatonicDesire {
     /// lists. Priority is 1. Scalar, decay, and the effect rate are copied.
     /// Amount starts at 1, and the platonic effects are scaled to that amount.
     pub fn create_empty_demo_desire(&self, id: usize, tier: usize) -> DemoDesire {
-        debug_assert!(self.tiers.contains(&tier), 
-            "Tier must be a valid tier for the Platonic Desire.");
+        debug_assert!(
+            self.tiers.contains(&tier),
+            "Tier must be a valid tier for the Platonic Desire."
+        );
         let mut demo = DemoDesire {
             id,
             platonic_id: self.id,
@@ -152,12 +153,22 @@ impl PlatonicDesire {
     /// `desire_targets` keeps bucket goods whose id is in that list.
     /// `priority` is stored on the result. Scalar, decay, and the effect rate
     /// are copied. [`DemoDesire::set_amount`] then writes `amount` and the effects.
-    pub fn derive_demographic_desire(&self, id: usize, tier: usize, amount: f64,
-        desire_targets: Vec<usize>, priority: isize) -> DemoDesire {
-        debug_assert!(self.tiers.contains(&tier),
-            "Tier must be a valid tier for the Platonic Desire.");
+    pub fn derive_demographic_desire(
+        &self,
+        id: usize,
+        tier: usize,
+        amount: f64,
+        desire_targets: Vec<usize>,
+        priority: isize,
+    ) -> DemoDesire {
+        debug_assert!(
+            self.tiers.contains(&tier),
+            "Tier must be a valid tier for the Platonic Desire."
+        );
         // Keep only the platonic targets this demo selected.
-        let first_desire = self.bucket.iter()
+        let first_desire = self
+            .bucket
+            .iter()
             .filter(|x| desire_targets.contains(&x.good))
             .map(|x| x.clone())
             .collect_vec();
@@ -181,14 +192,14 @@ impl PlatonicDesire {
 }
 
 /// # Demographic Desire
-/// 
+///
 /// A desire as it exists in a Species, Culture, Stratum, or Religion.
-/// 
+///
 /// This includes a targeted amount as though it were for a singular household.
-/// 
-/// This can be modified by players during the game. 
-/// 
-/// If a DemoDesire is 'new' and just to increase consumption, its `platonic_id` points 
+///
+/// This can be modified by players during the game.
+///
+/// If a DemoDesire is 'new' and just to increase consumption, its `platonic_id` points
 /// to 0.
 #[derive(Debug, Clone)]
 pub struct DemoDesire {
@@ -201,12 +212,12 @@ pub struct DemoDesire {
     pub platonic_id: usize,
     /// The Bucket of goods which satisfy this desire, as well as how they are used and
     /// the efficiency they have in satisfying it.
-    /// 
+    ///
     /// This should be a subset of the Platonic Desire's Targets goods.
     pub bucket: Vec<DesireTarget>,
     /// The effects produced by satisfaction. This is scaled with the amount targeted and
     /// the rate defined by the Platonic Desire's Desire Effect Rate.
-    /// 
+    ///
     /// This is the result of meeting the amount fully.
     /// [`Self::set_amount`] rewrites it from the platonic magnitudes.
     pub effects: Vec<DesireEffect>,
@@ -216,7 +227,7 @@ pub struct DemoDesire {
     pub effect_rate: DesireEffectRate,
     /// The units of satisfaction needed to fully satisfy this desire.
     /// This is multiplied by the Scaling factor to produce the final target per whatever.
-    /// 
+    ///
     /// Effectively equivalent to 1 per Scalar.
     ///
     /// Change it through [`Self::set_amount`] so `effects` stay matched to it.
@@ -224,21 +235,21 @@ pub struct DemoDesire {
     /// The Scaling Factor of the Desire. Multiply this value by the amount for the
     /// actual target amount.
     pub scalar: ScalingFactor,
-    /// The rate of decay for the Desire. Should be directly inherited from the 
+    /// The rate of decay for the Desire. Should be directly inherited from the
     /// Platonic Desire.
     pub decay: f64,
     /// The Desire Tier for the pop.
     pub tier: usize,
     /// The category the desire is restricting itself to.
     pub category: String,
-    /// The Priority of the desire in Demographic Tier it's in. Used for organization 
+    /// The Priority of the desire in Demographic Tier it's in. Used for organization
     /// both here and when consolidating into the pop at the end.
     pub priority: isize,
 }
 
 impl DemoDesire {
     /// # New
-    /// 
+    ///
     ///  Simple New, creates with no frills.
     pub fn new(id: usize) -> Self {
         Self {
@@ -337,7 +348,10 @@ impl DemoDesire {
     /// Sets the satisfaction decay rate between days.
     /// Debug-asserts that `decay` is in `[0.0, 1.0)`.
     pub fn with_decay(mut self, decay: f64) -> Self {
-        debug_assert!(0.0 <= decay && decay < 1.0, "Decay must be between 0.0 inclusive and 1.0 exclusive.");
+        debug_assert!(
+            0.0 <= decay && decay < 1.0,
+            "Decay must be between 0.0 inclusive and 1.0 exclusive."
+        );
         self.decay = decay;
         self
     }
@@ -357,13 +371,13 @@ impl DemoDesire {
     }
 
     /// # Create Desire
-    /// 
+    ///
     /// Creates a pop-level `Desire` from this demographic desire.
-    /// 
+    ///
     /// Copies bucket, scalar, and decay. Satisfaction starts at 0.0 and
     /// category is left empty. `source` is stored on the desire, and
     /// `demo_desire_id` is this demographic desire's `id`.
-    /// 
+    ///
     /// The target `amount` is this desire's base amount multiplied by the pop via
     /// `Pop::get_scaling_factor` and `self.scalar`.
     ///
@@ -404,10 +418,10 @@ impl DemoDesire {
 }
 
 /// # Desire Effect Rate
-/// 
-/// As a desire's target amount increases, the effects/benefits it recieves alter as 
+///
+/// As a desire's target amount increases, the effects/benefits it recieves alter as
 /// well.
-/// 
+///
 /// This effect alters the bonuses given to a pop by satisfying a desire, however pops
 /// will always linearly connect between 0 and the bonus effect given by the Culture.
 /// They will not follow the curve.
@@ -439,9 +453,9 @@ impl DesireEffectRate {
     }
 
     /// # Calculate
-    /// 
+    ///
     /// Given an input value `v`, it calculates what the desire's effect rate is.
-    /// 
+    ///
     /// v must be >= 1.0. V should never be below 1.0.
     pub fn calculate(&self, v: f64) -> f64 {
         assert!(v >= 1.0, "Input value must be 1.0 or greater.");
@@ -454,7 +468,7 @@ impl DesireEffectRate {
 }
 
 /// # Desire
-/// 
+///
 /// A Desire is things or groups of things that are desired by a pop.
 #[derive(Debug, Clone)]
 pub struct Desire {
@@ -465,11 +479,11 @@ pub struct Desire {
     pub demo_desire_id: usize,
 
     /// Ordering priority within a tier. Lower values come first when sorting.
-    /// 
+    ///
     /// Lifecycle under `Pop::update_desires`:
     /// 1. Set from the parent `DemoDesire.priority` for placement sorting.
     /// 2. After the tier is sorted, rewritten to the desire's index in that tier.
-    /// 
+    ///
     /// Once baked to index, later re-sorts can use `priority` alone without re-reading
     /// the source or [`Self::demo_desire_id`].
     pub priority: isize,
@@ -478,7 +492,7 @@ pub struct Desire {
     /// if it's multiple, then it's a bucket.
     pub target: Vec<DesireTarget>,
 
-    /// The amount of units needed. Must always be a positive value and should always 
+    /// The amount of units needed. Must always be a positive value and should always
     /// be >= 1.0.
     pub amount: f64,
     /// The current satisfaction of the desire in units. Does not differentiate goods.
@@ -491,7 +505,7 @@ pub struct Desire {
     pub target_taken: Vec<f64>,
 
     /// Desires should have a category of good they are restricted to expanding into.
-    /// 
+    ///
     /// Not Currently Used.
     pub category: Option<String>,
 
@@ -501,53 +515,54 @@ pub struct Desire {
 
     /// A Desire's Scalar is the factor by which the base amount of a desire is scaled
     /// by to match the pop and it's household(s).
-    /// 
-    /// In particular, it represents selecting either everyone, a member of the 
+    ///
+    /// In particular, it represents selecting either everyone, a member of the
     /// household, or it is on a 'per house' basis.
     pub scalar: ScalingFactor,
 
     /// The rate at which the satisfaction of a desire over time.
-    /// 
+    ///
     /// The satisfaction is multiplied by this value each turn.
-    /// 
+    ///
     /// This should be within [0.0, 1.0).
-    /// 
+    ///
     /// 0.0 means the desire is reset each day.
-    /// 
+    ///
     /// It should never be 1.0, as that would mean the desire never get's unsatisfied.
     pub decay: f64,
 }
 
 impl Desire {
     /// # Tiers Satisfied
-    /// 
+    ///
     /// `self.satisfaciton` / `self.amount`, or the number of times it's been satisfied.
     pub fn tiers_satisfied(&self) -> f64 {
         self.satisfaction / self.amount
     }
 
     /// # Cmp Order
-    /// 
+    ///
     /// Orders one desire relative to another within a tier.
-    /// 
+    ///
     /// Used during `update_desires` **after** priorities have been loaded from each
     /// parent `DemoDesire`, and for any later re-sort once priorities have been baked
     /// to tier indices (then `priority` alone decides order).
-    /// 
+    ///
     /// 1. `priority` ascending (lower first) — demo priority, or post-update index
     /// 2. source kind: Species → Culture → Stratum → Religion (tie-break only)
     /// 3. demo desire id ascending (tie-break only)
-    /// 
+    ///
     /// Provisional; may be reworked after playtesting.
     pub fn cmp_order(&self, other: &Self) -> std::cmp::Ordering {
-        self.priority.cmp(&other.priority)
+        self.priority
+            .cmp(&other.priority)
             .then_with(|| self.source.order_rank().cmp(&other.source.order_rank()))
             .then_with(|| self.demo_desire_id.cmp(&other.demo_desire_id))
     }
 
     /// # Ordered Targets
-    /// 
-    /// Organizes the target goods in the bucket, putting high priority goods first, 
+    ///
+    /// Organizes the target goods in the bucket, putting high priority goods first,
     /// then by efficiency.
     pub fn ordered_targets(&self) -> Vec<&DesireTarget> {
         let mut targets = self.target.iter().collect::<Vec<&DesireTarget>>();
@@ -557,16 +572,18 @@ impl Desire {
             } else if !a.high_priority && b.high_priority {
                 std::cmp::Ordering::Greater
             } else {
-                b.efficiency.partial_cmp(&a.efficiency).unwrap_or(std::cmp::Ordering::Equal)
+                b.efficiency
+                    .partial_cmp(&a.efficiency)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             }
         });
         targets
     }
-    
+
     /// # Get Bonus Satisfaction
     ///
     /// Sums [`DesireEffect::Satisfaction`] attached to this desire.
-    /// Should automatically scale the effect to the size of the pop through the use of 
+    /// Should automatically scale the effect to the size of the pop through the use of
     /// [`Self::tiers_satisfied`].
     ///
     /// A bonus is multiplied by [`Self::tiers_satisfied`], so it grows as the
@@ -587,13 +604,13 @@ impl Desire {
     }
 }
 
-/// # Desire Target 
-/// 
+/// # Desire Target
+///
 /// A good and the efficiency of that good at satisfying our desires.
 #[derive(Debug, Clone)]
 pub struct DesireTarget {
     /// Whe ID of the good which can satisfy this desire.
-    /// 
+    ///
     /// This should be unique within a bucket.
     /// TODO: Edit this to allow for good categories instead of just specific goods.
     pub good: usize,
@@ -603,8 +620,8 @@ pub struct DesireTarget {
     /// Units * effenciency = satisfaction.
     pub efficiency: f64,
     /// What proportion of the wider desire can be satisfied by this specific good.
-    /// 
-    /// Should be between 0.0 and 1.0 and should not go below 1 / number of goods, for 
+    ///
+    /// Should be between 0.0 and 1.0 and should not go below 1 / number of goods, for
     /// the desire.
     pub cap: f64,
     /// Whether this desire target is high priority and is always satisfied first.
@@ -636,8 +653,8 @@ impl DesireTarget {
 }
 
 /// # Desire Target Type
-/// 
-/// What kind of desire the target is. 
+///
+/// What kind of desire the target is.
 #[derive(Debug, Clone, Copy)]
 pub enum DesireTargetType {
     /// The Desire is Consumed, producing the output goods of the good's decay.

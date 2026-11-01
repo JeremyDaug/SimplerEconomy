@@ -25,16 +25,13 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use rand::rngs::StdRng;
 use rand::SeedableRng;
-use simpler_economy::game::actor::Actor;
+use rand::rngs::StdRng;
 use simpler_economy::game::actors::Actors;
-use simpler_economy::game::deal::{Meeting, MeetingOutcome, ProposedDeal};
 use simpler_economy::game::factuals::Factuals;
-use simpler_economy::game::good::Good;
-use simpler_economy::game::job::trade_score;
+use simpler_economy::game::job::{trade_rate, trade_score};
 use simpler_economy::game::market::{Market, MarketGood, MarketHistory, MassClose};
-use simpler_economy::game::pop::Pop;
+use simpler_economy::game::pop::{DayTape, Pop};
 
 fn main() {
     let (days, cap_multiplier) = tester_args();
@@ -76,7 +73,14 @@ fn main() {
                 break;
             }
         }
-        run_day(day, &mut actors, &mut markets, &factuals, market_id, &mut rng);
+        run_day(
+            day,
+            &mut actors,
+            &mut markets,
+            &factuals,
+            market_id,
+            &mut rng,
+        );
         day += 1;
         left -= 1;
     }
@@ -124,7 +128,7 @@ fn set_population_caps(actors: &mut Actors, ids: &[usize], multiplier: f64) {
 
 /// # Run Day
 ///
-/// One market day: morning grant, exchange, then the day's tables.
+/// One market day: morning grant, the mass market, then the day's tables.
 ///
 /// `day` is the number printed on the header. Sizes for the growth column
 /// are taken after the morning grant and before the market day, from the
@@ -145,12 +149,11 @@ fn run_day(
         .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
     // Match prices this morning's card. The night write is inside the day.
     let history = market.history();
-    // Size before the day, so the pop table can show this day's growth.
-    let sizes = pop_sizes(actors);
-    let meetings = market.market_day(actors, factuals, rng);
+    // Households before the day, so growth is on the same scale as migration.
+    let households = household_counts(actors);
+    market.market_day(actors, factuals, rng);
     print_mass_market(factuals, market);
-    print_exchanges(factuals, &history, &meetings);
-    print_pops(factuals, actors, &sizes, &history);
+    print_pops(factuals, actors, &households, &history);
     print_market_board(factuals, market);
 }
 
@@ -230,91 +233,32 @@ fn mass_price(close: &MassClose) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
-/// # Print Exchanges
-///
-/// Prints one row per meeting.
-///
-/// Columns are buyer, seller, the good they met on, the outcome, the AMV
-/// exchange ratio, and the basket. The ratio is buys over sells on `history`,
-/// the morning card the meeting used. No proposal prints `none`. An empty
-/// day still prints the header.
-fn print_exchanges(factuals: &Factuals, history: &MarketHistory, meetings: &[Meeting]) {
-    let rows = meetings
-        .iter()
-        .map(|meeting| {
-            let (ratio, basket) = match &meeting.proposal {
-                Some(proposal) => (
-                    amv_exchange_ratio(history, proposal),
-                    basket(factuals, proposal),
-                ),
-                None => ("none".to_string(), "none".to_string()),
-            };
-            vec![
-                actor_name(meeting.buyer),
-                actor_name(meeting.seller),
-                good_name(factuals, meeting.match_good).to_string(),
-                outcome_name(meeting.outcome).to_string(),
-                ratio,
-                basket,
-            ]
-        })
-        .collect::<Vec<_>>();
-    print_table(
-        "exchanges",
-        &["buyer", "seller", "good", "outcome", "buys/sells", "basket"],
-        &rows,
-    );
-}
-
-/// # AMV Exchange Ratio
-///
-/// Buys divided by sells for one proposed basket, priced on `history`.
-///
-/// A buy is a positive good: units the buyer receives times that good's
-/// absolute AMV. A sell is a negative good: units the buyer gives times
-/// that good's absolute AMV. Freight is not a good in the basket, so it
-/// stays out. The two sides are the same absolute-price split
-/// [`seller_can_accept`](simpler_economy::game::deal::seller_can_accept)
-/// adds up. Returns `none` when the buyer gave no AMV.
-fn amv_exchange_ratio(history: &MarketHistory, proposal: &ProposedDeal) -> String {
-    let mut buys = 0.0;
-    let mut sells = 0.0;
-    for (&good, &qty) in &proposal.goods {
-        let amv = history.price(good).abs();
-        if qty > 0.0 {
-            buys += amv * qty;
-        } else if qty < 0.0 {
-            sells += amv * -qty;
-        }
-    }
-    if sells > 0.0 {
-        qty_text(buys / sells)
-    } else {
-        "none".to_string()
-    }
-}
-
 /// # Print Pops
 ///
 /// Prints the work table, then the pop table, for the pops still stored.
 ///
-/// The work table is the craft, the schedule left on the job, and the
-/// goods still held. Schedule lines and holdings each take their own
-/// line, so a long row does not run off the screen. `history` is the card
-/// the schedule's profit is priced on.
+/// The work table is the craft, the schedule left on the job, and one
+/// line per good. That line is the holding, then buy and sell together.
+/// Schedule lines stay in their own column. `history` is the card the
+/// schedule's profit is priced on.
 ///
 /// The pop table is one row each: id, standard of living, size, growth,
-/// migration, and the five sentiment shares. Size is people
-/// (`DemoRow::total_population`). Growth is that size minus `sizes`, the
-/// population before this market day. A pop missing from `sizes` prints
-/// `none`. Migration is [`Pop::migration`], net households gained this day.
-/// Standard of living is today's satisfaction, including desire
-/// bonuses. The shares are the partition after this day's sentiment update.
-/// A pop removed during the day is absent from both tables.
+/// migration, the five sentiment shares, today's books, the meal, and
+/// the net. Size is people (`DemoRow::total_population`). Growth is the
+/// change in household count since `households`, the count before this
+/// market day. A pop missing from `households` prints `none`. Migration
+/// is [`Pop::migration`], net households gained this day. Standard of living is today's
+/// satisfaction, including desire bonuses. The shares are the partition
+/// after this day's sentiment update. Books, the meal, and the net are
+/// each divided by the households still on the pop. Books are income over
+/// expenses from [`Pop::day_books`], priced on the same morning `history`
+/// as the schedule. The consumed column is that meal, written as a cost.
+/// The net is income minus both of those costs. A pop removed during the
+/// day is absent from both tables.
 fn print_pops(
     factuals: &Factuals,
     actors: &mut Actors,
-    sizes: &HashMap<usize, f64>,
+    households: &HashMap<usize, f64>,
     history: &MarketHistory,
 ) {
     let ids = living_pops(actors);
@@ -324,10 +268,16 @@ fn print_pops(
         let pop = actors.pop_mut(id);
         let sol = pop.calculate_sol(factuals);
         let size = pop.demographics.total_population();
-        let growth = sizes
+        let count = pop.demographics.household.count;
+        let growth = households
             .get(&id)
-            .map(|before| growth_text(size - before))
+            .map(|before| growth_text(count - before))
             .unwrap_or_else(|| "none".to_string());
+        let (income, expenses, meal) = pop.day_books(history);
+        let income = per_household(pop, income);
+        let expenses = per_household(pop, expenses);
+        let meal = per_household(pop, meal);
+        let net = income - expenses - meal;
         pops.push(vec![
             id.to_string(),
             qty_text(sol),
@@ -339,31 +289,72 @@ fn print_pops(
             qty_text(pop.sentiment.anger()),
             qty_text(pop.sentiment.fear()),
             qty_text(pop.sentiment.hope()),
+            format!("{}/{}", growth_text(income), growth_text(-expenses)),
+            growth_text(-meal),
+            growth_text(net),
         ]);
+        let tape = pop.day_tape();
+        let (held, traded) = good_lines(factuals, pop, &tape);
         work.push(vec![
             id.to_string(),
             craft_name(factuals, pop.job.craft),
             schedule(factuals, pop, history),
-            holdings(factuals, pop),
+            held,
+            traded,
         ]);
     }
-    print_table("work", &["pop", "craft", "schedule", "holdings"], &work);
+    print_table(
+        "work",
+        &["pop", "craft", "schedule", "holdings", "buy/sell"],
+        &work,
+    );
     print_table(
         "pops",
         &[
-            "pop", "sol", "size", "growth", "migration", "happy", "content", "anger", "fear", "hope",
+            "pop",
+            "sol",
+            "size",
+            "growth",
+            "migration",
+            "happy",
+            "content",
+            "anger",
+            "fear",
+            "hope",
+            "books",
+            "consumed",
+            "net",
         ],
         &pops,
     );
 }
 
-/// # Pop Sizes
+/// # Per Household
 ///
-/// Population of each pop still stored, read before the market day runs.
-fn pop_sizes(actors: &Actors) -> HashMap<usize, f64> {
+/// `amount` divided by the households still on `pop`.
+///
+/// A non-positive or non-finite count uses one household, so the share
+/// stays finite. Returns that share.
+fn per_household(pop: &Pop, amount: f64) -> f64 {
+    let count = pop.demographics.household.count;
+    let households = if count.is_finite() && count > 0.0 {
+        count
+    } else {
+        1.0
+    };
+    amount / households
+}
+
+/// # Household Counts
+///
+/// Household count of each pop still stored, read before the market day runs.
+///
+/// Growth subtracts this from the count after the day, so it shares a scale
+/// with migration.
+fn household_counts(actors: &Actors) -> HashMap<usize, f64> {
     living_pops(actors)
         .into_iter()
-        .map(|id| (id, actors.pop(id).demographics.total_population()))
+        .map(|id| (id, actors.pop(id).demographics.household.count))
         .collect()
 }
 
@@ -382,9 +373,12 @@ fn living_pops(actors: &Actors) -> Vec<usize> {
 ///
 /// `delta` with a leading plus when it is positive.
 ///
-/// A change that prints as zero has no sign. Growth uses this for people,
-/// including a capped headcount whose leftover is smaller than the print.
-/// Migration uses it for net households.
+/// A change that prints as zero has no sign. Growth uses this for the
+/// household-count change, including a capped count whose leftover is
+/// smaller than the print. Migration uses it for net households. The books column uses it for
+/// income and for expenses written as a cost. The consumed column uses
+/// it for the meal, written as a cost. The net column uses it for the
+/// day's gain or loss.
 fn growth_text(delta: f64) -> String {
     let text = qty_text(delta);
     if text == "0" || text == "-0" {
@@ -408,11 +402,13 @@ fn craft_name(factuals: &Factuals, craft: usize) -> String {
 
 /// # Schedule
 ///
-/// Each job line as `process iterations:profit`, one line per process, in line order.
+/// Each job line as `process iterations:profit/percent`, one line per process, in line order.
 ///
-/// `history` prices [`trade_score`]. Profit is that one run, with a leading
-/// plus when the run gains holding. A missing process reads as "unknown" and
-/// has no profit. No lines read as "idle".
+/// `history` prices [`trade_score`] and [`trade_rate`]. Profit is that one
+/// run, with a leading plus when the run gains holding. The percent is
+/// that gain over the absolute input holding. No priced input reads as
+/// `none`. A missing process reads as "unknown" and has no figures. No
+/// lines read as "idle".
 fn schedule(factuals: &Factuals, pop: &Pop, history: &MarketHistory) -> String {
     if pop.job.lines.is_empty() {
         return "idle".to_string();
@@ -425,11 +421,17 @@ fn schedule(factuals: &Factuals, pop: &Pop, history: &MarketHistory) -> String {
                 .get_process(line.process)
                 .map(|process| process.name.as_str())
                 .unwrap_or("unknown");
-            let target = line.target.map(qty_text).unwrap_or_else(|| "open".to_string());
+            let target = line
+                .target
+                .map(qty_text)
+                .unwrap_or_else(|| "open".to_string());
             match factuals.get_process(line.process) {
                 Some(process) => {
                     let profit = growth_text(trade_score(process, history));
-                    format!("{name} {target}:{profit}")
+                    let percent = trade_rate(process, history)
+                        .map(|share| format!("{}%", growth_text(share * 100.0)))
+                        .unwrap_or_else(|| "none".to_string());
+                    format!("{name} {target}:{profit}/{percent}")
                 }
                 None => format!("{name} {target}"),
             }
@@ -484,27 +486,102 @@ fn decay_percent(good: &MarketGood) -> f64 {
     }
 }
 
-/// # Holdings
+/// # Good Lines
 ///
-/// Goods this pop still has, lowest id first, one good per line.
+/// One line per good, shared by holdings and the columns beside it.
 ///
-/// A quantity of 0 is left out. No stock reads as "nothing".
-fn holdings(factuals: &Factuals, pop: &Pop) -> String {
-    let mut rows: Vec<(&Good, f64)> = pop
-        .property
-        .iter()
-        .filter(|(_, row)| row.quantity != 0.0)
-        .filter_map(|(id, row)| factuals.goods.get(id).map(|good| (good, row.quantity)))
-        .collect();
-    rows.sort_by_key(|(good, _)| good.id);
-    if rows.is_empty() {
-        "nothing".to_string()
-    } else {
-        rows.iter()
-            .map(|(good, qty)| format!("{} {}", qty_text(*qty), good.name))
-            .collect::<Vec<_>>()
-            .join("\n")
+/// Goods are lowest id first. A line is kept when the pop holds the good
+/// or the day tape has a buy or a sell. A holding that prints as zero
+/// shows the name alone, so a buy with no stock still has a line. Buy
+/// and sell share the second cell: `buy` and `sell` are offers, `bought`
+/// and `sold` are the deal good, and `back+` and `back-` are change.
+/// No goods returns `nothing` for the holding and an empty cell beside it.
+fn good_lines(factuals: &Factuals, pop: &Pop, tape: &DayTape) -> (String, String) {
+    let mut ids = Vec::new();
+    for (&id, row) in &pop.property {
+        if shown(row.quantity) {
+            ids.push(id);
+        }
     }
+    for map in [
+        &tape.buy_offers,
+        &tape.sell_offers,
+        &tape.bought,
+        &tape.sold,
+        &tape.change_in,
+        &tape.change_out,
+    ] {
+        for (&id, &qty) in map {
+            if shown(qty) {
+                ids.push(id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return ("nothing".to_string(), String::new());
+    }
+    let mut held = Vec::new();
+    let mut traded = Vec::new();
+    for id in ids {
+        let name = good_name(factuals, id);
+        let qty = pop.property.get(&id).map(|row| row.quantity).unwrap_or(0.0);
+        if shown(qty) {
+            held.push(format!("{} {name}", qty_text(qty)));
+        } else {
+            held.push(name.to_string());
+        }
+        traded.push(join_marks(&[
+            mark("buy", tape_qty(&tape.buy_offers, id)),
+            mark("sell", tape_qty(&tape.sell_offers, id)),
+            mark("bought", tape_qty(&tape.bought, id)),
+            mark("sold", tape_qty(&tape.sold, id)),
+            mark("back+", tape_qty(&tape.change_in, id)),
+            mark("back-", tape_qty(&tape.change_out, id)),
+        ]));
+    }
+    (held.join("\n"), traded.join("\n"))
+}
+
+/// # Shown
+///
+/// True when `qty` prints as something other than zero.
+fn shown(qty: f64) -> bool {
+    if !qty.is_finite() {
+        return false;
+    }
+    let text = qty_text(qty);
+    text != "0" && text != "-0"
+}
+
+/// # Tape Qty
+///
+/// Units of `id` on `map`, or 0 when the good is absent.
+fn tape_qty(map: &HashMap<usize, f64>, id: usize) -> f64 {
+    map.get(&id).copied().unwrap_or(0.0)
+}
+
+/// # Mark
+///
+/// `label` and the printed quantity, when [`shown`] keeps it.
+///
+/// A quantity that prints as zero returns nothing.
+fn mark(label: &str, qty: f64) -> Option<String> {
+    shown(qty).then(|| format!("{label} {}", qty_text(qty)))
+}
+
+/// # Join Marks
+///
+/// `parts` that are present, separated by a comma.
+///
+/// An empty list is an empty line, so the good stays aligned.
+fn join_marks(parts: &[Option<String>]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| part.as_deref())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// # Print Table
@@ -522,11 +599,7 @@ fn print_table(title: &str, headers: &[&str], rows: &[Vec<String>]) {
         .map(|(column, header)| {
             let widest = rows
                 .iter()
-                .map(|row| {
-                    row.get(column)
-                        .map(|cell| cell_width(cell))
-                        .unwrap_or(0)
-                })
+                .map(|row| row.get(column).map(|cell| cell_width(cell)).unwrap_or(0))
                 .max()
                 .unwrap_or(0);
             header.len().max(widest)
@@ -600,41 +673,6 @@ fn table_line(cells: &[impl AsRef<str>], widths: &[usize]) -> String {
         })
         .collect::<Vec<_>>()
         .join("  ")
-}
-
-fn basket(factuals: &Factuals, proposal: &ProposedDeal) -> String {
-    let mut rows: Vec<(usize, f64)> = proposal.goods.iter().map(|(&id, &qty)| (id, qty)).collect();
-    rows.sort_by_key(|(id, _)| *id);
-    let mut parts: Vec<String> = rows
-        .into_iter()
-        .map(|(id, qty)| {
-            let sign = if qty > 0.0 { "+" } else { "" };
-            format!(
-                "{sign}{} {}",
-                qty_text(qty),
-                good_name(factuals, id)
-            )
-        })
-        .collect();
-    parts.push(format!("freight {}", qty_text(proposal.freight)));
-    parts.join(", ")
-}
-
-fn actor_name(actor: Actor) -> String {
-    match actor {
-        Actor::Pop(id) => format!("pop {id}"),
-        Actor::Firm(id) => format!("firm {id}"),
-        Actor::Institution(id) => format!("institution {id}"),
-        Actor::State(id) => format!("state {id}"),
-    }
-}
-
-fn outcome_name(outcome: MeetingOutcome) -> &'static str {
-    match outcome {
-        MeetingOutcome::Abandoned => "abandoned",
-        MeetingOutcome::Rejected => "rejected",
-        MeetingOutcome::Accepted => "accepted",
-    }
 }
 
 fn qty_text(qty: f64) -> String {

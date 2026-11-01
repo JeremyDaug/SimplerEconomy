@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    desire::DemoDesire, effects::DemographicEffect, household::{BirthSentiment, DemographicRates},
+    desire::DemoDesire,
+    effects::DemographicEffect,
+    household::{BirthSentiment, DemographicRates},
 };
 
 /// # Species
@@ -24,14 +26,14 @@ pub struct Species {
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
     /// The Universal Effects on people with this species.
-    /// 
+    ///
     /// This is for effects that are not contingent on other factors like desires.
     /// For example, Flat Birth/Moratlity Effects, Research or Culture bonuses,
     /// labor Efficiency changes, and so on.
     pub species_effects: Vec<DemographicEffect>,
     /// A species Demographic Rates, which act as a default rate for a population in
-    /// general. 
-    /// 
+    /// general.
+    ///
     /// Currently, the baseline is set by `DemographicRates::baseline()`
     pub species_demo_eff: DemographicRates,
     /// Birth change at a full share of one emotion.
@@ -44,6 +46,10 @@ pub struct Species {
     /// Culture, stratum, and religion add their own fractions on top. The sum is clamped
     /// in [`crate::game::factuals::Factuals::work_time_fraction`].
     pub work_time_fraction: f64,
+    /// Goods this species keeps consuming after its desires are done.
+    ///
+    /// Read through [`Self::sinks`]. Empty means the species has no such rule.
+    sinks: Vec<SpeciesSink>,
     /// When true, pops should refresh effective demographic rates this turn.
     ///
     /// TODO: Smoother multi-turn application of large rate swings if needed.
@@ -66,6 +72,7 @@ impl Species {
             birth_sentiment: BirthSentiment::human(),
             work_time_fraction: 0.5,
             household_changed: false,
+            sinks: Vec::new(),
         }
     }
 
@@ -103,4 +110,43 @@ impl Species {
     pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
         self.desires.get(&desire_id)
     }
+
+    /// # With Sink
+    ///
+    /// Adds one bottomless good this species accepts after its desires.
+    ///
+    /// `good` is that good. `efficiency` is the living one household gains
+    /// from one unit, and it must be finite and above 0. Panics if this
+    /// species already sinks `good`. Returns the species.
+    pub fn with_sink(mut self, good: usize, efficiency: f64) -> Self {
+        debug_assert!(
+            efficiency.is_finite() && efficiency > 0.0,
+            "sink efficiency must be finite and > 0"
+        );
+        if self.sinks.iter().any(|sink| sink.good == good) {
+            panic!("Species {} already sinks good {good}.", self.id);
+        }
+        self.sinks.push(SpeciesSink { good, efficiency });
+        self
+    }
+
+    /// # Sinks
+    ///
+    /// The bottomless goods on this species, in the order they were added.
+    pub fn sinks(&self) -> &[SpeciesSink] {
+        &self.sinks
+    }
+}
+
+/// # Species Sink
+///
+/// One good a species keeps consuming after its desires are finished.
+///
+/// `efficiency` is the living one household gains from consuming one unit.
+#[derive(Debug, Clone)]
+pub struct SpeciesSink {
+    /// Good id this species accepts without a desire.
+    pub good: usize,
+    /// Living added per unit consumed by one household.
+    pub efficiency: f64,
 }

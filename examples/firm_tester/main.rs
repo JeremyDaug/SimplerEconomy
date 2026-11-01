@@ -21,9 +21,7 @@ use std::path::PathBuf;
 
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use simpler_economy::game::actor::Actor;
 use simpler_economy::game::actors::Actors;
-use simpler_economy::game::deal::{Meeting, MeetingOutcome, ProposedDeal};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::firm::Firm;
 use simpler_economy::game::market::Market;
@@ -45,11 +43,16 @@ fn main() {
             eprintln!("{err}");
             std::process::exit(1);
         });
-    load::load_firms(&scenario_dir, &factuals, &mut scenario.market, &mut scenario.actors)
-        .unwrap_or_else(|err| {
-            eprintln!("{err}");
-            std::process::exit(1);
-        });
+    load::load_firms(
+        &scenario_dir,
+        &factuals,
+        &mut scenario.market,
+        &mut scenario.actors,
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    });
     let mut firm_ids: Vec<usize> = scenario.market.firms.iter().copied().collect();
     firm_ids.sort_unstable();
     let market_id = scenario.market.id;
@@ -70,8 +73,7 @@ fn main() {
         let market = markets
             .get_mut(&market_id)
             .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
-        let meetings = market.market_day(&mut actors, &factuals, &mut rng);
-        print_exchanges(&factuals, &meetings);
+        market.market_day(&mut actors, &factuals, &mut rng);
         print_firms(&factuals, &actors, &firm_ids, "firms");
         print_pops(&factuals, &mut actors);
         print_market_board(&factuals, market);
@@ -84,36 +86,6 @@ fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
         .get(&id)
         .map(|good| good.name.as_str())
         .unwrap_or("unknown")
-}
-
-/// # Print Exchanges
-///
-/// Prints one row per meeting: buyer, seller, the good they met on, the
-/// outcome, and the basket.
-///
-/// No proposal prints `none`. An empty day still prints the header.
-fn print_exchanges(factuals: &Factuals, meetings: &[Meeting]) {
-    let rows = meetings
-        .iter()
-        .map(|meeting| {
-            vec![
-                actor_name(meeting.buyer),
-                actor_name(meeting.seller),
-                good_name(factuals, meeting.match_good).to_string(),
-                outcome_name(meeting.outcome).to_string(),
-                meeting
-                    .proposal
-                    .as_ref()
-                    .map(|proposal| basket(factuals, proposal))
-                    .unwrap_or_else(|| "none".to_string()),
-            ]
-        })
-        .collect::<Vec<_>>();
-    print_table(
-        "exchanges",
-        &["buyer", "seller", "good", "outcome", "basket"],
-        &rows,
-    );
 }
 
 /// # Print Firms
@@ -169,7 +141,10 @@ fn lines(factuals: &Factuals, firm: &Firm) -> String {
                 .get_process(line.process)
                 .map(|process| process.name.clone())
                 .unwrap_or_else(|| line.process.to_string());
-            let target = line.target.map(qty_text).unwrap_or_else(|| "open".to_string());
+            let target = line
+                .target
+                .map(qty_text)
+                .unwrap_or_else(|| "open".to_string());
             format!("{name} {target}")
         })
         .collect::<Vec<_>>()
@@ -319,49 +294,6 @@ fn table_line(cells: &[impl AsRef<str>], widths: &[usize]) -> String {
         })
         .collect::<Vec<_>>()
         .join("  ")
-}
-
-/// # Basket
-///
-/// Each good in `proposal` as a signed quantity, lowest id first, then the
-/// freight.
-///
-/// A positive quantity goes to the buyer.
-fn basket(factuals: &Factuals, proposal: &ProposedDeal) -> String {
-    let mut rows: Vec<(usize, f64)> = proposal.goods.iter().map(|(&id, &qty)| (id, qty)).collect();
-    rows.sort_by_key(|(id, _)| *id);
-    let mut parts: Vec<String> = rows
-        .into_iter()
-        .map(|(id, qty)| {
-            let sign = if qty > 0.0 { "+" } else { "" };
-            format!("{sign}{} {}", qty_text(qty), good_name(factuals, id))
-        })
-        .collect();
-    parts.push(format!("freight {}", qty_text(proposal.freight)));
-    parts.join(", ")
-}
-
-/// # Actor Name
-///
-/// The actor's kind and id, such as `firm 2`.
-fn actor_name(actor: Actor) -> String {
-    match actor {
-        Actor::Pop(id) => format!("pop {id}"),
-        Actor::Firm(id) => format!("firm {id}"),
-        Actor::Institution(id) => format!("institution {id}"),
-        Actor::State(id) => format!("state {id}"),
-    }
-}
-
-/// # Outcome Name
-///
-/// The meeting outcome in lower case.
-fn outcome_name(outcome: MeetingOutcome) -> &'static str {
-    match outcome {
-        MeetingOutcome::Abandoned => "abandoned",
-        MeetingOutcome::Rejected => "rejected",
-        MeetingOutcome::Accepted => "accepted",
-    }
 }
 
 /// # Quantity Text

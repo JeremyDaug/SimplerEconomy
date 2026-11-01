@@ -11,8 +11,8 @@
 //! stay on `process` for now: they change production math, not actor state. Their
 //! birth / mortality arms bridge into [`ProcessEffect`] / [`EffectKind`].
 
-use crate::game::sentiment::SentimentKind;
 use crate::game::household::HouseholdTarget;
+use crate::game::sentiment::SentimentKind;
 
 // ---------------------------------------------------------------------------
 // Master catalog
@@ -50,7 +50,10 @@ pub enum EffectKind {
 
     // --- Goods ---
     /// Extra goods granted (e.g. desire bonus transport).
-    BonusGood { good: usize, amount: f64 },
+    BonusGood {
+        good: usize,
+        amount: f64,
+    },
 
     // --- Mood / satisfaction ---
     Satisfaction(f64),
@@ -232,34 +235,29 @@ impl DesireEffect {
     pub fn is_additive(self) -> bool {
         self.is_player_resource() || self.is_bonus_good()
     }
-    
+
     /// # Scale By
-    /// 
+    ///
     /// Scales our Desire Effect by a given scalar, returning the new version.
     pub(crate) fn scale_by(&self, effect_scale: f64) -> Self {
         match self {
-            DesireEffect::Mortality(household_target, v, b) => 
-                DesireEffect::Mortality(*household_target, v*effect_scale, *b),
-            DesireEffect::Birthrate(v, b) => 
-                DesireEffect::Birthrate(v*effect_scale, *b),
-            DesireEffect::BonusGood(g, v, b) => 
-                DesireEffect::BonusGood(*g, v*effect_scale, *b),
-            DesireEffect::Satisfaction(v, b) => 
-                DesireEffect::Satisfaction(v*effect_scale, *b),
-            DesireEffect::SentimentFlat(sentiment_kind, v, b) => 
-                DesireEffect::SentimentFlat(*sentiment_kind, v*effect_scale, *b),
-            DesireEffect::SentimentRelative(sentiment_kind, v, b) => 
-                DesireEffect::SentimentRelative(*sentiment_kind, v*effect_scale, *b),
-            DesireEffect::Culture(v, b) => 
-                DesireEffect::Culture(v*effect_scale, *b),
-            DesireEffect::Research(v, b) => 
-                DesireEffect::Research(v*effect_scale, *b),
-            DesireEffect::Faith(v, b) => 
-                DesireEffect::Faith(v*effect_scale, *b),
-            DesireEffect::Authority(v, b) => 
-                DesireEffect::Authority(v*effect_scale, *b),
-            DesireEffect::Legitimacy(v, b) => 
-                DesireEffect::Legitimacy(v*effect_scale, *b),
+            DesireEffect::Mortality(household_target, v, b) => {
+                DesireEffect::Mortality(*household_target, v * effect_scale, *b)
+            }
+            DesireEffect::Birthrate(v, b) => DesireEffect::Birthrate(v * effect_scale, *b),
+            DesireEffect::BonusGood(g, v, b) => DesireEffect::BonusGood(*g, v * effect_scale, *b),
+            DesireEffect::Satisfaction(v, b) => DesireEffect::Satisfaction(v * effect_scale, *b),
+            DesireEffect::SentimentFlat(sentiment_kind, v, b) => {
+                DesireEffect::SentimentFlat(*sentiment_kind, v * effect_scale, *b)
+            }
+            DesireEffect::SentimentRelative(sentiment_kind, v, b) => {
+                DesireEffect::SentimentRelative(*sentiment_kind, v * effect_scale, *b)
+            }
+            DesireEffect::Culture(v, b) => DesireEffect::Culture(v * effect_scale, *b),
+            DesireEffect::Research(v, b) => DesireEffect::Research(v * effect_scale, *b),
+            DesireEffect::Faith(v, b) => DesireEffect::Faith(v * effect_scale, *b),
+            DesireEffect::Authority(v, b) => DesireEffect::Authority(v * effect_scale, *b),
+            DesireEffect::Legitimacy(v, b) => DesireEffect::Legitimacy(v * effect_scale, *b),
         }
     }
 }
@@ -287,13 +285,25 @@ pub enum PopEffect {
     /// Sentiment counts it on that tier. Standard of living adds it, and
     /// [`crate::game::pop::Pop::calculate_sol`] removes it. `amount` is
     /// already scaled.
-    Satisfaction { tier: usize, amount: f64 },
+    Satisfaction {
+        tier: usize,
+        amount: f64,
+    },
     /// Extra goods already scaled; granted at end-of-day decay.
-    BonusGood { good: usize, amount: f64 },
+    BonusGood {
+        good: usize,
+        amount: f64,
+    },
     /// Flat share-of-pop into an axis (donors unspecified — other axes scale down).
-    SentimentFlat { kind: SentimentKind, delta: f64 },
+    SentimentFlat {
+        kind: SentimentKind,
+        delta: f64,
+    },
     /// Relative scale of one axis, then renormalize.
-    SentimentRelative { kind: SentimentKind, relative: f64 },
+    SentimentRelative {
+        kind: SentimentKind,
+        relative: f64,
+    },
     /// Culture points already scaled; harvested at extract.
     Culture(f64),
     /// Research points already scaled; harvested at extract.
@@ -313,9 +323,10 @@ impl PopEffect {
             PopEffect::Mortality(target, v) => EffectKind::MortalityRate(target, v),
             PopEffect::Satisfaction { amount, .. } => EffectKind::Satisfaction(amount),
             PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
-            PopEffect::SentimentFlat { kind, delta } => {
-                EffectKind::SentimentFlat { kind, amount: delta }
-            }
+            PopEffect::SentimentFlat { kind, delta } => EffectKind::SentimentFlat {
+                kind,
+                amount: delta,
+            },
             PopEffect::SentimentRelative { kind, relative } => {
                 EffectKind::SentimentRelative { kind, relative }
             }
@@ -406,7 +417,10 @@ impl From<DemographicEffect> for EffectKind {
 /// Effects an institution can apply, with an explicit [`EffectScope`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InstitutionEffect {
-    BirthRate { rate: f64, scope: EffectScope },
+    BirthRate {
+        rate: f64,
+        scope: EffectScope,
+    },
     MortalityRate {
         target: HouseholdTarget,
         rate: f64,
@@ -551,10 +565,11 @@ impl ProcessEffect {
             (ProcessEffect::BirthRate(v1), ProcessEffect::BirthRate(v2)) => {
                 Some(ProcessEffect::BirthRate(v1 + v2))
             }
-            (
-                ProcessEffect::MortalityRate(t1, v1),
-                ProcessEffect::MortalityRate(t2, v2),
-            ) if t1 == t2 => Some(ProcessEffect::MortalityRate(*t1, v1 + v2)),
+            (ProcessEffect::MortalityRate(t1, v1), ProcessEffect::MortalityRate(t2, v2))
+                if t1 == t2 =>
+            {
+                Some(ProcessEffect::MortalityRate(*t1, v1 + v2))
+            }
             _ => None,
         }
     }

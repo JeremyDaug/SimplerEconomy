@@ -1,7 +1,21 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::game::{
-    actor::Actor, config::TIME_PER_LABOR, deal::{DealMaker, DealResponse, ProposedDeal, SellerBook}, demographic_source::DemographicSource, desire::{Desire, DesireTarget, DesireTargetType}, effects::{DesireEffect, ProcessEffect}, factuals::Factuals, good::{Good, GoodTag, TIME}, household::{DemographicRates, Household}, job::Job, market::{Market, MarketHistory, AMV_EPSILON}, marketorder::MarketOrder, scalingfactor::ScalingFactor, sentiment::{Sentiment, SentimentKind, SentimentMod}, util::whole_units_up,
+    actor::Actor,
+    config::TIME_PER_LABOR,
+    deal::{DealMaker, ProposedDeal},
+    demographic_source::DemographicSource,
+    desire::{DemoDesire, Desire, DesireTarget, DesireTargetType},
+    effects::{DesireEffect, ProcessEffect},
+    factuals::Factuals,
+    good::{Good, GoodTag, TIME},
+    household::{DemographicRates, Household},
+    job::Job,
+    market::{AMV_EPSILON, Market, MarketHistory},
+    marketorder::MarketOrder,
+    scalingfactor::ScalingFactor,
+    sentiment::{Sentiment, SentimentKind, SentimentMod},
+    util::whole_units_up,
 };
 
 pub use crate::game::effects::PopEffect;
@@ -74,6 +88,19 @@ pub struct Pop {
     /// [`Job::leave`](crate::game::job::Job::leave).
     savings: HashMap<usize, f64>,
 
+    /// Units removed from [`Self::property`]. Not offered for sale.
+    ///
+    /// [`Self::meal`] and [`Job::input_hold`] are parts of this pile.
+    /// The rest of a currency here is the savings target. Decay and
+    /// migration see it. [`crate::game::ladder`] is the writer.
+    pub(crate) saved: HashMap<usize, f64>,
+
+    /// Part of [`Self::saved`] that consumption may eat.
+    ///
+    /// Reserved before the sell book. The rest of [`Self::saved`] stays out
+    /// of the meal.
+    pub(crate) meal: HashMap<usize, f64>,
+
     /// Luxury desires' part of [`Self::savings`].
     ///
     /// Empty when no luxury desire is saving.
@@ -87,9 +114,10 @@ pub struct Pop {
 
     /// Cover units cheaper to buy than the line that would make them.
     ///
-    /// [`Self::plan`] writes the map. [`Self::prepare_mass_buys`] funds it,
-    /// and the barter buy raises that good's order to this amount. The job
-    /// still aims at the cover. A purchase on hand shrinks the next night's gap.
+    /// [`Self::plan`] writes the map. [`Self::mass_want`] buys the part of
+    /// this cover that stock does not already hold, and
+    /// [`Self::prepare_mass_buys`] funds that buy. A purchase on hand
+    /// shrinks the next night's gap.
     cheaper_cover: HashMap<usize, f64>,
 
     /// Units funded for today's mass clear, by good.
@@ -98,6 +126,18 @@ pub struct Pop {
     /// drops it. [`DealMaker::mass_order`] posts a listed amount and does
     /// not invent a buy for a good left out.
     mass_buys: Option<HashMap<usize, f64>>,
+
+    /// Tender still allowed on today's sell book, by good.
+    ///
+    /// Empty until [`Self::note_currency_sale_room`]. The morning reset
+    /// drops it. [`Self::mass_sell`] reads it.
+    currency_sale_room: HashMap<usize, f64>,
+
+    /// Units of each tender posted for sale today.
+    ///
+    /// [`Self::spend_currency_sale_room`] adds a post. The morning reset
+    /// drops it. [`Self::plan`] notes it on the next sale.
+    day_listed: HashMap<usize, f64>,
 
     /// Units this pop posted to buy today, by good.
     ///
@@ -108,6 +148,127 @@ pub struct Pop {
     ///
     /// Cleared at the morning reset.
     buy_received: HashMap<usize, f64>,
+
+    /// Payment given today, by good. [`Self::finalize`] writes it.
+    ///
+    /// Cleared at the morning reset.
+    day_paid: HashMap<usize, f64>,
+
+    /// Payment taken in today, by good. [`Self::finalize`] writes it.
+    ///
+    /// Cleared at the morning reset.
+    day_received: HashMap<usize, f64>,
+
+    /// The deal's good received today, by good. [`Self::finalize`] writes it.
+    ///
+    /// Cleared at the morning reset.
+    day_got: HashMap<usize, f64>,
+
+    /// The deal's good given today, by good. [`Self::finalize`] writes it.
+    ///
+    /// Cleared at the morning reset.
+    day_gave: HashMap<usize, f64>,
+
+    /// Transport spent as freight today, by good. [`Self::pay_freight`] writes it.
+    ///
+    /// Cleared at the morning reset.
+    day_haul: HashMap<usize, f64>,
+
+    /// Units eaten for a desire today, by good. [`Self::consume`] writes it.
+    ///
+    /// Cleared at the morning reset. A good only used, and freight, stay out.
+    day_eaten: HashMap<usize, f64>,
+
+    /// Units a desire used today, by good. [`Self::consume`] writes it.
+    ///
+    /// Cleared at the morning reset. These units return at decay.
+    day_held: HashMap<usize, f64>,
+
+    /// Units eaten as rest today, by good. [`Self::rest`] writes it.
+    ///
+    /// Cleared at the morning reset. Not part of the meal.
+    rest_taken: HashMap<usize, f64>,
+
+    /// Units created this morning, by good.
+    ///
+    /// [`Self::start_day`] replaces the map with this morning's grant.
+    /// [`Self::reset_day`] leaves it. [`Self::day_books`] prices it as income.
+    day_granted: HashMap<usize, f64>,
+
+    /// Units posted to buy today, on the day tape.
+    ///
+    /// The buy ladder writes each bid. The morning reset drops it.
+    tape_buy: HashMap<usize, f64>,
+
+    /// Units posted to sell today, on the day tape.
+    ///
+    /// The sell book writes each offer. The morning reset drops it.
+    tape_sell: HashMap<usize, f64>,
+
+    /// The deal's good received today, on the day tape.
+    ///
+    /// [`Self::note_flow`] writes [`DayFlow::Got`]. The morning reset drops it.
+    tape_bought: HashMap<usize, f64>,
+
+    /// The deal's good given today, on the day tape.
+    ///
+    /// [`Self::note_flow`] writes [`DayFlow::Gave`]. The morning reset drops it.
+    tape_sold: HashMap<usize, f64>,
+
+    /// Tender given today, on the day tape.
+    ///
+    /// [`Self::note_flow`] writes [`DayFlow::Paid`]. The morning reset drops it.
+    tape_paid: HashMap<usize, f64>,
+
+    /// Tender taken today, on the day tape.
+    ///
+    /// [`Self::note_flow`] writes [`DayFlow::Received`]. The morning reset drops it.
+    tape_earned: HashMap<usize, f64>,
+
+    /// Change received today, on the day tape.
+    ///
+    /// The buy ladder writes it. The morning reset drops it.
+    tape_change_in: HashMap<usize, f64>,
+
+    /// Change given today, on the day tape.
+    ///
+    /// The buy ladder writes it. The morning reset drops it.
+    tape_change_out: HashMap<usize, f64>,
+
+    /// Meal units set aside today, on the day tape.
+    ///
+    /// [`Self::stash_working`] writes [`SaveHold::Meal`]. The morning reset drops it.
+    tape_meal: HashMap<usize, f64>,
+
+    /// Production inputs set aside today, on the day tape.
+    ///
+    /// [`Self::stash_working`] writes [`SaveHold::Input`]. The morning reset drops it.
+    tape_input: HashMap<usize, f64>,
+
+    /// Currency swept into savings today, on the day tape.
+    ///
+    /// [`Self::stash_working`] writes [`SaveHold::Currency`]. The morning reset drops it.
+    tape_saved: HashMap<usize, f64>,
+
+    /// Property that arrived with migrants today, on the day tape.
+    ///
+    /// [`Self::receive_migrants`] writes it. The morning reset drops it.
+    tape_arrived: HashMap<usize, f64>,
+
+    /// Property that left with migrants today, on the day tape.
+    ///
+    /// [`Self::take_migrants`] writes it. The morning reset drops it.
+    tape_left: HashMap<usize, f64>,
+
+    /// Saved stock that shrank with migrants and did not travel, on the day tape.
+    ///
+    /// [`Self::take_migrants`] writes it. The morning reset drops it.
+    tape_dropped: HashMap<usize, f64>,
+
+    /// Living [`Self::rest`] stored for [`Self::standard_of_living`].
+    ///
+    /// The morning reset clears it.
+    rest_sol: f64,
 
     /// Private value of one unit, in the same units as the card.
     ///
@@ -126,49 +287,17 @@ pub struct Pop {
     worth_open: bool,
 }
 
-/// # Satisfaction Change
-///
-/// Total satisfaction received and total satisfaction given up.
-///
-/// Each list is the end uses of one side. Every tier is included. Returns
-/// `(gain, loss)`.
-fn satisfaction_change(received: &[EndUse], given: &[EndUse]) -> (f64, f64) {
-    let gain = received.iter().map(|use_| use_.satisfaction).sum();
-    let loss = given.iter().map(|use_| use_.satisfaction).sum();
-    (gain, loss)
-}
-
-/// # Raw AMV
-///
-/// Face AMV of `goods`, ignoring salability.
-///
-/// `history` supplies [`MarketHistory::price`]. Quantities are positive.
-/// Returns the sum.
-fn raw_amv(history: &MarketHistory, goods: &HashMap<usize, f64>) -> f64 {
-    goods
-        .iter()
-        .map(|(&good, &qty)| history.price(good) * qty)
-        .sum()
-}
-
-/// # Dictated Price
-///
-/// Raw AMV per unit `order` will trade at.
-///
-/// A non-zero [`MarketOrder::accept_price`] is that price. Otherwise the
-/// card's raw AMV is used. Salability is not applied. Returns the price.
-fn dictated_price(order: &MarketOrder, history: &MarketHistory) -> f64 {
-    if order.accept_price != 0.0 && order.accept_price.is_finite() {
-        order.accept_price
-    } else {
-        history.price(order.target)
-    }
-}
-
 /// Saved days held above the day that will be eaten.
 ///
 /// Fixed for this tester. Demographics and sentiment do not change it.
 const SAVINGS_DAYS: f64 = 1.0;
+
+/// Decay at or above this is too fast to hold as the saved day.
+///
+/// The saved-day choice keeps a slower good. A faster good is saved as a
+/// more durable tender when one can be obtained, or left for the morning
+/// that makes it.
+const SAVINGS_EASY_DECAY: f64 = 0.10;
 
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet. Fixed for this tester.
@@ -252,15 +381,6 @@ struct NightNeeds {
     luxury_savings_open: bool,
 }
 
-/// Satisfaction one basket side places on a single desire.
-struct EndUse {
-    tier: usize,
-    order: usize,
-    satisfaction: f64,
-    /// Whole units of the good placed on this desire.
-    units: f64,
-}
-
 /// Bookmark for one satisfaction walk.
 ///
 /// `target_index` is into `desire.target` as stored, the target the walk
@@ -308,7 +428,11 @@ fn walk_pile(
     goal: &HashMap<usize, f64>,
     households: f64,
 ) -> HashMap<usize, f64> {
-    let mut goods: Vec<usize> = previous.keys().copied().chain(goal.keys().copied()).collect();
+    let mut goods: Vec<usize> = previous
+        .keys()
+        .copied()
+        .chain(goal.keys().copied())
+        .collect();
     goods.sort_unstable();
     goods.dedup();
     let mut out = HashMap::new();
@@ -377,15 +501,77 @@ fn scale_gap(
     out
 }
 
-/// # Order Amount
+/// Which part of the saved pile a stash belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SaveHold {
+    /// Consumption reserve.
+    Meal,
+    /// Production input. [`Job::input_hold`] records the same units.
+    Input,
+    /// Currency held toward the savings target.
+    Currency,
+}
+
+/// Today's posts, trades, plan set-asides, and migration goods for one pop.
 ///
-/// Units of `good` already on `orders`, or zero when it is absent.
-fn order_amount(orders: &[MarketOrder], good: usize) -> f64 {
-    orders
-        .iter()
-        .find(|order| order.target == good)
-        .map(|order| order.target_amount)
-        .unwrap_or(0.0)
+/// [`Pop::day_tape`] copies this. The morning reset clears the maps it reads.
+#[derive(Debug, Clone, Default)]
+pub struct DayTape {
+    /// Units posted to buy.
+    pub buy_offers: HashMap<usize, f64>,
+    /// Units posted to sell.
+    pub sell_offers: HashMap<usize, f64>,
+    /// The deal's good received.
+    pub bought: HashMap<usize, f64>,
+    /// The deal's good given.
+    pub sold: HashMap<usize, f64>,
+    /// Tender given.
+    pub paid: HashMap<usize, f64>,
+    /// Tender taken.
+    pub earned: HashMap<usize, f64>,
+    /// Change received.
+    pub change_in: HashMap<usize, f64>,
+    /// Change given.
+    pub change_out: HashMap<usize, f64>,
+    /// Meal set aside.
+    pub meal: HashMap<usize, f64>,
+    /// Production inputs set aside.
+    pub inputs: HashMap<usize, f64>,
+    /// Currency swept into savings.
+    pub saved: HashMap<usize, f64>,
+    /// Tender left in working stock and off the sell book.
+    pub unlisted: HashMap<usize, f64>,
+    /// Property that arrived with migrants.
+    pub arrived: HashMap<usize, f64>,
+    /// Property that left with migrants.
+    pub left: HashMap<usize, f64>,
+    /// Saved stock that shrank and did not travel.
+    pub dropped: HashMap<usize, f64>,
+}
+
+/// One of today's book maps on a pop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DayFlow {
+    /// Payment given.
+    Paid,
+    /// Payment taken.
+    Received,
+    /// The good received.
+    Got,
+    /// The good given.
+    Gave,
+}
+
+/// # Add Tape
+///
+/// Adds `units` of `good` onto `book`.
+///
+/// A non-positive or non-finite amount is ignored. Nothing is returned.
+fn add_tape(book: &mut HashMap<usize, f64>, good: usize, units: f64) {
+    if !units.is_finite() || units <= 0.0 {
+        return;
+    }
+    *book.entry(good).or_insert(0.0) += units;
 }
 
 impl Pop {
@@ -413,12 +599,40 @@ impl Pop {
             planned_desires: Vec::new(),
             luxury_reached: 0.0,
             savings: HashMap::new(),
+            saved: HashMap::new(),
+            meal: HashMap::new(),
             luxury_savings: HashMap::new(),
             luxury_savings_open: true,
             cheaper_cover: HashMap::new(),
             mass_buys: None,
+            currency_sale_room: HashMap::new(),
+            day_listed: HashMap::new(),
             buy_posted: HashMap::new(),
             buy_received: HashMap::new(),
+            day_paid: HashMap::new(),
+            day_received: HashMap::new(),
+            day_got: HashMap::new(),
+            day_gave: HashMap::new(),
+            day_haul: HashMap::new(),
+            day_eaten: HashMap::new(),
+            day_held: HashMap::new(),
+            rest_taken: HashMap::new(),
+            rest_sol: 0.0,
+            day_granted: HashMap::new(),
+            tape_buy: HashMap::new(),
+            tape_sell: HashMap::new(),
+            tape_bought: HashMap::new(),
+            tape_sold: HashMap::new(),
+            tape_paid: HashMap::new(),
+            tape_earned: HashMap::new(),
+            tape_change_in: HashMap::new(),
+            tape_change_out: HashMap::new(),
+            tape_meal: HashMap::new(),
+            tape_input: HashMap::new(),
+            tape_saved: HashMap::new(),
+            tape_arrived: HashMap::new(),
+            tape_left: HashMap::new(),
+            tape_dropped: HashMap::new(),
             worth: HashMap::new(),
             turned: HashMap::new(),
             worth_open: true,
@@ -454,11 +668,15 @@ impl Pop {
     ///
     /// `households` is clamped to the count on hand. The property share is half
     /// that fraction of the pop. `quantity` and `used` are reduced by that
-    /// share and returned in the group. `fresh`, `produced`, and `reserved`
-    /// shrink by the same share and stay. Savings shrink by that share and
-    /// stay. Averages on this pop stay. The group's household shape is those
-    /// averages from before the count dropped. A non-positive ask returns an
-    /// empty group and changes nothing.
+    /// share and returned in the group. `fresh`, `produced`, `spent`, and
+    /// `reserved` shrink by the same share and stay. Today's payment, the
+    /// deal's good, freight, the meal, the tender units posted for sale, and
+    /// the morning grant shrink by that share and stay. Savings shrink
+    /// by that share and stay. The day tape is left as posted: property that
+    /// leaves is noted, and saved stock that shrinks without traveling is
+    /// noted. Averages on this pop stay. The group's household
+    /// shape is those averages from before the count dropped. A non-positive
+    /// ask returns an empty group and changes nothing.
     pub(crate) fn take_migrants(&mut self, households: f64) -> MigrantGroup {
         let count = self.demographics.household.count;
         if !households.is_finite() || households <= 0.0 || count <= 0.0 {
@@ -477,19 +695,48 @@ impl Pop {
             row.used -= take_used;
             row.fresh *= 1.0 - goods_fraction;
             row.produced *= 1.0 - goods_fraction;
+            row.spent *= 1.0 - goods_fraction;
             row.reserved *= 1.0 - goods_fraction;
             if take_qty != 0.0 {
                 quantity.insert(good, take_qty);
+                add_tape(&mut self.tape_left, good, take_qty);
             }
             if take_used != 0.0 {
                 used.insert(good, take_used);
             }
+        }
+        for (&good, &amount) in &self.saved {
+            add_tape(&mut self.tape_dropped, good, amount * goods_fraction);
         }
         for amount in self.savings.values_mut() {
             *amount *= 1.0 - goods_fraction;
         }
         for amount in self.luxury_savings.values_mut() {
             *amount *= 1.0 - goods_fraction;
+        }
+        for amount in self.saved.values_mut() {
+            *amount *= 1.0 - goods_fraction;
+        }
+        for amount in self.meal.values_mut() {
+            *amount *= 1.0 - goods_fraction;
+        }
+        for amount in self.job.input_hold.values_mut() {
+            *amount *= 1.0 - goods_fraction;
+        }
+        let keep = 1.0 - goods_fraction;
+        for flow in [
+            &mut self.day_paid,
+            &mut self.day_received,
+            &mut self.day_got,
+            &mut self.day_gave,
+            &mut self.day_haul,
+            &mut self.day_eaten,
+            &mut self.day_listed,
+            &mut self.day_granted,
+        ] {
+            for amount in flow.values_mut() {
+                *amount *= keep;
+            }
         }
         MigrantGroup {
             households,
@@ -504,16 +751,20 @@ impl Pop {
     /// Adds `group` onto this pop.
     ///
     /// Household averages fold in the arrivals. `quantity` and `used` add.
-    /// Savings stay as they are. The arrivals do not bring a savings claim.
+    /// Arriving quantity is noted on the day tape. Savings stay as they are.
+    /// The arrivals do not bring a savings claim.
     /// An empty group changes nothing.
     pub(crate) fn receive_migrants(&mut self, group: &MigrantGroup) {
         if group.households <= 0.0 {
             return;
         }
-        self.demographics.household.absorb(&group.shape, group.households);
+        self.demographics
+            .household
+            .absorb(&group.shape, group.households);
         for (&good, &qty) in &group.quantity {
             if qty != 0.0 {
                 self.property.entry(good).or_default().quantity += qty;
+                add_tape(&mut self.tape_arrived, good, qty);
             }
         }
         for (&good, &qty) in &group.used {
@@ -542,17 +793,22 @@ impl Pop {
     ///
     /// `new_goods` is pairs of good id and scaling factor. Each amount is this
     /// pop's factor for that scaling, added to `quantity`. A missing row is
-    /// created.
+    /// created. A positive amount is this morning's creation of that good.
+    /// The creation record is replaced by this call.
     ///
     /// Returns each good id and the amount added, in the same order.
     pub fn start_day(&mut self, new_goods: &[(usize, ScalingFactor)]) -> Vec<(usize, f64)> {
         let mut added = Vec::with_capacity(new_goods.len());
+        self.day_granted.clear();
         for (good_id, scaling) in new_goods {
             let amount = self.get_scaling_factor(*scaling);
             self.property
                 .entry(*good_id)
                 .and_modify(|row| row.quantity += amount)
                 .or_insert(PopPRow::new(amount));
+            if amount > 0.0 {
+                *self.day_granted.entry(*good_id).or_insert(0.0) += amount;
+            }
             added.push((*good_id, amount));
         }
         added
@@ -562,9 +818,10 @@ impl Pop {
     ///
     /// Adds species, culture, stratum, and religion desires this pop does not already have.
     ///
-    /// `factuals` supplies those demographics. Does not shop, and does not
-    /// rewrite satisfaction. Culture, stratum, and religion id `0` are
-    /// skipped. Day-end size matching is [`Self::rescale_desires`].
+    /// `factuals` supplies those demographics. Each owner's desires are
+    /// copied in id order ([`Self::desires_in_id_order`]). Does not shop,
+    /// and does not rewrite satisfaction. Culture, stratum, and religion
+    /// id `0` are skipped. Day-end size matching is [`Self::rescale_desires`].
     pub fn update_desires(&mut self, factuals: &Factuals) {
         let mut existing = HashSet::new();
         for tier in &self.desires {
@@ -581,7 +838,7 @@ impl Pop {
         existing: &HashSet<(DemographicSource, usize)>,
     ) {
         if let Some(species) = factuals.species.get(&self.demographics.species) {
-            for demo in species.desires.values() {
+            for demo in Self::desires_in_id_order(&species.desires) {
                 let source = DemographicSource::Species(species.id);
                 if !existing.contains(&(source, demo.id)) {
                     let tier = demo.tier;
@@ -594,7 +851,7 @@ impl Pop {
 
         if self.demographics.culture != 0 {
             if let Some(culture) = factuals.cultures.get(&self.demographics.culture) {
-                for demo in culture.desires.values() {
+                for demo in Self::desires_in_id_order(&culture.desires) {
                     let source = DemographicSource::Culture(culture.id);
                     if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
@@ -608,7 +865,7 @@ impl Pop {
 
         if self.demographics.stratum != 0 {
             if let Some(stratum) = factuals.get_stratum(self.demographics.stratum) {
-                for demo in stratum.desires.values() {
+                for demo in Self::desires_in_id_order(&stratum.desires) {
                     let source = DemographicSource::Stratum(stratum.id);
                     if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
@@ -622,7 +879,7 @@ impl Pop {
 
         if self.demographics.religion != 0 {
             if let Some(religion) = factuals.religion.get(&self.demographics.religion) {
-                for demo in religion.desires.values() {
+                for demo in Self::desires_in_id_order(&religion.desires) {
                     let source = DemographicSource::Religion(religion.id);
                     if !existing.contains(&(source, demo.id)) {
                         let tier = demo.tier;
@@ -633,6 +890,22 @@ impl Pop {
                 }
             }
         }
+    }
+
+    /// # Desires In Id Order
+    ///
+    /// One demographic's desires, lowest id first.
+    ///
+    /// `desires` is that owner's map. The map's own order is not the copy
+    /// order. [`Self::satisfy_tier`] walks a tier in the order these copies
+    /// were pushed and stops at the first desire that cannot fill, so a
+    /// lower id of the same owner is reserved before a higher one.
+    ///
+    /// Returns those desires in id order.
+    fn desires_in_id_order(desires: &HashMap<usize, DemoDesire>) -> Vec<&DemoDesire> {
+        let mut ordered: Vec<&DemoDesire> = desires.values().collect();
+        ordered.sort_by_key(|desire| desire.id);
+        ordered
     }
 
     /// # Apply Craft
@@ -755,11 +1028,10 @@ impl Pop {
     /// Morning reserve shopped before that make
     /// and before [`Self::satisfy_made`] reserved any of it. An input the
     /// make left free is not bought again. Capital set aside in `used` still
-    /// counts. The buy this posts is recorded for [`Self::savings_fill`].
+    /// counts.
     pub fn settle_shopping(&mut self, factuals: &Factuals) {
         self.job.leave(&self.savings);
         self.job.settle_shopping(&self.property, factuals);
-        self.note_posted_buys();
     }
 
     /// # Satisfy Continue
@@ -1014,30 +1286,45 @@ impl Pop {
             } else {
                 0.0
             };
-            (share, fills, target.high_priority, on_hand, target.efficiency)
+            (
+                share,
+                fills,
+                target.high_priority,
+                on_hand,
+                target.efficiency,
+            )
         };
-        open.iter().copied().max_by(|&a, &b| {
-            let (share_a, fill_a, pri_a, hand_a, eff_a) = key(a);
-            let (share_b, fill_b, pri_b, hand_b, eff_b) = key(b);
-            let order = share_a
-                .cmp(&share_b)
-                .then(fill_a.cmp(&fill_b))
-                .then(pri_a.cmp(&pri_b));
-            if order != std::cmp::Ordering::Equal {
-                return order;
-            }
-            // Both can finish the level: take the better good. Neither can:
-            // take whichever stock satisfies more.
-            let ranked = if fill_a {
-                eff_a.partial_cmp(&eff_b).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                hand_a
-                    .partial_cmp(&hand_b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(eff_a.partial_cmp(&eff_b).unwrap_or(std::cmp::Ordering::Equal))
-            };
-            ranked.then(b.cmp(&a))
-        }).unwrap_or(open[0])
+        open.iter()
+            .copied()
+            .max_by(|&a, &b| {
+                let (share_a, fill_a, pri_a, hand_a, eff_a) = key(a);
+                let (share_b, fill_b, pri_b, hand_b, eff_b) = key(b);
+                let order = share_a
+                    .cmp(&share_b)
+                    .then(fill_a.cmp(&fill_b))
+                    .then(pri_a.cmp(&pri_b));
+                if order != std::cmp::Ordering::Equal {
+                    return order;
+                }
+                // Both can finish the level: take the better good. Neither can:
+                // take whichever stock satisfies more.
+                let ranked = if fill_a {
+                    eff_a
+                        .partial_cmp(&eff_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    hand_a
+                        .partial_cmp(&hand_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(
+                            eff_a
+                                .partial_cmp(&eff_b)
+                                .unwrap_or(std::cmp::Ordering::Equal),
+                        )
+                };
+                ranked.then(b.cmp(&a))
+            })
+            .unwrap_or(open[0])
     }
 
     /// # Target Can Fill
@@ -1118,11 +1405,11 @@ impl Pop {
     }
 
     /// # Consume
-    /// 
+    ///
     /// Consumes goods from `property` to satisfy a pop's desires.
-    /// 
+    ///
     /// Goods should already be reserved and ready to be consumed, so do so.
-    /// 
+    ///
     /// - Basic (0) and Common (1) tiers are processed **once each**, in list order,
     ///   filling to the best of the pop's ability before moving to the next tier.
     /// - Luxury (2) desires are cycled one level at a time. A desire that
@@ -1138,7 +1425,7 @@ impl Pop {
     /// those goods are eaten.
     ///
     /// Also mutates `self.property` (reduces `quantity`, increases `consumed`).
-    /// 
+    ///
     /// The function assumes that all desires are currently in `self.desires` and
     /// none are in `self.working_desires`.
     pub fn consume(&mut self) {
@@ -1185,13 +1472,13 @@ impl Pop {
     }
 
     /// # Consume Tier
-    /// 
+    ///
     /// Takes a list of desires (presumably a tier) and tries to satisfy each desire
     /// in order.
-    /// 
+    ///
     /// Will consume desires for satisfaction.
-    /// 
-    /// Returns the highest success rate, useful for checking if any desire reached the 
+    ///
+    /// Returns the highest success rate, useful for checking if any desire reached the
     /// next full level.
     pub fn consume_tier(&mut self, desires: &mut Vec<Desire>) -> f64 {
         let mut success: f64 = 0.0;
@@ -1203,8 +1490,8 @@ impl Pop {
     }
 
     /// # Consume One Desire
-    /// 
-    /// A helper which takes a single desire and tries to satisfy it to one level. It 
+    ///
+    /// A helper which takes a single desire and tries to satisfy it to one level. It
     /// returns final satisfaction level.
     pub(crate) fn consume_one_desire(&mut self, desire: &mut Desire) -> f64 {
         self.consume_one_desire_from(desire, false)
@@ -1216,17 +1503,22 @@ impl Pop {
     ///
     /// Targets are taken highest efficiency first. `leave_savings` keeps
     /// [`Self::savings`] in quantity. The take still comes out of `quantity`
-    /// and `reserved`, and moves into `consumed` or `used`.
+    /// and `reserved`, and moves into `consumed` or `used`. A consumed take
+    /// is added to [`Self::day_eaten`]. A used take is added to
+    /// [`Self::day_held`].
     fn consume_one_desire_from(&mut self, desire: &mut Desire, leave_savings: bool) -> f64 {
         // Clone + sort by efficiency descending (best substitutes first)
         let mut targets = desire.target.clone();
-        targets.sort_by(|a, b| b.efficiency.partial_cmp(&a.efficiency)
-            .unwrap_or(std::cmp::Ordering::Equal));
+        targets.sort_by(|a, b| {
+            b.efficiency
+                .partial_cmp(&a.efficiency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let mut remaining = desire.amount;
 
         for target in targets.iter() {
-            if remaining <=  0.0 {
+            if remaining <= 0.0 {
                 break;
             }
             let floor = if leave_savings {
@@ -1235,8 +1527,12 @@ impl Pop {
                 0.0
             };
             // get the target good, or continue on to the next target.
-            if let Some(row) = self.property.get_mut(&target.good) && row.quantity > 0.0 {
-                // remaining (Capped at the cap amount of the desire) divided by 
+            let mut meal = 0.0;
+            let mut held = 0.0;
+            if let Some(row) = self.property.get_mut(&target.good)
+                && row.quantity > 0.0
+            {
+                // remaining (Capped at the cap amount of the desire) divided by
                 // efficiency is how much is needed.
                 let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
                 let spare = (row.quantity - floor).max(0.0);
@@ -1253,21 +1549,113 @@ impl Pop {
                     DesireTargetType::Consume => {
                         // shift to consumed.
                         row.consumed += take;
+                        meal = take;
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
                         remaining -= sat_gained;
-                    },
+                    }
                     DesireTargetType::Use => {
                         row.used += take;
+                        held = take;
                         let sat_gained = take * target.efficiency;
                         desire.satisfaction += sat_gained;
                         remaining -= sat_gained;
-                    },
+                    }
                 }
+            }
+            // The meal reserved before the sell book sits outside property.
+            if remaining > 0.0 && target.efficiency > 0.0 {
+                let needed = remaining.min(desire.amount * target.cap) / target.efficiency;
+                let used = matches!(target.desire_type, DesireTargetType::Use);
+                let take = self.draw_saved_meal(target.good, needed, used);
+                if take > 0.0 {
+                    let sat_gained = take * target.efficiency;
+                    desire.satisfaction += sat_gained;
+                    remaining -= sat_gained;
+                    if used {
+                        held += take;
+                    } else {
+                        meal += take;
+                    }
+                }
+            }
+            if meal > 0.0 {
+                *self.day_eaten.entry(target.good).or_insert(0.0) += meal;
+            }
+            if held > 0.0 {
+                *self.day_held.entry(target.good).or_insert(0.0) += held;
             }
         }
         // The current satisfaction rate.
         desire.satisfaction / desire.amount
+    }
+
+    /// # Rest
+    ///
+    /// Eats leftover free stock named by this pop's species sinks.
+    ///
+    /// `factuals` supplies [`Factuals::species_sinks`]. Each sink takes free
+    /// quantity above [`Self::savings`], and no reserved unit. The take leaves
+    /// `quantity` and is recorded as consumed and as today's rest. The living
+    /// gain is the sum of those takes times each sink's efficiency, divided
+    /// by the household count. A missing species, a non-positive household
+    /// count, or no spare stock adds nothing. Nothing is returned.
+    pub fn rest(&mut self, factuals: &Factuals) {
+        let sinks: Vec<(usize, f64)> = factuals
+            .species_sinks(self.demographics.species)
+            .iter()
+            .map(|sink| (sink.good, sink.efficiency))
+            .collect();
+        let households = self.demographics.household.count;
+        if !households.is_finite() || households <= 0.0 {
+            return;
+        }
+        let mut satisfaction = 0.0;
+        for (good, efficiency) in sinks {
+            if !efficiency.is_finite() || efficiency <= 0.0 {
+                continue;
+            }
+            let spare = (self.free_units(good) - self.savings_of(good)).max(0.0);
+            if spare <= 0.0 {
+                continue;
+            }
+            let take = {
+                let Some(row) = self.property.get_mut(&good) else {
+                    continue;
+                };
+                let take = spare.min(row.quantity.max(0.0));
+                if take <= 0.0 {
+                    continue;
+                }
+                row.quantity -= take;
+                row.consumed += take;
+                take
+            };
+            *self.rest_taken.entry(good).or_insert(0.0) += take;
+            satisfaction += take * efficiency;
+        }
+        self.rest_sol = satisfaction / households;
+    }
+
+    /// # Desire Eaten
+    ///
+    /// Units a desire ate today, by good.
+    pub(crate) fn desire_eaten(&self) -> &HashMap<usize, f64> {
+        &self.day_eaten
+    }
+
+    /// # Desire Held
+    ///
+    /// Units a desire used today, by good.
+    pub(crate) fn desire_held(&self) -> &HashMap<usize, f64> {
+        &self.day_held
+    }
+
+    /// # Rest Taken
+    ///
+    /// Units eaten as rest today, by good.
+    pub(crate) fn rest_taken(&self) -> &HashMap<usize, f64> {
+        &self.rest_taken
     }
 
     /// # Growth Phase
@@ -1276,7 +1664,8 @@ impl Pop {
     /// effects, then scales births per woman by the demographic sentiment
     /// schedule, then [`Household::update`](crate::game::household::Household::update).
     ///
-    /// Pops with household `count < 1` are left alone. The scale is
+    /// Pops with household `count < 1` are left alone. The year split is
+    /// [`crate::game::config::PopConfig::turn_length`]. The scale is
     /// [`Factuals::birth_sentiment`](crate::game::factuals::Factuals::birth_sentiment)
     /// times this pop's current sentiment. Desire satisfaction does not change
     /// the rates by itself. A market day may then scale this household with
@@ -1297,7 +1686,9 @@ impl Pop {
             self.sentiment.anger(),
         );
         rates.birth_per_woman *= scale;
-        self.demographics.household.update(&rates);
+        self.demographics
+            .household
+            .update(&rates, factuals.config.pop.turn_length);
     }
 
     /// # Update Sentiments
@@ -1381,6 +1772,7 @@ impl Pop {
     /// [`Desire::tiers_satisfied`](crate::game::desire::Desire::tiers_satisfied)
     /// and [`Desire::get_bonus_satisfaction`](crate::game::desire::Desire::get_bonus_satisfaction),
     /// then each stored [`PopEffect::Satisfaction`] amount is added.
+    /// Today's [`Self::rest`] adds its stored living gain.
     pub(crate) fn standard_of_living(&self) -> f64 {
         if self.desires.iter().all(|tier| tier.is_empty()) {
             return f64::INFINITY;
@@ -1391,6 +1783,9 @@ impl Pop {
                 sum += desire.tiers_satisfied();
                 sum += desire.get_bonus_satisfaction();
             }
+        }
+        if self.rest_sol.is_finite() {
+            sum += self.rest_sol;
         }
         for effect in &self.stored_effects {
             if let PopEffect::Satisfaction { amount, .. } = *effect {
@@ -1420,6 +1815,12 @@ impl Pop {
             }
             value += row.quantity * history.holding_per_unit(good);
         }
+        for (&good, &qty) in &self.saved {
+            if good == TIME || qty == 0.0 {
+                continue;
+            }
+            value += qty * history.holding_per_unit(good);
+        }
         let per = value / households;
         if per.is_finite() { per } else { 0.0 }
     }
@@ -1448,7 +1849,11 @@ impl Pop {
         }
         let mut stored = 0.0;
         for effect in &self.stored_effects {
-            if let PopEffect::Satisfaction { tier: effect_tier, amount } = *effect {
+            if let PopEffect::Satisfaction {
+                tier: effect_tier,
+                amount,
+            } = *effect
+            {
                 if effect_tier == tier && amount.is_finite() {
                     stored += amount;
                 }
@@ -1709,18 +2114,46 @@ impl Pop {
     ///
     /// Each desire's satisfaction is multiplied by [`Desire::decay`]. A decay
     /// of `0.0` clears it. Per-target taken is cleared, and the satisfy
-    /// bookmark is dropped. `reserved`, `fresh`, `produced`, and `lost` on
-    /// every property row are set to 0. Quantity, consumed, and used stay for
-    /// today's walk and for decay. Eaten and used units waiting on worth are
-    /// cleared, and that gate reopens. Stored worth stays. The job drops its
-    /// claimed-input list and its shopping list. The mass buy list is dropped.
-    /// Line targets stay,
+    /// bookmark is dropped. `reserved`, `fresh`, `produced`, `spent`, and
+    /// `lost` on every property row are set to 0. Quantity, consumed, and used
+    /// stay for today's walk and for decay. Eaten and used units waiting on
+    /// worth are cleared, and that gate reopens. Stored worth stays. The job
+    /// drops its claimed-input list and its shopping list. The mass buy list,
+    /// the tender sale rooms, the units posted from those rooms, posted buys,
+    /// today's payment, deal good, freight, meal, and rest, and the day tape
+    /// are dropped.
+    /// The morning grant stays. Line targets stay,
     /// so last night's plan is what this morning runs.
     pub fn reset_day(&mut self) {
         self.satisfy_cursor = None;
         self.mass_buys = None;
+        self.currency_sale_room.clear();
+        self.day_listed.clear();
         self.buy_posted.clear();
         self.buy_received.clear();
+        self.day_paid.clear();
+        self.day_received.clear();
+        self.day_got.clear();
+        self.day_gave.clear();
+        self.day_haul.clear();
+        self.day_eaten.clear();
+        self.day_held.clear();
+        self.rest_taken.clear();
+        self.rest_sol = 0.0;
+        self.tape_buy.clear();
+        self.tape_sell.clear();
+        self.tape_bought.clear();
+        self.tape_sold.clear();
+        self.tape_paid.clear();
+        self.tape_earned.clear();
+        self.tape_change_in.clear();
+        self.tape_change_out.clear();
+        self.tape_meal.clear();
+        self.tape_input.clear();
+        self.tape_saved.clear();
+        self.tape_arrived.clear();
+        self.tape_left.clear();
+        self.tape_dropped.clear();
         self.turned.clear();
         self.worth_open = true;
         for tier in &mut self.desires {
@@ -1733,6 +2166,7 @@ impl Pop {
             row.reserved = 0.0;
             row.fresh = 0.0;
             row.produced = 0.0;
+            row.spent = 0.0;
             row.lost = 0.0;
         }
         self.job.reset_day();
@@ -1746,6 +2180,47 @@ impl Pop {
     /// reads. Nothing is returned.
     pub fn record_keeping(&mut self, _factuals: &Factuals, history: &MarketHistory) {
         self.revise_worth(history);
+    }
+
+    /// # Day Books
+    ///
+    /// Today's production, trade, rot, and meal, priced on `history`.
+    ///
+    /// Income is units made, the morning grant [`Self::start_day`] recorded,
+    /// payment taken in, and the deal's good received. Expenses are inputs a
+    /// process destroyed, payment given, the deal's good given, transport
+    /// spent as freight, and units lost to rot. The meal is
+    /// [`Self::day_eaten`]. Each unit is [`MarketHistory::holding_per_unit`].
+    /// Capital set aside is not a line. A grant that is spent or lost later
+    /// is income on this line and an expense on that later line, so the two
+    /// meet in the net. Returns `(income, expenses, meal)`.
+    pub fn day_books(&self, history: &MarketHistory) -> (f64, f64, f64) {
+        let mut income = 0.0;
+        let mut expenses = 0.0;
+        for (&good, row) in &self.property {
+            let price = history.holding_per_unit(good);
+            if row.produced > 0.0 {
+                income += row.produced * price;
+            }
+            if row.spent > 0.0 {
+                expenses += row.spent * price;
+            }
+            if row.lost > 0.0 {
+                expenses += row.lost * price;
+            }
+        }
+        let priced = |flow: &HashMap<usize, f64>| -> f64 {
+            flow.iter()
+                .map(|(&good, &qty)| qty.max(0.0) * history.holding_per_unit(good))
+                .sum()
+        };
+        income += priced(&self.day_received);
+        income += priced(&self.day_got);
+        income += priced(&self.day_granted);
+        expenses += priced(&self.day_paid);
+        expenses += priced(&self.day_gave);
+        expenses += priced(&self.day_haul);
+        (income, expenses, priced(&self.day_eaten))
     }
 
     /// # Plan
@@ -1762,7 +2237,9 @@ impl Pop {
     /// grew into an amount or a desire was added or removed, and that night
     /// snaps the cover. Cover units [`crate::game::job::buys_cheaper_than_making`]
     /// returns are stored for the morning order. The saved pile walks one
-    /// household toward that ideal.
+    /// household toward that ideal. The sale pile, today's sales, and the
+    /// units of each tender posted today are noted first, so the next plan
+    /// can follow what sold.
     pub fn plan(&mut self, factuals: &Factuals, history: &MarketHistory) {
         self.luxury_reached = self.finished_luxury_levels();
         let needs = self.night_needs(factuals, history);
@@ -1793,6 +2270,39 @@ impl Pop {
             factuals,
             history,
         );
+        // The sale pile and what sold today arm the next plan.
+        let mut for_sale = HashMap::new();
+        let mut sold = HashMap::new();
+        for line in &self.job.lines {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            for output in &process.outputs {
+                if output.amount <= 0.0 {
+                    continue;
+                }
+                if factuals
+                    .get_good(output.good)
+                    .is_some_and(|good| good.is_skill())
+                {
+                    continue;
+                }
+                for_sale
+                    .entry(output.good)
+                    .or_insert_with(|| self.surplus_for_sale(output.good));
+                sold.entry(output.good)
+                    .or_insert_with(|| self.day_gave.get(&output.good).copied().unwrap_or(0.0));
+            }
+        }
+        self.job.note_sale(&for_sale, &sold);
+        // A tender's posted units are the offer that can sell out.
+        for &tender in history.currencies() {
+            if !for_sale.contains_key(&tender) {
+                continue;
+            }
+            let listed = self.day_listed.get(&tender).copied().unwrap_or(0.0);
+            self.job.note_listed(tender, listed);
+        }
         self.job
             .plan(&cover, &property, factuals, history, modifier, snap_cover);
     }
@@ -1831,7 +2341,11 @@ impl Pop {
         let mut stamp = Vec::new();
         for tier in &self.desires {
             for desire in tier {
-                stamp.push((desire.source, desire.demo_desire_id, desire.amount.to_bits()));
+                stamp.push((
+                    desire.source,
+                    desire.demo_desire_id,
+                    desire.amount.to_bits(),
+                ));
             }
         }
         stamp
@@ -1868,12 +2382,12 @@ impl Pop {
     /// `quantity`, plus the morning time grant on [`TIME`]. One level of a
     /// desire is `amount / efficiency` of a single target. A target whose
     /// cap is below 1 cannot finish that level. Goods are not mixed.
-    /// [`Self::best_target`] picks the target. A desire stock can finish is
-    /// spent. Every tier is walked, so a later desire is planned while an
-    /// earlier one is still short.
+    /// [`Self::best_target`] picks the target stock can finish. A desire
+    /// stock can finish is spent. Every tier is walked, so a later desire
+    /// is planned while an earlier one is still short.
     ///
-    /// Each short desire adds the highest-efficiency target some line
-    /// outputs. A desire no line can make adds nothing.
+    /// Each short desire adds the target [`Self::priced_target`] picks
+    /// among goods some line outputs. A desire no line can make adds nothing.
     /// [`Self::savings_piles`] then finds one saved day on each desire it
     /// allows. That check uses the stock on hand, before tomorrow's meal is
     /// set aside. A day this job makes is kept apart from the meal. Stock
@@ -1946,7 +2460,7 @@ impl Pop {
                     }
                     continue;
                 }
-                let Some(target) = Self::best_target(&desire.target, |target| {
+                let Some(target) = self.priced_target(&desire.target, history, |target| {
                     target.cap >= 1.0 && producible.contains(&target.good)
                 }) else {
                     continue;
@@ -2009,7 +2523,9 @@ impl Pop {
     /// tier are still saved. Basic and common pass `in_bucket`, so the day
     /// stays a good that desire eats. Luxury does not. Both maps sum the
     /// desires that were allowed onto each winning good. The flag is false
-    /// when that stop comes before the luxury tier.
+    /// when that stop comes before the luxury tier. A day the choice refuses
+    /// still closes a later tier while one ungrossed day of the eaten good
+    /// is not on hand.
     fn savings_piles(
         &self,
         factuals: &Factuals,
@@ -2027,6 +2543,9 @@ impl Pop {
                 let Some((good, day, units)) =
                     self.chosen_buffer(desire, factuals, history, tier < 2)
                 else {
+                    if Self::is_eaten_day_short(desire, stock) {
+                        short = true;
+                    }
                     continue;
                 };
                 let have = stock.get(&good).copied().unwrap_or(0.0);
@@ -2062,8 +2581,12 @@ impl Pop {
     /// value. `in_bucket` keeps the search on goods that satisfy `desire`.
     /// The winner is the highest [`Self::savings_rating`]. The eaten good
     /// keeps a tie. The day's units are of the winning good and are not
-    /// grossed. The hold is. Fill is scored on that hold. Returns `None`
-    /// when every candidate rates at zero.
+    /// grossed. The hold is. Fill is scored on that hold. A winner that
+    /// decays at [`SAVINGS_EASY_DECAY`] or faster is replaced by a more
+    /// durable tender this pop can obtain. When this pop makes that winner
+    /// and no tender qualifies, returns `None` so the morning make covers
+    /// the day. Otherwise the rotting good is kept. Returns `None` when
+    /// every candidate rates at zero.
     fn chosen_buffer(
         &self,
         desire: &Desire,
@@ -2099,7 +2622,87 @@ impl Pop {
             }
             best = Some((rating, good.id, day, units));
         }
-        best.map(|(_, id, day, units)| (id, day, units))
+        let (_, id, day, units) = best?;
+        let Some(winner) = factuals.get_good(id) else {
+            return Some((id, day, units));
+        };
+        if winner.decay_rate < SAVINGS_EASY_DECAY {
+            return Some((id, day, units));
+        }
+        if let Some(money) =
+            self.durable_tender(factuals, history, desire, eaten, winner.durability())
+        {
+            return Some(money);
+        }
+        if self.makes_good(factuals, id) {
+            return None;
+        }
+        Some((id, day, units))
+    }
+
+    /// # Is Eaten Day Short
+    ///
+    /// True when `stock` holds less than one ungrossed day of the good `desire` eats.
+    ///
+    /// The day is [`SAVINGS_DAYS`] times the desire amount, divided by that
+    /// good's efficiency. No eaten good, or a non-positive day, is false.
+    fn is_eaten_day_short(desire: &Desire, stock: &HashMap<usize, f64>) -> bool {
+        let Some(eaten) = Self::eaten_target(desire) else {
+            return false;
+        };
+        if eaten.efficiency <= 0.0 {
+            return false;
+        }
+        let day = SAVINGS_DAYS * desire.amount / eaten.efficiency;
+        if !day.is_finite() || day <= 0.0 {
+            return false;
+        }
+        stock.get(&eaten.good).copied().unwrap_or(0.0) < day
+    }
+
+    /// # Durable Tender
+    ///
+    /// A tender that holds `desire` in place of a good of `floor` durability.
+    ///
+    /// `history` lists the tenders and prices the outside day. `factuals`
+    /// supplies decay. `eaten` is the good that day would have been. A
+    /// tender at or below `floor`, or that this pop cannot obtain, is
+    /// skipped. The most durable wins. A tie keeps the higher salability,
+    /// then the lower id. Returns that good, the ungrossed day, and the
+    /// whole units to hold.
+    fn durable_tender(
+        &self,
+        factuals: &Factuals,
+        history: &MarketHistory,
+        desire: &Desire,
+        eaten: &DesireTarget,
+        floor: f64,
+    ) -> Option<(usize, f64, f64)> {
+        let mut best: Option<(f64, f64, usize, f64, f64)> = None;
+        for &id in history.currencies() {
+            let Some(good) = factuals.get_good(id) else {
+                continue;
+            };
+            if good.is_skill() {
+                continue;
+            }
+            let durability = good.durability();
+            if durability <= 0.0 || durability <= floor {
+                continue;
+            }
+            let Some((day, units)) = Self::buffer_units(desire, good, eaten, history) else {
+                continue;
+            };
+            if self.savings_fill(factuals, good.id, units) <= 0.0 {
+                continue;
+            }
+            let salability = history.salability(good.id);
+            if !Self::tender_beats(durability, salability, good.id, best) {
+                continue;
+            }
+            best = Some((durability, salability, good.id, day, units));
+        }
+        best.map(|(_, _, id, day, units)| (id, day, units))
     }
 
     /// # Rating Beats
@@ -2128,6 +2731,32 @@ impl Pop {
                     id < best_id
                 }
             }
+            _ => false,
+        }
+    }
+
+    /// # Tender Beats
+    ///
+    /// True when this tender should replace `best`.
+    ///
+    /// A higher durability wins. An equal durability keeps the higher
+    /// salability, then the lower id.
+    fn tender_beats(
+        durability: f64,
+        salability: f64,
+        id: usize,
+        best: Option<(f64, f64, usize, f64, f64)>,
+    ) -> bool {
+        let Some((was_durability, was_salability, was_id, _, _)) = best else {
+            return true;
+        };
+        match durability.partial_cmp(&was_durability) {
+            Some(std::cmp::Ordering::Greater) => true,
+            Some(std::cmp::Ordering::Equal) => match salability.partial_cmp(&was_salability) {
+                Some(std::cmp::Ordering::Greater) => true,
+                Some(std::cmp::Ordering::Equal) => id < was_id,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -2286,37 +2915,13 @@ impl Pop {
         })
     }
 
-    /// # Add Savings Buys
-    ///
-    /// Adds the whole units of each saved good still short of [`Self::savings`].
-    ///
-    /// `orders` is the desire buy already posted. A good already on that list
-    /// has the shortfall added. Stock [`Self::free_units`] already holds counts
-    /// toward the pile. A shortfall under one unit is skipped.
-    fn add_savings_buys(&self, orders: &mut Vec<MarketOrder>) {
-        let mut goods: Vec<usize> = self.savings.keys().copied().collect();
-        goods.sort_unstable();
-        for good in goods {
-            let short = (self.savings_of(good) - self.free_units(good)).max(0.0);
-            let units = whole_units_up(short);
-            if units < 1.0 {
-                continue;
-            }
-            if let Some(existing) = orders.iter_mut().find(|order| order.target == good) {
-                existing.target_amount += units;
-            } else {
-                orders.push(MarketOrder::buy(Actor::Pop(self.id), good, units));
-            }
-        }
-    }
-
     /// # Household Count
     ///
     /// Households in this pop, and at least one.
     ///
     /// A count above one is that count. Anything else is one household, so
     /// the saved day finishes in one night.
-    fn household_count(&self) -> f64 {
+    pub(crate) fn household_count(&self) -> f64 {
         let count = self.demographics.household.count;
         if count.is_finite() && count > 1.0 {
             count
@@ -2396,7 +3001,12 @@ impl Pop {
                 continue;
             };
             let row = self.property.get(&good);
-            let bought = self.buy_received.get(&good).copied().unwrap_or(0.0).max(0.0);
+            let bought = self
+                .buy_received
+                .get(&good)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0);
             let produced = row.map(|row| row.produced.max(0.0)).unwrap_or(0.0);
             let turned = self.turned.get(&good).copied().unwrap_or(0.0).max(0.0);
             let lost = row.map(|row| row.lost.max(0.0)).unwrap_or(0.0);
@@ -2434,8 +3044,8 @@ impl Pop {
     ///
     /// `tier` selects the level count. Luxury (`2`) repeats
     /// [`Self::luxury_reached`] levels, and at least one. Every other tier
-    /// is one level. A target scores [`Self::quote`] times its efficiency,
-    /// or one times efficiency when it has no quote. Satisfaction is shared
+    /// is one level. A target scores its efficiency per [`Self::quote`], or
+    /// its efficiency when it has no quote. Satisfaction is shared
     /// in proportion to those scores, and no target takes more than its cap
     /// over those levels. Each share is floored to whole units. Leftover
     /// satisfaction goes to the highest score that still fits, as many whole
@@ -2482,7 +3092,7 @@ impl Pop {
                 continue;
             }
             let quote = self.quote(target.good, history).unwrap_or(1.0);
-            let score = quote * target.efficiency;
+            let score = target.efficiency / quote;
             if !score.is_finite() || score <= 0.0 {
                 continue;
             }
@@ -2581,101 +3191,23 @@ impl Pop {
         plan
     }
 
-    /// # Add Valued Buys
-    ///
-    /// Posts the consumption mix still short of stock.
-    ///
-    /// `history` prices [`Self::consumption_plan`]. `orders` receives one
-    /// buy per good whose plan exceeds [`Self::on_hand`] by at least one
-    /// unit. A shorter gap is skipped. Nothing is returned.
-    fn add_valued_buys(&self, history: &MarketHistory, orders: &mut Vec<MarketOrder>) {
-        let plan = self.consumption_plan(history);
-        let mut goods: Vec<usize> = plan.keys().copied().collect();
-        goods.sort_unstable();
-        for good in goods {
-            let want = plan.get(&good).copied().unwrap_or(0.0);
-            let short = (want - self.on_hand(good)).max(0.0).floor();
-            if short >= 1.0 {
-                self.write_order(orders, good, short);
-            }
-        }
-    }
-
-    /// # Keep Desire Bids
-    ///
-    /// Posts one unit of every desire target still missing from `orders`.
-    ///
-    /// A target already at one unit or more stays. A non-positive efficiency
-    /// is skipped. Nothing is returned.
-    fn keep_desire_bids(&self, orders: &mut Vec<MarketOrder>) {
-        for desire in self.desires.iter().flatten() {
-            for target in &desire.target {
-                if target.efficiency <= 0.0 {
-                    continue;
-                }
-                if order_amount(orders, target.good) < 1.0 {
-                    self.write_order(orders, target.good, 1.0);
-                }
-            }
-        }
-    }
-
-    /// # Write Order
-    ///
-    /// Sets `good` on `orders` to `amount`.
-    ///
-    /// An amount of at least one updates the existing buy or pushes one.
-    /// A smaller amount removes that good. Nothing is returned.
-    fn write_order(&self, orders: &mut Vec<MarketOrder>, good: usize, amount: f64) {
-        if amount >= 1.0 {
-            if let Some(order) = orders.iter_mut().find(|order| order.target == good) {
-                order.target_amount = amount;
-            } else {
-                orders.push(MarketOrder::buy(Actor::Pop(self.id), good, amount));
-            }
-        } else {
-            orders.retain(|order| order.target != good);
-        }
-    }
-
-    /// # Add Cheaper Cover
-    ///
-    /// Raises each order to the units in [`Self::cheaper_cover`].
-    ///
-    /// `orders` is the buy already posted. A good already listed stays at
-    /// the larger amount. A good not listed is added. A stored amount under
-    /// one unit is skipped.
-    fn add_cheaper_cover(&self, orders: &mut Vec<MarketOrder>) {
-        let mut goods: Vec<usize> = self.cheaper_cover.keys().copied().collect();
-        goods.sort_unstable();
-        for good in goods {
-            let units = whole_units_up(self.cheaper_cover.get(&good).copied().unwrap_or(0.0));
-            if units < 1.0 {
-                continue;
-            }
-            if let Some(existing) = orders.iter_mut().find(|order| order.target == good) {
-                if units > existing.target_amount {
-                    existing.target_amount = units;
-                }
-            } else {
-                orders.push(MarketOrder::buy(Actor::Pop(self.id), good, units));
-            }
-        }
-    }
-
     /// # Note Posted Buys
     ///
-    /// Raises today's posted buy to the amounts [`Self::buy_orders`] would post.
+    /// Records the funded mass buys as today's posted buy.
     ///
-    /// A later call keeps the larger amount. The morning reset clears the tape.
+    /// A later call keeps the larger amount. The morning reset clears the
+    /// tape. [`Self::savings_fill`] reads it.
     fn note_posted_buys(&mut self) {
-        for order in self.buy_orders(&MarketHistory::new()) {
-            if order.target_amount <= 0.0 {
+        let Some(plan) = self.mass_buys.clone() else {
+            return;
+        };
+        for (good, amount) in plan {
+            if amount <= 0.0 {
                 continue;
             }
-            let posted = self.buy_posted.entry(order.target).or_insert(0.0);
-            if order.target_amount > *posted {
-                *posted = order.target_amount;
+            let posted = self.buy_posted.entry(good).or_insert(0.0);
+            if amount > *posted {
+                *posted = amount;
             }
         }
     }
@@ -2696,6 +3228,31 @@ impl Pop {
             .max_by(|a, b| {
                 a.efficiency
                     .partial_cmp(&b.efficiency)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// # Priced Target
+    ///
+    /// The target in `targets` with the most satisfaction per quote that `keep` accepts.
+    ///
+    /// `history` prices [`Self::quote`]. A missing quote counts as one.
+    /// The score is efficiency divided by that quote. A target with
+    /// efficiency at or below zero is skipped. A tie keeps the later
+    /// target. Returns that target, or `None` when none are kept.
+    fn priced_target<'a>(
+        &self,
+        targets: &'a [DesireTarget],
+        history: &MarketHistory,
+        keep: impl Fn(&DesireTarget) -> bool,
+    ) -> Option<&'a DesireTarget> {
+        targets
+            .iter()
+            .filter(|target| target.efficiency > 0.0 && keep(target))
+            .max_by(|a, b| {
+                let left = a.efficiency / self.quote(a.good, history).unwrap_or(1.0);
+                let right = b.efficiency / self.quote(b.good, history).unwrap_or(1.0);
+                left.partial_cmp(&right)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     }
@@ -2782,6 +3339,44 @@ impl Pop {
             }
         }
 
+        // Saved stock is off the working ledger and still rots.
+        let saved_ids: Vec<usize> = self.saved.keys().copied().collect();
+        for good_id in saved_ids {
+            let before = self.saved.get(&good_id).copied().unwrap_or(0.0);
+            if before <= 0.0 {
+                continue;
+            }
+            let Some(good) = factuals.get_good(good_id) else {
+                continue;
+            };
+            let exposure = good.tags.contains(&GoodTag::Exposure);
+            let mut lost = 0.0;
+            if !exposure && good.decay_rate > 0.0 {
+                lost = before * good.decay_rate;
+                let keep = ((before - lost) / before).max(0.0);
+                if let Some(saved) = self.saved.get_mut(&good_id) {
+                    *saved = (*saved - lost).max(0.0);
+                }
+                if let Some(meal) = self.meal.get_mut(&good_id) {
+                    *meal *= keep;
+                }
+                if let Some(held) = self.job.input_hold.get_mut(&good_id) {
+                    *held *= keep;
+                }
+            }
+            let row = self
+                .property
+                .entry(good_id)
+                .or_insert_with(|| PopPRow::new(0.0));
+            row.lost += lost;
+            let entry = rot.entry(good_id).or_insert((0.0, 0.0));
+            entry.0 += lost;
+            entry.1 += before;
+        }
+        self.saved.retain(|_, qty| *qty > 1e-12);
+        self.meal.retain(|_, qty| *qty > 1e-12);
+        self.job.input_hold.retain(|_, qty| *qty > 1e-12);
+
         for (good_id, amount) in gains {
             if amount == 0.0 {
                 continue;
@@ -2814,12 +3409,12 @@ impl Pop {
     }
 
     /// # Calculate Standard of Living
-    /// 
+    ///
     /// Calculates the standard of living for the pop, based on the satisfaction of
     /// their desires (tieres satisfied, not straight units of satisfaction.)
-    /// 
+    ///
     /// If a pop has no desires, then we return +inf to denote that.
-    /// 
+    ///
     /// Currently, this is a direct summation of satisfaction from all desires, plus
     /// bonus satisfaction from the desire and pop effects. The sum is
     /// [`Self::standard_of_living`]. Stored satisfaction is then removed.
@@ -2837,9 +3432,9 @@ impl Pop {
     }
 
     /// # Satisfaction from Pop Effects
-    /// 
+    ///
     /// Extracts the bonus satisfaction the pop should gain from it's stored effects.
-    /// 
+    ///
     /// This currently does not take the satisfaction tier into account, just adding directly
     /// to the output instead.
     fn satisfaction_from_pop_effects(&mut self) -> f64 {
@@ -2856,60 +3451,6 @@ impl Pop {
         }
         self.stored_effects = kept;
         sum
-    }
-
-    /// # Payment Goods
-    ///
-    /// Seller requests first, then the buyer's other free goods.
-    ///
-    /// `factuals` distinguishes transport. `avoid` is the good being bought.
-    /// `skip` ids are left out. A good is included when [`Self::spendable`]
-    /// for that purchase is at least one unit. Free goods go highest monetary
-    /// rating first, then lowest id. Unrequested transport is listed after
-    /// the other free goods. [`Self::add_payment`] then keeps a freight
-    /// reserve of that transport.
-    fn payment_goods(
-        &self,
-        factuals: &Factuals,
-        book: &SellerBook,
-        history: &MarketHistory,
-        avoid: usize,
-        skip: &[usize],
-    ) -> Vec<usize> {
-        let mut goods: Vec<usize> = book
-            .requests
-            .iter()
-            .map(|order| order.target)
-            .filter(|good| {
-                *good != avoid && !skip.contains(good) && self.spendable(*good, avoid) >= 1.0
-            })
-            .collect();
-        let mut ordinary = Vec::new();
-        let mut transport = Vec::new();
-        for (good, row) in &self.property {
-            if *good == avoid || goods.contains(good) || skip.contains(good) {
-                continue;
-            }
-            if row.available().floor() < 1.0 || self.spendable(*good, avoid) < 1.0 {
-                continue;
-            }
-            let rating = crate::game::market::monetary_rating(history.salability(*good));
-            if self.is_unrequested_transport(factuals, book, *good) {
-                transport.push((*good, rating));
-            } else {
-                ordinary.push((*good, rating));
-            }
-        }
-        let by_pay = |a: &(usize, f64), b: &(usize, f64)| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        };
-        ordinary.sort_by(by_pay);
-        transport.sort_by(by_pay);
-        goods.extend(ordinary.into_iter().map(|(good, _)| good));
-        goods.extend(transport.into_iter().map(|(good, _)| good));
-        goods
     }
 
     /// # Desire Units
@@ -2959,8 +3500,8 @@ impl Pop {
     /// Free units are [`Self::free_units`]. Units a desire reserved are
     /// already in its satisfaction, so they are out of the room. Units the
     /// job claimed ([`Job::claimed_of`]) count toward the desire they feed,
-    /// so they are not held back a second time. Sell orders and payment
-    /// both use this amount.
+    /// so they are not held back a second time. [`Self::units_on_offer`]
+    /// reads this amount when the good is not a loss.
     fn surplus_for_sale(&self, good: usize) -> f64 {
         let free = self.free_units(good).floor();
         let still = (self.desire_units(good) - self.job.claimed_of(good)).max(0.0);
@@ -2977,16 +3518,6 @@ impl Pop {
                 .iter()
                 .any(|target| target.good == good && target.efficiency > 0.0)
         })
-    }
-
-    /// # Mass Need
-    ///
-    /// Whole units of `good` this pop still wants on hand.
-    ///
-    /// The open desire room ([`Self::desire_units`]) and the saved day
-    /// ([`Self::savings_of`]) are added. Returns that sum, floored.
-    fn mass_need(&self, good: usize) -> f64 {
-        (self.desire_units(good) + self.savings_of(good)).floor()
     }
 
     /// # Job Buy Units
@@ -3044,51 +3575,45 @@ impl Pop {
     ) -> bool {
         let lines = self.processes_making(factuals, good);
         !lines.is_empty()
-            && lines.iter().all(|process| {
-                crate::game::job::trade_score(process, history) < 0.0
-            })
+            && lines
+                .iter()
+                .all(|process| crate::game::job::trade_score(process, history) < 0.0)
     }
 
-    /// # Mass Sell Floor
+    /// # Accepts The Card
     ///
-    /// The least this pop will take for one unit of `good`.
+    /// True when this pop will sell one unit of `good` at `market`.
     ///
-    /// `market` is the card AMV. When a line makes `good`, the floor starts
-    /// at the lowest non-zero [`crate::game::job::make_cost_per_unit`],
-    /// negative included. Otherwise, and when that cost is zero, it starts
-    /// 25% under the card. A negative card starts 25% further down. Fear
-    /// then pulls a positive floor toward zero and pushes a negative start
-    /// further down. A fear of 0 leaves that start. [`walk_sell_floor`]
-    /// then pulls a floor that is still past the card toward the card.
-    /// [`positive_ask`] keeps that soft cost above zero. Returns the floor.
-    fn mass_sell_floor(
+    /// `factuals` names the good and the processes. `history` prices
+    /// [`crate::game::job::make_cost_per_unit`]. A non-finite or zero card
+    /// is refused. A pop that does not make `good`, or whose make-cost is
+    /// not finite, accepts the card. A maker accepts when
+    /// [`crate::game::job::card_covers_cost`] says the card covers the
+    /// lowest finite cost after [`crate::game::job::listed_decay`].
+    fn accepts_the_card(
         &self,
         factuals: &Factuals,
         history: &MarketHistory,
         good: usize,
         market: f64,
-    ) -> f64 {
-        let fear = fear_share(self.sentiment.fear());
-        let markdown = if market < 0.0 {
-            market * (1.25 + fear)
-        } else {
-            market * (0.75 - fear)
-        };
+    ) -> bool {
+        if !market.is_finite() || market == 0.0 {
+            return false;
+        }
         let cost = self
             .processes_making(factuals, good)
             .iter()
-            .filter_map(|process| {
-                crate::game::job::make_cost_per_unit(process, good, history)
-            })
-            .filter(|cost| cost.is_finite() && *cost != 0.0)
+            .filter_map(|process| crate::game::job::make_cost_per_unit(process, good, history))
+            .filter(|cost| cost.is_finite())
             .reduce(f64::min);
-        let start = match cost {
-            Some(cost) if cost > 0.0 => cost * (1.0 - fear),
-            Some(cost) => cost * (1.0 + fear),
-            None => markdown,
+        let Some(cost) = cost else {
+            return true;
         };
-        let floor = walk_sell_floor(start, market, history.ask_walk(good));
-        positive_ask(floor)
+        crate::game::job::card_covers_cost(
+            cost,
+            market,
+            crate::game::job::listed_decay(factuals, good),
+        )
     }
 
     /// # Liquid Tender
@@ -3102,6 +3627,41 @@ impl Pop {
             .floor()
     }
 
+    /// # Note Currency Sale Room
+    ///
+    /// Stores how much of each tender may still be sold today.
+    ///
+    /// `currencies` are the tender slots. Every filled slot is stored.
+    /// The room is [`currency_sale_cap`] of that tender's surplus. A later
+    /// pass reads the room instead of taking another share. Units already
+    /// posted stay on [`Self::day_listed`]. Nothing is returned.
+    pub(crate) fn note_currency_sale_room(&mut self, currencies: &[Option<usize>]) {
+        self.currency_sale_room.clear();
+        for tender in currencies.iter().copied().flatten() {
+            if self.currency_sale_room.contains_key(&tender) {
+                continue;
+            }
+            let room = currency_sale_cap(self.surplus_for_sale(tender));
+            self.currency_sale_room.insert(tender, room);
+        }
+    }
+
+    /// # Spend Currency Sale Room
+    ///
+    /// Removes `units` from the stored sale room of `good`.
+    ///
+    /// A good with no stored room is left alone. The room does not go
+    /// below zero. Positive `units` are added to today's posted listing.
+    /// Nothing is returned.
+    pub(crate) fn spend_currency_sale_room(&mut self, good: usize, units: f64) {
+        if let Some(room) = self.currency_sale_room.get_mut(&good) {
+            *room = (*room - units).max(0.0);
+            if units > 0.0 {
+                *self.day_listed.entry(good).or_insert(0.0) += units;
+            }
+        }
+    }
+
     /// # Mass Want
     ///
     /// Whole units of `good` this pop would buy on the mass market.
@@ -3109,10 +3669,10 @@ impl Pop {
     /// `history` prices [`Self::consumption_plan`]. `factuals` tells
     /// [`Self::units_on_offer`]. The plan and the saved day are one pile,
     /// and stock on hand, reserved included, comes off that pile.
-    /// [`Self::cheaper_cover`] replaces that shortfall when the cover is
-    /// larger. The job's next-run shopping is added on top. A desire target
-    /// stays at one unit when this pop is not already offering the good.
-    /// A good with none of those is `0`.
+    /// The part of [`Self::cheaper_cover`] still above that stock replaces
+    /// the shortfall when it is larger. The job's next-run shopping is
+    /// added on top. A desire target stays at one unit when this pop is not
+    /// already offering the good. A good with none of those is `0`.
     fn mass_want(&self, good: usize, history: &MarketHistory, factuals: &Factuals) -> f64 {
         let owned = self.on_hand(good);
         let stock = self
@@ -3123,7 +3683,8 @@ impl Pop {
         let want = stock + self.savings_of(good);
         let short = (want - owned).max(0.0).floor();
         let cheaper = whole_units_up(self.cheaper_cover.get(&good).copied().unwrap_or(0.0));
-        let next = short.max(cheaper) + self.job_buy_units(good);
+        let cover_left = (cheaper - owned).max(0.0);
+        let next = short.max(cover_left) + self.job_buy_units(good);
         if self.has_desire_for(good) && self.units_on_offer(good, factuals, history) < 1.0 {
             next.max(1.0)
         } else {
@@ -3142,9 +3703,10 @@ impl Pop {
         let Some(card) = Self::positive_card(history, good) else {
             return false;
         };
-        self.worth.get(&good).copied().is_some_and(|worth| {
-            worth.is_finite() && worth > 0.0 && worth < card
-        })
+        self.worth
+            .get(&good)
+            .copied()
+            .is_some_and(|worth| worth.is_finite() && worth > 0.0 && worth < card)
     }
 
     /// # Units On Offer
@@ -3157,12 +3719,7 @@ impl Pop {
     /// [`Self::is_worth_below_card`] holds, free units above today's
     /// consumption plan are offered as well, and the larger of the two
     /// counts. The plan is the meal that stays. Returns that count.
-    fn units_on_offer(
-        &self,
-        good: usize,
-        factuals: &Factuals,
-        history: &MarketHistory,
-    ) -> f64 {
+    fn units_on_offer(&self, good: usize, factuals: &Factuals, history: &MarketHistory) -> f64 {
         let free = self.free_units(good).floor();
         let ordinary = if self.is_produced_at_a_loss(factuals, history, good) {
             (free - self.savings_of(good)).max(0.0).floor()
@@ -3208,14 +3765,44 @@ impl Pop {
             .unwrap_or(usize::MAX)
     }
 
+    /// # Mass Buy Score
+    ///
+    /// Satisfaction per quote of `good` on its earliest desire tier.
+    ///
+    /// `history` prices [`Self::quote`]. A missing quote counts as one.
+    /// The score is the highest efficiency on that tier divided by the
+    /// quote. A good no desire names scores 0. Returns that score.
+    fn mass_buy_score(&self, good: usize, history: &MarketHistory) -> f64 {
+        let tier = self.mass_buy_tier(good);
+        let Some(desires) = self.desires.get(tier) else {
+            return 0.0;
+        };
+        let quote = self.quote(good, history).unwrap_or(1.0);
+        let mut best = 0.0;
+        for desire in desires {
+            for target in &desire.target {
+                if target.good != good || !target.efficiency.is_finite() || target.efficiency <= 0.0
+                {
+                    continue;
+                }
+                let score = target.efficiency / quote;
+                if score > best {
+                    best = score;
+                }
+            }
+        }
+        best
+    }
+
     /// # Mass Candidates
     ///
     /// Goods this pop might buy, earliest desire tier first.
     ///
-    /// A desire target, a [`Self::cheaper_cover`] entry, and a job shopping
-    /// line each qualify. One good is listed once. Within a tier the lower
-    /// id comes first. Returns that order.
-    fn mass_candidates(&self) -> Vec<usize> {
+    /// `history` prices the quote. A desire target, a [`Self::cheaper_cover`]
+    /// entry, and a job shopping line each qualify. One good is listed once.
+    /// Within a tier, [`Self::mass_buy_score`] comes first and a tie keeps
+    /// the lower id. Returns that order.
+    fn mass_candidates(&self, history: &MarketHistory) -> Vec<usize> {
         let mut goods = HashSet::new();
         for desire in self.desires.iter().flatten() {
             for target in &desire.target {
@@ -3229,251 +3816,109 @@ impl Pop {
             goods.insert(order.target);
         }
         let mut goods: Vec<usize> = goods.into_iter().collect();
-        goods.sort_by_key(|good| (self.mass_buy_tier(*good), *good));
+        goods.sort_by(|left, right| {
+            let tier = self.mass_buy_tier(*left).cmp(&self.mass_buy_tier(*right));
+            if tier != std::cmp::Ordering::Equal {
+                return tier;
+            }
+            let score = self
+                .mass_buy_score(*right, history)
+                .partial_cmp(&self.mass_buy_score(*left, history))
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if score != std::cmp::Ordering::Equal {
+                return score;
+            }
+            left.cmp(right)
+        });
         goods
     }
 
     /// # Mass Buy
     ///
-    /// A buy of `buy_units` of `good`, or `None` when the tender cannot start it.
+    /// A buy of `buy_units` of `good`, or `None` when no tender can start it.
     ///
-    /// `tender` is the tender that pays. `market` is the card AMV of `good`.
-    /// `need` is the pile the shortfall is a share of. `short` is the full
-    /// want. That share and this pop's fear set [`mass_buy_limit`]. The
-    /// amount is the most [`crate::game::market::make_change`] can pay for `buy_units` at that
+    /// `currencies` are the tender slots. `market` is the card AMV of `good`,
+    /// and it is the price this buy accepts. The amount is the most
+    /// [`crate::game::market::mix_change`] can pay for `buy_units` at that
     /// card from [`Self::liquid_tender`]. A negative card is not paid by
     /// this pop, so `buy_units` is the amount. Returns the order.
     fn mass_buy(
         &self,
         good: usize,
         history: &MarketHistory,
-        tender: Option<usize>,
+        currencies: &[Option<usize>],
         market: f64,
-        need: f64,
-        short: f64,
         buy_units: f64,
     ) -> Option<MarketOrder> {
-        let tender = tender?;
-        let currency_amv = history.price(tender);
-        if !currency_amv.is_finite() || currency_amv <= 0.0 {
+        let tenders = crate::game::market::payment_tenders(currencies, good);
+        if tenders.is_empty() {
             return None;
         }
-        // The seller pays a negative card. The buy is not limited by this purse.
-        let purse = if market > 0.0 {
-            self.liquid_tender(tender)
+        // The seller pays a negative card. One tender purse covers the buy.
+        let spec = if market > 0.0 {
+            crate::game::market::priced_coins(&tenders, history, |id| self.liquid_tender(id))
         } else {
-            let per = (market.abs() / currency_amv).ceil().max(1.0);
-            (buy_units * per).max(per)
+            let mut rows = Vec::new();
+            for id in tenders {
+                let amv = history.price(id);
+                if !amv.is_finite() || amv <= 0.0 {
+                    continue;
+                }
+                let per = (market.abs() / amv).ceil().max(1.0);
+                rows.push((id, amv, (buy_units * per).max(per)));
+                break;
+            }
+            rows
         };
-        let (units, pay) = crate::game::market::make_change(buy_units, market, currency_amv, purse);
-        if units < 1.0 || pay < 1.0 {
+        if spec.is_empty() {
             return None;
         }
-        let missing = if need > 0.0 { short / need } else { 0.0 };
-        let limit = mass_buy_limit(market, missing, self.sentiment.fear());
-        Some(MarketOrder::buy(self.actor(), good, units).with_accept_price(limit))
+        let (units, mix) = crate::game::market::mix_change(buy_units, market, &spec);
+        if units < 1.0 || !mix.iter().any(|(_, qty)| *qty >= 1.0) {
+            return None;
+        }
+        Some(MarketOrder::buy(self.actor(), good, units).with_accept_price(market))
     }
 
     /// # Mass Sell
     ///
     /// A sell of the units of `good` this pop will part with.
     ///
-    /// `market` is the card AMV. The units are [`Self::units_on_offer`].
-    /// The min price is [`Self::mass_sell_floor`]. Under one unit, or a
-    /// floor that is not a real price, returns `None`. A negative floor
-    /// is a real ask.
+    /// `market` is the card AMV. `currencies` are the tender slots. The units
+    /// start at [`Self::units_on_offer`]. A filled tender slot is then
+    /// limited to its sale room, or to [`currency_sale_cap`] of
+    /// [`Self::surplus_for_sale`] when that room was not stored. The price
+    /// is the card. Under one unit, or a card [`Self::accepts_the_card`]
+    /// refuses, returns `None`. A negative card is a real ask.
     fn mass_sell(
         &self,
         good: usize,
         factuals: &Factuals,
         history: &MarketHistory,
         market: f64,
+        currencies: &[Option<usize>],
     ) -> Option<MarketOrder> {
-        let units = self.units_on_offer(good, factuals, history);
-        if units < 1.0 {
+        let mut units = self.units_on_offer(good, factuals, history);
+        let is_tender = currencies.iter().copied().flatten().any(|id| id == good);
+        if is_tender {
+            let cap = self
+                .currency_sale_room
+                .get(&good)
+                .copied()
+                .unwrap_or_else(|| currency_sale_cap(self.surplus_for_sale(good)));
+            units = units.min(cap);
+        }
+        if units < 1.0 || !self.accepts_the_card(factuals, history, good, market) {
             return None;
         }
-        let limit = self.mass_sell_floor(factuals, history, good, market);
-        if !limit.is_finite() || limit == 0.0 {
-            return None;
-        }
-        Some(MarketOrder::sell(self.actor(), good, units).with_accept_price(limit))
-    }
-
-    /// # Spendable
-    ///
-    /// Whole free units of `good` the buyer may offer while buying `buying`.
-    ///
-    /// Surplus above every desire is always included, via
-    /// [`Self::surplus_for_sale`], when `buying` feeds no open desire.
-    /// [`Self::savings`] is taken out of the free units first. When `buying`
-    /// still feeds a desire, units of `good` placed on that tier or an
-    /// earlier one stay. Units placed only on a later tier, and any units
-    /// past every desire, are spendable. Same-tier goods are not spent on
-    /// each other. Sell orders stay on the surplus alone.
-    fn spendable(&self, good: usize, buying: usize) -> f64 {
-        let offerable = (self.free_units(good).floor() - self.savings_of(good))
-            .max(0.0)
-            .floor();
-        if offerable < 1.0 {
-            return 0.0;
-        }
-        let Some(limit) = self.earliest_use(buying) else {
-            return self.surplus_for_sale(good);
-        };
-        let keep: f64 = self
-            .end_uses(good, offerable)
-            .into_iter()
-            .filter(|use_| tier_through(use_.tier, limit.0))
-            .map(|use_| use_.units)
-            .sum();
-        (offerable - keep).max(0.0).floor()
-    }
-
-    /// # Earliest Use
-    ///
-    /// Tier and list index of the first open desire `good` still feeds.
-    ///
-    /// A missing use means the good fills nothing that still has room.
-    /// The walk is the same one [`Self::end_uses`] uses.
-    fn earliest_use(&self, good: usize) -> Option<(usize, usize)> {
-        self.end_uses(good, f64::MAX)
-            .into_iter()
-            .find(|use_| use_.units >= 1.0)
-            .map(|use_| (use_.tier, use_.order))
-    }
-
-    /// # End Uses
-    ///
-    /// Whole units of `good` placed on the earliest desire that still has room.
-    ///
-    /// `good` is the good id. `qty` is the units to place. Direct targets are
-    /// placed first. Units still left are then placed on a desire whose good
-    /// this input is consumed to make. [`Job::reserve`] records those links.
-    /// Returns one [`EndUse`] per desire that received units.
-    fn end_uses(&self, good: usize, qty: f64) -> Vec<EndUse> {
-        let mut left = if qty.is_finite() && qty > 0.0 {
-            qty.floor()
-        } else {
-            0.0
-        };
-        let mut found = Vec::new();
-        for (tier, desires) in self.desires.iter().enumerate() {
-            if left < 1.0 {
-                break;
-            }
-            for (order, desire) in desires.iter().enumerate() {
-                if left < 1.0 {
-                    break;
-                }
-                let Some(index) = desire.target.iter().position(|target| target.good == good) else {
-                    continue;
-                };
-                let target = &desire.target[index];
-                if target.efficiency <= 0.0 {
-                    continue;
-                }
-                let room = desire_room(desire, index);
-                let take = (room / target.efficiency).floor().min(left);
-                if take < 1.0 {
-                    continue;
-                }
-                found.push(EndUse {
-                    tier,
-                    order,
-                    satisfaction: take * target.efficiency,
-                    units: take,
-                });
-                left -= take;
-            }
-        }
-        self.place_input_uses(good, &mut left, &mut found);
-        found
-    }
-
-    /// # Place Input Uses
-    ///
-    /// Places leftover units of an input onto the desire its output feeds.
-    ///
-    /// `good` is the input. `left` is whole units not yet placed on a direct
-    /// target. `found` collects the uses. One output takes `per_output` input
-    /// units. Satisfaction is the output units made times that desire's
-    /// efficiency. `left` falls by the input units spent.
-    fn place_input_uses(&self, good: usize, left: &mut f64, found: &mut Vec<EndUse>) {
-        let feeds = self.job.feeds_of(good);
-        if feeds.is_empty() {
-            return;
-        }
-        for (tier, desires) in self.desires.iter().enumerate() {
-            for (order, desire) in desires.iter().enumerate() {
-                if *left < 1.0 {
-                    return;
-                }
-                for (index, target) in desire.target.iter().enumerate() {
-                    if target.efficiency <= 0.0 {
-                        continue;
-                    }
-                    let Some(per_output) = feeds
-                        .iter()
-                        .find(|(output, _)| *output == target.good)
-                        .map(|(_, per)| *per)
-                    else {
-                        continue;
-                    };
-                    if per_output <= 0.0 {
-                        continue;
-                    }
-                    let output_room = (desire_room(desire, index) / target.efficiency).floor();
-                    let made = (*left / per_output).floor().min(output_room);
-                    if made < 1.0 {
-                        continue;
-                    }
-                    let spent = made * per_output;
-                    found.push(EndUse {
-                        tier,
-                        order,
-                        satisfaction: made * target.efficiency,
-                        units: spent,
-                    });
-                    *left -= spent;
-                }
-            }
-        }
-    }
-
-    /// # Exchange Ok
-    ///
-    /// Pop verdict on giving `given` and receiving `received`.
-    ///
-    /// Both maps are positive quantities. Firms do not use this. A unit that
-    /// still feeds an earlier desire than the best end received is refused.
-    /// Satisfaction is then one total: every end received against every end
-    /// given up. A strict satisfaction gain accepts, and the raw AMV of the
-    /// basket does not veto it. With no satisfaction on either side, the
-    /// raw AMV received must meet the raw AMV given. Equality meets that
-    /// price. Returns whether the pop accepts.
-    fn exchange_ok(
-        &self,
-        given: &HashMap<usize, f64>,
-        received: &HashMap<usize, f64>,
-        history: &MarketHistory,
-    ) -> bool {
-        let (given_uses, received_uses) = self.exchange_uses(given, received);
-        if self.exchange_blocked(&given_uses, &received_uses) {
-            return false;
-        }
-        let (gain, loss) = satisfaction_change(&received_uses, &given_uses);
-        if gain > loss {
-            return true;
-        }
-        if gain == 0.0 && loss == 0.0 {
-            return raw_amv(history, received) >= raw_amv(history, given);
-        }
-        false
+        Some(MarketOrder::sell(self.actor(), good, units).with_accept_price(market))
     }
 
     fn move_good(&mut self, good: usize, delta: f64) {
-        let row = self.property.entry(good).or_insert_with(|| PopPRow::new(0.0));
+        let row = self
+            .property
+            .entry(good)
+            .or_insert_with(|| PopPRow::new(0.0));
         row.quantity = (row.quantity + delta).max(0.0);
     }
 
@@ -3486,720 +3931,11 @@ impl Pop {
         if delta == 0.0 {
             return;
         }
-        let row = self.property.entry(good).or_insert_with(|| PopPRow::new(0.0));
+        let row = self
+            .property
+            .entry(good)
+            .or_insert_with(|| PopPRow::new(0.0));
         row.fresh = (row.fresh + delta).max(0.0);
-    }
-
-    /// # Buy Transport For Freight
-    ///
-    /// Buy transport the seller is offering when that lowers the unpaid freight.
-    ///
-    /// `skip` goods are not used to pay for that transport. A one-unit purchase
-    /// is repeated by [`Self::extend_failed_freight_chunk`] while that unit is
-    /// still the next step. Returns `None` when freight remains and no further
-    /// purchase helps. Returns `Some(())` when stock plus transport in the
-    /// basket can pay it.
-    fn buy_transport_for_freight(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &mut HashMap<usize, f64>,
-        covered: &mut f64,
-        skip: &[usize],
-    ) -> Option<()> {
-        let free = self.free_stock();
-        loop {
-            let before =
-                crate::game::deal::freight_shortfall(factuals, history.friction, goods, &free);
-            if before <= 0.0 {
-                return Some(());
-            }
-            let mut bought = false;
-            for order in &book.offers {
-                let Some(row) = factuals.get_good(order.target) else {
-                    continue;
-                };
-                let efficiency = row.transport_efficiency();
-                if efficiency <= 0.0 {
-                    continue;
-                }
-                let listed = (-order.target_amount).floor();
-                let already = goods.get(&order.target).copied().unwrap_or(0.0).max(0.0);
-                let room = (listed - already).floor();
-                if room < 1.0 {
-                    continue;
-                }
-                let price = history.price(order.target);
-                if price <= 0.0 {
-                    continue;
-                }
-                let Some((trial, trial_covered)) = self.transport_chunk(
-                    factuals,
-                    history,
-                    book,
-                    goods,
-                    *covered,
-                    &free,
-                    order.target,
-                    price,
-                    room,
-                    before,
-                    skip,
-                ) else {
-                    continue;
-                };
-                let (trial, trial_covered) = self.extend_failed_freight_chunk(
-                    factuals,
-                    history,
-                    book,
-                    goods,
-                    *covered,
-                    &free,
-                    order.target,
-                    price,
-                    room,
-                    skip,
-                    trial,
-                    trial_covered,
-                );
-                *goods = trial;
-                *covered = trial_covered;
-                bought = true;
-                break;
-            }
-            if !bought {
-                return None;
-            }
-        }
-    }
-
-    /// # Extend Failed Freight Chunk
-    ///
-    /// Repeats a one-unit transport buy while that unit is still the next step.
-    ///
-    /// `goods` and `covered` are the basket before the buy. `trial` and
-    /// `trial_covered` are that basket after [`Self::transport_chunk`]. `room`
-    /// counts the unit already in `trial`. `free` is the buyer's stock. A chunk
-    /// that already bought more than one unit is returned unchanged. Otherwise
-    /// the one-unit change is copied forward. Copying stops at the last count
-    /// where [`Self::freight_step_holds`] is still true. A later count is easier
-    /// for the full closing to accept, and a payment good that runs out changes
-    /// the one-unit basket, so the matching counts are a prefix. The search
-    /// doubles to find that prefix, then halves inside it. Returns the extended
-    /// basket and its covered payment.
-    fn extend_failed_freight_chunk(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        covered: f64,
-        free: &HashMap<usize, f64>,
-        transport: usize,
-        price: f64,
-        room: f64,
-        skip: &[usize],
-        trial: HashMap<usize, f64>,
-        trial_covered: f64,
-    ) -> (HashMap<usize, f64>, f64) {
-        let added = trial.get(&transport).copied().unwrap_or(0.0)
-            - goods.get(&transport).copied().unwrap_or(0.0);
-        let limit = room.floor();
-        if (added - 1.0).abs() > 1e-9 || !limit.is_finite() || limit < 2.0 {
-            return (trial, trial_covered);
-        }
-        let delta = goods_change(goods, &trial);
-        let covered_delta = trial_covered - covered;
-        // Doubling finds the band. Halving finds the last matching count.
-        let mut proven = 1.0;
-        let mut step = 1.0;
-        let mut failed_at: Option<f64> = None;
-        while proven + step <= limit {
-            let candidate = proven + step;
-            if self.freight_step_holds(
-                factuals,
-                history,
-                book,
-                goods,
-                covered,
-                free,
-                &delta,
-                covered_delta,
-                transport,
-                price,
-                room,
-                skip,
-                candidate,
-            ) {
-                proven = candidate;
-                step *= 2.0;
-            } else {
-                failed_at = Some(candidate);
-                break;
-            }
-        }
-        let mut low = proven + 1.0;
-        let mut high = failed_at
-            .map(|failed| failed - 1.0)
-            .unwrap_or(limit)
-            .floor();
-        while low <= high {
-            let mid = ((low + high) / 2.0).floor();
-            if mid < low {
-                break;
-            }
-            if self.freight_step_holds(
-                factuals,
-                history,
-                book,
-                goods,
-                covered,
-                free,
-                &delta,
-                covered_delta,
-                transport,
-                price,
-                room,
-                skip,
-                mid,
-            ) {
-                proven = mid;
-                low = mid + 1.0;
-            } else if mid <= low {
-                break;
-            } else {
-                high = mid - 1.0;
-            }
-        }
-        if proven <= 1.0 {
-            return (trial, trial_covered);
-        }
-        let mut out = goods.clone();
-        apply_goods_delta(&mut out, &delta, proven);
-        (out, covered + covered_delta * proven)
-    }
-
-    /// # Freight Step Holds
-    ///
-    /// Whether copy `total` of `delta` is still the next transport buy.
-    ///
-    /// `goods` and `covered` are the basket before any copy. `delta` is one
-    /// unit's change in goods. `covered_delta` is that unit's covered payment.
-    /// `room` is the seller's listing at the start, counting every copy. The
-    /// basket just before copy `total` is those earlier copies. The shortfall
-    /// there has to be open, and the seller has to have a unit left. A probe
-    /// of [`Self::transport_chunk`] from that basket has to return the same
-    /// change. Returns that answer.
-    fn freight_step_holds(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        covered: f64,
-        free: &HashMap<usize, f64>,
-        delta: &HashMap<usize, f64>,
-        covered_delta: f64,
-        transport: usize,
-        price: f64,
-        room: f64,
-        skip: &[usize],
-        total: f64,
-    ) -> bool {
-        let earlier = (total - 1.0).floor();
-        if earlier < 1.0 {
-            return false;
-        }
-        let room_left = room - earlier;
-        if room_left < 1.0 {
-            return false;
-        }
-        let mut state = goods.clone();
-        apply_goods_delta(&mut state, delta, earlier);
-        let state_covered = covered + covered_delta * earlier;
-        let before =
-            crate::game::deal::freight_shortfall(factuals, history.friction, &state, free);
-        if before <= 0.0 {
-            return false;
-        }
-        let Some((next, next_covered)) = self.transport_chunk(
-            factuals,
-            history,
-            book,
-            &state,
-            state_covered,
-            free,
-            transport,
-            price,
-            room_left,
-            before,
-            skip,
-        ) else {
-            return false;
-        };
-        let slack = 1e-6 * (1.0 + covered_delta.abs());
-        let covered_gap = (next_covered - state_covered - covered_delta).abs();
-        same_goods_change(&state, &next, delta) && covered_gap <= slack
-    }
-
-    /// # Transport Chunk
-    ///
-    /// Whole units of `transport` that lower the unpaid freight, bought at once.
-    ///
-    /// `goods` and `covered` are the basket so far. `free` is the buyer's
-    /// stock. `price` is one unit's raw AMV. `room` is how many the seller
-    /// still lists. `before` is the shortfall of `goods`. One unit is tried
-    /// first. When it pays and the shortfall falls, the same step is repeated
-    /// up to the units that would close `before`, and no further than `room`.
-    /// Returns that basket and its covered payment, or `None` when one unit
-    /// does not help.
-    fn transport_chunk(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        covered: f64,
-        free: &HashMap<usize, f64>,
-        transport: usize,
-        price: f64,
-        room: f64,
-        before: f64,
-        skip: &[usize],
-    ) -> Option<(HashMap<usize, f64>, f64)> {
-        let (trial_one, covered_one, after_one) = self.transport_trial(
-            factuals, history, book, goods, covered, free, transport, price, 1.0, skip,
-        )?;
-        if after_one >= before {
-            return None;
-        }
-        let delta = before - after_one;
-        let closing = if delta > 0.0 {
-            (before / delta).ceil().min(room).floor().max(1.0)
-        } else {
-            1.0
-        };
-        if closing <= 1.0 {
-            return Some((trial_one, covered_one));
-        }
-        if let Some((trial, covered_n, after)) = self.transport_trial(
-            factuals, history, book, goods, covered, free, transport, price, closing, skip,
-        ) {
-            // The one-unit step has to keep holding. A chunk that falls short of
-            // that step is left, and the caller keeps the single unit.
-            let predicted = (before - closing * delta).max(0.0);
-            let slack = 1e-6 * closing.max(1.0);
-            if after <= predicted + slack {
-                return Some((trial, covered_n));
-            }
-        }
-        Some((trial_one, covered_one))
-    }
-
-    /// # Transport Trial
-    ///
-    /// `units` of `transport` added to a copy of `goods`, paid at `price` each.
-    ///
-    /// Payment of each unit is a separate whole-unit step, same as one call
-    /// to [`Self::add_payment`] per unit. Returns the basket, the covered
-    /// payment, and the freight still unpaid. `None` when those units cannot
-    /// be paid.
-    fn transport_trial(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        covered: f64,
-        free: &HashMap<usize, f64>,
-        transport: usize,
-        price: f64,
-        units: f64,
-        skip: &[usize],
-    ) -> Option<(HashMap<usize, f64>, f64, f64)> {
-        let mut trial = goods.clone();
-        *trial.entry(transport).or_insert(0.0) += units.floor();
-        let mut trial_covered = covered;
-        let paid = self.pay_each_unit(
-            factuals,
-            history,
-            book,
-            transport,
-            &mut trial,
-            &mut trial_covered,
-            price,
-            units.floor(),
-            skip,
-        );
-        if !paid {
-            return None;
-        }
-        let after = crate::game::deal::freight_shortfall(factuals, history.friction, &trial, free);
-        Some((trial, trial_covered, after))
-    }
-
-    /// # Pay Each Unit
-    ///
-    /// Pays `units` of a good that costs `unit_price` each.
-    ///
-    /// `goods` and `covered` are the basket. Each unit's price is rounded up
-    /// to whole payment units on its own, then the next unit starts from that
-    /// covered total. A run that draws the same whole amount from one good is
-    /// applied together. Returns whether every unit was paid.
-    fn pay_each_unit(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        buying: usize,
-        goods: &mut HashMap<usize, f64>,
-        covered: &mut f64,
-        unit_price: f64,
-        units: f64,
-        skip: &[usize],
-    ) -> bool {
-        if units < 1.0 {
-            return true;
-        }
-        if unit_price <= 0.0 {
-            return false;
-        }
-        let mut left = units.floor();
-        while left >= 1.0 {
-            let order = self.payment_goods(factuals, book, history, buying, skip);
-            let mut chunked = false;
-            for good in order {
-                let per = history.price(good);
-                if per <= 0.0 {
-                    continue;
-                }
-                let free = self.payable_after_freight(factuals, history, book, goods, good, buying);
-                let free = self.skill_offer_room(factuals, goods, good, free);
-                if free < 1.0 {
-                    continue;
-                }
-                let take_one = (unit_price / per).ceil();
-                if take_one > free {
-                    break;
-                }
-                let chunk = (free / take_one).floor().min(left);
-                if chunk < 1.0 {
-                    continue;
-                }
-                let take = chunk * take_one;
-                *goods.entry(good).or_insert(0.0) -= take;
-                *covered += take * per;
-                left -= chunk;
-                chunked = true;
-                break;
-            }
-            if left < 1.0 {
-                return true;
-            }
-            if chunked {
-                continue;
-            }
-            if !self.add_payment(
-                factuals,
-                history,
-                book,
-                buying,
-                goods,
-                covered,
-                unit_price,
-                skip,
-            ) {
-                return false;
-            }
-            left -= 1.0;
-        }
-        true
-    }
-
-    /// # Can Propose One
-    ///
-    /// Whether [`Self::propose_quantity`] accepts one unit of `good`.
-    ///
-    /// `offers` and `requests` are the seller's book. `history` prices the
-    /// goods. `factuals` supplies transport. A stored price of zero returns
-    /// false. The deal itself is discarded.
-    pub(crate) fn can_propose_one(
-        &self,
-        good: usize,
-        offers: &[MarketOrder],
-        requests: &[MarketOrder],
-        history: &MarketHistory,
-        factuals: &Factuals,
-    ) -> bool {
-        if history.price(good) == 0.0 {
-            return false;
-        }
-        let book = SellerBook {
-            seller: self.actor(),
-            offers: offers.to_vec(),
-            requests: requests.to_vec(),
-        };
-        self.propose_quantity(good, 1.0, &book, history, factuals)
-            .is_ok()
-    }
-
-    /// # Add Payment
-    ///
-    /// Add `need` more raw AMV of payment. Unrequested transport keeps a
-    /// freight reserve, so the bill can still be paid from what remains.
-    ///
-    /// `covered` is raw AMV already offered. Each payment good counts at
-    /// [`MarketHistory::price`], not at its salability-scaled holding.
-    /// `skip` goods are not offered. Returns when `covered` reaches
-    /// `covered + need`. The whole unit that crosses that price is the last
-    /// unit added.
-    fn add_payment(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        avoid: usize,
-        goods: &mut HashMap<usize, f64>,
-        covered: &mut f64,
-        need: f64,
-        skip: &[usize],
-    ) -> bool {
-        let target = *covered + need;
-        for good in self.payment_goods(factuals, book, history, avoid, skip) {
-            if *covered >= target {
-                return true;
-            }
-            let per = history.price(good);
-            if per <= 0.0 {
-                continue;
-            }
-            let free = self.payable_after_freight(factuals, history, book, goods, good, avoid);
-            let free = self.skill_offer_room(factuals, goods, good, free);
-            if free < 1.0 {
-                continue;
-            }
-            let take = ((target - *covered) / per).ceil().min(free);
-            if take < 1.0 {
-                continue;
-            }
-            *goods.entry(good).or_insert(0.0) -= take;
-            *covered += take * per;
-        }
-        *covered >= target
-    }
-
-    /// # Skill Offer Room
-    ///
-    /// How many units of `good` this basket may still offer.
-    ///
-    /// `factuals` says whether `good` is a skill. `goods` is the basket so
-    /// far, and payment is a negative amount. `free` is the units otherwise
-    /// payable. A skill is offered once: the basket takes at most one unit.
-    /// Any other good returns `free`.
-    fn skill_offer_room(
-        &self,
-        factuals: &Factuals,
-        goods: &HashMap<usize, f64>,
-        good: usize,
-        free: f64,
-    ) -> f64 {
-        if !factuals.get_good(good).is_some_and(|row| row.is_skill()) {
-            return free;
-        }
-        let offered = (-goods.get(&good).copied().unwrap_or(0.0)).max(0.0);
-        (1.0 - offered).max(0.0).min(free)
-    }
-
-    /// True when `good` is transport and the seller did not request it.
-    ///
-    /// `factuals` supplies the transport tag. `book` is the seller's requests.
-    /// Requested transport is ordinary payment. Unrequested transport is spent
-    /// only above [`Self::freight_reserve`].
-    fn is_unrequested_transport(
-        &self,
-        factuals: &Factuals,
-        book: &SellerBook,
-        good: usize,
-    ) -> bool {
-        let is_transport = factuals
-            .get_good(good)
-            .is_some_and(|row| row.is_transport());
-        let requested = book.requests.iter().any(|order| order.target == good);
-        is_transport && !requested
-    }
-
-    /// Whole transport units `goods` must leave in stock to cover its freight.
-    ///
-    /// `factuals` prices the bill and the efficiency. `history` supplies
-    /// friction. `good` is the transport good. A missing efficiency is `0`,
-    /// and then the reserve is `0`. The bill is [`crate::game::deal::freight_bill`]
-    /// of the basket so far. The result is that bill divided by efficiency,
-    /// rounded up.
-    fn freight_reserve(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        goods: &HashMap<usize, f64>,
-        good: usize,
-    ) -> f64 {
-        let efficiency = factuals
-            .get_good(good)
-            .map(|row| row.transport_efficiency())
-            .unwrap_or(0.0);
-        if efficiency <= 0.0 {
-            return 0.0;
-        }
-        let bill = crate::game::deal::freight_bill(factuals, history.friction, goods);
-        (bill / efficiency).ceil()
-    }
-
-    /// Units of `good` still free to pay with, after the freight reserve.
-    ///
-    /// `factuals` and `history` price the reserve. `book` and `goods` are the
-    /// seller's book and the basket so far. `buying` is the good being bought.
-    /// Unrequested transport subtracts [`Self::freight_reserve`]. Other goods
-    /// return [`Self::payable_units`].
-    fn payable_after_freight(
-        &self,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        good: usize,
-        buying: usize,
-    ) -> f64 {
-        let free = self.payable_units(book, goods, good, buying);
-        if !self.is_unrequested_transport(factuals, book, good) {
-            return free;
-        }
-        (free - self.freight_reserve(factuals, history, goods, good)).max(0.0)
-    }
-
-    /// # Payable Units
-    ///
-    /// Units of `good` still available to put in `goods` while buying `buying`.
-    ///
-    /// `book` is the seller's offers and requests. `goods` is the basket so
-    /// far. Units already in the basket are subtracted from
-    /// [`Self::spendable`]. A seller request caps the amount.
-    fn payable_units(
-        &self,
-        book: &SellerBook,
-        goods: &HashMap<usize, f64>,
-        good: usize,
-        buying: usize,
-    ) -> f64 {
-        let already = goods.get(&good).copied().unwrap_or(0.0).min(0.0).abs();
-        let mut free = self.spendable(good, buying) - already;
-        if let Some(request) = book.requests.iter().find(|order| order.target == good) {
-            free = free.min(request.target_amount.floor() - already).max(0.0);
-        }
-        free
-    }
-
-    /// # Buyer Accepts
-    ///
-    /// Buyer side of the verdict [`Self::evaluate`] uses for the seller.
-    ///
-    /// `goods` is the basket, positive toward the buyer. `history` supplies
-    /// raw AMV. The tier and satisfaction checks match the seller. A basket
-    /// that only misses because whole units paid more raw AMV than they
-    /// received is still offered: the seller's price was the target, and the
-    /// seller still requires that price or a satisfaction gain. Returns
-    /// whether the buyer puts the basket on the table.
-    fn buyer_accepts(&self, goods: &HashMap<usize, f64>, history: &MarketHistory) -> bool {
-        let mut given = HashMap::new();
-        let mut received = HashMap::new();
-        for (&good, &qty) in goods {
-            if qty > 0.0 {
-                received.insert(good, qty);
-            } else if qty < 0.0 {
-                given.insert(good, -qty);
-            }
-        }
-        self.exchange_ok(&given, &received, history)
-            || self.exchange_why(&given, &received, history) == "price_short"
-    }
-
-    /// # Exchange Uses
-    ///
-    /// End uses of the goods given and the goods received.
-    ///
-    /// `given` and `received` are positive quantities. Surplus is given
-    /// before units a desire still needs, so a gift inside the surplus has
-    /// no end use. Returns the two lists.
-    fn exchange_uses(
-        &self,
-        given: &HashMap<usize, f64>,
-        received: &HashMap<usize, f64>,
-    ) -> (Vec<EndUse>, Vec<EndUse>) {
-        let mut given_uses = Vec::new();
-        for (&good, &qty) in given {
-            let cutting = (qty - self.surplus_for_sale(good)).max(0.0);
-            given_uses.extend(self.end_uses(good, cutting));
-        }
-        let mut received_uses = Vec::new();
-        for (&good, &qty) in received {
-            received_uses.extend(self.end_uses(good, qty));
-        }
-        (given_uses, received_uses)
-    }
-
-    /// # Exchange Blocked
-    ///
-    /// Whether a given end outranks the best end received.
-    ///
-    /// Earlier is a lower tier, or the same tier and an earlier list index.
-    /// A given end with nothing received is blocked. Returns that answer.
-    fn exchange_blocked(&self, given_uses: &[EndUse], received_uses: &[EndUse]) -> bool {
-        let best = received_uses.iter().min_by(|a, b| {
-            a.tier.cmp(&b.tier).then(a.order.cmp(&b.order))
-        });
-        given_uses.iter().any(|use_| match best {
-            None => true,
-            Some(best) => {
-                use_.tier < best.tier || (use_.tier == best.tier && use_.order < best.order)
-            }
-        })
-    }
-
-    /// # Exchange Why
-    ///
-    /// Names the check [`Self::exchange_ok`] is on.
-    ///
-    /// `given` and `received` are positive quantities. `history` supplies
-    /// raw AMV. A refusal is `"blocked"`, `"sat_short"`, or `"price_short"`.
-    /// A pass is `"sat_gain"` or `"price_met"`.
-    fn exchange_why(
-        &self,
-        given: &HashMap<usize, f64>,
-        received: &HashMap<usize, f64>,
-        history: &MarketHistory,
-    ) -> &'static str {
-        let (given_uses, received_uses) = self.exchange_uses(given, received);
-        if self.exchange_blocked(&given_uses, &received_uses) {
-            return "blocked";
-        }
-        let (gain, loss) = satisfaction_change(&received_uses, &given_uses);
-        if gain > loss {
-            return "sat_gain";
-        }
-        if gain == 0.0 && loss == 0.0 && raw_amv(history, received) >= raw_amv(history, given) {
-            return "price_met";
-        }
-        if gain > 0.0 || loss > 0.0 {
-            "sat_short"
-        } else {
-            "price_short"
-        }
-    }
-
-    fn free_stock(&self) -> HashMap<usize, f64> {
-        self.property
-            .iter()
-            .map(|(&good, row)| (good, row.available().max(0.0)))
-            .collect()
     }
 
     /// # Pay Freight
@@ -4208,7 +3944,7 @@ impl Pop {
     ///
     /// `factuals` names the transport goods. Property ids are walked in
     /// order. A good with no transport efficiency is skipped. Units spent
-    /// are recorded as consumed. Nothing is returned.
+    /// are recorded as consumed and as today's freight. Nothing is returned.
     fn pay_freight(&mut self, amount: f64, factuals: &Factuals) {
         let mut ids: Vec<usize> = self.property.keys().copied().collect();
         ids.sort_unstable();
@@ -4232,324 +3968,426 @@ impl Pop {
                 .expect("free stock vanished before it could be spent")
                 .spend_aged_first(take);
             self.move_good(id, -take);
-            self.property
+            let row = self
+                .property
                 .get_mut(&id)
-                .expect("free stock vanished before it could be spent")
-                .consumed += take;
+                .expect("free stock vanished before it could be spent");
+            row.consumed += take;
+            *self.day_haul.entry(id).or_insert(0.0) += take;
             left -= take * efficiency;
         }
     }
 
-    /// # Bulky Payment
+    /// # Working Units
     ///
-    /// The non-transport good in `goods` that adds the most bulk.
+    /// Free units of `good` still in [`Self::property`].
     ///
-    /// `factuals` supplies bulk and the transport tag. Only negative
-    /// quantities are payment. A missing good counts as bulk `0`. Equal
-    /// bulk selects the higher id. Returns `None` when every payment good
-    /// is transport.
-    fn bulky_payment(factuals: &Factuals, goods: &HashMap<usize, f64>) -> Option<usize> {
-        let mut best: Option<(usize, f64)> = None;
-        for (&id, &qty) in goods {
-            if qty >= 0.0 {
+    /// Saved stock is already outside that map. Returns the free quantity,
+    /// floored at zero.
+    pub(crate) fn working_units(&self, good: usize) -> f64 {
+        self.free_units(good).max(0.0)
+    }
+
+    /// # Take Working
+    ///
+    /// Removes up to `units` of `good` from working stock.
+    ///
+    /// Aged units leave before fresh. Returns the units removed.
+    pub(crate) fn take_working(&mut self, good: usize, units: f64) -> f64 {
+        let take = units.min(self.working_units(good)).max(0.0);
+        if take <= 0.0 {
+            return 0.0;
+        }
+        if let Some(row) = self.property.get_mut(&good) {
+            row.spend_aged_first(take);
+            row.quantity = (row.quantity - take).max(0.0);
+        }
+        take
+    }
+
+    /// # Give Working
+    ///
+    /// Adds `units` of `good` to working stock.
+    ///
+    /// A non-positive amount does nothing.
+    pub(crate) fn give_working(&mut self, good: usize, units: f64) {
+        if !units.is_finite() || units <= 0.0 {
+            return;
+        }
+        self.property
+            .entry(good)
+            .or_insert_with(|| PopPRow::new(0.0))
+            .quantity += units;
+    }
+
+    /// # Stash Working
+    ///
+    /// Moves up to `units` of `good` from working stock into [`Self::saved`].
+    ///
+    /// `hold` records the meal or the production-input part. Currency savings
+    /// are the rest of the pile. The units moved are noted on the day tape.
+    /// Returns the units moved.
+    pub(crate) fn stash_working(&mut self, good: usize, units: f64, hold: SaveHold) -> f64 {
+        let took = self.take_working(good, units);
+        if took <= 0.0 {
+            return 0.0;
+        }
+        *self.saved.entry(good).or_insert(0.0) += took;
+        match hold {
+            SaveHold::Meal => {
+                *self.meal.entry(good).or_insert(0.0) += took;
+                add_tape(&mut self.tape_meal, good, took);
+            }
+            SaveHold::Input => {
+                *self.job.input_hold.entry(good).or_insert(0.0) += took;
+                add_tape(&mut self.tape_input, good, took);
+            }
+            SaveHold::Currency => add_tape(&mut self.tape_saved, good, took),
+        }
+        took
+    }
+
+    /// # Keep Craft Inputs
+    ///
+    /// Parks the inputs a paying line can finish from the stock just made.
+    ///
+    /// `factuals` names the processes. The units come from
+    /// [`Job::craft_input_keep`]. They move into [`Job::input_hold`], so
+    /// the meal and the sell book leave them for the next produce. Nothing
+    /// is returned.
+    pub(crate) fn keep_craft_inputs(&mut self, factuals: &Factuals) {
+        let keep = self.job.craft_input_keep(&self.property, factuals);
+        for (good, units) in keep {
+            self.stash_working(good, units, SaveHold::Input);
+        }
+    }
+
+    /// # Release Input Hold
+    ///
+    /// Moves [`Job::input_hold`] back into working stock.
+    ///
+    /// Produce spends those inputs from property. The saved pile drops the
+    /// same units. Nothing is returned.
+    pub(crate) fn release_input_hold(&mut self) {
+        let hold = std::mem::take(&mut self.job.input_hold);
+        for (good, units) in hold {
+            if units <= 0.0 {
                 continue;
             }
-            let row = factuals.get_good(id);
-            if row.is_some_and(|good| good.is_transport()) {
-                continue;
+            if let Some(saved) = self.saved.get_mut(&good) {
+                *saved = (*saved - units).max(0.0);
             }
-            let bulk = row.map(|good| good.bulk()).unwrap_or(0.0);
-            let replace = match best {
-                None => true,
-                Some((held, score)) => bulk > score || (bulk == score && id > held),
+            self.give_working(good, units);
+        }
+        self.saved.retain(|_, qty| *qty > 1e-12);
+    }
+
+    /// # Draw Saved Meal
+    ///
+    /// Takes up to `units` of `good` from the meal part of [`Self::saved`].
+    ///
+    /// `used` records a use on the property row. Otherwise the row records
+    /// the take as consumed, so decay can still credit the byproduct. The
+    /// caller records [`Self::day_eaten`] or [`Self::day_held`]. Returns
+    /// the units taken.
+    pub(crate) fn draw_saved_meal(&mut self, good: usize, units: f64, used: bool) -> f64 {
+        let have = self.meal.get(&good).copied().unwrap_or(0.0);
+        let take = units.min(have).max(0.0);
+        if take <= 0.0 {
+            return 0.0;
+        }
+        if let Some(meal) = self.meal.get_mut(&good) {
+            *meal = (*meal - take).max(0.0);
+        }
+        if let Some(saved) = self.saved.get_mut(&good) {
+            *saved = (*saved - take).max(0.0);
+        }
+        let row = self
+            .property
+            .entry(good)
+            .or_insert_with(|| PopPRow::new(0.0));
+        // The caller records the day book. The row is what decay credits.
+        if used {
+            row.used += take;
+        } else {
+            row.consumed += take;
+        }
+        self.meal.retain(|_, qty| *qty > 1e-12);
+        self.saved.retain(|_, qty| *qty > 1e-12);
+        take
+    }
+
+    /// # Saved Currency Units
+    ///
+    /// Saved units of `good` that are neither the meal nor a production input.
+    pub(crate) fn saved_currency_units(&self, good: usize) -> f64 {
+        let saved = self.saved.get(&good).copied().unwrap_or(0.0);
+        let meal = self.meal.get(&good).copied().unwrap_or(0.0);
+        let held = self.job.input_hold.get(&good).copied().unwrap_or(0.0);
+        (saved - meal - held).max(0.0)
+    }
+
+    /// # Spend Saved Currency
+    ///
+    /// Removes up to `units` of saved currency `good`.
+    ///
+    /// The meal and the input hold stay. Returns the units removed.
+    pub(crate) fn spend_saved_currency(&mut self, good: usize, units: f64) -> f64 {
+        let take = units.min(self.saved_currency_units(good)).max(0.0);
+        if take <= 0.0 {
+            return 0.0;
+        }
+        if let Some(saved) = self.saved.get_mut(&good) {
+            *saved = (*saved - take).max(0.0);
+        }
+        self.saved.retain(|_, qty| *qty > 1e-12);
+        take
+    }
+
+    /// # Give Saved
+    ///
+    /// Adds `units` of `good` to the saved pile as currency savings.
+    ///
+    /// The meal and the input hold are unchanged.
+    pub(crate) fn give_saved(&mut self, good: usize, units: f64) {
+        if !units.is_finite() || units <= 0.0 {
+            return;
+        }
+        *self.saved.entry(good).or_insert(0.0) += units;
+    }
+
+    /// # Note Flow
+    ///
+    /// Adds `units` to one of today's book maps.
+    ///
+    /// `flow` selects payment or the good. A non-positive amount is ignored.
+    /// The same units are noted on the day tape. Freight stays on
+    /// [`Self::pay_freight`].
+    pub(crate) fn note_flow(&mut self, flow: DayFlow, good: usize, units: f64) {
+        if !units.is_finite() || units <= 0.0 {
+            return;
+        }
+        match flow {
+            DayFlow::Paid => {
+                *self.day_paid.entry(good).or_insert(0.0) += units;
+                add_tape(&mut self.tape_paid, good, units);
+            }
+            DayFlow::Received => {
+                *self.day_received.entry(good).or_insert(0.0) += units;
+                add_tape(&mut self.tape_earned, good, units);
+            }
+            DayFlow::Got => {
+                *self.day_got.entry(good).or_insert(0.0) += units;
+                add_tape(&mut self.tape_bought, good, units);
+            }
+            DayFlow::Gave => {
+                *self.day_gave.entry(good).or_insert(0.0) += units;
+                add_tape(&mut self.tape_sold, good, units);
+            }
+        }
+    }
+
+    /// # Note Buy Offer
+    ///
+    /// Adds `units` of `good` to today's buy offers.
+    ///
+    /// A non-positive or non-finite amount is ignored. Nothing is returned.
+    pub(crate) fn note_buy_offer(&mut self, good: usize, units: f64) {
+        add_tape(&mut self.tape_buy, good, units);
+    }
+
+    /// # Note Sell Offer
+    ///
+    /// Adds `units` of `good` to today's sell offers.
+    ///
+    /// A non-positive or non-finite amount is ignored. Nothing is returned.
+    pub(crate) fn note_sell_offer(&mut self, good: usize, units: f64) {
+        add_tape(&mut self.tape_sell, good, units);
+    }
+
+    /// # Note Change In
+    ///
+    /// Adds `units` of `good` to change this pop received today.
+    ///
+    /// A non-positive or non-finite amount is ignored. Nothing is returned.
+    pub(crate) fn note_change_in(&mut self, good: usize, units: f64) {
+        add_tape(&mut self.tape_change_in, good, units);
+    }
+
+    /// # Note Change Out
+    ///
+    /// Adds `units` of `good` to change this pop gave today.
+    ///
+    /// A non-positive or non-finite amount is ignored. Nothing is returned.
+    pub(crate) fn note_change_out(&mut self, good: usize, units: f64) {
+        add_tape(&mut self.tape_change_out, good, units);
+    }
+
+    /// # Day Tape
+    ///
+    /// Today's posts, trades, plan set-asides, and migration goods.
+    ///
+    /// The unlisted tender is copied from the job. The other maps are the
+    /// day tape. Returns that copy.
+    pub fn day_tape(&self) -> DayTape {
+        DayTape {
+            buy_offers: self.tape_buy.clone(),
+            sell_offers: self.tape_sell.clone(),
+            bought: self.tape_bought.clone(),
+            sold: self.tape_sold.clone(),
+            paid: self.tape_paid.clone(),
+            earned: self.tape_earned.clone(),
+            change_in: self.tape_change_in.clone(),
+            change_out: self.tape_change_out.clone(),
+            meal: self.tape_meal.clone(),
+            inputs: self.tape_input.clone(),
+            saved: self.tape_saved.clone(),
+            unlisted: self.job.unlisted.clone(),
+            arrived: self.tape_arrived.clone(),
+            left: self.tape_left.clone(),
+            dropped: self.tape_dropped.clone(),
+        }
+    }
+
+    /// # Transport Cover
+    ///
+    /// Transport units this pop can spend from working stock.
+    ///
+    /// `factuals` names the transport goods. A good that is missing there
+    /// adds nothing.
+    pub(crate) fn transport_cover(&self, factuals: &Factuals) -> f64 {
+        let mut cover = 0.0;
+        for (&id, row) in &self.property {
+            let Some(good) = factuals.get_good(id) else {
+                continue;
             };
-            if replace {
-                best = Some((id, bulk));
-            }
+            cover += good.transport_cover(row.available().max(0.0));
         }
-        best.map(|(id, _)| id)
+        cover
     }
 
-    /// # Propose Quantity
+    /// # Spend Freight
     ///
-    /// One basket for `qty` of `match_good`, or why that size was refused.
+    /// Pays `amount` of transport from working stock.
     ///
-    /// `book` is the seller's offers and requests. `history` prices the
-    /// goods. `factuals` supplies transport. Payment, freight, and the
-    /// buyer's own check all have to pass. When the freight bill is the
-    /// check that fails, the bulkiest non-transport good in that basket is
-    /// left out and the same quantity is tried again. That stops when the
-    /// basket pays or every remaining payment good is transport. Any other
-    /// failure is returned as it is. The `Err` string is the check that
-    /// stopped the last try.
-    fn propose_quantity(
-        &self,
-        match_good: usize,
-        qty: f64,
-        book: &SellerBook,
-        history: &MarketHistory,
-        factuals: &Factuals,
-    ) -> Result<ProposedDeal, &'static str> {
-        let mut skip = Vec::new();
-        loop {
-            match self.propose_skipped(match_good, qty, book, history, factuals, &skip) {
-                Ok(deal) => return Ok(deal),
-                Err((reason, goods)) if reason == "freight" || reason == "freight_left" => {
-                    match Self::bulky_payment(factuals, &goods) {
-                        Some(drop) if !skip.contains(&drop) => skip.push(drop),
-                        _ => return Err(reason),
-                    }
-                }
-                Err((reason, _)) => return Err(reason),
-            }
-        }
+    /// `factuals` names the transport goods. The spend is [`Self::pay_freight`].
+    pub(crate) fn spend_freight(&mut self, amount: f64, factuals: &Factuals) {
+        self.pay_freight(amount, factuals);
     }
 
-    /// # Propose Skipped
+    /// # Meal To Keep
     ///
-    /// One basket for `qty` of `match_good`, leaving out `skip`.
+    /// Units of stock to move into the meal before the sell book.
     ///
-    /// Same checks as [`Self::propose_quantity`]. On failure the basket that
-    /// failed is returned with the check that failed.
-    fn propose_skipped(
-        &self,
-        match_good: usize,
-        qty: f64,
-        book: &SellerBook,
-        history: &MarketHistory,
-        factuals: &Factuals,
-        skip: &[usize],
-    ) -> Result<ProposedDeal, (&'static str, HashMap<usize, f64>)> {
-        let mut goods = HashMap::from([(match_good, qty)]);
-        let mut covered = 0.0;
-        let ask = book
-            .offers
+    /// One level of each basic and common desire, and one level of each
+    /// luxury desire. Desires in a tier follow [`Desire::cmp_order`]. Inside
+    /// a desire, higher efficiency is taken first, up to that target's cap.
+    /// Returns the units by good.
+    pub(crate) fn meal_to_keep(&self) -> HashMap<usize, f64> {
+        let mut stock: HashMap<usize, f64> = self
+            .property
             .iter()
-            .find(|order| order.target == match_good && order.target_amount < 0.0)
-            .map(|order| dictated_price(order, history))
-            .unwrap_or_else(|| history.price(match_good));
-        let need = if ask > 0.0 { ask * qty } else { 0.0 };
-        if need > 0.0
-            && !self.add_payment(
-                factuals,
-                history,
-                book,
-                match_good,
-                &mut goods,
-                &mut covered,
-                need,
-                skip,
-            )
-        {
-            return Err(("cannot_pay", goods));
-        }
-        if self
-            .buy_transport_for_freight(factuals, history, book, &mut goods, &mut covered, skip)
-            .is_none()
-        {
-            return Err(("freight", goods));
-        }
-        if crate::game::deal::freight_shortfall(
-            factuals,
-            history.friction,
-            &goods,
-            &self.free_stock(),
-        ) > 0.0
-        {
-            return Err(("freight_left", goods));
-        }
-        if !self.buyer_accepts(&goods, history) {
-            return Err(("buyer_rejects", goods));
-        }
-        Ok(ProposedDeal {
-            buyer: self.actor(),
-            seller: book.seller,
-            match_good,
-            freight: crate::game::deal::freight_bill(factuals, history.friction, &goods),
-            goods,
-            fresh: HashMap::new(),
-        })
-    }
-
-    /// # Propose Largest
-    ///
-    /// The largest whole quantity of `match_good`, from 1 through `qty`, that
-    /// [`Self::propose_quantity`] accepts.
-    ///
-    /// `book` is the seller. `history` prices the basket. `factuals` supplies
-    /// transport. A quantity that does not pay or haul rules out every larger
-    /// one, so the search halves that range. Returns that basket, or `None`
-    /// when one unit does not pass.
-    fn propose_largest(
-        &self,
-        match_good: usize,
-        qty: f64,
-        book: &SellerBook,
-        history: &MarketHistory,
-        factuals: &Factuals,
-    ) -> Option<ProposedDeal> {
-        let mut low = 1.0;
-        let mut high = qty.floor();
-        let mut best = None;
-        while low <= high {
-            let mid = ((low + high) / 2.0).floor();
-            if mid < 1.0 {
-                break;
-            }
-            match self.propose_quantity(match_good, mid, book, history, factuals) {
-                Ok(deal) => {
-                    best = Some(deal);
-                    low = mid + 1.0;
+            .map(|(&good, row)| (good, row.quantity.max(0.0)))
+            .collect();
+        let mut locked = HashMap::new();
+        for tier in &self.desires {
+            let mut order: Vec<&Desire> = tier.iter().collect();
+            order.sort_by(|left, right| left.cmp_order(right));
+            for desire in order {
+                if !desire.amount.is_finite() || desire.amount <= 0.0 {
+                    continue;
                 }
-                Err(_) => {
-                    if mid <= 1.0 {
+                let mut budget = desire.amount;
+                let mut targets = desire.target.clone();
+                targets.sort_by(|left, right| {
+                    right
+                        .efficiency
+                        .partial_cmp(&left.efficiency)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for target in targets {
+                    if budget <= 0.0 || target.efficiency <= 0.0 {
                         break;
                     }
-                    high = mid - 1.0;
+                    let have = stock.get(&target.good).copied().unwrap_or(0.0);
+                    let cap_units =
+                        desire.amount * target.cap.max(0.0) / target.efficiency;
+                    let want = (budget / target.efficiency).min(cap_units.max(0.0));
+                    let take = want.min(have).max(0.0);
+                    if take <= 0.0 {
+                        continue;
+                    }
+                    if let Some(left) = stock.get_mut(&target.good) {
+                        *left = (*left - take).max(0.0);
+                    }
+                    *locked.entry(target.good).or_insert(0.0) += take;
+                    budget -= take * target.efficiency;
                 }
             }
         }
-        best
+        locked
     }
+
+    /// # Basic Gaps
+    ///
+    /// Satisfaction each tier-0 desire still lacks, and the goods that fill it.
+    ///
+    /// Stock on hand counts, and so does a meal already set aside. A desire
+    /// that stock covers is left out. Returns each short desire as the goods
+    /// with their satisfaction per unit, then the missing satisfaction.
+    pub(crate) fn basic_gaps(&self) -> Vec<(Vec<(usize, f64)>, f64)> {
+        let mut out = Vec::new();
+        let Some(basic) = self.desires.first() else {
+            return out;
+        };
+        for desire in basic {
+            if !desire.amount.is_finite() || desire.amount <= 0.0 {
+                continue;
+            }
+            let mut goods = Vec::new();
+            let mut have = 0.0;
+            for target in &desire.target {
+                if !target.efficiency.is_finite() || target.efficiency <= 0.0 {
+                    continue;
+                }
+                let stock = self.working_units(target.good)
+                    + self.meal.get(&target.good).copied().unwrap_or(0.0);
+                have += stock.max(0.0) * target.efficiency;
+                goods.push((target.good, target.efficiency));
+            }
+            let gap = desire.amount - have;
+            if gap > 1e-9 && !goods.is_empty() {
+                out.push((goods, gap));
+            }
+        }
+        out
+    }
+
 }
 
-/// A mass limit the price formula put on zero.
+/// Share of a tender's stock, after desire and savings, offered in one day.
 ///
-/// Zero on an order means the card. This step keeps a real limit, on the
-/// side the price had before fear pulled it onto zero.
-const MASS_LIMIT_STEP: f64 = 1e-6;
+/// The remainder is left off the sell book.
+const CURRENCY_SALE_SHARE: f64 = 0.1;
 
-/// # Fear Share
+/// # Currency Sale Cap
 ///
-/// `fear` clamped to 0..=1. A non-finite share is 0.
-fn fear_share(fear: f64) -> f64 {
-    if fear.is_finite() {
-        fear.clamp(0.0, 1.0)
-    } else {
+/// Whole units of a tender's `available` stock that may be offered.
+///
+/// `available` is what remains after desire and savings. The cap is
+/// [`CURRENCY_SALE_SHARE`] of that stock, floored. A non-positive or
+/// non-finite stock caps at 0.
+fn currency_sale_cap(available: f64) -> f64 {
+    if !available.is_finite() || available <= 0.0 {
         0.0
-    }
-}
-
-/// # Walk Sell Floor
-///
-/// Pulls `floor` toward `market` by `walk` while the ask is still past the card.
-///
-/// `walk` is the fraction from [`MarketHistory::ask_walk`]. A non-positive
-/// or non-finite fraction returns `floor`. A positive card moves a higher
-/// floor down. A negative card moves a lower floor up. An ask already on
-/// the card's side of that line stays. Returns the moved floor.
-fn walk_sell_floor(floor: f64, market: f64, walk: f64) -> f64 {
-    if !walk.is_finite() || walk <= 0.0 {
-        return floor;
-    }
-    let past = (market > 0.0 && floor > market) || (market < 0.0 && floor < market);
-    if !past {
-        return floor;
-    }
-    floor + (market - floor) * walk.clamp(0.0, 1.0)
-}
-
-/// # Positive Ask
-///
-/// A soft sell floor kept above zero.
-///
-/// `floor` is the make-cost or markdown ask, fear included. Dumping a
-/// surplus and replacing a good are that soft cost. A positive finite
-/// `floor` is returned. Anything else is [`MASS_LIMIT_STEP`]. A hard
-/// opportunity cost, expelling a good, is not priced, so this never
-/// returns a negative.
-fn positive_ask(floor: f64) -> f64 {
-    if floor.is_finite() && floor > 0.0 {
-        floor
     } else {
-        MASS_LIMIT_STEP
+        (available * CURRENCY_SALE_SHARE).floor().max(0.0)
     }
-}
-
-/// # Off Zero
-///
-/// `price` when it is a real limit.
-///
-/// Exact zero means the card, so a computed zero is stored as
-/// [`MASS_LIMIT_STEP`] on the side of `side`. A non-finite price takes
-/// that same step. Returns the limit.
-fn off_zero(price: f64, side: f64) -> f64 {
-    if price.is_finite() && price != 0.0 {
-        price
-    } else if side < 0.0 {
-        -MASS_LIMIT_STEP
-    } else {
-        MASS_LIMIT_STEP
-    }
-}
-
-/// # Mass Buy Limit
-///
-/// The most a pop will pay per unit on the mass market.
-///
-/// `market` is the card AMV. `missing` is the share of the quoted need
-/// still short, clamped to 0..=1. `fear` is that pop's fear share. The
-/// limit is 25% above the card, plus 1% for each 5% of that short share,
-/// plus the whole fear share. A fear of 0 leaves the 25% band. A fear of 1
-/// adds the card's magnitude again. A negative card moves toward and past
-/// zero by that same share, so a frightened buyer will pay to take a good
-/// the market pays to dump. A computed zero is stored one step off zero.
-/// Returns the limit.
-fn mass_buy_limit(market: f64, missing: f64, fear: f64) -> f64 {
-    let share = missing.clamp(0.0, 1.0);
-    let fear = fear_share(fear);
-    let bump = 0.01 * (share / 0.05);
-    let limit = if market < 0.0 {
-        market * (0.75 - bump - fear)
-    } else {
-        market * (1.25 + bump + fear)
-    };
-    off_zero(limit, market)
 }
 
 impl DealMaker for Pop {
     fn actor(&self) -> Actor {
         Actor::Pop(self.id)
-    }
-
-    fn sell_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
-        let mut orders = Vec::new();
-        for (&good, _) in &self.property {
-            let units = self.surplus_for_sale(good);
-            if units >= 1.0 {
-                let price = history.price(good);
-                orders.push(MarketOrder::sell(self.actor(), good, units).with_accept_price(price));
-            }
-        }
-        orders
-    }
-
-    /// # Buy Orders
-    ///
-    /// The barter buys for today.
-    ///
-    /// `history` prices the consumption mix and each order. The mix still
-    /// short of stock is posted first. The saved day, the cheaper cover, and
-    /// the job's shopping are added on top. Every desire target stays on the
-    /// book at one unit. Each order's accept price is the card. Returns
-    /// those orders.
-    fn buy_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
-        let mut orders = Vec::new();
-        self.add_valued_buys(history, &mut orders);
-        self.add_savings_buys(&mut orders);
-        self.add_cheaper_cover(&mut orders);
-        for order in self.job.buy_orders(self.actor()) {
-            if let Some(existing) = orders.iter_mut().find(|held| held.target == order.target) {
-                existing.target_amount += order.target_amount;
-            } else {
-                orders.push(order);
-            }
-        }
-        self.keep_desire_bids(&mut orders);
-        for order in &mut orders {
-            order.accept_price = history.price(order.target);
-        }
-        orders
     }
 
     /// # Mass Market Order
@@ -4558,14 +4396,17 @@ impl DealMaker for Pop {
     ///
     /// `history` is the card. `currencies` are the market's tender slots.
     /// `factuals` names goods and processes. An untradeable good, a zero
-    /// card, and a tender [`crate::game::market::payment_tender`] will not
+    /// card, and a tender [`crate::game::market::payment_tenders`] will not
     /// pay sit out. A negative card is a real price. The want is
     /// [`Self::mass_want`]. A prepared [`Self::mass_buys`] list posts only
     /// the funded amount, and a good left off that list is not bought.
     /// With no list yet, the want is the amount. An empty bin does not
-    /// block that buy. When the buy cannot start, a job input still short
-    /// stays put unless every line that makes it loses holding. Otherwise
-    /// [`Self::mass_sell`] is the offer. Returns that order.
+    /// block that buy. The posted price is the card. Fear and a short pile
+    /// change whether this pop shows up and how many units, not that price.
+    /// When the buy cannot start, a job input still short stays put unless
+    /// every line that makes it loses holding. Otherwise [`Self::mass_sell`]
+    /// is the offer, and a maker whose card is under the decay floor sits
+    /// out. Returns that order.
     fn mass_order(
         &self,
         good: usize,
@@ -4580,9 +4421,9 @@ impl DealMaker for Pop {
         if !market.is_finite() || market == 0.0 {
             return None;
         }
-        let tender = crate::game::market::payment_tender(currencies, good);
+        let tenders = crate::game::market::payment_tenders(currencies, good);
         let is_tender = currencies.iter().copied().flatten().any(|id| id == good);
-        if is_tender && tender.is_none() {
+        if is_tender && tenders.is_empty() {
             return None;
         }
         let want = self.mass_want(good, history, factuals);
@@ -4592,20 +4433,7 @@ impl DealMaker for Pop {
             None => want,
         };
         if buy_units >= 1.0 {
-            let desire_need = if self.has_desire_for(good) {
-                self.mass_need(good)
-            } else {
-                0.0
-            };
-            if let Some(order) = self.mass_buy(
-                good,
-                history,
-                tender,
-                market,
-                desire_need + job_units,
-                want,
-                buy_units,
-            ) {
+            if let Some(order) = self.mass_buy(good, history, currencies, market, buy_units) {
                 return Some(order);
             }
         }
@@ -4613,21 +4441,91 @@ impl DealMaker for Pop {
         if want >= 1.0 && job_units >= 1.0 && !self.is_produced_at_a_loss(factuals, history, good) {
             return None;
         }
-        self.mass_sell(good, factuals, history, market)
+        self.mass_sell(good, factuals, history, market, currencies)
+    }
+
+    /// # Mass Card Sell
+    ///
+    /// A sell of `good` at the card, or `None` when this pop will not sell.
+    ///
+    /// `history` is the card. `currencies` are the tender slots. `factuals`
+    /// names goods and processes. An untradeable good and a zero card sit
+    /// out. The units and the refusal are [`Self::mass_sell`]. Returns that
+    /// order.
+    fn mass_card_sell(
+        &self,
+        good: usize,
+        history: &MarketHistory,
+        currencies: &[Option<usize>],
+        factuals: &Factuals,
+    ) -> Option<MarketOrder> {
+        if !crate::game::market::tradeable(factuals, good) {
+            return None;
+        }
+        let market = history.price(good);
+        if !market.is_finite() || market == 0.0 {
+            return None;
+        }
+        self.mass_sell(good, factuals, history, market, currencies)
+    }
+
+    /// # Mass Conversion Buy
+    ///
+    /// A buy of `good` paid only from `tenders`, or `None`.
+    ///
+    /// `history` is the card. `factuals` names goods. The purse is
+    /// [`Self::liquid_tender`] of each tender with a positive price. The
+    /// amount is the whole units of `good` that purse can pay at the card,
+    /// from [`crate::game::market::mix_change`]. A non-positive card, an
+    /// empty purse, and a buy under one unit sit out. The accept price is
+    /// the card. Returns that order.
+    fn mass_conversion_buy(
+        &self,
+        good: usize,
+        history: &MarketHistory,
+        tenders: &[usize],
+        factuals: &Factuals,
+    ) -> Option<MarketOrder> {
+        if !crate::game::market::tradeable(factuals, good) || tenders.is_empty() {
+            return None;
+        }
+        let market = history.price(good);
+        if !market.is_finite() || market <= 0.0 {
+            return None;
+        }
+        let spec = crate::game::market::priced_coins(tenders, history, |id| self.liquid_tender(id));
+        if spec.is_empty() {
+            return None;
+        }
+        let mut purse = 0.0;
+        for &(_, amv, free) in &spec {
+            purse += amv * free;
+        }
+        let want = (purse / market).floor();
+        if want < 1.0 {
+            return None;
+        }
+        let (units, mix) = crate::game::market::mix_change(want, market, &spec);
+        if units < 1.0 || !mix.iter().any(|(_, qty)| *qty >= 1.0) {
+            return None;
+        }
+        Some(MarketOrder::buy(self.actor(), good, units).with_accept_price(market))
     }
 
     /// # Prepare Mass Buys
     ///
-    /// Funds today's mass buys from the liquid tender.
+    /// Funds today's mass buys from the liquid tenders.
     ///
     /// `history` is the card. `currencies` are the tender slots. `factuals`
     /// names goods and processes. Each [`Self::mass_want`] of at least one
-    /// unit is priced at the card in its payment tender. An earlier desire
-    /// tier is funded before a later one, and a good no desire names is
-    /// funded after those. One tender's purse is [`Self::liquid_tender`],
-    /// and a funded buy subtracts its payment from that purse. A negative
+    /// unit is priced at the card. An earlier desire tier is funded before
+    /// a later one. Within a tier, more satisfaction per quote is funded
+    /// first, and a tie keeps the lower id. A good no desire names is
+    /// funded after those. Each tender's purse is [`Self::liquid_tender`],
+    /// and a funded buy subtracts that tender's part of the mix. A negative
     /// card is funded in full, because the seller pays. The result is
-    /// stored on [`Self::mass_buys`]. Nothing is returned.
+    /// stored on [`Self::mass_buys`], and those amounts are today's posted
+    /// buys. Nothing is returned.
     fn prepare_mass_buys(
         &mut self,
         history: &MarketHistory,
@@ -4636,7 +4534,7 @@ impl DealMaker for Pop {
     ) {
         let mut funded = HashMap::new();
         let mut purses: HashMap<usize, f64> = HashMap::new();
-        for good in self.mass_candidates() {
+        for good in self.mass_candidates(history) {
             if !crate::game::market::tradeable(factuals, good) {
                 continue;
             }
@@ -4644,33 +4542,43 @@ impl DealMaker for Pop {
             if !market.is_finite() || market == 0.0 {
                 continue;
             }
-            let Some(tender) = crate::game::market::payment_tender(currencies, good) else {
+            let tenders = crate::game::market::payment_tenders(currencies, good);
+            if tenders.is_empty() {
                 continue;
-            };
+            }
             let want = self.mass_want(good, history, factuals);
             if want < 1.0 {
                 continue;
             }
-            let currency_amv = history.price(tender);
-            if !currency_amv.is_finite() || currency_amv <= 0.0 {
-                continue;
-            }
             // A negative card is a disposal fee the seller pays.
             if market < 0.0 {
-                funded.insert(good, want);
+                let priced = tenders.iter().any(|&id| {
+                    let amv = history.price(id);
+                    amv.is_finite() && amv > 0.0
+                });
+                if priced {
+                    funded.insert(good, want);
+                }
                 continue;
             }
-            let purse = purses
-                .entry(tender)
-                .or_insert_with(|| self.liquid_tender(tender));
-            let (units, pay) =
-                crate::game::market::make_change(want, market, currency_amv, *purse);
-            if units >= 1.0 && pay >= 1.0 {
+            let spec = crate::game::market::priced_coins(&tenders, history, |id| {
+                *purses.entry(id).or_insert_with(|| self.liquid_tender(id))
+            });
+            if spec.is_empty() {
+                continue;
+            }
+            let (units, mix) = crate::game::market::mix_change(want, market, &spec);
+            if units >= 1.0 && mix.iter().any(|(_, qty)| *qty >= 1.0) {
                 funded.insert(good, units);
-                *purse = (*purse - pay).max(0.0);
+                for (id, qty) in mix {
+                    if let Some(purse) = purses.get_mut(&id) {
+                        *purse = (*purse - qty).max(0.0);
+                    }
+                }
             }
         }
         self.mass_buys = Some(funded);
+        self.note_posted_buys();
     }
 
     fn free_units(&self, good: usize) -> f64 {
@@ -4690,83 +4598,6 @@ impl DealMaker for Pop {
             .unwrap_or(0.0)
     }
 
-    fn propose(
-        &self,
-        match_good: usize,
-        book: &SellerBook,
-        history: &MarketHistory,
-        factuals: &Factuals,
-    ) -> Option<ProposedDeal> {
-        let offer = book
-            .offers
-            .iter()
-            .find(|order| order.target == match_good && order.target_amount < 0.0);
-        let Some(offer) = offer else {
-            return None;
-        };
-        // This meeting is for one good. Use the buy for that good: the open
-        // desire, the job's input shortfall, or the two added together.
-        let wanted = self
-            .buy_orders(history)
-            .into_iter()
-            .find(|order| order.target == match_good)
-            .map(|order| order.target_amount);
-        let Some(wanted) = wanted else {
-            return None;
-        };
-        if wanted < 1.0 {
-            return None;
-        }
-        let ask = dictated_price(offer, history);
-        let bid = self
-            .buy_orders(history)
-            .into_iter()
-            .find(|order| order.target == match_good)
-            .map(|order| dictated_price(&order, history))
-            .unwrap_or_else(|| history.price(match_good));
-        // The buyer will not pay a higher raw price than the one they posted.
-        if ask > 0.0 && bid > 0.0 && bid < ask {
-            return None;
-        }
-        let qty = wanted.min((-offer.target_amount).floor());
-        if qty < 1.0 || history.price(match_good) == 0.0 {
-            return None;
-        }
-        // The whole pile may not be payable. Keep the largest whole quantity that is.
-        self.propose_largest(match_good, qty.floor(), book, history, factuals)
-    }
-
-    fn evaluate(
-        &self,
-        proposal: &ProposedDeal,
-        history: &MarketHistory,
-        _factuals: &Factuals,
-    ) -> DealResponse {
-        let mut given = HashMap::new();
-        let mut received = HashMap::new();
-        for (&good, &qty) in &proposal.goods {
-            if qty > 0.0 {
-                given.insert(good, qty);
-            } else if qty < 0.0 {
-                received.insert(good, -qty);
-            }
-        }
-        let match_qty = given.get(&proposal.match_good).copied().unwrap_or(0.0);
-        if match_qty < 1.0 || received.is_empty() {
-            return DealResponse::Reject;
-        }
-        for (&good, &qty) in &given {
-            if self.free_units(good) < qty {
-                return DealResponse::Reject;
-            }
-        }
-        if self.exchange_ok(&given, &received, history) {
-            DealResponse::Accept
-        } else {
-            DealResponse::Reject
-        }
-    }
-
     fn finalize(&mut self, proposal: &ProposedDeal, factuals: &Factuals) {
         let id = self.actor();
         let sign = if proposal.buyer == id {
@@ -4782,6 +4613,18 @@ impl DealMaker for Pop {
             // Aged and fresh both sit in quantity. fresh marks the spared share.
             self.move_good(good, delta);
             self.move_fresh(good, fresh_units);
+            // The deal's good is stock in or out. Every other good is the payment.
+            if good == proposal.match_good {
+                if delta > 0.0 {
+                    *self.day_got.entry(good).or_insert(0.0) += delta;
+                } else if delta < 0.0 {
+                    *self.day_gave.entry(good).or_insert(0.0) += -delta;
+                }
+            } else if delta > 0.0 {
+                *self.day_received.entry(good).or_insert(0.0) += delta;
+            } else if delta < 0.0 {
+                *self.day_paid.entry(good).or_insert(0.0) += -delta;
+            }
             // Goods just received count against the job's shopping list.
             if sign > 0.0 && qty > 0.0 {
                 self.job.note_purchase(good, qty);
@@ -4804,16 +4647,6 @@ impl DealMaker for Pop {
         self.pay_freight(amount, factuals);
     }
 
-    fn reevaluate(&mut self, history: &MarketHistory, rng: &mut dyn rand::RngCore) {
-        let _ = history;
-        // Goods just received can fill the open desire before sell orders are read again.
-        if self.satisfy_cursor.is_some() {
-            self.satisfy_continue(rng);
-        }
-        // A desire that just opened may post a larger buy.
-        self.note_posted_buys();
-    }
-
     fn reset_day(&mut self) {
         Pop::reset_day(self);
     }
@@ -4832,10 +4665,16 @@ impl DealMaker for Pop {
         for effect in self.job.produce(&mut self.property, factuals) {
             self.store_process_effect(effect);
         }
+        // The next produce spends these. The meal does not.
+        self.keep_craft_inputs(factuals);
     }
 
     fn consume(&mut self) {
         Pop::consume(self);
+    }
+
+    fn rest(&mut self, factuals: &Factuals) {
+        Pop::rest(self, factuals);
     }
 
     fn decay_goods(&mut self, factuals: &Factuals) -> HashMap<usize, (f64, f64)> {
@@ -4859,16 +4698,6 @@ impl DealMaker for Pop {
 /// than the gap to one level (`amount - satisfaction`). Another target's
 /// take fills the level, not this target's cap. A full cap, or a met
 /// level, is `0`.
-/// # Tier Through
-///
-/// True when `tier` is `limit` or an earlier tier.
-///
-/// A later tier is false. List index is not compared, so a good on the
-/// same tier is not spent on another desire of that tier.
-fn tier_through(tier: usize, limit: usize) -> bool {
-    tier <= limit
-}
-
 fn desire_room(desire: &Desire, index: usize) -> f64 {
     let level_left = desire.amount - desire.satisfaction;
     target_cap_left(desire, index).min(level_left).max(0.0)
@@ -4882,106 +4711,33 @@ fn target_cap_left(desire: &Desire, index: usize) -> f64 {
     desire.amount * target.cap - already
 }
 
-/// # Goods Change
-///
-/// The per-good difference of `after` minus `before`.
-///
-/// A key in only one map counts as zero on the other side. A difference
-/// inside `1e-9` is dropped. Returns that change.
-fn goods_change(before: &HashMap<usize, f64>, after: &HashMap<usize, f64>) -> HashMap<usize, f64> {
-    let mut delta = HashMap::new();
-    for (&id, &qty) in before {
-        let diff = after.get(&id).copied().unwrap_or(0.0) - qty;
-        if diff.abs() > 1e-9 {
-            delta.insert(id, diff);
-        }
-    }
-    for (&id, &qty) in after {
-        if before.contains_key(&id) {
-            continue;
-        }
-        if qty.abs() > 1e-9 {
-            delta.insert(id, qty);
-        }
-    }
-    delta
-}
-
-/// # Apply Goods Delta
-///
-/// Adds `times` copies of `delta` into `goods`.
-///
-/// A missing key starts at zero. Nothing is returned.
-fn apply_goods_delta(goods: &mut HashMap<usize, f64>, delta: &HashMap<usize, f64>, times: f64) {
-    for (&id, &diff) in delta {
-        *goods.entry(id).or_insert(0.0) += diff * times;
-    }
-}
-
-/// # Same Goods Change
-///
-/// Whether `after` minus `before` matches `delta`.
-///
-/// A key in only one of the maps counts as zero on the other side. A
-/// difference inside `1e-6` still matches. Returns that answer.
-fn same_goods_change(
-    before: &HashMap<usize, f64>,
-    after: &HashMap<usize, f64>,
-    delta: &HashMap<usize, f64>,
-) -> bool {
-    for (&id, &qty) in before {
-        let diff = after.get(&id).copied().unwrap_or(0.0) - qty;
-        let want = delta.get(&id).copied().unwrap_or(0.0);
-        if (diff - want).abs() > 1e-6 {
-            return false;
-        }
-    }
-    for (&id, &qty) in after {
-        if before.contains_key(&id) {
-            continue;
-        }
-        let want = delta.get(&id).copied().unwrap_or(0.0);
-        if (qty - want).abs() > 1e-6 {
-            return false;
-        }
-    }
-    for (&id, &want) in delta {
-        if before.contains_key(&id) || after.contains_key(&id) {
-            continue;
-        }
-        if want.abs() > 1e-6 {
-            return false;
-        }
-    }
-    true
-}
-
 #[cfg(test)]
 mod pop {
     use std::collections::{HashMap, HashSet, VecDeque};
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
-    use crate::game::deal::{DealMaker, DealResponse, MeetingOutcome, ProposedDeal, SellerBook};
-    use crate::game::marketorder::MarketOrder;
+    use crate::game::config::TIME_PER_LABOR;
+    use crate::game::craft::Craft;
+    use crate::game::culture::Culture;
+    use crate::game::deal::{DealMaker, ProposedDeal};
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{DemoDesire, Desire, DesireEffect, DesireTarget, DesireTargetType};
-    use crate::game::scalingfactor::ScalingFactor;
-    use crate::game::culture::Culture;
-    use crate::game::species::Species;
-    use crate::game::stratum::Stratum;
     use crate::game::effects::PopEffect;
-    use crate::game::craft::Craft;
     use crate::game::factuals::Factuals;
-    use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::good::{Good, GoodTag, TIME};
     use crate::game::household::{BirthSentiment, DemographicRates, Household};
     use crate::game::job::{Job, JobLine};
+    use crate::game::market::{Market, MarketGood, MarketHistory};
     use crate::game::pop::{DemoRow, Pop, PopPRow, PopRecords};
     use crate::game::process::{InputType, Process, ProcessEffect, ProcessInput, ProcessOutput};
+    use crate::game::religion::Religion;
+    use crate::game::scalingfactor::ScalingFactor;
     use crate::game::sentiment::{Sentiment, SentimentKind};
-    use rand::rngs::StdRng;
+    use crate::game::species::Species;
+    use crate::game::stratum::Stratum;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn do_satisfy(pop: &mut Pop) -> Option<crate::game::desire::Desire> {
         let mut rng = StdRng::seed_from_u64(1);
@@ -4991,20 +4747,6 @@ mod pop {
     fn do_continue(pop: &mut Pop) -> Option<crate::game::desire::Desire> {
         let mut rng = StdRng::seed_from_u64(1);
         pop.satisfy_continue(&mut rng)
-    }
-
-    fn do_match(
-        market: &mut Market,
-        actors: &mut Actors,
-        factuals: &Factuals,
-    ) -> Vec<crate::game::deal::ProposedDeal> {
-        let mut rng = StdRng::seed_from_u64(1);
-        market
-            .match_deals(actors, factuals, &mut rng)
-            .into_iter()
-            .filter(|meeting| meeting.outcome == MeetingOutcome::Accepted)
-            .filter_map(|meeting| meeting.proposal)
-            .collect()
     }
 
     /// Makes pop for testing
@@ -5032,12 +4774,40 @@ mod pop {
             planned_desires: Vec::new(),
             luxury_reached: 0.0,
             savings: HashMap::new(),
+            saved: HashMap::new(),
+            meal: HashMap::new(),
             luxury_savings: HashMap::new(),
             luxury_savings_open: true,
             cheaper_cover: HashMap::new(),
             mass_buys: None,
+            currency_sale_room: HashMap::new(),
+            day_listed: HashMap::new(),
             buy_posted: HashMap::new(),
             buy_received: HashMap::new(),
+            day_paid: HashMap::new(),
+            day_received: HashMap::new(),
+            day_got: HashMap::new(),
+            day_gave: HashMap::new(),
+            day_haul: HashMap::new(),
+            day_eaten: HashMap::new(),
+            day_held: HashMap::new(),
+            rest_taken: HashMap::new(),
+            rest_sol: 0.0,
+            day_granted: HashMap::new(),
+            tape_buy: HashMap::new(),
+            tape_sell: HashMap::new(),
+            tape_bought: HashMap::new(),
+            tape_sold: HashMap::new(),
+            tape_paid: HashMap::new(),
+            tape_earned: HashMap::new(),
+            tape_change_in: HashMap::new(),
+            tape_change_out: HashMap::new(),
+            tape_meal: HashMap::new(),
+            tape_input: HashMap::new(),
+            tape_saved: HashMap::new(),
+            tape_arrived: HashMap::new(),
+            tape_left: HashMap::new(),
+            tape_dropped: HashMap::new(),
             worth: HashMap::new(),
             turned: HashMap::new(),
             worth_open: true,
@@ -5054,7 +4824,7 @@ mod pop {
         let mut household = Household::new();
         let mut rates = DemographicRates::baseline();
         rates.birth_per_woman = (rates.birth_per_woman + birth_add) * scale;
-        household.update(&rates);
+        household.update(&rates, 1.0);
         household.total_count()
     }
 
@@ -5082,6 +4852,20 @@ mod pop {
         let scale = BirthSentiment::human().multiplier(0.0, 0.0, 1.0, 0.0);
         let got = pop.demographics.household.total_count();
         assert!((got - population_at(0.0, scale)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn growth_phase_uses_the_configured_turn_length() {
+        let mut pop = make_pop();
+        let mut factuals = Factuals::new().with_species(Species::new(0, "human"));
+        factuals.config.pop.turn_length = 12.0;
+
+        pop.growth_phase(&factuals);
+
+        let mut household = Household::new();
+        household.update(&DemographicRates::baseline(), 12.0);
+        let got = pop.demographics.household.total_count();
+        assert!((got - household.total_count()).abs() < 1e-9);
     }
 
     #[test]
@@ -5237,7 +5021,9 @@ mod pop {
         pop.demographics.stratum = 2;
         let factuals = Factuals::new()
             .with_culture(Culture::new(1, "farmers"))
-            .with_stratum(Stratum::new(2, "tenants", 1).with_desire(DemoDesire::new(4).with_tier(0)));
+            .with_stratum(
+                Stratum::new(2, "tenants", 1).with_desire(DemoDesire::new(4).with_tier(0)),
+            );
 
         pop.update_desires(&factuals);
 
@@ -5245,6 +5031,26 @@ mod pop {
         assert_eq!(pop.desires[0][0].source, DemographicSource::Stratum(2));
         assert_eq!(pop.desires[0][0].demo_desire_id, 4);
         assert!(factuals.find_culture(1).strata.contains(&2));
+    }
+
+    /// Religion stores luxury id 2, then id 1. The copy is ids 1 then 2.
+    #[test]
+    fn update_desires_copies_religion_desires_in_id_order() {
+        let mut pop = make_pop();
+        pop.demographics.religion = 1;
+        let factuals = Factuals::new().with_religion(
+            Religion::new(1, "hearth")
+                .with_desire(DemoDesire::new(2).with_tier(2))
+                .with_desire(DemoDesire::new(1).with_tier(2)),
+        );
+
+        pop.update_desires(&factuals);
+
+        let ids: Vec<usize> = pop.desires[2]
+            .iter()
+            .map(|desire| desire.demo_desire_id)
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
     }
 
     fn make_good(id: usize, name: &str, decay_rate: f64) -> Good {
@@ -5264,7 +5070,8 @@ mod pop {
     #[test]
     fn decays_on_hand_quantity_and_destroys_consumed() {
         let mut pop = make_pop();
-        pop.property.insert(1, PopPRow::new(10.0).with_consumed(4.0));
+        pop.property
+            .insert(1, PopPRow::new(10.0).with_consumed(4.0));
         let mut grain = make_good(1, "grain", 0.5);
         grain.decay_result.insert(2, 0.25);
         let factuals = Factuals::new()
@@ -5380,6 +5187,19 @@ mod pop {
         history
     }
 
+    /// Two time in, six water out.
+    fn water_maker(target: f64) -> (Job, Factuals) {
+        let job = Job::new(1, vec![JobLine::new(2, Some(target), vec![])]);
+        let process = Process::new(2, "make water", 0)
+            .with_input(ProcessInput::new(0, 2.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(2, 6.0, true));
+        let factuals = Factuals::new()
+            .with_good(make_good(0, "time", 1.0))
+            .with_good(make_good(2, "water", 0.0))
+            .with_process(process);
+        (job, factuals)
+    }
+
     /// Five time in, six grain out. Time is loaded so it does not survive the night.
     fn grain_maker() -> (Job, Factuals) {
         let job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
@@ -5392,20 +5212,25 @@ mod pop {
         (job, factuals)
     }
 
-    /// Empty bin, desire of 4, card 2, ten tender. The buy is 4 at 45% over the card.
+    /// Empty bin, desire of 4, card 2, ten tender. The buy is 4 at the card.
     #[test]
     fn mass_order_buys_the_short_need_up_to_the_tender() {
         let mut pop = make_pop();
         grain_meal(&mut pop, 4.0);
         pop.property.insert(5, PopPRow::new(10.0));
         let order = pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("buy");
         assert!((order.target_amount - 4.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.9).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
-    /// Two of the four are already on hand, so the ceiling is 35% over the card.
+    /// Two of the four are already on hand. The buy is the other two at the card.
     #[test]
     fn mass_order_raises_the_buy_ceiling_with_the_share_still_short() {
         let mut pop = make_pop();
@@ -5413,10 +5238,15 @@ mod pop {
         pop.property.insert(1, PopPRow::new(2.0));
         pop.property.insert(5, PopPRow::new(10.0));
         let order = pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("buy");
         assert!((order.target_amount - 2.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.7).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
     /// Tender covers two units at a card of 2. The want stays four.
@@ -5426,7 +5256,12 @@ mod pop {
         grain_meal(&mut pop, 4.0);
         pop.property.insert(5, PopPRow::new(5.0));
         let order = pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("buy");
         assert!((order.target_amount - 2.0).abs() < 1e-9);
     }
@@ -5438,9 +5273,15 @@ mod pop {
         grain_meal(&mut pop, 4.0);
         pop.property.insert(5, PopPRow::new(5.0));
         pop.savings.insert(5, 5.0);
-        assert!(pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
-            .is_none());
+        assert!(
+            pop.mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new()
+            )
+            .is_none()
+        );
     }
 
     /// Six on hand, a need of four, and tender in the purse. The extra two
@@ -5452,7 +5293,12 @@ mod pop {
         pop.property.insert(1, PopPRow::new(6.0));
         pop.property.insert(5, PopPRow::new(10.0));
         let order = pop
-            .mass_order(1, &card_at(4.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(4.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("sell");
         assert!((order.target_amount - -2.0).abs() < 1e-9);
     }
@@ -5466,22 +5312,32 @@ mod pop {
         pop.property.insert(5, PopPRow::new(10.0));
         assert!(do_satisfy(&mut pop).is_none());
         let order = pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("buy");
         assert!((order.target_amount - 1.0).abs() < 1e-9);
     }
 
-    /// Six on hand and a need of four. The pop does not make it, so two sell at 25% under.
+    /// Six on hand and a need of four. The pop does not make it, so two sell at the card.
     #[test]
     fn mass_order_sells_the_surplus_above_a_need() {
         let mut pop = make_pop();
         grain_meal(&mut pop, 4.0);
         pop.property.insert(1, PopPRow::new(6.0));
         let order = pop
-            .mass_order(1, &card_at(4.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(4.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("sell");
         assert!((order.target_amount - -2.0).abs() < 1e-9);
-        assert!((order.accept_price - 3.0).abs() < 1e-9);
+        assert!((order.accept_price - 4.0).abs() < 1e-9);
     }
 
     /// Six on hand, a meal of four, and two saved. Worth is under the card,
@@ -5494,7 +5350,12 @@ mod pop {
         pop.savings.insert(1, 2.0);
         pop.worth.insert(1, 1.0);
         let order = pop
-            .mass_order(1, &card_at(4.0), &[Some(5), None, None, None], &Factuals::new())
+            .mass_order(
+                1,
+                &card_at(4.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
             .expect("sell");
         assert!((order.target_amount - -2.0).abs() < 1e-9);
     }
@@ -5507,13 +5368,18 @@ mod pop {
         pop.property.insert(1, PopPRow::new(6.0));
         pop.savings.insert(1, 2.0);
         pop.worth.insert(1, 4.0);
-        assert!(pop
-            .mass_order(1, &card_at(4.0), &[Some(5), None, None, None], &Factuals::new())
-            .is_none());
+        assert!(
+            pop.mass_order(
+                1,
+                &card_at(4.0),
+                &[Some(5), None, None, None],
+                &Factuals::new()
+            )
+            .is_none()
+        );
     }
 
-    /// The same pile, made at a profit. Time on the card holds at 1, so the
-    /// floor is five time over six grain, and the need stays.
+    /// The same pile, made at a profit. The card covers the cost, so two sell at the card.
     #[test]
     fn mass_order_floors_a_made_good_at_its_cost() {
         let mut pop = make_pop();
@@ -5522,14 +5388,18 @@ mod pop {
         let (job, factuals) = grain_maker();
         pop.job = job;
         let order = pop
-            .mass_order(1, &card_with_time(2.0, 1.0), &[Some(5), None, None, None], &factuals)
+            .mass_order(
+                1,
+                &card_with_time(2.0, 1.0),
+                &[Some(5), None, None, None],
+                &factuals,
+            )
             .expect("sell");
         assert!((order.target_amount - -2.0).abs() < 1e-9);
-        assert!((order.accept_price - 5.0 / 6.0).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
-    /// Making grain loses at this card. Time holds at 1, so the need itself
-    /// is offered at five time over six grain.
+    /// Making grain loses at this card. Time holds at 1. The need itself is offered at the card.
     #[test]
     fn mass_order_sells_a_losing_product_through_the_need() {
         let mut pop = make_pop();
@@ -5538,32 +5408,35 @@ mod pop {
         let (job, factuals) = grain_maker();
         pop.job = job;
         let order = pop
-            .mass_order(1, &card_with_time(1.0, 1.0), &[Some(5), None, None, None], &factuals)
+            .mass_order(
+                1,
+                &card_with_time(1.0, 1.0),
+                &[Some(5), None, None, None],
+                &factuals,
+            )
             .expect("sell");
         assert!((order.target_amount - -6.0).abs() < 1e-9);
-        assert!((order.accept_price - 5.0 / 6.0).abs() < 1e-9);
+        assert!((order.accept_price - 1.0).abs() < 1e-9);
     }
 
-    /// A refused ask has walked a quarter of the way. The cost is 5/6 and the
-    /// card is 1/2, so the floor lands at 3/4.
+    /// Cost is 5/6 and the card is 1/2. Decay is 0, so the maker sits out.
     #[test]
-    fn mass_order_walks_a_refused_ask_toward_the_card() {
+    fn mass_order_refuses_a_card_under_make_cost() {
         let mut pop = make_pop();
         grain_meal(&mut pop, 4.0);
         pop.property.insert(1, PopPRow::new(6.0));
         let (job, factuals) = grain_maker();
         pop.job = job;
-        let mut history = card_with_time(0.5, 1.0);
-        history.ask_walk.insert(1, 0.25);
-        let order = pop
-            .mass_order(1, &history, &[Some(5), None, None, None], &factuals)
-            .expect("sell");
-        assert!((order.accept_price - 0.75).abs() < 1e-9);
+        let history = card_with_time(0.5, 1.0);
+        assert!(
+            pop.mass_order(1, &history, &[Some(5), None, None, None], &factuals)
+                .is_none()
+        );
     }
 
-    /// The markdown is already under the card. A full walk does not raise it.
+    /// The pop does not make it. Surplus sells at the card.
     #[test]
-    fn mass_order_does_not_raise_an_ask_already_under_the_card() {
+    fn mass_order_sells_surplus_at_the_card() {
         let mut pop = make_pop();
         grain_meal(&mut pop, 4.0);
         pop.property.insert(1, PopPRow::new(6.0));
@@ -5573,7 +5446,52 @@ mod pop {
             .mass_order(1, &history, &[Some(5), None, None, None], &Factuals::new())
             .expect("sell");
         assert!((order.target_amount - -2.0).abs() < 1e-9);
-        assert!((order.accept_price - 3.0).abs() < 1e-9);
+        assert!((order.accept_price - 4.0).abs() < 1e-9);
+    }
+
+    /// Water decays by half. Cost is 2 and the floor is 1, so a card of 1.5 sells.
+    #[test]
+    fn mass_order_sells_down_to_the_decay_floor() {
+        let mut pop = make_pop();
+        let (job, mut factuals) = water_maker(10.0);
+        factuals.goods.get_mut(&2).expect("water").decay_rate = 0.5;
+        pop.job = job;
+        pop.property.insert(2, PopPRow::new(12.0));
+        let history = card(&[(0, 6.0, 1.0), (2, 1.5, 1.0)]);
+        let order = pop
+            .mass_order(2, &history, &[Some(1), None, None, None], &factuals)
+            .expect("sell");
+        assert!((order.target_amount - -12.0).abs() < 1e-9);
+        assert!((order.accept_price - 1.5).abs() < 1e-9);
+    }
+
+    /// The same water at 0.5 is under the floor of 1. The maker sits out.
+    #[test]
+    fn mass_order_refuses_a_card_under_the_decay_floor() {
+        let mut pop = make_pop();
+        let (job, mut factuals) = water_maker(10.0);
+        factuals.goods.get_mut(&2).expect("water").decay_rate = 0.5;
+        pop.job = job;
+        pop.property.insert(2, PopPRow::new(12.0));
+        let history = card(&[(0, 6.0, 1.0), (2, 0.5, 1.0)]);
+        assert!(
+            pop.mass_order(2, &history, &[Some(1), None, None, None], &factuals)
+                .is_none()
+        );
+    }
+
+    /// Time at 30 prices one water at 10. Decay is 0, so a card of 2 is refused.
+    #[test]
+    fn mass_order_refuses_a_card_under_an_undecayed_cost() {
+        let mut pop = make_pop();
+        let (job, factuals) = water_maker(10.0);
+        pop.job = job;
+        pop.property.insert(2, PopPRow::new(30.0));
+        let history = card(&[(0, 30.0, 1.0), (2, 2.0, 1.0)]);
+        assert!(
+            pop.mass_order(2, &history, &[Some(1), None, None, None], &factuals)
+                .is_none()
+        );
     }
 
     /// No desire, so nothing is bought. Surplus of that good is still offered.
@@ -5585,14 +5503,15 @@ mod pop {
         let mut history = MarketHistory::new();
         history.prices.insert(7, 1.0);
         history.prices.insert(5, 1.0);
-        assert!(pop
-            .mass_order(1, &history, &[Some(5), None, None, None], &Factuals::new())
-            .is_none());
+        assert!(
+            pop.mass_order(1, &history, &[Some(5), None, None, None], &Factuals::new())
+                .is_none()
+        );
         let sell = pop
             .mass_order(7, &history, &[Some(5), None, None, None], &Factuals::new())
             .expect("sell");
         assert!((sell.target_amount - -5.0).abs() < 1e-9);
-        assert!((sell.accept_price - 0.75).abs() < 1e-9);
+        assert!((sell.accept_price - 1.0).abs() < 1e-9);
     }
 
     /// An untradeable desire is not quoted.
@@ -5604,12 +5523,13 @@ mod pop {
         let mut skill = make_good(1, "skill", 0.0);
         skill.tags.insert(GoodTag::Untradeable);
         let factuals = Factuals::new().with_good(skill);
-        assert!(pop
-            .mass_order(1, &card_at(1.0), &[Some(5), None, None, None], &factuals)
-            .is_none());
+        assert!(
+            pop.mass_order(1, &card_at(1.0), &[Some(5), None, None, None], &factuals)
+                .is_none()
+        );
     }
 
-    /// Grain is only the next run's input. Four are bought at 45% over the card.
+    /// Grain is only the next run's input. Four are bought at the card.
     #[test]
     fn mass_order_buys_a_job_input_it_does_not_desire() {
         let mut pop = make_pop();
@@ -5623,7 +5543,7 @@ mod pop {
             .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &factuals)
             .expect("buy");
         assert!((order.target_amount - 4.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.9).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
     /// The open meal is four and the job shops two more. The buy is the sum.
@@ -5641,7 +5561,7 @@ mod pop {
             .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &factuals)
             .expect("buy");
         assert!((order.target_amount - 6.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.9).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
     /// Five on hand and eight needed. No tender, so the five stay off the sell book.
@@ -5654,13 +5574,13 @@ mod pop {
             .with_good(make_good(1, "grain", 0.0))
             .with_process(bake());
         pop.settle_shopping(&factuals);
-        assert!(pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &factuals)
-            .is_none());
+        assert!(
+            pop.mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &factuals)
+                .is_none()
+        );
     }
 
-    /// A card of -4 with no make cost would ask 25% further under.
-    /// That soft ask stays one step above zero.
+    /// A card of -4 with no make cost sells at that card.
     #[test]
     fn mass_order_sells_under_a_negative_card() {
         let mut pop = make_pop();
@@ -5672,10 +5592,25 @@ mod pop {
             .mass_order(7, &history, &[Some(5), None, None, None], &Factuals::new())
             .expect("sell");
         assert!((sell.target_amount - -5.0).abs() < 1e-9);
-        assert!((sell.accept_price - super::MASS_LIMIT_STEP).abs() < 1e-12);
+        assert!((sell.accept_price - -4.0).abs() < 1e-9);
     }
 
-    /// Fully missing at a card of -2. The buyer holds no tender and still bids -1.1.
+    /// The grain maker's cost is positive. A card of -2 is under the floor.
+    #[test]
+    fn mass_order_refuses_a_negative_card_on_a_made_good() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(6.0));
+        let (job, factuals) = grain_maker();
+        pop.job = job;
+        let mut history = card_with_time(-2.0, 1.0);
+        history.prices.insert(5, 1.0);
+        assert!(
+            pop.mass_order(1, &history, &[Some(5), None, None, None], &factuals)
+                .is_none()
+        );
+    }
+
+    /// Fully missing at a card of -2. The buyer holds no tender and still bids the card.
     #[test]
     fn mass_order_buys_a_negative_card_without_spending_tender() {
         let mut pop = make_pop();
@@ -5685,7 +5620,152 @@ mod pop {
             .mass_order(1, &history, &[Some(5), None, None, None], &Factuals::new())
             .expect("buy");
         assert!((order.target_amount - 2.0).abs() < 1e-9);
-        assert!((order.accept_price - -1.1).abs() < 1e-9);
+        assert!((order.accept_price - -2.0).abs() < 1e-9);
+    }
+
+    /// Saved grain is not purse, so it does not bid for gold.
+    #[test]
+    fn mass_conversion_buy_skips_saved_grain() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(20.0));
+        pop.savings.insert(1, 20.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.prices.insert(4, 1.0);
+        assert!(
+            pop.mass_conversion_buy(4, &history, &[1], &Factuals::new())
+                .is_none()
+        );
+    }
+
+    /// Twenty free grain buys twenty gold at a card of 1.
+    #[test]
+    fn mass_conversion_buy_spends_liquid_grain_on_gold() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(20.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 1.0);
+        history.prices.insert(4, 1.0);
+        let order = pop
+            .mass_conversion_buy(4, &history, &[1], &Factuals::new())
+            .expect("buy");
+        assert!((order.target_amount - 20.0).abs() < 1e-9);
+        assert!((order.accept_price - 1.0).abs() < 1e-9);
+    }
+
+    /// Twenty left after savings. A tender offers two and keeps the other eighteen.
+    #[test]
+    fn mass_order_offers_a_tenth_of_spare_tender() {
+        let mut pop = make_pop();
+        pop.property.insert(5, PopPRow::new(24.0));
+        pop.savings.insert(5, 4.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(5, 1.0);
+        history.prices.insert(7, 1.0);
+        let sell = pop
+            .mass_order(
+                5,
+                &history,
+                &[Some(5), Some(7), None, None],
+                &Factuals::new(),
+            )
+            .expect("sell");
+        assert!((sell.target_amount - -2.0).abs() < 1e-9);
+    }
+
+    /// Twenty spare units of the second tender offer two.
+    #[test]
+    fn mass_order_offers_a_tenth_of_spare_second_tender() {
+        let mut pop = make_pop();
+        pop.property.insert(7, PopPRow::new(24.0));
+        pop.savings.insert(7, 4.0);
+        let mut history = MarketHistory::new();
+        history.prices.insert(5, 1.0);
+        history.prices.insert(7, 1.0);
+        let sell = pop
+            .mass_order(
+                7,
+                &history,
+                &[Some(5), Some(7), None, None],
+                &Factuals::new(),
+            )
+            .expect("sell");
+        assert!((sell.target_amount - -2.0).abs() < 1e-9);
+    }
+
+    /// Nine free tender units floor to an empty offer.
+    #[test]
+    fn mass_order_keeps_a_tender_when_a_tenth_is_under_one() {
+        let mut pop = make_pop();
+        pop.property.insert(5, PopPRow::new(9.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(5, 1.0);
+        history.prices.insert(7, 1.0);
+        assert!(
+            pop.mass_order(
+                5,
+                &history,
+                &[Some(5), Some(7), None, None],
+                &Factuals::new()
+            )
+            .is_none()
+        );
+    }
+
+    /// The run loses, and decay of 0.8 keeps the card above the floor.
+    /// The desire pile stays. Twenty spare units offer two.
+    #[test]
+    fn mass_order_keeps_a_losing_tenders_desire_stock() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(5, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(5, PopPRow::new(24.0));
+        pop.job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        let process = Process::new(1, "mint", 0)
+            .with_input(ProcessInput::new(0, 5.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(5, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(process)
+            .with_good(make_good(5, "coin", 0.8));
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 1.0);
+        history.prices.insert(5, 1.0);
+        history.prices.insert(7, 1.0);
+        let sell = pop
+            .mass_order(5, &history, &[Some(5), Some(7), None, None], &factuals)
+            .expect("sell");
+        assert!((sell.target_amount - -2.0).abs() < 1e-9);
+    }
+
+    /// The second tender loses the same way. Decay of 0.8 keeps its card above the floor.
+    /// The desire pile stays, and twenty spare units offer two.
+    #[test]
+    fn mass_order_keeps_a_losing_second_tenders_desire_stock() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(7, PopPRow::new(24.0));
+        pop.job = Job::new(1, vec![JobLine::new(1, Some(1.0), vec![])]);
+        let process = Process::new(1, "mint", 0)
+            .with_input(ProcessInput::new(0, 5.0, true, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(7, 1.0, true));
+        let factuals = Factuals::new()
+            .with_process(process)
+            .with_good(make_good(7, "coin", 0.8));
+        let mut history = MarketHistory::new();
+        history.prices.insert(0, 1.0);
+        history.prices.insert(5, 1.0);
+        history.prices.insert(7, 1.0);
+        let sell = pop
+            .mass_order(7, &history, &[Some(5), Some(7), None, None], &factuals)
+            .expect("sell");
+        assert!((sell.target_amount - -2.0).abs() < 1e-9);
     }
 
     /// The only tender is not quoted, even when the pop holds a surplus of it.
@@ -5693,9 +5773,15 @@ mod pop {
     fn mass_order_skips_the_only_tender() {
         let mut pop = make_pop();
         pop.property.insert(5, PopPRow::new(10.0));
-        assert!(pop
-            .mass_order(5, &card_at(1.0), &[Some(5), None, None, None], &Factuals::new())
-            .is_none());
+        assert!(
+            pop.mass_order(
+                5,
+                &card_at(1.0),
+                &[Some(5), None, None, None],
+                &Factuals::new()
+            )
+            .is_none()
+        );
     }
 
     /// Good 5 is a tender, and good 7 pays for it. Two are bought with that other pile.
@@ -5712,10 +5798,15 @@ mod pop {
         history.prices.insert(5, 2.0);
         history.prices.insert(7, 1.0);
         let order = pop
-            .mass_order(5, &history, &[Some(5), Some(7), None, None], &Factuals::new())
+            .mass_order(
+                5,
+                &history,
+                &[Some(5), Some(7), None, None],
+                &Factuals::new(),
+            )
             .expect("buy");
         assert!((order.target_amount - 2.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.9).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
     /// Five tender buys two of the basic good. The later good is left unfunded.
@@ -5741,129 +5832,63 @@ mod pop {
             .mass_order(7, &history, &currencies, &Factuals::new())
             .expect("basic buy");
         assert!((basic.target_amount - 2.0).abs() < 1e-9);
-        assert!((basic.accept_price - 2.9).abs() < 1e-9);
-        assert!(pop
-            .mass_order(1, &history, &currencies, &Factuals::new())
-            .is_none());
+        assert!((basic.accept_price - 2.0).abs() < 1e-9);
+        assert!(
+            pop.mass_order(1, &history, &currencies, &Factuals::new())
+                .is_none()
+        );
     }
 
-    /// The bin already holds the meal. The plan's cheaper cover is still funded.
+    /// An empty bin funds the cover at the card. Grain already in the bin
+    /// is not bought again: half on hand buys the other half, and a full bin
+    /// keeps only the one-unit floor.
     #[test]
-    fn prepare_mass_buys_funds_the_meal_the_plan_priced_to_buy() {
-        let mut pop = make_pop();
-        grain_meal(&mut pop, 4.0);
-        pop.desires[0][0].satisfaction = 4.0;
-        pop.property.insert(1, PopPRow::new(4.0));
-        pop.property.insert(5, PopPRow::new(10.0));
-        pop.cheaper_cover.insert(1, 4.0);
-        let history = card_at(2.0);
+    fn prepare_mass_buys_funds_the_cover_still_missing() {
         let currencies = [Some(5), None, None, None];
-        pop.prepare_mass_buys(&history, &currencies, &Factuals::new());
-        let order = pop
-            .mass_order(1, &history, &currencies, &Factuals::new())
+        let history = card_at(2.0);
+        let factuals = Factuals::new();
+
+        let mut empty = make_pop();
+        grain_meal(&mut empty, 4.0);
+        empty.desires[0][0].satisfaction = 4.0;
+        empty.property.insert(5, PopPRow::new(10.0));
+        empty.cheaper_cover.insert(1, 4.0);
+        empty.prepare_mass_buys(&history, &currencies, &factuals);
+        let order = empty
+            .mass_order(1, &history, &currencies, &factuals)
             .expect("buy");
         assert!((order.target_amount - 4.0).abs() < 1e-9);
-        assert!((order.accept_price - 2.5).abs() < 1e-9);
-    }
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
 
-    /// Full fear adds the card again. Four short at a card of 2 bid 4.9.
-    #[test]
-    fn mass_order_buys_higher_when_the_pop_is_afraid() {
-        let mut pop = make_pop();
-        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
-        grain_meal(&mut pop, 4.0);
-        pop.property.insert(5, PopPRow::new(10.0));
-        let order = pop
-            .mass_order(1, &card_at(2.0), &[Some(5), None, None, None], &Factuals::new())
+        let mut half = make_pop();
+        grain_meal(&mut half, 4.0);
+        half.property.insert(1, PopPRow::new(2.0));
+        half.property.insert(5, PopPRow::new(10.0));
+        half.cheaper_cover.insert(1, 4.0);
+        half.prepare_mass_buys(&history, &currencies, &factuals);
+        let order = half
+            .mass_order(1, &history, &currencies, &factuals)
             .expect("buy");
-        assert!((order.target_amount - 4.0).abs() < 1e-9);
-        assert!((order.accept_price - 4.9).abs() < 1e-9);
+        assert!((order.target_amount - 2.0).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
+
+        let mut full = make_pop();
+        grain_meal(&mut full, 4.0);
+        full.property.insert(1, PopPRow::new(4.0));
+        full.property.insert(5, PopPRow::new(10.0));
+        full.cheaper_cover.insert(1, 4.0);
+        full.prepare_mass_buys(&history, &currencies, &factuals);
+        let order = full
+            .mass_order(1, &history, &currencies, &factuals)
+            .expect("floor");
+        assert!((order.target_amount - 1.0).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
-    /// Full fear pulls a surplus ask through zero. The soft floor stops one step above.
+    /// Bread satisfies more per unit and costs less, so the purse buys it
+    /// before grain even though grain's id is lower.
     #[test]
-    fn mass_order_sells_lower_when_the_pop_is_afraid() {
-        let mut pop = make_pop();
-        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
-        grain_meal(&mut pop, 4.0);
-        pop.property.insert(1, PopPRow::new(6.0));
-        let order = pop
-            .mass_order(1, &card_at(4.0), &[Some(5), None, None, None], &Factuals::new())
-            .expect("sell");
-        assert!((order.target_amount - -2.0).abs() < 1e-9);
-        assert!((order.accept_price - super::MASS_LIMIT_STEP).abs() < 1e-12);
-    }
-
-    /// Full fear pulls a make-cost floor off zero, so the ask is not the card.
-    #[test]
-    fn mass_order_drops_a_made_good_toward_zero_when_the_pop_is_afraid() {
-        let mut pop = make_pop();
-        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
-        grain_meal(&mut pop, 4.0);
-        pop.property.insert(1, PopPRow::new(6.0));
-        let (job, factuals) = grain_maker();
-        pop.job = job;
-        let order = pop
-            .mass_order(1, &card_with_time(2.0, 1.0), &[Some(5), None, None, None], &factuals)
-            .expect("sell");
-        assert!((order.target_amount - -2.0).abs() < 1e-9);
-        assert!((order.accept_price - super::MASS_LIMIT_STEP).abs() < 1e-12);
-    }
-
-    #[test]
-    fn job_reserve_keeps_the_input_off_sell_orders() {
-        let mut pop = make_pop();
-        pop.job = Job::new(1, vec![JobLine::new(7, Some(2.0), vec![])]);
-        pop.property.insert(1, PopPRow::new(2.0));
-        pop.property.insert(9, PopPRow::new(5.0));
-        let factuals = Factuals::new().with_process(bake());
-
-        pop.job.reserve(&mut pop.property, &factuals);
-        let sells = pop.sell_orders(&MarketHistory::new());
-
-        assert!(sells.iter().all(|order| order.target != 1));
-        assert!(sells.iter().any(|order| order.target == 9));
-    }
-
-    #[test]
-    fn sell_orders_offer_the_units_above_the_desire() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        pop.property.insert(1, PopPRow::new(10.0));
-
-        let grain = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 1)
-            .expect("grain");
-        assert!((grain.target_amount + 6.0).abs() < 1e-9);
-
-        // The buyer receives five more. The next read offers that surplus too.
-        let deal = ProposedDeal {
-            buyer: Actor::Pop(pop.id),
-            seller: Actor::Pop(2),
-            match_good: 1,
-            goods: HashMap::from([(1, 5.0)]),
-            fresh: HashMap::new(),
-            freight: 0.0,
-        };
-        pop.finalize(&deal, &Factuals::new());
-        let grain = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 1)
-            .expect("grain");
-        assert!((grain.target_amount + 11.0).abs() < 1e-9);
-    }
-
-    /// Ten bread. The first desire reserves four, then the walk stops on
-    /// tools. A later desire still takes four bread, so two are for sale.
-    #[test]
-    fn sell_orders_hold_back_a_later_desire_after_an_earlier_reserve() {
+    fn prepare_mass_buys_funds_the_better_satisfaction_first() {
         let mut pop = make_pop();
         pop.desires[0].push(desire(
             1,
@@ -5872,54 +5897,150 @@ mod pop {
         ));
         pop.desires[0].push(desire(
             2,
-            vec![DesireTarget::new(3, DesireTargetType::Consume, 1.0)],
+            vec![DesireTarget::new(3, DesireTargetType::Consume, 2.0)],
             4.0,
         ));
-        pop.desires[0].push(desire(
-            3,
-            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        pop.property.insert(1, PopPRow::new(10.0));
-        do_satisfy(&mut pop).expect("stuck on tools");
-        assert!((pop.property[&1].reserved - 4.0).abs() < 1e-9);
-
+        pop.property.insert(5, PopPRow::new(4.0));
+        let mut history = MarketHistory::new();
+        history.prices.insert(1, 4.0);
+        history.prices.insert(3, 1.0);
+        history.prices.insert(5, 1.0);
+        let currencies = [Some(5), None, None, None];
+        pop.prepare_mass_buys(&history, &currencies, &Factuals::new());
         let bread = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 1)
+            .mass_order(3, &history, &currencies, &Factuals::new())
             .expect("bread");
-        assert!((bread.target_amount + 2.0).abs() < 1e-9);
+        assert!((bread.target_amount - 2.0).abs() < 1e-9);
+        assert!(
+            pop.mass_order(1, &history, &currencies, &Factuals::new())
+                .is_none()
+        );
     }
 
-    /// Ten units from a bucket, each target capped at half. Two cheese are
-    /// already reserved toward the level. Bread still has its whole cap of
-    /// five, so five of ten bread are for sale.
+    /// Bread satisfies twice as much and costs four times the card. The level
+    /// goes to grain.
     #[test]
-    fn sell_orders_hold_back_a_bucket_target_by_its_own_cap() {
+    fn portfolio_prefers_satisfaction_per_quote() {
         let mut pop = make_pop();
-        let mut meal = desire(
+        let meal = desire(
             1,
             vec![
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
-                DesireTarget::new(2, DesireTargetType::Consume, 1.0).with_cap(0.5),
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
             ],
-            10.0,
+            6.0,
         );
-        meal.satisfaction = 2.0;
-        meal.target_taken = vec![0.0, 2.0];
-        pop.desires[0].push(meal);
-        pop.property.insert(1, PopPRow::new(10.0));
-        let mut cheese = PopPRow::new(2.0);
-        cheese.reserved = 2.0;
-        pop.property.insert(2, cheese);
+        pop.desires[0].push(meal.clone());
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 4.0);
+        history.prices.insert(1, 1.0);
+        let split = pop.portfolio(&meal, 0, &history);
+        let grain = split
+            .iter()
+            .find(|(good, _)| *good == 1)
+            .map(|(_, units)| *units)
+            .unwrap_or(0.0);
+        let bread = split
+            .iter()
+            .find(|(good, _)| *good == 2)
+            .map(|(_, units)| *units)
+            .unwrap_or(0.0);
+        assert!((grain - 4.0).abs() < 1e-9);
+        assert!((bread - 1.0).abs() < 1e-9);
+    }
 
-        let bread = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 1)
-            .expect("bread");
-        assert!((bread.target_amount + 5.0).abs() < 1e-9);
+    /// Both goods can be made. Bread is the richer meal and the dearer card,
+    /// so the short desire is grain.
+    #[test]
+    fn night_needs_makes_the_cheaper_satisfaction() {
+        let mut pop = make_pop();
+        pop.job = Job::new(
+            1,
+            vec![
+                JobLine::new(7, Some(0.0), vec![]),
+                JobLine::new(9, Some(0.0), vec![]),
+            ],
+        );
+        pop.desires[0].push(desire(
+            1,
+            vec![
+                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
+                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
+            ],
+            4.0,
+        ));
+        let factuals = Factuals::new()
+            .with_process(Process::new(7, "bake", 0).with_output(ProcessOutput::new(2, 1.0, true)))
+            .with_process(
+                Process::new(9, "thresh", 0).with_output(ProcessOutput::new(1, 1.0, true)),
+            );
+        let mut history = MarketHistory::new();
+        history.prices.insert(2, 4.0);
+        history.prices.insert(1, 1.0);
+
+        let needs = pop.night_needs(&factuals, &history);
+
+        assert!((needs.meal.get(&1).copied().unwrap_or(0.0) - 4.0).abs() < 1e-9);
+        assert!(needs.meal.get(&2).is_none());
+    }
+
+    /// Full fear still buys four at the card.
+    #[test]
+    fn mass_order_buys_the_card_when_the_pop_is_afraid() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+        grain_meal(&mut pop, 4.0);
+        pop.property.insert(5, PopPRow::new(10.0));
+        let order = pop
+            .mass_order(
+                1,
+                &card_at(2.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
+            .expect("buy");
+        assert!((order.target_amount - 4.0).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
+    }
+
+    /// Full fear still sells the surplus at the card.
+    #[test]
+    fn mass_order_sells_the_card_when_the_pop_is_afraid() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+        grain_meal(&mut pop, 4.0);
+        pop.property.insert(1, PopPRow::new(6.0));
+        let order = pop
+            .mass_order(
+                1,
+                &card_at(4.0),
+                &[Some(5), None, None, None],
+                &Factuals::new(),
+            )
+            .expect("sell");
+        assert!((order.target_amount - -2.0).abs() < 1e-9);
+        assert!((order.accept_price - 4.0).abs() < 1e-9);
+    }
+
+    /// Full fear still sells a made good at the card when the card covers its cost.
+    #[test]
+    fn mass_order_sells_a_made_good_at_the_card_when_the_pop_is_afraid() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+        grain_meal(&mut pop, 4.0);
+        pop.property.insert(1, PopPRow::new(6.0));
+        let (job, factuals) = grain_maker();
+        pop.job = job;
+        let order = pop
+            .mass_order(
+                1,
+                &card_with_time(2.0, 1.0),
+                &[Some(5), None, None, None],
+                &factuals,
+            )
+            .expect("sell");
+        assert!((order.target_amount - -2.0).abs() < 1e-9);
+        assert!((order.accept_price - 2.0).abs() < 1e-9);
     }
 
     #[test]
@@ -5943,19 +6064,8 @@ mod pop {
 
         pop.job.reserve(&mut pop.property, &factuals);
 
-        let gold = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 4)
-            .expect("gold");
         // Four gold feed the jewelry desire. The other six are for sale.
-        assert!((gold.target_amount + 6.0).abs() < 1e-9);
-        // Stone feeds nothing. Gold feeds the jewelry desire, so giving stone is allowed.
-        assert!(pop.exchange_ok(
-            &HashMap::from([(8, 2.0)]),
-            &HashMap::from([(4, 2.0)]),
-            &MarketHistory::new(),
-        ));
+        assert!((pop.surplus_for_sale(4) - 6.0).abs() < 1e-9);
     }
 
     #[test]
@@ -5975,13 +6085,81 @@ mod pop {
 
         pop.job.reserve(&mut pop.property, &factuals);
 
-        let wood = pop
-            .sell_orders(&MarketHistory::new())
-            .into_iter()
-            .find(|order| order.target == 7)
-            .expect("wood");
         // Two cabins take six wood. The other four are for sale.
-        assert!((wood.target_amount + 4.0).abs() < 1e-9);
+        assert!((pop.surplus_for_sale(7) - 4.0).abs() < 1e-9);
+    }
+
+    /// # Water Seller
+    ///
+    /// A water maker with thirty on hand, sixty made, and a target of ten.
+    ///
+    /// Returns that pop and the water process.
+    fn water_seller() -> (Pop, Factuals) {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(2, Some(10.0), vec![])]);
+        let mut water = PopPRow::new(30.0);
+        water.produced = 60.0;
+        pop.property.insert(2, water);
+        pop.property.insert(TIME, PopPRow::new(10_000.0));
+        let factuals = Factuals::new().with_process(
+            Process::new(2, "make water", 0)
+                .with_input(ProcessInput::new(TIME, 2.0, true, InputType::Destroyed, false))
+                .with_output(ProcessOutput::new(2, 6.0, true)),
+        );
+        (pop, factuals)
+    }
+
+    /// # Water Currency
+    ///
+    /// Water is the tender, and its card is above a free cost.
+    ///
+    /// Returns that board.
+    fn water_currency() -> MarketHistory {
+        let mut history = MarketHistory::new();
+        history.prices.insert(TIME, 0.0);
+        history.prices.insert(2, 2.0);
+        history.salability.insert(2, 1.0);
+        history.currencies = vec![2];
+        history
+    }
+
+    /// The listed unit sold and the pile did not. The sale leaves the march.
+    #[test]
+    fn plan_leaves_the_march_when_the_posted_tender_sells_out() {
+        let (mut pop, factuals) = water_seller();
+        pop.note_currency_sale_room(&[Some(2)]);
+        pop.spend_currency_sale_room(2, 1.0);
+        pop.day_gave.insert(2, 1.0);
+
+        pop.plan(&factuals, &water_currency());
+
+        assert!((pop.job.lines[0].target.unwrap_or(0.0) - 10.0).abs() < 1e-9);
+    }
+
+    /// Both posts stay listed. One sale of those two units aims at that unit.
+    #[test]
+    fn plan_counts_both_tender_posts_toward_what_sold() {
+        let (mut pop, factuals) = water_seller();
+        pop.note_currency_sale_room(&[Some(2)]);
+        pop.spend_currency_sale_room(2, 1.0);
+        pop.note_currency_sale_room(&[Some(2)]);
+        pop.spend_currency_sale_room(2, 1.0);
+        pop.day_gave.insert(2, 1.0);
+
+        pop.plan(&factuals, &water_currency());
+
+        assert!((pop.job.lines[0].target.unwrap_or(0.0) - 1.0 / 6.0).abs() < 1e-9);
+    }
+
+    /// Nothing was posted. The pile remains and the card covers cost,
+    /// so the sale leaves the march.
+    #[test]
+    fn plan_leaves_the_march_when_the_tender_was_not_posted() {
+        let (mut pop, factuals) = water_seller();
+
+        pop.plan(&factuals, &water_currency());
+
+        assert!((pop.job.lines[0].target.unwrap_or(0.0) - 10.0).abs() < 1e-9);
     }
 
     /// No water, and the six wood sit inside a later desire, so none of it is surplus.
@@ -5990,251 +6168,11 @@ mod pop {
     /// place 8 satisfaction. Four wood place 4. The gain is larger, so the
     /// later good pays for the earlier one.
     #[test]
-    fn propose_pays_for_an_earlier_desire_with_a_later_good() {
-        let mut buyer = make_pop();
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 2.0)],
-            8.0,
-        ));
-        buyer.desires[1].push(desire(
-            2,
-            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
-            6.0,
-        ));
-        buyer.property.insert(7, PopPRow::new(6.0));
-        do_satisfy(&mut buyer);
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 4.0)],
-            requests: vec![],
-        };
-        let history = card(&[(2, 1.0, 1.0), (7, 1.0, 1.0)]);
-
-        let deal = buyer
-            .propose(2, &book, &history, &Factuals::new())
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
-        assert_eq!(deal.goods.get(&7).copied(), Some(-4.0));
-    }
-
-    /// Water is priced at 3. One skill is offered, and it does not cover
-    /// that price, so wood pays the rest. The skill is still offered once.
-    #[test]
-    fn propose_offers_a_skill_once() {
-        let mut buyer = make_pop();
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        buyer.property.insert(40, PopPRow::new(8.0));
-        buyer.property.insert(7, PopPRow::new(4.0));
-        do_satisfy(&mut buyer);
-        let mut skill = make_good(40, "survival", 0.05);
-        skill.mass = 0.0;
-        skill.tags.insert(GoodTag::Skill);
-        let factuals = Factuals::new()
-            .with_good(skill)
-            .with_good(make_good(7, "wood", 0.0))
-            .with_good(make_good(2, "water", 0.0));
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 1.0)],
-            requests: vec![],
-        };
-        let history = card(&[(2, 3.0, 1.0), (40, 1.0, 1.5), (7, 1.0, 1.0)]);
-
-        let deal = buyer
-            .propose(2, &book, &history, &factuals)
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&2).copied(), Some(1.0));
-        assert_eq!(deal.goods.get(&40).copied(), Some(-1.0));
-        assert_eq!(deal.goods.get(&7).copied(), Some(-2.0));
-    }
-
-    /// Ten time, freight bill 1. Four water take four time at the raw price.
-    /// The reserve stays out of the basket. One time is only the reserve, so
-    /// that buyer offers nothing.
-    #[test]
-    fn propose_pays_with_time_above_the_freight_reserve() {
-        let mut buyer = make_pop();
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        buyer.property.insert(0, PopPRow::new(10.0));
-        do_satisfy(&mut buyer);
-        let factuals = Factuals::new().with_good(time_good());
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 4.0)],
-            requests: vec![],
-        };
-        let history = card(&[(2, 1.0, 1.0), (0, 1.0, 1.0)]);
-
-        let deal = buyer
-            .propose(2, &book, &history, &factuals)
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
-        assert_eq!(deal.goods.get(&0).copied(), Some(-4.0));
-
-        buyer.property.insert(0, PopPRow::new(1.0));
-        assert!(buyer.propose(2, &book, &history, &factuals).is_none());
-    }
-
-    /// Eight water are on offer. Five time covers four once the freight
-    /// reserve is held back, and the buyer keeps those four.
-    #[test]
-    fn propose_steps_down_to_the_quantity_it_can_pay() {
-        let mut buyer = make_pop();
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            8.0,
-        ));
-        buyer.property.insert(0, PopPRow::new(5.0));
-        do_satisfy(&mut buyer);
-        let factuals = Factuals::new().with_good(time_good());
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 2, 8.0)],
-            requests: vec![],
-        };
-        let history = card(&[(2, 1.0, 1.0), (0, 1.0, 1.0)]);
-
-        let deal = buyer
-            .propose(2, &book, &history, &factuals)
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&2).copied(), Some(4.0));
-    }
-
-    /// One wood. The cabin covers the price, then its bulk makes the freight
-    /// larger than the ten time on hand. Leaving the cabin out, that time
-    /// covers the wood, so the buyer pays with time.
-    #[test]
-    fn propose_drops_a_bulky_payment_when_freight_fails() {
-        let mut buyer = make_pop();
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        buyer.property.insert(8, PopPRow::new(1.0));
-        buyer.property.insert(0, PopPRow::new(10.0));
-        do_satisfy(&mut buyer);
-        let factuals = Factuals::new()
-            .with_good(time_good())
-            .with_good(make_good(7, "wood", 0.0).with_mass(2.0).with_volume(0.003))
-            .with_good(make_good(8, "cabins", 0.0).with_mass(20.0).with_volume(0.05));
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 7, 1.0)],
-            requests: vec![],
-        };
-        let mut history = card(&[(7, 1.0, 1.0), (8, 1.0, 1.0), (0, 1.0, 1.0)]);
-        history.friction = 1.0;
-
-        let deal = buyer
-            .propose(7, &book, &history, &factuals)
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&7).copied(), Some(1.0));
-        assert!(deal.goods.get(&8).is_none());
-        assert!(deal.goods.get(&0).copied().unwrap_or(0.0) < 0.0);
-    }
-
-    /// The meal is already full, so the grain is only a job input. Stone feeds
-    /// nothing. The priced basket is a holding loss, and the buyer still offers it.
-    #[test]
-    fn propose_offers_a_job_input_at_a_holding_loss() {
-        let mut buyer = make_pop();
-        buyer.job = Job::new(1, vec![JobLine::new(7, Some(4.0), vec![])]);
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        buyer.property.insert(2, PopPRow::new(4.0));
-        buyer.property.insert(8, PopPRow::new(10.0));
-        do_satisfy(&mut buyer);
-        let factuals = Factuals::new().with_process(bake());
-        buyer.job.reserve(&mut buyer.property, &factuals);
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 1, 4.0)],
-            requests: vec![],
-        };
-        let history = card(&[(1, 1.0, 1.0), (8, 1.0, 1.0)]);
-
-        let deal = buyer
-            .propose(1, &book, &history, &factuals)
-            .expect("basket");
-
-        assert_eq!(deal.goods.get(&1).copied(), Some(4.0));
-        assert!(deal.goods.get(&8).copied().unwrap_or(0.0) <= -4.0);
-    }
-
-    #[test]
-    fn job_buy_orders_cover_the_shortfall() {
-        let mut pop = make_pop();
-        pop.job = Job::new(1, vec![JobLine::new(7, Some(4.0), vec![])]);
-        pop.property.insert(1, PopPRow::new(1.0));
-        let factuals = Factuals::new().with_process(bake());
-
-        pop.job.reserve(&mut pop.property, &factuals);
-        let orders = pop.buy_orders(&MarketHistory::new());
-
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 1);
-        assert_eq!(orders[0].target_amount, 4.0);
-    }
-
-    #[test]
-    fn buy_orders_add_the_job_shortfall_onto_the_open_desire() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        // The open desire wants 4 bread. The job also needs 2 bread it does not hold.
-        pop.job = Job::new(
-            1,
-            vec![JobLine::new(
-                8,
-                Some(2.0),
-                vec![],
-            )],
-        );
-        let process = Process::new(8, "slice", 0)
-            .with_input(ProcessInput::new(2, 1.0, true, InputType::Destroyed, false))
-            .with_output(ProcessOutput::new(3, 1.0, true));
-        let factuals = Factuals::new().with_process(process);
-
-        do_satisfy(&mut pop);
-        pop.job.reserve(&mut pop.property, &factuals);
-        let orders = pop.buy_orders(&MarketHistory::new());
-
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 2);
-        assert_eq!(orders[0].target_amount, 6.0);
-    }
-
-    #[test]
     fn plan_covers_one_full_tier_of_the_best_target() {
         let mut pop = make_pop();
         pop.job = Job::new(
             1,
-            vec![
-                JobLine::new(7, None, vec![]),
-                JobLine::new(9, None, vec![]),
-            ],
+            vec![JobLine::new(7, None, vec![]), JobLine::new(9, None, vec![])],
         );
         // Bread covers the meal fully. Grain is the worse substitute.
         // Satisfaction is already one tier; the plan still asks for the next morning.
@@ -6249,12 +6187,9 @@ mod pop {
         meal.satisfaction = 4.0;
         pop.desires[0].push(meal);
         pop.property.insert(2, PopPRow::new(1.0));
-        let factuals = Factuals::new()
-            .with_process(bake())
-            .with_process(
-                Process::new(9, "eat grain", 0)
-                    .with_output(ProcessOutput::new(1, 1.0, true)),
-            );
+        let factuals = Factuals::new().with_process(bake()).with_process(
+            Process::new(9, "eat grain", 0).with_output(ProcessOutput::new(1, 1.0, true)),
+        );
         let mut history = MarketHistory::new();
         history.prices.insert(1, 0.0);
 
@@ -6288,9 +6223,9 @@ mod pop {
             2.0,
         ));
         pop.property.insert(2, PopPRow::new(4.0));
-        let factuals = Factuals::new()
-            .with_process(bake())
-            .with_process(Process::new(9, "weave", 0).with_output(ProcessOutput::new(4, 1.0, true)));
+        let factuals = Factuals::new().with_process(bake()).with_process(
+            Process::new(9, "weave", 0).with_output(ProcessOutput::new(4, 1.0, true)),
+        );
         let mut history = MarketHistory::new();
         history.prices.insert(2, 0.0);
         history.prices.insert(4, 0.0);
@@ -6317,8 +6252,9 @@ mod pop {
             ],
             4.0,
         ));
-        let factuals = Factuals::new()
-            .with_process(Process::new(9, "thresh", 0).with_output(ProcessOutput::new(1, 1.0, true)));
+        let factuals = Factuals::new().with_process(
+            Process::new(9, "thresh", 0).with_output(ProcessOutput::new(1, 1.0, true)),
+        );
         let mut history = MarketHistory::new();
         history.prices.insert(1, 0.0);
 
@@ -6347,9 +6283,9 @@ mod pop {
         ));
         // Five grain finishes the five bread runs. The gem line has no input.
         pop.property.insert(1, PopPRow::new(5.0));
-        let factuals = Factuals::new()
-            .with_process(bake())
-            .with_process(Process::new(9, "cut gem", 0).with_output(ProcessOutput::new(4, 1.0, true)));
+        let factuals = Factuals::new().with_process(bake()).with_process(
+            Process::new(9, "cut gem", 0).with_output(ProcessOutput::new(4, 1.0, true)),
+        );
         let mut history = MarketHistory::new();
         history.prices.insert(2, 0.0);
         history.prices.insert(4, 0.0);
@@ -6402,7 +6338,13 @@ mod pop {
         pop.job = Job::new(1, vec![JobLine::new(1, Some(100.0), vec![])]);
         let factuals = Factuals::new().with_process(
             Process::new(1, "make grain", 0)
-                .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                .with_input(ProcessInput::new(
+                    TIME,
+                    0.5,
+                    true,
+                    InputType::Destroyed,
+                    false,
+                ))
                 .with_output(ProcessOutput::new(1, 6.0, true)),
         );
         let mut history = MarketHistory::new();
@@ -6455,7 +6397,8 @@ mod pop {
         let mut pop = make_pop();
         pop.job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
         pop.property.insert(1, PopPRow::new(1.0));
-        let factuals = Factuals::new().with_process(bake().with_effect(ProcessEffect::Culture(2.0)));
+        let factuals =
+            Factuals::new().with_process(bake().with_effect(ProcessEffect::Culture(2.0)));
         let mut rng = StdRng::seed_from_u64(1);
 
         DealMaker::reserve(&mut pop, &factuals, &mut rng);
@@ -6518,8 +6461,8 @@ mod pop {
     /// # Market Day Leaves A Craft Process Off The Job
     ///
     /// The craft lists bake. The job does not run it. Two market days leave
-    /// the job on the line it already had. That line covers nothing and does
-    /// not pay, so the nights march its target from 1 toward 0.
+    /// the job on the line it already had. The process is missing, so the
+    /// morning plan writes a target of zero.
     #[test]
     fn market_day_leaves_a_craft_process_off_the_job() {
         let mut pop = make_pop();
@@ -6561,7 +6504,7 @@ mod pop {
         let pop = actors.pop(1);
         let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
         assert_eq!(processes, vec![4]);
-        assert_eq!(pop.job.lines[0].target, Some(0.5));
+        assert_eq!(pop.job.lines[0].target, Some(0.0));
     }
 
     /// # Apply Craft Adds The Attached Processes Once
@@ -6593,7 +6536,11 @@ mod pop {
         let processes: Vec<usize> = pop.job.lines.iter().map(|line| line.process).collect();
         assert_eq!(processes, vec![4, 7, 9, 8]);
         assert_eq!(pop.job.lines[0].target, Some(1.0));
-        assert!(pop.job.lines[1..].iter().all(|line| line.target == Some(0.0)));
+        assert!(
+            pop.job.lines[1..]
+                .iter()
+                .all(|line| line.target == Some(0.0))
+        );
     }
 
     fn bake() -> Process {
@@ -6923,8 +6870,8 @@ mod pop {
         assert!((pop.property[&2].reserved - 2.5).abs() < 1e-9);
     }
 
-    /// The level is split by efficiency when no card is listed. The capped
-    /// good is already on hand, so it keeps one unit.
+    /// A cap of half a level is reserved from the good on hand. The level
+    /// stays open at that half.
     #[test]
     fn satisfy_buys_the_goods_that_finish_a_capped_level() {
         let mut pop = make_pop();
@@ -6942,50 +6889,6 @@ mod pop {
         let blocked = do_satisfy(&mut pop).expect("the level is only half filled");
         assert!((blocked.satisfaction - 5.0).abs() < 1e-9);
         assert!((pop.property[&1].reserved - 5.0).abs() < 1e-9);
-
-        let orders = pop.buy_orders(&MarketHistory::new());
-        let units = |good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-        // Scores 1, 2, and 1 share ten satisfaction: 2, 3, and 2 units.
-        // The filled cap is on hand, so that bid stays at one.
-        assert!((units(2) - 2.0).abs() < 1e-9);
-        assert!((units(3) - 3.0).abs() < 1e-9);
-        assert_eq!(units(1), 1.0);
-    }
-
-    /// Last night finished two luxury levels, so today's buy splits both.
-    #[test]
-    fn luxury_buy_repeats_levels_finished_last_night() {
-        let mut pop = make_pop();
-        pop.luxury_reached = 2.0;
-        pop.property.insert(1, PopPRow::new(100.0));
-        pop.desires[2].push(desire(
-            1,
-            vec![
-                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0).with_cap(0.5),
-            ],
-            10.0,
-        ));
-
-        assert!(do_satisfy(&mut pop).is_some());
-        let orders = pop.buy_orders(&MarketHistory::new());
-        let units = |good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-        // Twenty satisfaction. Cabins score 2 and the cap scores 1, so cabins take 7.
-        // The capped good is on hand and keeps one unit.
-        assert!((units(2) - 7.0).abs() < 1e-9);
-        assert_eq!(units(1), 1.0);
     }
 
     #[test]
@@ -7066,640 +6969,6 @@ mod pop {
         assert!((pop.desires[0][1].satisfaction - 10.0).abs() < 1e-9);
     }
 
-    #[test]
-    fn match_deals_buys_the_open_desire_from_a_seller() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(10.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer still wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new());
-
-        assert_eq!(deals.len(), 1);
-        assert_eq!(deals[0].goods.get(&2), Some(&4.0));
-        assert_eq!(deals[0].goods.get(&9), Some(&-8.0));
-        assert!((actors.pops[&1].property[&2].quantity - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 2.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&2].quantity - 6.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&9].quantity - 8.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&2].reserved - 4.0).abs() < 1e-9);
-        assert!((market.goods[&2].amv - 2.0).abs() < 1e-12);
-        assert!((market.goods[&9].amv - 1.0).abs() < 1e-12);
-        assert!((market.goods[&2].traded - 4.0).abs() < 1e-9);
-        assert_eq!(market.goods[&2].paid, 0.0);
-        assert!((market.goods[&9].paid - 8.0).abs() < 1e-9);
-    }
-
-    /// The buyer wants four bread and holds nothing that can pay for one.
-    /// Two sellers offer bread. No meeting is opened. The buy stays sought.
-    #[test]
-    fn match_deals_skips_a_buyer_who_cannot_pay() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller_a = make_pop();
-        seller_a.id = 2;
-        seller_a.property.insert(2, PopPRow::new(10.0));
-        let mut seller_b = make_pop();
-        seller_b.id = 3;
-        seller_b.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.pops.insert(3);
-        market
-            .goods
-            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller_a);
-        actors.pops.insert(3, seller_b);
-
-        let mut rng = StdRng::seed_from_u64(1);
-        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
-
-        assert!(meetings.is_empty());
-        assert!((market.goods[&2].sought_unmet - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&2].quantity - 10.0).abs() < 1e-9);
-        assert!((actors.pops[&3].property[&2].quantity - 10.0).abs() < 1e-9);
-    }
-
-    /// One seller will only take a single coin, which does not cover the
-    /// bread. The other seller asks for nothing. The coin sits on a later
-    /// desire, so it is not offered for sale, and it can still pay for
-    /// bread. One bread places 4 satisfaction. The three coins given up
-    /// place 3, so the buyer spends them. The buyer meets the open seller
-    /// and does not open an empty meeting with the capped one.
-    #[test]
-    fn match_deals_skips_a_seller_whose_request_blocks_payment() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(3.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 4.0)],
-            4.0,
-        ));
-        buyer.desires[1].push(desire(
-            3,
-            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
-            3.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut capped = make_pop();
-        capped.id = 2;
-        capped.property.insert(2, PopPRow::new(10.0));
-        capped.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        do_satisfy(&mut capped).expect("capped seller wants one coin");
-
-        let mut open = make_pop();
-        open.id = 3;
-        open.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.pops.insert(3);
-        market
-            .goods
-            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
-        market
-            .goods
-            .insert(9, MarketGood::new().with_amv(0.4).with_salability(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, capped);
-        actors.pops.insert(3, open);
-
-        let mut rng = StdRng::seed_from_u64(1);
-        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
-
-        assert!(meetings.iter().all(|meeting| meeting.outcome == MeetingOutcome::Accepted));
-        assert!(meetings.iter().any(|meeting| {
-            meeting.buyer == Actor::Pop(1)
-                && meeting.seller == Actor::Pop(3)
-                && meeting.match_good == 2
-        }));
-        assert!(meetings.iter().all(|meeting| meeting.seller != Actor::Pop(2)));
-        assert!((actors.pops[&1].property[&2].quantity - 1.0).abs() < 1e-9);
-        assert!(actors.pops[&1].property.get(&9).is_none_or(|row| row.quantity < 1e-9));
-    }
-
-    /// The bread buyer holds one wood, and wood's holding does not cover one
-    /// bread. They sell that wood for a good that does cover it, then buy
-    /// the bread from the other seller in the same call.
-    #[test]
-    fn match_deals_retries_a_buyer_after_they_are_paid() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(7, PopPRow::new(1.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut wood_buyer = make_pop();
-        wood_buyer.id = 2;
-        wood_buyer.property.insert(9, PopPRow::new(4.0));
-        wood_buyer.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(7, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        do_satisfy(&mut wood_buyer).expect("wood buyer wants wood");
-
-        let mut bread_seller = make_pop();
-        bread_seller.id = 3;
-        bread_seller.property.insert(2, PopPRow::new(5.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.pops.insert(3);
-        market
-            .goods
-            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
-        market
-            .goods
-            .insert(7, MarketGood::new().with_amv(0.5).with_salability(1.0));
-        market
-            .goods
-            .insert(9, MarketGood::new().with_amv(1.5).with_salability(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, wood_buyer);
-        actors.pops.insert(3, bread_seller);
-
-        let mut rng = StdRng::seed_from_u64(1);
-        let meetings = market.match_deals(&mut actors, &Factuals::new(), &mut rng);
-
-        assert!(meetings.iter().all(|meeting| meeting.outcome == MeetingOutcome::Accepted));
-        assert_eq!(meetings.len(), 2);
-        assert!((actors.pops[&1].property[&2].quantity - 1.0).abs() < 1e-9);
-        assert!(actors.pops[&1].property.get(&9).is_none_or(|row| row.quantity < 1e-9));
-        assert!((actors.pops[&3].property[&2].quantity - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&3].property[&9].quantity - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn match_deals_buys_bread_the_seller_does_not_use() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(10.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        seller.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(3, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut seller).expect("seller wants tools");
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new());
-
-        assert_eq!(deals.len(), 1);
-        assert_eq!(deals[0].goods.get(&2), Some(&4.0));
-        assert_eq!(deals[0].goods.get(&9), Some(&-8.0));
-    }
-
-    /// The buyer wants one bread. They hold ten of a basic good the desire
-    /// still takes four of, and one luxury unit that fills its desire.
-    ///
-    /// Payment uses surplus. Six of the basic good are above the desire, so
-    /// the basket pays one of those, the raw price of the bread. The luxury
-    /// unit is the one that fills its desire, so it stays.
-    #[test]
-    fn match_deals_pays_surplus_of_a_desired_good() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(4, PopPRow::new(10.0));
-        buyer.property.insert(8, PopPRow::new(1.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        buyer.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(4, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        buyer.desires[1].push(desire(
-            4,
-            vec![DesireTarget::new(6, DesireTargetType::Consume, 1.0)],
-            1.0,
-        ));
-        buyer.desires[2].push(desire(
-            3,
-            vec![DesireTarget::new(8, DesireTargetType::Consume, 10.0)],
-            10.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
-        market.goods.insert(4, MarketGood::new().with_amv(1.0).with_salability(1.0));
-        market.goods.insert(8, MarketGood::new().with_amv(2.0).with_salability(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new());
-
-        assert_eq!(deals.len(), 1);
-        assert_eq!(deals[0].goods.get(&2), Some(&1.0));
-        assert_eq!(deals[0].goods.get(&4), Some(&-1.0));
-        assert!(deals[0].goods.get(&8).is_none());
-        assert_eq!(actors.pops[&1].property[&4].quantity, 9.0);
-        assert_eq!(actors.pops[&1].property[&8].quantity, 1.0);
-        assert_eq!(actors.pops[&2].property[&4].quantity, 1.0);
-        assert!(actors.pops[&2].property.get(&8).is_none());
-        assert_eq!(actors.pops[&1].property[&2].quantity, 1.0);
-    }
-
-    /// The seller is stuck on tools. Bread is a later desire on that same
-    /// tier and still has room for four. Ten on hand leaves six above that
-    /// room, and those six can be sold.
-    #[test]
-    fn match_deals_sells_bread_above_a_later_desire() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(10.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        seller.desires[0].push(desire(
-            3,
-            vec![DesireTarget::new(3, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        seller.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut seller).expect("seller is stuck on tools");
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new());
-
-        // Four bread move. Payment is eight of good 9, the raw price.
-        assert_eq!(deals.len(), 1);
-        assert_eq!(deals[0].goods.get(&2), Some(&4.0));
-        assert_eq!(deals[0].goods.get(&9), Some(&-8.0));
-        assert!((actors.pops[&1].property[&2].quantity - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 2.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&2].quantity - 6.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&9].quantity - 8.0).abs() < 1e-9);
-        // The four the later desire can still take stay. Two surplus remain.
-        let bread = actors.pops[&2]
-            .sell_orders(&market.history())
-            .into_iter()
-            .find(|order| order.target == 2)
-            .expect("bread");
-        assert!((bread.target_amount + 2.0).abs() < 1e-9);
-    }
-
-    fn time_good() -> Good {
-        let mut time = make_good(0, "time", 0.0);
-        time.tags.insert(GoodTag::transport(1.0));
-        time
-    }
-
-    #[test]
-    fn match_deals_refuses_when_freight_cannot_be_covered() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(10.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
-
-        assert!(deals.is_empty());
-        assert!((actors.pops[&1].property[&9].quantity - 10.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&2].quantity - 10.0).abs() < 1e-9);
-    }
-
-    /// The buyer holds the time, so freight stays out of the basket. Four
-    /// bread at raw AMV 2 take eight coins. Two coins remain.
-    #[test]
-    fn match_deals_spends_the_buyers_transport_inside_the_basket() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(10.0));
-        buyer.property.insert(0, PopPRow::new(5.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
-
-        assert_eq!(deals.len(), 1);
-        assert!((deals[0].freight - 1.0).abs() < 1e-9);
-        assert!(deals[0].goods.get(&0).is_none());
-        assert!(actors.pops[&2].property.get(&0).is_none());
-        assert!((actors.pops[&1].property[&0].quantity - 4.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&0].consumed - 1.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 2.0).abs() < 1e-9);
-    }
-
-    /// The buyer holds no time, so one unit is bought with the bread. Four
-    /// bread at raw AMV 2 and one time at raw AMV 1 take nine coins. Eleven
-    /// remain.
-    #[test]
-    fn match_deals_buys_transport_to_cover_freight() {
-        let mut buyer = make_pop();
-        buyer.id = 1;
-        buyer.property.insert(9, PopPRow::new(20.0));
-        buyer.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        do_satisfy(&mut buyer).expect("buyer wants bread");
-
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        seller.property.insert(0, PopPRow::new(4.0));
-
-        let mut market = Market::new(1);
-        market.pops.insert(1);
-        market.pops.insert(2);
-        market.goods.insert(2, MarketGood::new().with_amv(2.0));
-        market.goods.insert(9, MarketGood::new().with_amv(1.0));
-        market.goods.insert(0, MarketGood::new().with_amv(1.0));
-        let mut actors = Actors::new();
-        actors.pops.insert(1, buyer);
-        actors.pops.insert(2, seller);
-
-        let deals = do_match(&mut market, &mut actors, &Factuals::new().with_good(time_good()));
-
-        assert_eq!(deals.len(), 1);
-        assert_eq!(deals[0].goods.get(&0), Some(&1.0));
-        assert!(actors.pops[&1].property.get(&0).is_none_or(|row| row.quantity < 1e-9));
-        assert!((actors.pops[&1].property[&0].consumed - 1.0).abs() < 1e-9);
-        assert!((actors.pops[&2].property[&0].quantity - 3.0).abs() < 1e-9);
-        assert!((actors.pops[&1].property[&9].quantity - 11.0).abs() < 1e-9);
-    }
-
-    /// # Freight One Unit At A Time
-    ///
-    /// One unit of transport, paid the way the freight walk used to pay it.
-    ///
-    /// Each pass keeps whatever [`Pop::transport_chunk`] returns. `limit` stops
-    /// a walk that does not finish. Returns the verdict and how many passes ran.
-    fn freight_one_unit_at_a_time(
-        buyer: &Pop,
-        factuals: &Factuals,
-        history: &MarketHistory,
-        book: &SellerBook,
-        goods: &mut HashMap<usize, f64>,
-        covered: &mut f64,
-        skip: &[usize],
-        limit: u32,
-    ) -> (Option<()>, u32) {
-        let free = buyer.free_stock();
-        let mut steps = 0u32;
-        loop {
-            let before =
-                crate::game::deal::freight_shortfall(factuals, history.friction, goods, &free);
-            if before <= 0.0 {
-                return (Some(()), steps);
-            }
-            steps += 1;
-            if steps > limit {
-                return (None, steps);
-            }
-            let mut bought = false;
-            for order in &book.offers {
-                let Some(row) = factuals.get_good(order.target) else {
-                    continue;
-                };
-                if row.transport_efficiency() <= 0.0 {
-                    continue;
-                }
-                let listed = (-order.target_amount).floor();
-                let already = goods.get(&order.target).copied().unwrap_or(0.0).max(0.0);
-                let room = (listed - already).floor();
-                if room < 1.0 {
-                    continue;
-                }
-                let price = history.price(order.target);
-                if price <= 0.0 {
-                    continue;
-                }
-                let Some((trial, trial_covered)) = buyer.transport_chunk(
-                    factuals,
-                    history,
-                    book,
-                    goods,
-                    *covered,
-                    &free,
-                    order.target,
-                    price,
-                    room,
-                    before,
-                    skip,
-                ) else {
-                    continue;
-                };
-                *goods = trial;
-                *covered = trial_covered;
-                bought = true;
-                break;
-            }
-            if !bought {
-                return (None, steps);
-            }
-        }
-    }
-
-    /// Light payment runs out before the freight closes, so the full chunk spills
-    /// onto a bulkier good and is refused. The repeated one-unit buys on the
-    /// light good, then the later chunk, match the old walk.
-    #[test]
-    fn buy_transport_repeats_a_failing_chunk_the_same_way() {
-        let mut time = make_good(0, "time", 0.0);
-        time.mass = 0.0;
-        time.tags.insert(GoodTag::transport(1.0));
-        let mut light = make_good(1, "light", 0.0);
-        light.mass = 0.0;
-        let mut medium = make_good(2, "medium", 0.0);
-        medium.mass = 0.05;
-        let bulky = make_good(3, "bulk", 0.0);
-        let factuals = Factuals::new()
-            .with_good(time)
-            .with_good(light)
-            .with_good(medium)
-            .with_good(bulky);
-        let mut history = MarketHistory::new();
-        history.friction = 1.0;
-        history.prices.insert(0, 1.0);
-        history.prices.insert(1, 1.0);
-        history.prices.insert(2, 1.0);
-        let mut buyer = Pop::new(1);
-        buyer.property.insert(1, PopPRow::new(10.0));
-        buyer.property.insert(2, PopPRow::new(100.0));
-        let book = SellerBook {
-            seller: Actor::Pop(2),
-            offers: vec![MarketOrder::sell(Actor::Pop(2), 0, 200.0)],
-            requests: Vec::new(),
-        };
-        let start = HashMap::from([(3usize, 50.0)]);
-        let mut slow_goods = start.clone();
-        let mut slow_covered = 0.0;
-        let (slow, steps) = freight_one_unit_at_a_time(
-            &buyer,
-            &factuals,
-            &history,
-            &book,
-            &mut slow_goods,
-            &mut slow_covered,
-            &[],
-            4_000,
-        );
-        let mut fast_goods = start;
-        let mut fast_covered = 0.0;
-        let fast = buyer.buy_transport_for_freight(
-            &factuals,
-            &history,
-            &book,
-            &mut fast_goods,
-            &mut fast_covered,
-            &[],
-        );
-        assert_eq!(fast.is_some(), slow.is_some());
-        assert!(goods_match(&fast_goods, &slow_goods));
-        assert!((fast_covered - slow_covered).abs() < 1e-6);
-        let time_bought = slow_goods.get(&0).copied().unwrap_or(0.0);
-        assert!(time_bought > 10.0);
-        assert!(steps > 1);
-        assert!(steps < time_bought as u32);
-        assert!((slow_goods.get(&1).copied().unwrap_or(0.0) + 10.0).abs() < 1e-6);
-    }
-
-    /// # Goods Match
-    ///
-    /// Whether two baskets agree within `1e-6` on every key.
-    ///
-    /// A key in only one map counts as zero on the other side. Returns that
-    /// answer.
-    fn goods_match(left: &HashMap<usize, f64>, right: &HashMap<usize, f64>) -> bool {
-        let mut ids: Vec<usize> = left.keys().copied().chain(right.keys().copied()).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids.into_iter().all(|id| {
-            let a = left.get(&id).copied().unwrap_or(0.0);
-            let b = right.get(&id).copied().unwrap_or(0.0);
-            (a - b).abs() <= 1e-6
-        })
-    }
-
     /// Yesterday's card. Each row is `(good, AMV, salability)`.
     fn card(rows: &[(usize, f64, f64)]) -> MarketHistory {
         let mut history = MarketHistory::new();
@@ -7773,6 +7042,176 @@ mod pop {
         assert!((seller.property[&9].quantity - 9.0).abs() < 1e-12);
         assert!((seller.property[&9].fresh - 4.5).abs() < 1e-12);
         assert_eq!(seller.property[&9].produced, 0.0);
+    }
+
+    /// A sale books the deal's good apart from the coin. A negative payment
+    /// is the seller paying the buyer to take the good.
+    #[test]
+    fn finalize_books_the_deal_good_apart_from_the_payment() {
+        let factuals = Factuals::new();
+        let mut buyer = make_pop();
+        buyer.property.insert(9, PopPRow::new(10.0));
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(2, PopPRow::new(4.0));
+        let deal = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
+
+        buyer.finalize(&deal, &factuals);
+        seller.finalize(&deal, &factuals);
+
+        assert!((buyer.day_got[&2] - 4.0).abs() < 1e-12);
+        assert!((buyer.day_paid[&9] - 9.0).abs() < 1e-12);
+        assert!(buyer.day_gave.is_empty());
+        assert!(buyer.day_received.is_empty());
+        assert!((seller.day_gave[&2] - 4.0).abs() < 1e-12);
+        assert!((seller.day_received[&9] - 9.0).abs() < 1e-12);
+        assert!(seller.day_got.is_empty());
+        assert!(seller.day_paid.is_empty());
+
+        let mut buyer = make_pop();
+        let mut seller = make_pop();
+        seller.id = 2;
+        seller.property.insert(9, PopPRow::new(3.0));
+        let dumped = proposal(2, HashMap::from([(2, 4.0), (9, 3.0)]));
+        buyer.finalize(&dumped, &factuals);
+        seller.finalize(&dumped, &factuals);
+
+        assert!((buyer.day_got[&2] - 4.0).abs() < 1e-12);
+        assert!((buyer.day_received[&9] - 3.0).abs() < 1e-12);
+        assert!(buyer.day_paid.is_empty());
+        assert!((seller.day_gave[&2] - 4.0).abs() < 1e-12);
+        assert!((seller.day_paid[&9] - 3.0).abs() < 1e-12);
+        assert!(seller.day_received.is_empty());
+    }
+
+    /// Production, payment, the deal's good, freight, and rot are priced on
+    /// the card. The meal is its own line. Capital and a `consumed` balance
+    /// that was not eaten for a desire are not. The morning reset clears them.
+    #[test]
+    fn day_books_prices_production_and_trade() {
+        let mut pop = make_pop();
+        let mut grain = PopPRow::new(4.0);
+        grain.produced = 4.0;
+        grain.used = 9.0;
+        grain.lost = 9.0;
+        grain.consumed = 9.0;
+        pop.property.insert(1, grain);
+        let mut time = PopPRow::new(0.0);
+        time.spent = 50.0;
+        pop.property.insert(0, time);
+        pop.day_received.insert(5, 3.0);
+        pop.day_got.insert(2, 2.0);
+        pop.day_gave.insert(7, 1.0);
+        pop.day_paid.insert(5, 1.0);
+        pop.day_haul.insert(0, 2.0);
+        pop.day_eaten.insert(2, 2.0);
+        let history = card(&[
+            (0, 0.1, 1.0),
+            (1, 2.0, 1.0),
+            (2, 4.0, 1.0),
+            (5, 1.0, 1.0),
+            (7, 3.0, 0.5),
+        ]);
+
+        let (income, expenses, meal) = pop.day_books(&history);
+
+        // Grain 8, gold taken 3, bread received 8. Time spent 5, grain rot 18,
+        // wood at half salability 1.5, gold given 1, freight 0.2. Meal is the
+        // bread eaten, 8.
+        assert!((income - 19.0).abs() < 1e-9);
+        assert!((expenses - 25.7).abs() < 1e-9);
+        assert!((meal - 8.0).abs() < 1e-9);
+
+        pop.reset_day();
+        let (income, expenses, meal) = pop.day_books(&history);
+        assert_eq!(income, 0.0);
+        assert_eq!(expenses, 0.0);
+        assert_eq!(meal, 0.0);
+        assert_eq!(pop.property[&1].produced, 0.0);
+        assert_eq!(pop.property[&1].lost, 0.0);
+        assert_eq!(pop.property[&0].spent, 0.0);
+        assert!(pop.day_haul.is_empty());
+        assert!(pop.day_eaten.is_empty());
+    }
+
+    /// A desire that eats a good is the meal. A desire that only uses a good
+    /// leaves that good out. Freight is not a meal.
+    #[test]
+    fn day_books_prices_the_meal_and_leaves_a_used_good() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(4.0));
+        pop.property.insert(3, PopPRow::new(2.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.desires[1].push(desire(
+            2,
+            vec![DesireTarget::new(3, DesireTargetType::Use, 1.0)],
+            2.0,
+        ));
+
+        pop.consume();
+
+        assert!((pop.day_eaten[&1] - 4.0).abs() < 1e-9);
+        assert!(pop.day_eaten.get(&3).is_none());
+        assert!((pop.property[&3].used - 2.0).abs() < 1e-9);
+        let history = card(&[(1, 2.0, 1.0), (3, 5.0, 1.0)]);
+        let (income, expenses, meal) = pop.day_books(&history);
+        assert_eq!(income, 0.0);
+        assert_eq!(expenses, 0.0);
+        assert!((meal - 8.0).abs() < 1e-9);
+    }
+
+    /// The morning grant is income. Time spent, and time later lost to rot,
+    /// are expenses of that same grant, so a day that uses it up nets nothing.
+    #[test]
+    fn day_books_counts_the_morning_grant_against_later_time() {
+        let mut pop = make_pop();
+        pop.demographics.household = Household::with_members(1.0, 0.0, 0.0);
+        let added = pop.start_day(&[(TIME, ScalingFactor::Labor(TIME_PER_LABOR))]);
+        assert!((added[0].1 - TIME_PER_LABOR).abs() < 1e-12);
+
+        // The market day clears yesterday after the grant. The grant stays.
+        pop.reset_day();
+
+        let history = card(&[(TIME, 0.1, 1.0)]);
+        pop.property.get_mut(&TIME).unwrap().spent = 40.0;
+        let (income, expenses, meal) = pop.day_books(&history);
+        // 64 created at 0.1, and 40 of it spent. The 24 still on hand stay income.
+        assert!((income - 6.4).abs() < 1e-9);
+        assert!((expenses - 4.0).abs() < 1e-9);
+        assert_eq!(meal, 0.0);
+
+        pop.property.get_mut(&TIME).unwrap().lost = 24.0;
+        let (income, expenses, meal) = pop.day_books(&history);
+        assert!((income - 6.4).abs() < 1e-9);
+        assert!((expenses - 6.4).abs() < 1e-9);
+        assert_eq!(meal, 0.0);
+
+        // A second morning replaces the grant. It does not add to the first.
+        pop.start_day(&[(TIME, ScalingFactor::Labor(TIME_PER_LABOR))]);
+        let (income, expenses, _) = pop.day_books(&history);
+        assert!((income - 6.4).abs() < 1e-9);
+        assert!((expenses - 6.4).abs() < 1e-9);
+    }
+
+    /// Freight units are an expense of the move, not an input a process destroyed.
+    #[test]
+    fn pay_freight_books_the_transport_it_takes() {
+        let mut time_good = make_good(0, "time", 0.5);
+        time_good.set_transport_efficiency(1.0);
+        let factuals = Factuals::new().with_good(time_good);
+        let mut buyer = make_pop();
+        buyer.property.insert(0, PopPRow::new(10.0));
+
+        buyer.pay_freight(4.0, &factuals);
+
+        assert!((buyer.day_haul[&0] - 4.0).abs() < 1e-12);
+        assert!((buyer.property[&0].consumed - 4.0).abs() < 1e-12);
+        assert_eq!(buyer.property[&0].spent, 0.0);
+        assert!(buyer.day_eaten.is_empty());
     }
 
     /// Freight is own consumption, not a transfer. Aged stock is spent
@@ -7851,251 +7290,6 @@ mod pop {
     /// were surplus. A unit that still feeds a desire is given up when the
     /// goods received feed that desire or an earlier one.
     #[test]
-    fn evaluate_accepts_surplus_and_rejects_a_cut_into_the_desire() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        seller.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 1.0)]);
-        let within = proposal(2, HashMap::from([(2, 4.0), (9, -9.0)]));
-        assert_eq!(
-            seller.evaluate(&within, &history, &Factuals::new()),
-            DealResponse::Accept
-        );
-        let cutting = proposal(2, HashMap::from([(2, 8.0), (9, -17.0)]));
-        assert_eq!(
-            seller.evaluate(&cutting, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-    }
-
-    /// Both goods feed basic desires. Good 2 is earlier in the tier than good 9.
-    /// The seller gives 4 of good 9, which is 4 satisfaction.
-    ///
-    /// Satisfaction gained has to exceed satisfaction given up, one for one,
-    /// across the goods. Receiving 2 of good 2 puts 2 satisfaction in place
-    /// of 4, so the seller rejects. Receiving 5 puts 5 in place of 4, so the
-    /// seller accepts. Giving the later good is allowed because good 2 feeds
-    /// the earlier desire.
-    #[test]
-    fn evaluate_requires_a_strict_satisfaction_gain() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(9, PopPRow::new(10.0));
-        seller.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            10.0,
-        ));
-        seller.desires[0].push(desire(
-            2,
-            vec![DesireTarget::new(9, DesireTargetType::Consume, 1.0)],
-            10.0,
-        ));
-        let history = card(&[(2, 1.0, 1.0), (9, 1.0, 1.0)]);
-        // 4 satisfaction given up, 2 gained.
-        let short = proposal(9, HashMap::from([(9, 4.0), (2, -2.0)]));
-        assert_eq!(
-            seller.evaluate(&short, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-        // 4 satisfaction given up, 5 gained.
-        let ahead = proposal(9, HashMap::from([(9, 4.0), (2, -5.0)]));
-        assert_eq!(
-            seller.evaluate(&ahead, &history, &Factuals::new()),
-            DealResponse::Accept
-        );
-    }
-
-    /// No desires at first. Good 2 is AMV 2 and good 9 is AMV 1, both at
-    /// salability 1. With no satisfaction on either side the raw price is
-    /// enforced, and meeting it accepts.
-    ///
-    /// Giving 4 of good 2 costs 8. Receiving 7 of good 9 credits 7, short of
-    /// the price, so the seller rejects. Receiving 8 credits 8 and accepts.
-    ///
-    /// Good 2 then feeds a basic desire. The seller gives 100 of good 9
-    /// (no desire on it) and receives 1 of good 2. Satisfaction rises by 1
-    /// against nothing given up, so the seller accepts that AMV loss.
-    #[test]
-    fn evaluate_meets_the_raw_price_and_accepts_a_satisfaction_gain() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        seller.property.insert(9, PopPRow::new(100.0));
-        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 1.0)]);
-        // Raw 8 for 7.
-        let short = proposal(2, HashMap::from([(2, 4.0), (9, -7.0)]));
-        assert_eq!(
-            seller.evaluate(&short, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-        // Raw 8 for 8.
-        let met = proposal(2, HashMap::from([(2, 4.0), (9, -8.0)]));
-        assert_eq!(
-            seller.evaluate(&met, &history, &Factuals::new()),
-            DealResponse::Accept
-        );
-
-        seller.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        // Satisfaction +1 against an AMV loss of 100 for 2.
-        let fortune = proposal(9, HashMap::from([(9, 100.0), (2, -1.0)]));
-        assert_eq!(
-            seller.evaluate(&fortune, &history, &Factuals::new()),
-            DealResponse::Accept
-        );
-    }
-
-    /// No desires. The seller gives 1 of good 9 (AMV -0.1) and receives 1 of
-    /// good 8 (AMV -0.2). Both salabilities are 0.1.
-    ///
-    /// Raw AMV moves from -0.1 to -0.2. Salability does not scale it. With no
-    /// satisfaction on either side that is a loss, so the seller rejects.
-    #[test]
-    fn evaluate_does_not_soften_a_negative_amv() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(9, PopPRow::new(4.0));
-        let history = card(&[(9, -0.1, 0.1), (8, -0.2, 0.1)]);
-        let deal = proposal(9, HashMap::from([(9, 1.0), (8, -1.0)]));
-        assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-    }
-
-    /// No desires. The seller gives 4 of good 2 (AMV 2) and receives 5 of
-    /// good 9 (AMV 1). Good 9's salability is 2.
-    ///
-    /// Raw AMV falls from 8 to 5. Salability does not scale either price.
-    /// With no satisfaction on either side the seller rejects that loss.
-    #[test]
-    fn evaluate_rejects_a_raw_loss_with_no_satisfaction() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(4.0));
-        let history = card(&[(2, 2.0, 1.0), (9, 1.0, 2.0)]);
-        let deal = proposal(2, HashMap::from([(2, 4.0), (9, -5.0)]));
-        assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-    }
-
-    /// No desires. The seller gives 1 of good 2 (AMV 1) and receives 1 of
-    /// good 9 (AMV 2). The raw price is a gain, so the seller accepts.
-    /// Salability does not scale that price. Low salability on either good
-    /// leaves the same acceptance.
-    #[test]
-    fn evaluate_accepts_a_raw_gain_at_any_salability() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(2, PopPRow::new(10.0));
-        let deal = proposal(2, HashMap::from([(2, 1.0), (9, -1.0)]));
-        let at_par = card(&[(2, 1.0, 1.0), (9, 2.0, 1.0)]);
-        assert_eq!(
-            seller.evaluate(&deal, &at_par, &Factuals::new()),
-            DealResponse::Accept
-        );
-        let received_illiquid = card(&[(2, 1.0, 1.0), (9, 2.0, 0.4)]);
-        assert_eq!(
-            seller.evaluate(&deal, &received_illiquid, &Factuals::new()),
-            DealResponse::Accept
-        );
-        let both_illiquid = card(&[(2, 1.0, 0.5), (9, 2.0, 0.2)]);
-        assert_eq!(
-            seller.evaluate(&deal, &both_illiquid, &Factuals::new()),
-            DealResponse::Accept
-        );
-    }
-
-    /// The seller gives 1 of good 8 and receives 1 of good 2. Good 8 is a
-    /// luxury desire, and one unit yields 10 satisfaction. Good 2 is a basic
-    /// desire, and one unit yields 1. Both AMVs are 1 at salability 1.
-    ///
-    /// A later tier may be given for an earlier one. Satisfaction is compared
-    /// one for one across both goods, so 10 given against 1 received is not
-    /// a gain and the seller rejects.
-    ///
-    /// One unit of a luxury worth 1 satisfaction, given for two units of the
-    /// basic good, gains satisfaction. The luxury's raw AMV is 5 and the
-    /// basic good's is 1, so the exchange is an AMV loss, and the seller
-    /// accepts it.
-    #[test]
-    fn evaluate_compares_satisfaction_across_tiers() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(8, PopPRow::new(1.0));
-        seller.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        seller.desires[2].push(desire(
-            2,
-            vec![DesireTarget::new(8, DesireTargetType::Consume, 10.0)],
-            10.0,
-        ));
-        let history = card(&[(2, 1.0, 1.0), (8, 1.0, 1.0)]);
-        let deal = proposal(8, HashMap::from([(8, 1.0), (2, -1.0)]));
-        assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-
-        seller.property.insert(8, PopPRow::new(1.0));
-        seller.desires[2][0].target[0].efficiency = 1.0;
-        let traded = proposal(8, HashMap::from([(8, 1.0), (2, -2.0)]));
-        let loss = card(&[(2, 1.0, 1.0), (8, 5.0, 1.0)]);
-        assert_eq!(
-            seller.evaluate(&traded, &loss, &Factuals::new()),
-            DealResponse::Accept
-        );
-    }
-
-    /// The seller gives 1 of good 9 (AMV 1) and receives 1 of good 2 (AMV 0.5).
-    ///
-    /// With no desires the raw price is short, so the seller rejects. A basic
-    /// desire for good 2 is then added. The seller gains 1 satisfaction from
-    /// good 2 and gives up none, because good 9 feeds no desire. That gain
-    /// accepts the AMV loss.
-    #[test]
-    fn evaluate_accepts_satisfaction_gained_when_none_is_lost() {
-        let mut seller = make_pop();
-        seller.id = 2;
-        seller.property.insert(9, PopPRow::new(4.0));
-        let history = card(&[(2, 0.5, 1.0), (9, 1.0, 1.0)]);
-        let deal = proposal(9, HashMap::from([(9, 1.0), (2, -1.0)]));
-        // No desire on either good: raw 1 given for 0.5 received.
-        assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
-            DealResponse::Reject
-        );
-        seller.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        // Good 2 now gains 1 satisfaction. Good 9 still feeds nothing.
-        assert_eq!(
-            seller.evaluate(&deal, &history, &Factuals::new()),
-            DealResponse::Accept
-        );
-    }
-
-    /// One basic desire is half met and carries a satisfaction bonus of 6,
-    /// so it contributes 0.5 tiers and 3 bonus. One common desire is fully
-    /// met and carries a malus of 2, so it contributes 1 tier and no malus.
-    /// A culture effect on the common desire is not satisfaction.
-    #[test]
     fn standard_of_living_sums_tiers_and_desire_satisfaction_effects() {
         let mut pop = make_pop();
         let mut basic = desire(
@@ -8111,9 +7305,7 @@ mod pop {
             4.0,
         );
         common.satisfaction = 4.0;
-        common
-            .effect
-            .push(DesireEffect::Satisfaction(2.0, false));
+        common.effect.push(DesireEffect::Satisfaction(2.0, false));
         common.effect.push(DesireEffect::Culture(5.0, true));
         pop.desires[0].push(basic);
         pop.desires[1].push(common);
@@ -8135,8 +7327,10 @@ mod pop {
         );
         basic.satisfaction = 4.0;
         pop.desires[0].push(basic);
-        pop.stored_effects
-            .push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Satisfaction {
+            tier: 1,
+            amount: 1.5,
+        });
         pop.stored_effects.push(PopEffect::Birthrate(0.01));
 
         let sol = pop.calculate_sol(&Factuals::new());
@@ -8157,9 +7351,11 @@ mod pop {
             4.0,
         );
         basic.satisfaction = 4.0;
-        basic
-            .effect
-            .push(DesireEffect::SentimentFlat(SentimentKind::Happiness, 0.2, true));
+        basic.effect.push(DesireEffect::SentimentFlat(
+            SentimentKind::Happiness,
+            0.2,
+            true,
+        ));
         pop.desires[0].push(basic);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8190,11 +7386,10 @@ mod pop {
             false,
         ));
         pop.desires[0].push(basic);
-        pop.stored_effects
-            .push(PopEffect::SentimentFlat {
-                kind: SentimentKind::Hope,
-                delta: 0.2,
-            });
+        pop.stored_effects.push(PopEffect::SentimentFlat {
+            kind: SentimentKind::Hope,
+            delta: 0.2,
+        });
         pop.stored_effects.push(PopEffect::Birthrate(0.01));
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8291,9 +7486,7 @@ mod pop {
             4.0,
         );
         common.satisfaction = 4.0;
-        common
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, true));
+        common.effect.push(DesireEffect::Satisfaction(0.5, true));
         pop.desires[1].push(common);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8336,8 +7529,10 @@ mod pop {
             vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
             4.0,
         ));
-        pop.stored_effects
-            .push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Satisfaction {
+            tier: 1,
+            amount: 1.5,
+        });
         pop.stored_effects.push(PopEffect::Birthrate(0.01));
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8346,7 +7541,10 @@ mod pop {
         assert_eq!(
             pop.stored_effects,
             vec![
-                PopEffect::Satisfaction { tier: 1, amount: 1.5 },
+                PopEffect::Satisfaction {
+                    tier: 1,
+                    amount: 1.5
+                },
                 PopEffect::Birthrate(0.01),
             ]
         );
@@ -8465,7 +7663,11 @@ mod pop {
         assert!((pop.sentiment.happiness() - 0.05 / 1.10).abs() < 1e-9);
         assert!((pop.sentiment.contentment() - 1.0 / 1.10).abs() < 1e-9);
         assert_eq!(pop.sol_samples.len(), 5);
-        assert!(pop.sol_samples.iter().all(|sample| (sample - 1.0).abs() < 1e-9));
+        assert!(
+            pop.sol_samples
+                .iter()
+                .all(|sample| (sample - 1.0).abs() < 1e-9)
+        );
     }
 
     /// A pop with no desires has infinite living. That reading is not a
@@ -8544,8 +7746,10 @@ mod pop {
             vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
             4.0,
         ));
-        pop.stored_effects
-            .push(PopEffect::Satisfaction { tier: 0, amount: 0.5 });
+        pop.stored_effects.push(PopEffect::Satisfaction {
+            tier: 0,
+            amount: 0.5,
+        });
 
         pop.update_sentiments(&MarketHistory::new());
 
@@ -8554,7 +7758,10 @@ mod pop {
         assert!((pop.sentiment.contentment() - 1.0 / 1.04).abs() < 1e-9);
         assert_eq!(
             pop.stored_effects,
-            vec![PopEffect::Satisfaction { tier: 0, amount: 0.5 }]
+            vec![PopEffect::Satisfaction {
+                tier: 0,
+                amount: 0.5
+            }]
         );
     }
 
@@ -8568,8 +7775,10 @@ mod pop {
             vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
             4.0,
         ));
-        pop.stored_effects
-            .push(PopEffect::Satisfaction { tier: 0, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Satisfaction {
+            tier: 0,
+            amount: 1.5,
+        });
 
         pop.update_sentiments(&MarketHistory::new());
 
@@ -8578,7 +7787,10 @@ mod pop {
         assert_eq!(pop.sentiment.fear(), 0.0);
         assert_eq!(
             pop.stored_effects,
-            vec![PopEffect::Satisfaction { tier: 0, amount: 1.5 }]
+            vec![PopEffect::Satisfaction {
+                tier: 0,
+                amount: 1.5
+            }]
         );
     }
 
@@ -8592,9 +7804,7 @@ mod pop {
             vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
             4.0,
         );
-        basic
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, false));
+        basic.effect.push(DesireEffect::Satisfaction(0.5, false));
         pop.desires[0].push(basic);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8615,9 +7825,7 @@ mod pop {
             4.0,
         );
         basic.satisfaction = 4.0;
-        basic
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, true));
+        basic.effect.push(DesireEffect::Satisfaction(0.5, true));
         pop.desires[0].push(basic);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8641,9 +7849,7 @@ mod pop {
             4.0,
         );
         common.satisfaction = 4.0;
-        common
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, true));
+        common.effect.push(DesireEffect::Satisfaction(0.5, true));
         pop.desires[1].push(common);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8666,9 +7872,7 @@ mod pop {
             4.0,
         );
         luxury.satisfaction = 8.0;
-        luxury
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, true));
+        luxury.effect.push(DesireEffect::Satisfaction(0.5, true));
         pop.desires[2].push(luxury);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8690,9 +7894,7 @@ mod pop {
             vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
             4.0,
         );
-        common
-            .effect
-            .push(DesireEffect::Satisfaction(0.5, false));
+        common.effect.push(DesireEffect::Satisfaction(0.5, false));
         pop.desires[1].push(common);
 
         pop.update_sentiments(&MarketHistory::new());
@@ -8711,8 +7913,10 @@ mod pop {
     fn update_sentiments_counts_stored_satisfaction_on_an_empty_tier() {
         let mut pop = make_pop();
         pop.sentiment = Sentiment::even();
-        pop.stored_effects
-            .push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Satisfaction {
+            tier: 1,
+            amount: 1.5,
+        });
 
         pop.update_sentiments(&MarketHistory::new());
 
@@ -8722,7 +7926,10 @@ mod pop {
         assert!(pop.sol_samples.is_empty());
         assert_eq!(
             pop.stored_effects,
-            vec![PopEffect::Satisfaction { tier: 1, amount: 1.5 }]
+            vec![PopEffect::Satisfaction {
+                tier: 1,
+                amount: 1.5
+            }]
         );
     }
 
@@ -8869,7 +8076,7 @@ mod pop {
         let factuals = Factuals::new().with_good(grain);
         let mut rng = StdRng::seed_from_u64(1);
 
-        let _meetings = market.market_day(&mut actors, &factuals, &mut rng);
+        market.market_day(&mut actors, &factuals, &mut rng);
 
         let pop = actors.pop(1);
         assert_eq!(pop.desires[0][0].satisfaction, 0.0);
@@ -8898,12 +8105,11 @@ mod pop {
         assert!((market.goods[&1].decayed - 8.0).abs() < 1e-9);
     }
 
-    /// The buyer wants 4 of good 2 and pays with good 9. The seller holds
-    /// 10 of good 2 and wants nothing. Neither good rots.
+    /// The buyer wants 4 of good 2 and pays with good 9, the tender. The
+    /// seller holds 10 of good 2 and wants nothing. Neither good rots.
     ///
-    /// Day 1 buys and eats the bread. The next morning clears that
-    /// satisfaction, so day 2 buys again. Day 2 also buys the saved day,
-    /// eats one level, and holds what is left of that day.
+    /// Day 1 buys four bread and eats them. Day 2 buys four more and eats
+    /// them. The seller keeps the two that were not bought.
     #[test]
     fn market_day_buys_again_after_satisfaction_is_reset() {
         let mut buyer = make_pop();
@@ -8927,6 +8133,7 @@ mod pop {
         market
             .goods
             .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.currencies = [Some(9), None, None, None];
         let mut actors = Actors::new();
         actors.pops.insert(1, buyer);
         actors.pops.insert(2, seller);
@@ -8935,18 +8142,30 @@ mod pop {
             .with_good(make_good(9, "gold", 0.0));
         let mut rng = StdRng::seed_from_u64(1);
 
-        let day1 = market.market_day(&mut actors, &factuals, &mut rng);
-        assert!(day1
-            .iter()
-            .any(|meeting| meeting.outcome == MeetingOutcome::Accepted));
+        market.market_day(&mut actors, &factuals, &mut rng);
+        assert!(
+            market
+                .mass_closes()
+                .iter()
+                .any(|close| close.good == 2 && close.exchanged >= 1.0)
+        );
         assert!(actors.pop(1).desires[0][0].satisfaction > 0.0);
 
-        let day2 = market.market_day(&mut actors, &factuals, &mut rng);
-        assert!(day2
-            .iter()
-            .any(|meeting| meeting.outcome == MeetingOutcome::Accepted));
-        assert!((actors.pop(1).property[&2].quantity - 2.0).abs() < 1e-9);
-        assert!((actors.pop(2).property[&2].quantity).abs() < 1e-9);
+        market.market_day(&mut actors, &factuals, &mut rng);
+        assert!(
+            market
+                .mass_closes()
+                .iter()
+                .any(|close| close.good == 2 && close.exchanged >= 1.0)
+        );
+        let buyer_bread = actors
+            .pop(1)
+            .property
+            .get(&2)
+            .map(|row| row.quantity)
+            .unwrap_or(0.0);
+        assert!(buyer_bread.abs() < 1e-9);
+        assert!((actors.pop(2).property[&2].quantity - 2.0).abs() < 1e-9);
     }
 
     #[test]
@@ -9105,14 +8324,90 @@ mod pop {
         assert!(dest.luxury_savings.is_empty());
     }
 
+    /// The leaving share of today's books stays off the destination.
+    #[test]
+    fn take_migrants_shrinks_the_day_books() {
+        let mut origin = make_pop();
+        origin.demographics.household.count = 10.0;
+        let mut grain = PopPRow::new(10.0);
+        grain.produced = 10.0;
+        grain.spent = 5.0;
+        origin.property.insert(1, grain);
+        origin.day_paid.insert(5, 10.0);
+        origin.day_got.insert(2, 2.5);
+        origin.day_eaten.insert(1, 10.0);
+        origin.day_listed.insert(4, 10.0);
+        origin.day_granted.insert(0, 10.0);
+        let mut dest = make_pop();
+        dest.id = 2;
+        dest.demographics.household.count = 10.0;
+
+        let group = origin.take_migrants(4.0);
+        dest.receive_migrants(&group);
+
+        assert!((origin.property[&1].produced - 8.0).abs() < 1e-9);
+        assert!((origin.property[&1].spent - 4.0).abs() < 1e-9);
+        assert!((origin.day_paid[&5] - 8.0).abs() < 1e-9);
+        assert!((origin.day_got[&2] - 2.0).abs() < 1e-9);
+        assert!((origin.day_eaten[&1] - 8.0).abs() < 1e-9);
+        assert!((origin.day_listed[&4] - 8.0).abs() < 1e-9);
+        assert!((origin.day_granted[&0] - 8.0).abs() < 1e-9);
+        assert!(dest.day_paid.is_empty());
+        assert!(dest.day_got.is_empty());
+        assert!(dest.day_eaten.is_empty());
+        assert!(dest.day_granted.is_empty());
+        let arrived = dest.property.get(&1).expect("quantity traveled");
+        assert!((arrived.quantity - 2.0).abs() < 1e-9);
+        assert_eq!(arrived.produced, 0.0);
+        assert_eq!(arrived.spent, 0.0);
+    }
+
+    /// Posts and trades stay on the day tape when households leave.
+    ///
+    /// Saved stock that does not travel is noted. The destination notes
+    /// the property that arrives.
+    #[test]
+    fn day_tape_keeps_a_post_when_households_leave() {
+        let mut origin = make_pop();
+        origin.demographics.household.count = 10.0;
+        origin.property.insert(1, PopPRow::new(10.0));
+        origin.saved.insert(4, 10.0);
+        origin.note_sell_offer(1, 5.0);
+        origin.note_buy_offer(2, 3.0);
+        origin.note_flow(super::DayFlow::Gave, 1, 4.0);
+        origin.note_flow(super::DayFlow::Got, 2, 1.0);
+        origin.stash_working(1, 2.0, super::SaveHold::Meal);
+        origin.job.unlisted.insert(1, 3.0);
+
+        let group = origin.take_migrants(4.0);
+        let mut dest = make_pop();
+        dest.id = 2;
+        dest.demographics.household.count = 10.0;
+        dest.receive_migrants(&group);
+
+        let origin_tape = origin.day_tape();
+        assert!((origin_tape.sell_offers[&1] - 5.0).abs() < 1e-9);
+        assert!((origin_tape.buy_offers[&2] - 3.0).abs() < 1e-9);
+        assert!((origin_tape.sold[&1] - 4.0).abs() < 1e-9);
+        assert!((origin_tape.bought[&2] - 1.0).abs() < 1e-9);
+        assert!((origin.day_gave[&1] - 3.2).abs() < 1e-9);
+        assert!((origin_tape.meal[&1] - 2.0).abs() < 1e-9);
+        assert!((origin_tape.unlisted[&1] - 3.0).abs() < 1e-9);
+        assert!((origin_tape.left[&1] - 1.6).abs() < 1e-9);
+        assert!((origin_tape.dropped[&4] - 2.0).abs() < 1e-9);
+        assert!((origin_tape.dropped[&1] - 0.4).abs() < 1e-9);
+        let dest_tape = dest.day_tape();
+        assert!((dest_tape.arrived[&1] - 1.6).abs() < 1e-9);
+        assert!(dest_tape.left.is_empty());
+    }
+
     #[test]
     fn market_day_matches_desires_to_the_fitted_population() {
         let demo = DemoDesire::new(1)
             .with_tier(0)
             .with_scalar(ScalingFactor::Household(1.0))
             .with_amount(2.0);
-        let factuals = Factuals::new()
-            .with_species(Species::new(0, "human").with_desire(demo));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_desire(demo));
         let mut pop = make_pop();
         // One household fitted back under 1 is pruned. Two stay above that line.
         pop.demographics.household.count = 2.0;
@@ -9165,8 +8460,7 @@ mod pop {
             .with_tier(0)
             .with_scalar(ScalingFactor::Household(1.0))
             .with_amount(2.0);
-        let factuals = Factuals::new()
-            .with_species(Species::new(0, "human").with_desire(demo));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_desire(demo));
         let mut pop = make_pop();
         let start = pop.demographics.total_population();
         pop.population_cap = Some(start);
@@ -9193,9 +8487,33 @@ mod pop {
         assert!((pop.desires[0][0].satisfaction / amount - 0.5).abs() < 1e-9);
     }
 
-    /// A basic day stays on bread even when grain rates higher and is already held.
+    /// A basic day stays on bread. Grain is held and does not rot, and it is
+    /// not a meal of this desire. Bread rots, and this pop does not make it,
+    /// so the day stays bread.
     #[test]
-    fn savings_keeps_a_basic_day_in_the_bucket() {
+    fn savings_keeps_a_rotting_day_the_pop_does_not_make() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        pop.property.insert(1, PopPRow::new(5.0));
+        pop.property.insert(2, PopPRow::new(8.0));
+        let factuals = Factuals::new()
+            .with_good(make_good(2, "bread", 0.5))
+            .with_good(make_good(1, "grain", 0.0));
+        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
+
+        pop.plan(&factuals, &history);
+
+        assert_eq!(pop.savings, HashMap::from([(2, 8.0)]));
+    }
+
+    /// Bread rots and this pop bakes it. No tender is on hand, so the day
+    /// is left for the morning make.
+    #[test]
+    fn savings_leaves_a_rotting_day_the_pop_makes() {
         let mut pop = make_pop();
         pop.job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
         pop.desires[0].push(desire(
@@ -9212,7 +8530,33 @@ mod pop {
 
         pop.plan(&factuals, &history);
 
-        assert_eq!(pop.savings, HashMap::from([(2, 8.0)]));
+        assert!(pop.savings.is_empty());
+    }
+
+    /// Bread rots and this pop bakes it. Gold is the tender and does not
+    /// rot. Nothing is piled until five gold, one outside day, is on hand.
+    #[test]
+    fn savings_holds_a_rotting_day_in_durable_money() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(7, Some(1.0), vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let factuals = Factuals::new()
+            .with_good(make_good(2, "bread", 0.5))
+            .with_good(make_good(9, "gold", 0.0))
+            .with_process(bake());
+        let mut history = card(&[(2, 1.0, 1.0), (9, 1.0, 1.0)]);
+        history.currencies = vec![9];
+
+        pop.plan(&factuals, &history);
+        assert!(pop.savings.is_empty());
+
+        pop.property.insert(9, PopPRow::new(5.0));
+        pop.plan(&factuals, &history);
+        assert_eq!(pop.savings, HashMap::from([(9, 5.0)]));
     }
 
     /// Luxury may leave the bucket. Bread rots. Grain does not, and five
@@ -9284,8 +8628,9 @@ mod pop {
         assert!(pop.savings.is_empty());
     }
 
-    /// Luxury may leave the bucket. Gold that did not arrive rates 0.
-    /// The same buy, filled, outrates bread.
+    /// Luxury may leave the bucket. Gold that did not arrive rates 0, and
+    /// bread rots and is made here, so nothing is piled. The same buy,
+    /// filled, outrates bread.
     #[test]
     fn savings_ignores_a_good_yesterdays_buy_missed() {
         let mut pop = make_pop();
@@ -9303,7 +8648,7 @@ mod pop {
         let history = card(&[(2, 1.0, 1.0), (9, 1.0, 1.0)]);
 
         pop.plan(&factuals, &history);
-        assert_eq!(pop.savings, HashMap::from([(2, 8.0)]));
+        assert!(pop.savings.is_empty());
 
         pop.buy_received.insert(9, 10.0);
         pop.plan(&factuals, &history);
@@ -9352,8 +8697,9 @@ mod pop {
         assert_eq!(pop.savings, HashMap::from([(2, 4.0), (4, 2.0)]));
     }
 
-    /// Bread decays by half, so the day is 4 and the hold is 8. Four on hand
-    /// opens the next tier. Three does not. The pile stays the hold.
+    /// Bread decays by half and this pop makes it, so the day is not piled.
+    /// Three on hand is short of one day, and cloth stays closed. Four is
+    /// that day, so cloth's hold of 2 is saved.
     #[test]
     fn savings_opens_the_next_tier_once_one_day_is_on_hand() {
         let mut pop = make_pop();
@@ -9385,209 +8731,13 @@ mod pop {
 
         pop.property.insert(2, PopPRow::new(3.0));
         pop.plan(&factuals, &history);
-        assert_eq!(pop.savings, HashMap::from([(2, 8.0)]));
+        assert!(pop.savings.is_empty());
 
         pop.property.insert(2, PopPRow::new(4.0));
         pop.plan(&factuals, &history);
-        assert_eq!(pop.savings, HashMap::from([(2, 8.0), (4, 2.0)]));
+        assert_eq!(pop.savings, HashMap::from([(4, 2.0)]));
     }
 
-    #[test]
-    fn sell_orders_keep_the_saved_day() {
-        let mut pop = make_pop();
-        pop.property.insert(9, PopPRow::new(8.0));
-        pop.savings.insert(9, 5.0);
-
-        let orders = pop.sell_orders(&MarketHistory::new());
-
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 9);
-        assert!((orders[0].target_amount + 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn spendable_keeps_the_saved_day() {
-        let mut pop = make_pop();
-        pop.property.insert(9, PopPRow::new(8.0));
-        pop.savings.insert(9, 5.0);
-
-        assert!((pop.spendable(9, 1) - 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn buy_orders_add_the_saved_day_onto_the_open_desire() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        pop.savings.insert(2, 4.0);
-
-        do_satisfy(&mut pop);
-        let orders = pop.buy_orders(&MarketHistory::new());
-
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 2);
-        assert_eq!(orders[0].target_amount, 8.0);
-    }
-
-    /// Both cards are 1. Grain scores 1 and bread scores 2, so a level of 4
-    /// is 2 grain and 1 bread. Grain on hand covers its share and keeps one unit.
-    #[test]
-    fn buy_orders_asks_for_a_level_of_a_cheaper_substitute() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
-                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
-            ],
-            4.0,
-        ));
-        pop.property.insert(1, PopPRow::new(4.0));
-        do_satisfy(&mut pop);
-        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
-
-        let orders = pop.buy_orders(&history);
-        let units = |good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-
-        assert_eq!(orders.len(), 2);
-        assert_eq!(units(2), 1.0);
-        assert_eq!(units(1), 1.0);
-        assert_eq!(pop.property[&1].quantity, 4.0);
-    }
-
-    /// Both cards are 1. A level of 8 is 2 grain and 3 bread. Grain on hand
-    /// covers its share and keeps one unit.
-    #[test]
-    fn buy_orders_moves_a_short_level_onto_the_cheaper_substitute() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
-                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
-            ],
-            8.0,
-        ));
-        pop.property.insert(1, PopPRow::new(4.0));
-        do_satisfy(&mut pop).expect("grain is short of the level");
-        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
-
-        let orders = pop.buy_orders(&history);
-        let units = |good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-
-        assert_eq!(orders.len(), 2);
-        assert_eq!(units(2), 3.0);
-        assert_eq!(units(1), 1.0);
-        assert_eq!(pop.property[&1].quantity, 4.0);
-    }
-
-    /// Bread's card is 3 and its efficiency is 2, so its score is 6 against
-    /// grain's 1. The level sits on bread. Grain on hand keeps one unit.
-    #[test]
-    fn buy_orders_spends_the_level_on_the_higher_valued_bread() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
-                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
-            ],
-            4.0,
-        ));
-        pop.property.insert(1, PopPRow::new(4.0));
-        do_satisfy(&mut pop);
-        let history = card(&[(1, 1.0, 1.0), (2, 3.0, 1.0)]);
-
-        let orders = pop.buy_orders(&history);
-        let units = |good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-
-        assert_eq!(orders.len(), 2);
-        assert_eq!(units(1), 1.0);
-        assert_eq!(units(2), 2.0);
-    }
-
-    /// The saved day is already free. The desire keeps one unit on the book.
-    #[test]
-    fn buy_orders_skip_a_saved_day_already_free() {
-        let mut pop = make_pop();
-        pop.desires[0].push(desire(
-            1,
-            vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)],
-            4.0,
-        ));
-        pop.property.insert(2, PopPRow::new(8.0));
-        pop.savings.insert(2, 4.0);
-
-        assert!(do_satisfy(&mut pop).is_none());
-        let orders = pop.buy_orders(&MarketHistory::new());
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 2);
-        assert_eq!(orders[0].target_amount, 1.0);
-    }
-
-    /// A collapsed bread quote puts the level on grain. A high bread quote
-    /// takes the level. The other good keeps one unit.
-    #[test]
-    fn buy_orders_follow_private_worth() {
-        let desire = desire(
-            1,
-            vec![
-                DesireTarget::new(1, DesireTargetType::Consume, 1.0),
-                DesireTarget::new(2, DesireTargetType::Consume, 2.0),
-            ],
-            4.0,
-        );
-        let history = card(&[(1, 1.0, 1.0), (2, 1.0, 1.0)]);
-        let units = |orders: &[MarketOrder], good: usize| {
-            orders
-                .iter()
-                .find(|order| order.target == good)
-                .map(|order| order.target_amount)
-                .unwrap_or(0.0)
-        };
-
-        let mut low = make_pop();
-        low.desires[0].push(desire.clone());
-        low.worth.insert(2, super::AMV_EPSILON);
-        let low_orders = low.buy_orders(&history);
-        assert_eq!(low_orders.len(), 2);
-        assert_eq!(units(&low_orders, 1), 4.0);
-        assert_eq!(units(&low_orders, 2), 1.0);
-
-        let mut high = make_pop();
-        high.desires[0].push(desire);
-        high.worth.insert(2, 2.0);
-        let high_orders = high.buy_orders(&history);
-        assert_eq!(high_orders.len(), 2);
-        assert_eq!(units(&high_orders, 1), 1.0);
-        assert_eq!(units(&high_orders, 2), 2.0);
-    }
-
-    /// A lone purchase with no older stock sets worth at twice the card.
-    /// A total rot sets it at the floor. A make against a large pile moves
-    /// partway. A second pass the same night leaves the first result. A good
-    /// with no card is not seeded.
     #[test]
     fn revise_worth_follows_success_and_rot() {
         let mut history = MarketHistory::new();
@@ -9763,8 +8913,7 @@ mod pop {
     /// Ten time makes two grain, and the board prices grain at 1. The line
     /// loses money, so the quota is the meal and not the saved day. No
     /// faster grain process is known, so the meal is bought and still made.
-    /// The book also carries the saved day. Once that grain is on hand, the
-    /// buy stops and the farm target steps down.
+    /// Once that grain is on hand, the buy stops and the farm target steps down.
     #[test]
     fn plan_buys_a_subsistence_cover_and_still_makes_it() {
         let mut pop = make_pop();
@@ -9779,7 +8928,13 @@ mod pop {
             .with_good(make_good(1, "grain", 0.0))
             .with_process(
                 Process::new(29, "subsistence farm", 0)
-                    .with_input(ProcessInput::new(TIME, 10.0, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        10.0,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 2.0, true)),
             );
         let history = card(&[(1, 1.0, 1.0)]);
@@ -9795,11 +8950,6 @@ mod pop {
             .find(|line| line.process == 29)
             .expect("farm line");
         assert!((farm.target.expect("farm target") - 2.5).abs() < 1e-9);
-        let orders = pop.buy_orders(&history);
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 1);
-        // One level, plus the saved day.
-        assert_eq!(orders[0].target_amount, 8.0);
 
         pop.property.insert(1, PopPRow::new(4.0));
         pop.plan(&factuals, &history);
@@ -9816,10 +8966,8 @@ mod pop {
     }
 
     /// Make grain is known and cheaper per time than the farm. The farm is
-    /// not on a job that runs it. The buy is the day's meal plus the saved
-    /// day, and the meal stays posted once that grain is on hand. The farm
-    /// keeps making the gap
-    /// until then, then steps down.
+    /// not on a job that runs it. The meal stays posted once that grain is
+    /// on hand. The farm keeps making the gap until then, then steps down.
     #[test]
     fn plan_keeps_a_worse_meal_until_the_grain_is_on_hand() {
         let mut pop = make_pop();
@@ -9834,12 +8982,24 @@ mod pop {
             .with_good(make_good(1, "grain", 0.0))
             .with_process(
                 Process::new(29, "subsistence farm", 0)
-                    .with_input(ProcessInput::new(TIME, 10.0, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        10.0,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 2.0, true)),
             )
             .with_process(
                 Process::new(1, "make grain", 0)
-                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        0.5,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 6.0, true)),
             );
         let history = card(&[(1, 1.0, 1.0)]);
@@ -9855,11 +9015,6 @@ mod pop {
             .find(|line| line.process == 29)
             .expect("farm line");
         assert!((farm.target.expect("farm target") - 2.5).abs() < 1e-9);
-        let orders = pop.buy_orders(&history);
-        assert_eq!(orders.len(), 1);
-        assert_eq!(orders[0].target, 1);
-        // One level, plus the saved day. The cover stays the meal.
-        assert_eq!(orders[0].target_amount, 8.0);
 
         pop.property.insert(1, PopPRow::new(4.0));
         pop.plan(&factuals, &history);
@@ -9874,6 +9029,109 @@ mod pop {
             .find(|line| line.process == 29)
             .expect("farm line");
         assert!((farm.target.expect("farm target") - 1.875).abs() < 1e-9);
+    }
+
+    /// Make grain is known, and the mass book offered grain. The farm is still
+    /// short, and it walks a quarter off the meal. The buy stays at that meal.
+    /// The best yield keeps its meal when the same book is offering.
+    #[test]
+    fn plan_walks_a_worse_meal_off_when_the_book_offers_it() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let factuals = Factuals::new()
+            .with_good(make_good(TIME, "time", 1.0))
+            .with_good(make_good(1, "grain", 0.0))
+            .with_process(
+                Process::new(29, "subsistence farm", 0)
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        10.0,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
+                    .with_output(ProcessOutput::new(1, 2.0, true)),
+            )
+            .with_process(
+                Process::new(1, "make grain", 0)
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        0.5,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
+                    .with_output(ProcessOutput::new(1, 6.0, true)),
+            );
+        let mut history = card(&[(1, 1.0, 1.0)]);
+
+        pop.plan(&factuals, &history);
+
+        assert_eq!(pop.cheaper_cover, HashMap::from([(1, 4.0)]));
+        let farm = pop
+            .job
+            .lines
+            .iter()
+            .find(|line| line.process == 29)
+            .expect("farm line");
+        assert!((farm.target.expect("farm target") - 2.5).abs() < 1e-9);
+
+        history.mass_offered.insert(1, 1.0);
+        pop.plan(&factuals, &history);
+
+        assert_eq!(pop.cheaper_cover, HashMap::from([(1, 4.0)]));
+        let farm = pop
+            .job
+            .lines
+            .iter()
+            .find(|line| line.process == 29)
+            .expect("farm line");
+        assert!((farm.target.expect("farm target") - 1.875).abs() < 1e-9);
+    }
+
+    /// Half a time makes six grain, and that costs more than the card. The
+    /// book is offering grain. This line is the best yield, so the meal stays.
+    #[test]
+    fn plan_keeps_the_best_meal_when_the_book_offers_it() {
+        let mut pop = make_pop();
+        pop.job = Job::new(1, vec![JobLine::new(1, Some(0.0), vec![])]);
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            4.0,
+        ));
+        let factuals = Factuals::new()
+            .with_good(make_good(TIME, "time", 1.0))
+            .with_good(make_good(1, "grain", 0.0))
+            .with_process(
+                Process::new(1, "make grain", 0)
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        0.5,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
+                    .with_output(ProcessOutput::new(1, 6.0, true)),
+            );
+        let mut history = card(&[(1, 1.0, 1.0), (TIME, 100.0, 1.0)]);
+        history.mass_offered.insert(1, 4.0);
+
+        pop.plan(&factuals, &history);
+
+        assert_eq!(pop.cheaper_cover, HashMap::from([(1, 4.0)]));
+        let specialty = pop
+            .job
+            .lines
+            .iter()
+            .find(|line| line.process == 1)
+            .expect("specialty line");
+        assert!((specialty.target.expect("specialty target") - 5.0 / 6.0).abs() < 1e-9);
     }
 
     /// Two grain are on hand of a meal of four. The farm is worse than make
@@ -9893,12 +9151,24 @@ mod pop {
             .with_good(make_good(1, "grain", 0.0))
             .with_process(
                 Process::new(29, "subsistence farm", 0)
-                    .with_input(ProcessInput::new(TIME, 10.0, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        10.0,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 2.0, true)),
             )
             .with_process(
                 Process::new(1, "make grain", 0)
-                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        0.5,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 6.0, true)),
             );
         let history = card(&[(1, 1.0, 1.0)]);
@@ -9938,12 +9208,24 @@ mod pop {
             .with_good(make_good(1, "grain", 0.0))
             .with_process(
                 Process::new(29, "subsistence farm", 0)
-                    .with_input(ProcessInput::new(TIME, 10.0, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        10.0,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 2.0, true)),
             )
             .with_process(
                 Process::new(1, "make grain", 0)
-                    .with_input(ProcessInput::new(TIME, 0.5, true, InputType::Destroyed, false))
+                    .with_input(ProcessInput::new(
+                        TIME,
+                        0.5,
+                        true,
+                        InputType::Destroyed,
+                        false,
+                    ))
                     .with_output(ProcessOutput::new(1, 6.0, true)),
             );
         let history = card(&[(1, 1.0, 1.0)]);
@@ -9968,5 +9250,93 @@ mod pop {
             .find(|line| line.process == 29)
             .expect("farm line");
         assert_eq!(farm.target, Some(0.0));
+    }
+
+    /// Two households eat two leftover units. Each household gains the sink's
+    /// efficiency once, so living rises by 0.01. One household eating one unit
+    /// is the same rate.
+    #[test]
+    fn rest_adds_one_efficiency_per_unit_per_household() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 2.0;
+        pop.property.insert(0, PopPRow::new(2.0));
+        pop.desires[0].push(desire(1, vec![], 1.0));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_sink(0, 0.01));
+
+        pop.rest(&factuals);
+
+        assert!(pop.property[&0].quantity.abs() < 1e-12);
+        assert!((pop.property[&0].consumed - 2.0).abs() < 1e-12);
+        assert!((pop.rest_taken[&0] - 2.0).abs() < 1e-12);
+        assert!((pop.standard_of_living() - 0.01).abs() < 1e-12);
+    }
+
+    /// One household, one free unit above a reserve and a saved unit, adds 0.01.
+    /// The reserve and the saved unit stay.
+    #[test]
+    fn rest_leaves_reserved_stock_and_the_saved_pile() {
+        let mut pop = make_pop();
+        pop.property.insert(0, PopPRow::new(3.0).with_reserve(1.0));
+        pop.savings.insert(0, 1.0);
+        pop.desires[0].push(desire(1, vec![], 1.0));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_sink(0, 0.01));
+
+        pop.rest(&factuals);
+
+        assert!((pop.property[&0].quantity - 2.0).abs() < 1e-12);
+        assert!((pop.property[&0].reserved - 1.0).abs() < 1e-12);
+        assert!((pop.rest_taken[&0] - 1.0).abs() < 1e-12);
+        assert!((pop.standard_of_living() - 0.01).abs() < 1e-12);
+    }
+
+    /// The desire ate the only unit. Rest does not take it, and living stays
+    /// that one level.
+    #[test]
+    fn rest_does_not_eat_a_unit_the_desire_took() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(1.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            1.0,
+        ));
+        let factuals = Factuals::new().with_species(Species::new(0, "human").with_sink(1, 0.05));
+
+        pop.consume();
+        pop.rest(&factuals);
+
+        assert!(pop.property[&1].quantity.abs() < 1e-12);
+        assert!(pop.rest_taken.get(&1).copied().unwrap_or(0.0).abs() < 1e-12);
+        assert!((pop.standard_of_living() - 1.0).abs() < 1e-12);
+    }
+
+    /// A species that was not loaded leaves the stock where it is.
+    #[test]
+    fn rest_with_no_species_eats_nothing() {
+        let mut pop = make_pop();
+        pop.property.insert(0, PopPRow::new(1.0));
+        pop.desires[0].push(desire(1, vec![], 1.0));
+
+        pop.rest(&Factuals::new());
+
+        assert!((pop.property[&0].quantity - 1.0).abs() < 1e-12);
+        assert_eq!(pop.rest_sol, 0.0);
+    }
+
+    /// A used good is recorded apart from the meal.
+    #[test]
+    fn consume_records_a_used_good_apart_from_the_meal() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(1.0));
+        pop.desires[0].push(desire(
+            1,
+            vec![DesireTarget::new(1, DesireTargetType::Use, 1.0)],
+            1.0,
+        ));
+
+        pop.consume();
+
+        assert!((pop.day_held[&1] - 1.0).abs() < 1e-9);
+        assert!(pop.day_eaten.get(&1).copied().unwrap_or(0.0).abs() < 1e-12);
     }
 }

@@ -5,7 +5,19 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::game::{
-    config::{ConfigLoadError, GameConfig}, craft::Craft, culture::Culture, demographic_source::DemographicSource, desire::{DemoDesire, Desire}, effects::ProcessEffect, good::Good, household::{BirthSentiment, DemographicRates}, pop::DemoRow, process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput}, religion::Religion, species::Species, stratum::Stratum,
+    config::{ConfigLoadError, GameConfig},
+    craft::Craft,
+    culture::Culture,
+    demographic_source::DemographicSource,
+    desire::{DemoDesire, Desire},
+    effects::ProcessEffect,
+    good::Good,
+    household::{BirthSentiment, DemographicRates},
+    pop::DemoRow,
+    process::{InputEffect, InputType, Process, ProcessInput, ProcessOutput},
+    religion::Religion,
+    species::{Species, SpeciesSink},
+    stratum::Stratum,
 };
 
 /// TOML world-data file of goods, processes, and crafts (factuals).
@@ -192,8 +204,8 @@ impl ProcessFile {
         let id = self.id;
         check_process_complexity(id, self.complexity)?;
         let mut seen_inputs = HashSet::new();
-        let mut process = Process::new(id, self.name, self.tech_source)
-            .with_complexity(self.complexity);
+        let mut process =
+            Process::new(id, self.name, self.tech_source).with_complexity(self.complexity);
         for input in self.inputs {
             if !seen_inputs.insert(input.good) {
                 return Err(FactualsLoadError::DuplicateProcessInput {
@@ -214,7 +226,11 @@ impl ProcessFile {
 }
 
 impl ProcessInputFile {
-    fn into_input(self, process: usize, factuals: &Factuals) -> Result<ProcessInput, FactualsLoadError> {
+    fn into_input(
+        self,
+        process: usize,
+        factuals: &Factuals,
+    ) -> Result<ProcessInput, FactualsLoadError> {
         check_process_amount(process, "input", self.amount)?;
         check_process_good(process, self.good, factuals)?;
         let optional = self.optional || !self.optional_effects.is_empty();
@@ -233,7 +249,11 @@ impl ProcessInputFile {
 }
 
 impl ProcessOutputFile {
-    fn into_output(self, process: usize, factuals: &Factuals) -> Result<ProcessOutput, FactualsLoadError> {
+    fn into_output(
+        self,
+        process: usize,
+        factuals: &Factuals,
+    ) -> Result<ProcessOutput, FactualsLoadError> {
         check_process_amount(process, "output", self.amount)?;
         check_process_good(process, self.good, factuals)?;
         Ok(ProcessOutput::new(self.good, self.amount, self.fixed))
@@ -303,15 +323,16 @@ fn duplicate_craft(id: usize, origin: Option<DemographicSource>) -> FactualsLoad
         Some(DemographicSource::Culture(culture)) => {
             FactualsLoadError::DuplicateCultureCraft { culture, craft: id }
         }
-        Some(DemographicSource::Religion(religion)) => {
-            FactualsLoadError::DuplicateReligionCraft { religion, craft: id }
+        Some(DemographicSource::Religion(religion)) => FactualsLoadError::DuplicateReligionCraft {
+            religion,
+            craft: id,
+        },
+        Some(DemographicSource::Species(species)) => {
+            FactualsLoadError::InvalidCraft(format!("species {species} already has craft {id}"))
         }
-        Some(DemographicSource::Species(species)) => FactualsLoadError::InvalidCraft(format!(
-            "species {species} already has craft {id}"
-        )),
-        Some(DemographicSource::Stratum(stratum)) => FactualsLoadError::InvalidCraft(format!(
-            "stratum {stratum} already has craft {id}"
-        )),
+        Some(DemographicSource::Stratum(stratum)) => {
+            FactualsLoadError::InvalidCraft(format!("stratum {stratum} already has craft {id}"))
+        }
     }
 }
 
@@ -376,14 +397,14 @@ impl From<ProcessEffectFile> for ProcessEffect {
 }
 
 /// # Factuals
-/// 
-/// This is where all the 'facts' of the world are stored, such as what goods and 
+///
+/// This is where all the 'facts' of the world are stored, such as what goods and
 /// processes exist, these rarely, if ever change, and should even be mostly the same
 /// between games.
-/// 
+///
 /// This should include Goods, Processes, Crafts, Game Rules, etc.
-/// 
-/// This is as compared to 'game state' which is the current state fo the world in a 
+///
+/// This is as compared to 'game state' which is the current state fo the world in a
 /// given game, such as the map, players, goods in the market, prices, etc.
 #[derive(Debug, Clone)]
 pub struct Factuals {
@@ -405,7 +426,7 @@ pub struct Factuals {
 
 impl Factuals {
     /// # New
-    /// 
+    ///
     /// News up empty data.
     pub fn new() -> Self {
         Factuals {
@@ -646,11 +667,7 @@ impl Factuals {
     ///
     /// A repeated id is invalid. An id [`Self::get_process`] does not return
     /// is invalid. Returns the first failure.
-    fn require_craft_processes(
-        &self,
-        label: &str,
-        ids: &[usize],
-    ) -> Result<(), FactualsLoadError> {
+    fn require_craft_processes(&self, label: &str, ids: &[usize]) -> Result<(), FactualsLoadError> {
         let mut seen = HashSet::new();
         for process in ids {
             if !seen.insert(*process) {
@@ -879,8 +896,7 @@ impl Factuals {
             }
         }
         if religion != 0 {
-            if let Some(attached) = self.craft(craft, Some(DemographicSource::Religion(religion)))
-            {
+            if let Some(attached) = self.craft(craft, Some(DemographicSource::Religion(religion))) {
                 resolved.processes = attached.apply_to(&resolved.processes);
                 resolved.complexity_modifier *= attached.complexity_modifier;
             }
@@ -901,8 +917,21 @@ impl Factuals {
 
     /// Looks up a species by id. Panics if missing.
     pub fn find_species(&self, id: usize) -> &Species {
-        self.species.get(&id)
+        self.species
+            .get(&id)
             .unwrap_or_else(|| panic!("Species {id} missing from factuals."))
+    }
+
+    /// # Species Sinks
+    ///
+    /// Bottomless goods for `species`.
+    ///
+    /// A species that was not loaded has none. Returns that slice.
+    pub fn species_sinks(&self, species: usize) -> &[SpeciesSink] {
+        self.species
+            .get(&species)
+            .map(Species::sinks)
+            .unwrap_or(&[])
     }
 
     /// # Clear Household Changed Flags
@@ -927,7 +956,8 @@ impl Factuals {
 
     /// Looks up a culture by id. Panics if missing.
     pub fn find_culture(&self, id: usize) -> &Culture {
-        self.cultures.get(&id)
+        self.cultures
+            .get(&id)
             .unwrap_or_else(|| panic!("Culture {id} missing from factuals."))
     }
 
@@ -953,7 +983,8 @@ impl Factuals {
 
     /// Looks up a religion by id. Panics if missing.
     pub fn find_religion(&self, id: usize) -> &Religion {
-        self.religion.get(&id)
+        self.religion
+            .get(&id)
             .unwrap_or_else(|| panic!("Religion {id} missing from factuals."))
     }
 
@@ -985,10 +1016,11 @@ impl Factuals {
     }
 
     pub(crate) fn find_good(&self, id: usize) -> &Good {
-        self.goods.get(&id)
+        self.goods
+            .get(&id)
             .unwrap_or_else(|| panic!("Good {id} missing from factuals."))
     }
-    
+
     /// # Get Demographic Rates
     ///
     /// Resolve structural demographic rates for a pop's demographic ids:
@@ -1220,7 +1252,10 @@ add = [30, 2]
         )
         .expect("toml");
 
-        assert_eq!(factuals.get_craft(1).expect("subsistence").name, "subsistence");
+        assert_eq!(
+            factuals.get_craft(1).expect("subsistence").name,
+            "subsistence"
+        );
         assert_eq!(factuals.craft_processes(1, 0, 0), vec![29, 30]);
         assert_eq!(factuals.craft_processes(1, 4, 0), vec![29, 3]);
         assert_eq!(factuals.craft_processes(1, 4, 5), vec![29, 3, 30, 2]);
@@ -1306,7 +1341,15 @@ complexity_modifier = 0.5
         )
         .expect("toml");
 
-        assert!((factuals.get_craft(1).expect("subsistence").complexity_modifier - 0.4).abs() < 1e-12);
+        assert!(
+            (factuals
+                .get_craft(1)
+                .expect("subsistence")
+                .complexity_modifier
+                - 0.4)
+                .abs()
+                < 1e-12
+        );
         assert!((factuals.get_craft(2).expect("plain").complexity_modifier - 1.0).abs() < 1e-12);
         assert!(
             (factuals
@@ -1471,7 +1514,11 @@ processes = [29]
         assert!(msg.contains("craft 1"), "{msg}");
         assert!(msg.contains("32"), "{msg}");
         assert!(factuals.cultures.get(&4).is_none());
-        assert!(factuals.craft(1, Some(DemographicSource::Culture(4))).is_none());
+        assert!(
+            factuals
+                .craft(1, Some(DemographicSource::Culture(4)))
+                .is_none()
+        );
 
         let repeated = factuals
             .insert_culture_craft(CultureCraftFile {
@@ -1523,11 +1570,17 @@ processes = [29]
         assert_eq!(subsistence.processes, vec![29, 30, 31]);
         assert!((subsistence.complexity_modifier - 1.0).abs() < 1e-12);
         assert_eq!(
-            factuals.get_craft(5).expect("subsistence farming").processes,
+            factuals
+                .get_craft(5)
+                .expect("subsistence farming")
+                .processes,
             vec![29, 30, 31, 1]
         );
         assert_eq!(
-            factuals.get_craft(6).expect("subsistence watering").processes,
+            factuals
+                .get_craft(6)
+                .expect("subsistence watering")
+                .processes,
             vec![29, 30, 31, 2]
         );
         assert_eq!(
@@ -1554,8 +1607,7 @@ processes = [29]
         assert!(survival.is_skill());
         assert!(survival.tags.contains(&GoodTag::Untradeable));
         const RAW_EXTRACTS: &[&str] = &[
-            "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal",
-            "clay",
+            "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal", "clay",
         ];
         for process in factuals.processes.values() {
             let time_in = process
@@ -1594,9 +1646,10 @@ processes = [29]
                 .get(&process.outputs[0].good)
                 .map(|good| good.name.as_str())
                 .unwrap_or("");
-            let required_material = process.inputs.iter().any(|input| {
-                input.good != TIME && !input.is_optional()
-            });
+            let required_material = process
+                .inputs
+                .iter()
+                .any(|input| input.good != TIME && !input.is_optional());
             if process.is_subsistence() || process.outputs[0].good == TIME {
                 assert!(!required_material, "{} should be Time-only", process.name);
                 if process.is_subsistence() {
@@ -1664,7 +1717,9 @@ processes = [29]
         assert_eq!(time.outputs[0].good, 0);
         assert_eq!(time.inputs.len(), 2);
         assert!((time.outputs[0].amount - 1.0).abs() < 1e-12);
-        assert_eq!(factuals.config, GameConfig::default());
+        let mut expected = GameConfig::default();
+        expected.pop.turn_length = 4.0;
+        assert_eq!(factuals.config, expected);
         assert_eq!(factuals.config.market.friction, 1.0);
     }
 
@@ -1784,7 +1839,10 @@ outputs = [{ good = 2, amount = 1.0 }]
         )
         .expect_err("duplicate input");
         match err {
-            FactualsLoadError::DuplicateProcessInput { process: 1, good: 1 } => {}
+            FactualsLoadError::DuplicateProcessInput {
+                process: 1,
+                good: 1,
+            } => {}
             other => panic!("expected DuplicateProcessInput, got {other}"),
         }
     }
@@ -1871,9 +1929,7 @@ volume = 1.0
         culture.work_time_fraction = 0.1;
         let mut stratum = Stratum::new(2, "tenants", 1);
         stratum.work_time_fraction = 0.05;
-        let factuals = Factuals::new()
-            .with_culture(culture)
-            .with_stratum(stratum);
+        let factuals = Factuals::new().with_culture(culture).with_stratum(stratum);
         let row = DemoRow {
             household: Household::new(),
             species: 0,

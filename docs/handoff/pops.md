@@ -1,6 +1,6 @@
 # Pops
 
-Read this for desire satisfaction, consume, cottage work, and the first deal pass.
+Read this before changing the pop tester, `Market::market_day`, or the morning plan.
 `examples/pop_tester` loads `data/world` and `data/pop_tester/`,
 places those pops on one market, grants the day's Time, and runs
 `Market::market_day`. The folder sets the opening board, crafts, stock,
@@ -8,79 +8,96 @@ and the first morning's line targets. A missing household count is 10.
 A household table overrides the adult, elder, and child averages. The
 firm tester loads its pops through the same reader. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
-copies them onto each pop. The tester prints exchanges, including the
-morning buys/sells ratio, then each pop's work, then the pop table, then
-the market board. The pop table is standard of living, size, growth,
-migration, and the five sentiment shares. Migration is the net households
-gained that day. It does not choose baskets or prices. The night's
-plan rewrites every line target and each line's optional inputs.
-`docs/handoff/desire.md` sketches how a platonic desire becomes a
-demographic desire and then a pop desire.
+copies them onto each pop.
+
+The tester prints that morning's mass book, then each pop's work, then the
+pop table, then the market board. The mass book is offered, requested,
+exchanged, and the price. A book that did not trade prints `none`. The
+work table is one line per good: the holding, then buy and sell together
+(`buy`, `sell`, `bought`, `sold`, `back+`, `back-`). A bare name is
+working stock that prints as zero. The line is there because the good was
+offered, bought, or sold. The schedule stays in its own column. The pop
+table is standard of living, people, the change in households, net
+households from migration, and the five sentiment shares. Size is people.
+Growth is the household change since that morning. It does not choose
+baskets or prices. `docs/handoff/desire.md` sketches how a platonic desire
+becomes a demographic desire and then a pop desire.
+
+Cottage work through Market record, below, is the earlier one-to-one day.
+`Market::market_day` does not call `match_deals` or `Pop::plan`. The live
+day is this stop note and `src/game/ladder.rs`. `TODO.md` still describes
+that older day in its 0.1 paragraph. This note is the status.
 
 ## Where this stopped
 
-Cottage planning, savings, the optional-input list, and the first deal pass
-are in. `match_deals` builds the buy list, the sell list, and the requests
-once. After a meeting, only the buyer and the seller rewrite their orders.
-A pop posts a raw accept price, and equality clears. Salability does not
-scale it. A basket is accepted when satisfaction gained is strictly greater
-than satisfaction given up, summed across every tier, even when raw AMV
-falls. When both sides are zero, raw AMV received has to cover raw AMV
-given. A worse recipe posts that day's meal, including after the bin holds
-it, and the line keeps making the gap until those units are in quantity.
-The best known recipe keeps the meal and takes the sought shortfall. A
-paying snap writes the new cover whole, steps the surplus above the old
-cover, and steps sought from that whole line.
+The mass day is in. One sell book, then each pop buys. The morning plan is
+`Job::plan_purchases`. The night does not call `Pop::plan`. Firms are not
+on the ladder. `Firm::plan` stays empty. `PlayState` is not in this cut.
 
-A 15-day `pop_tester` on the current process list is the board this pass
-leaves. Every non-subsistence time input is ten times the previous amount.
-Subsistence farm, water, and forage spend 50 time and return 4. Make grain
-finished at 41.75 and was still rising, and that pop's subsistence farm
-stayed at 0. Grain moved 1223 units in 33 accepted deals. Make water
-finished at 53, wood at 30, bread at 11.4, wood tools at 8.3, cabins at
-6.8, and beer at 15.5. The baker's standard of living was 4.49 at a size
-of 47 and was growing. That pop held grain and water. No bread was sold.
-The two grazers stayed at 3.32 and 3.44. Each still ran a grain meal of
-about 35 subsistence-farm iterations. Gold stayed at 1 and jewelry at 0,
-and those pops bought time rather than grain. The run accepted 470
-meetings, rejected 9, and abandoned none. The world loader still requires
-a non-subsistence time input of at most 1, so `cargo test --lib` fails on
-`make grain time 5 exceeds 1`.
+The day order is reset, then each pop locks a meal and writes its purchase
+targets, `buy_ladder`, the input hold returns to property, produce,
+consume, rest, sentiment, growth, the population cap, prune under one
+household, internal migration, decay, rescale desires, record keeping,
+gather use, and the night card. Yesterday's mass offer and exchange stay
+on the history the plan reads. Sentiment runs before growth. Rescale runs
+after decay and after migration.
 
-The next pass resets the market, buying, selling, planning, and scheduling.
-These trials are already judged and stay out of that reset: interlacing
-consumption with production and trading, a price floor on the most
-efficient process, a mid-day price recalc, an NxN meeting matrix, an
-internal price or time as the numeraire, a rewrite of the peg or the print,
-dropping a bought meal on the night it is posted, a shared time pool across
-lines, and marching every costly line, including the only maker, down to
-the floor. `offered_unsold` is stored on the good after the match, and the
-plan does not read it. Process cost compares a recipe with the card and
-does not choose the desire. The day in this commit still produces, then
-trades, then plans.
+`buy_ladder` orders pops by currency AMV per household, then the lower id.
+Each pop buys basic desires, saves, buys the job's inputs, saves, buys
+common desires, saves, then luxury. An unfilled whole input stops that pop
+before common and luxury. A desire the book cannot fill is still a bid,
+and the next desire runs while a whole coin remains. Tender the plan kept
+off the sell book stays in working stock. Desires do not spend it. The
+input buy and the currency save can.
 
-Seller weight is a first cut: the whole units on the
-offer. Refine that weight later. The buyer draw is still one ticket per buy.
-Owned targets are in the tester: wood tools on the householder common
-desire, and cabins on the hearth luxury desire. New pop generation is the
-open 0.1 item in `TODO.md`. The pop tester shares one ceiling: each pop's
-starting size times a multiplier (default 1000) is its share. Sentiment
-runs before growth, from desire arms, stored effects, tier satisfaction,
-wealth per household, and the change in standard of living against its
-recent average. Each other emotion moves 15 percent of its stored share
-into contentment in that same batch, and a larger stored share moves more.
-Growth scales this year's births per woman by the demographic sentiment
-schedule. A content pop stays on the baseline. The tester desires carry no
-sentiment arms. After growth, if the capped headcount passes the sum of
-those shares, every capped pop's household count is scaled by the same
-factor. A pop left under one household is removed. Households then move
-between the pops still on the market. Desires match the size that remains,
-after decay. After the days on the command line, it asks how many more to run.
+A line pays when its trade score is positive. A specialty also pays when
+an offered output sold at least one unit. Subsistence drops that mark when
+a specialty pays. Paying lines are planned first, and the higher score is
+planned first. Time on hand is the ceiling of a line that still pays. A
+currency output is not treated as an unsold product. A positive score that
+sold nothing still takes the day. Scaling a partial sale down to the sold
+share was tried and taken out. It cut the pops that were selling, and a
+pile that sold nothing kept the whole day.
 
-A specialty line aims at its cover, its paced surplus, and the unmet buys
-it is allowed to take. It does not take the rest of the morning. Each pop's
-surplus is one offer. The weight pulls a meeting toward the larger pile.
-The other pops still make and sell the same goods.
+`turn_length` is 4. Infant and maternal mortality stay fractions of the
+births in the turn. Subsistence farm, water, and forage are processes
+29–31, complexity 0.25, 36 time for 3 output. Migration pace is 0.1. One
+calm point of living moves a twentieth of the households. Anger weighs
+half beside fear. A different craft closes above 1.10 times the origin's
+wealth. Half of the moving goods travel. A move that would leave fewer
+than one household takes the whole pop, and that pop is removed.
+
+A 100-day `pop_tester` on this tree loses five pops by day 41: the waterer,
+the brewer, the tool maker, the cabin maker, and the jeweler. Births stay
+slightly positive. Migration takes them from 10 households down to about
+one, and the next offer takes the rest. Those households arrive, mostly on
+the gold miner. On day 38 the book still has empty offers against 610 beer
+bids, 488 cabin bids, 1306 jewelry bids, and 5587 pot bids. Wood tools are
+5 offered and 22 requested, and none are exchanged. The waterer is still
+running water against an offer near 30,000. The farmer, the baker, the
+woodcutter, the gold miner, the bucket maker, and the coal pop are still
+on the market at day 100. A floor that keeps the last household was
+considered and left out. Unsuccessful pops should thin.
+
+`cargo test --lib` still fails
+`load_from_path_reads_world_dir_goods_and_processes`. The loader rejects a
+non-subsistence time input above 1. The panic names whichever of those
+processes the map yields first.
+
+Left out of the next pass: writing prices from the job, seeding one run of
+a line that has never sold, retuning migration, `turn_length`, recipes,
+rot, or sentiment, and putting firms on this ladder. The pop tester still
+shares one ceiling. Each pop's starting size times a multiplier (default
+1000) is its share. After the days on the command line, it asks how many
+more to run.
+
+Next is new pop generation, the open 0.1 line in `TODO.md`. The tester
+should start with less than a demographic can do, and a pop should be able
+to create a new pop with a new job. That pass stays limited. It does not
+create a second pop with the same demographic and the same job. The split
+is not designed yet. Death stays as it is. An open bid with no offer is
+the pressure already on the book. The replacement does not have to copy
+the pop that died.
 
 ## Landed vs stub
 
@@ -89,17 +106,17 @@ The other pops still make and sell the same goods.
 | `Pop::satisfy` | Reserves free stock and records satisfaction. Starts at the first basic desire. A target that can be taken in full comes first. Stops if the chosen target cannot. Returns a copy of that desire, or `None` |
 | `Pop::satisfy_continue` | Walks forward from the bookmark `satisfy` wrote. No bookmark: same as `satisfy` |
 | `Pop::satisfy_tier` | One tier, from its first desire. Does not move the bookmark |
-| `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after exchange. `PlayState::phase_pop_consumption` is still `todo` |
+| `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after produce and the input-hold release, before rest. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from selling and payment. The job does not spend that pile as an input. Basic, common, and the first luxury level may eat it. A further luxury level leaves it. See Savings |
-| `Market::match_deals` | Pair on one good, buyer proposes, seller accepts or rejects. Returns every `Meeting`. Only an accepted basket moves goods and pays freight. Both sides reevaluate afterward |
-| `Market::market_day` | One market, in order: reset, reserve, produce, a second pop satisfy for what was just made, `settle_shopping`, `match_deals`, consume, sentiment, pop growth, `rebalance_population_cap`, prune pops under one household, internal migration, decay, `rescale_desires`, actor books and planning, then the night card. Sentiment is before growth so today's mood scales this year's births. Rescale is after decay so this day's desire effects stay at the old size, and after migration so satisfaction and targets match the size still on the market. A pop with no share is left out of the ceiling. A pop's reserve is satisfy, then the job reserve. The morning does not call `apply_craft`, so a process left off the job stays off. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
-| Cottage job | On the pop's stock. Plans, reserves, produces, and shops inputs. See Cottage work |
-| `Pop::plan` | Covers every short desire tier the job can make. A worse line that makes a good for more than a positive holding buys that day's meal, including after those units are in quantity, and keeps making the gap until then. The best known recipe keeps the meal. Each paying line adds its own paced surplus. Unmet buys, plus units downstream production used, add runs on the best line. A worse line the card already beats adds none of that shortfall. A line that does not pay aims at the cover and those runs. One already running keeps a run when that aim is gone. A covering line returns to the order it was added, ahead of a line that only pays or only feeds one of those lines. A line that is not covering, and does not feed one that is, moves to the back. A producer of an input runs before the line that consumes it. Each line's optional inputs are rewritten from the return on feeding each one. `Firm::plan` is empty |
+| `Market::match_deals` | Still in the tree. The live day does not call it. See Match |
+| `Market::market_day` | One market, in order: reset, meal and `plan_purchases`, `buy_ladder`, release the input hold, produce, consume, rest, sentiment, growth, `rebalance_population_cap`, prune under one household, internal migration, decay, `rescale_desires`, record keeping, gather use, then the night card. Yesterday's mass offer and exchange stay on the history the plan reads. Sentiment is before growth. Rescale is after decay and after migration. A pop with no share is left out of the ceiling. The morning does not call `apply_craft`. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| Cottage job | On the pop's stock. `plan_purchases` writes the morning runs and the input buy. The pop posts the sell book. The job does not set a price. See Where this stopped. The Cottage work section below is the earlier night plan |
+| `Pop::plan` | Still in the tree. `market_day` does not call it. The morning plan is `Job::plan_purchases`. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
 | Sentiment | Updated before growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment this day just wrote, so today's mood scales this year's births. Fear and anger also scale the migration offer, and hope scales the pull. Tester desires carry no sentiment arms |
-| Internal migration | After the cap and the under-one prune, before decay. Households move between pops on this market. The offer is the squared living gap plus the squared relative wealth shortfall, times fear and half of anger, then saturated and scaled by a fifth, so one calm point of living moves about a tenth of the households. A living standard above the average pulls, times hope. Demographic distance and wealth gate the destination. The distance cap averages the two cultures' assimilation with the two religions' conversion. A different species does not move. Stratum has no such ease. Half of the moving share's goods travel. A move that would leave fewer than one household takes the whole pop. The per-pop migration methods stay `todo` |
-| Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. A deal offers at most one unit of a skill. The goods still carry `untradeable`, so a meeting is not opened on a skill |
+| Internal migration | After the cap and the under-one prune, before decay. Households move between pops on this market. The offer is the squared living gap plus the squared relative wealth shortfall, times fear and half of anger, then saturated by pace 0.1, so one calm point of living moves a twentieth of the households. A living standard above the average pulls, times hope. Demographic distance and wealth gate the destination. The distance cap averages the two cultures' assimilation with the two religions' conversion. A different species does not move. Stratum has no such ease. A different craft closes above 1.10 times the origin's wealth. Half of the moving share's goods travel. A move that would leave fewer than one household takes the whole pop, and that pop is removed. The per-pop migration methods stay `todo` |
+| Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. Skills are not listed on the mass book |
 
 ## Satisfy
 
@@ -213,8 +230,10 @@ make. The morning buy adds the shortfall on the winning good.
 
 ## Cottage work
 
+The live morning plan is `Job::plan_purchases`, called from `Market::market_day` before the ladder. The notes under this heading are the earlier night plan.
+
 A pop's `Job` (`src/game/job.rs`) runs on that pop's property. It does not
-set a price and does not sell. `Pop::sell_orders` offers free whole units
+set a price. The pop posts the sell book. `Pop::sell_orders` offers free whole units
 above what still feeds a desire. See Proposal and evaluate.
 
 Craft `0` is no baseline. Lines still run. An empty line list skips plan,
@@ -375,6 +394,8 @@ morning, before a plan, does not shop an output. A purchase shrinks that
 list. The next morning's reset drops that shopping list and the claim book. Targets and the optional-input list stay.
 
 ## Match
+
+`Market::market_day` does not call `match_deals`. The live buy is `Market::buy_ladder` in `src/game/ladder.rs`. The notes under this heading are the earlier one-to-one pass.
 
 Exchange, production, and consumption stay separate phases.
 

@@ -28,7 +28,10 @@ pub struct MarketOrder {
 impl MarketOrder {
     /// Buy `amount` of `target`. Amount must be `>= 0`.
     pub fn buy(origin: Actor, target: usize, amount: f64) -> Self {
-        debug_assert!(amount >= 0.0 && amount.is_finite(), "buy amount must be >= 0");
+        debug_assert!(
+            amount >= 0.0 && amount.is_finite(),
+            "buy amount must be >= 0"
+        );
         Self {
             origin,
             target,
@@ -42,7 +45,10 @@ impl MarketOrder {
     /// Sell `amount` of `target`. Stored as a negative target amount.
     /// Amount must be `>= 0`.
     pub fn sell(origin: Actor, target: usize, amount: f64) -> Self {
-        debug_assert!(amount >= 0.0 && amount.is_finite(), "sell amount must be >= 0");
+        debug_assert!(
+            amount >= 0.0 && amount.is_finite(),
+            "sell amount must be >= 0"
+        );
         Self {
             origin,
             target,

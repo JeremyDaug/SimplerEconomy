@@ -13,7 +13,7 @@ fn default_decay_rate() -> f64 {
 }
 
 /// # Good
-/// 
+///
 /// Goods are things that are bought, sold, and traded in the economy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Good {
@@ -23,24 +23,24 @@ pub struct Good {
     pub name: String,
 
     /// What class the good this is in.
-    /// 
-    /// This is another good which exists. it points to the 'ideal' example of the 
+    ///
+    /// This is another good which exists. it points to the 'ideal' example of the
     /// class of good. Think generic bread vs wonder bread.
     #[serde(default)]
     pub class: Option<usize>,
 
     /// The rate that the good decays.
-    /// 
+    ///
     /// [0, 1]
-    /// 
+    ///
     /// Decay rate of 0, means no decay, decay of 1 means it always decays.
     /// Missing world-data keys default to 1.0 (full daily decay).
     #[serde(default = "default_decay_rate")]
     pub decay_rate: f64,
     /// What the good decays into.
-    /// 
+    ///
     /// General Rule 1, what it decays into should be of similar mass .
-    /// 
+    ///
     /// General Rule 2, it should only decay into goods that are either indestructable
     /// or decay into nothing.
     #[serde(default)]
@@ -49,7 +49,7 @@ pub struct Good {
     /// The mass(kg) of the object, used as part of transportation, storage, and friction
     /// cost calculations.
     pub mass: f64,
-    /// The volume (m^3) needed to store the object, used as part of transportation, 
+    /// The volume (m^3) needed to store the object, used as part of transportation,
     /// storage, and friction cost calculations.
     pub volume: f64,
 
@@ -57,7 +57,7 @@ pub struct Good {
     #[serde(default)]
     pub tags: HashSet<GoodTag>,
 
-    /// Categories that a Good belongs to. A tool for searching, sorting, and refining 
+    /// Categories that a Good belongs to. A tool for searching, sorting, and refining
     /// goods into various sections. For example, a bucket of desires should all be
     /// goods which share a primary category.
     #[serde(default)]
@@ -139,7 +139,9 @@ impl Good {
 
     /// True if this good can pay intramarket transport / friction.
     pub fn is_transport(&self) -> bool {
-        self.tags.iter().any(|tag| tag.transport_efficiency().is_some())
+        self.tags
+            .iter()
+            .any(|tag| tag.transport_efficiency().is_some())
     }
 
     /// Friction cover per unit from the Transport tag, or 0.0 if none.
@@ -156,23 +158,23 @@ impl Good {
     }
 
     /// # Durability
-    /// 
+    ///
     /// Calculates the durability of an item (1 - decay_rate).
-    /// 
+    ///
     /// Also used for remaining goods after decay.
     pub fn durability(&self) -> f64 {
         1.0 - self.decay_rate
     }
 
     /// # Bulk
-    /// 
+    ///
     /// Calculates the bulk of an item.
     /// Equal to mass + 400 * Volume.
-    /// 
+    ///
     /// This is meant to be scaled up or down to match friction scaling and so
     /// it may be added here later.
-    /// 
-    /// Bulk may be negative, but it cannot reduce the transportation cost of a 
+    ///
+    /// Bulk may be negative, but it cannot reduce the transportation cost of a
     /// transaction below the flat friction cost.
     pub fn bulk(&self) -> f64 {
         self.mass + self.volume * 400.0

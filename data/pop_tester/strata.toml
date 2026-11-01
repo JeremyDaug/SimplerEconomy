@@ -2,7 +2,9 @@
 # culture is the culture this stratum derives from.
 # Tier 1 is a common desire. The goods table shares one amount.
 # Wood is eaten. Wood tools are owned: consume sets them aside and decay
-# returns them, minus the tool's own decay.
+# returns them, minus the tool's own decay. Coal is eaten beside wood.
+# It fills less than that stratum's wood, and it caps at a quarter of
+# the level.
 
 [[strata]]
 id = 1
@@ -18,6 +20,11 @@ scalar = "all"
 [[strata.desires.goods]]
 good = "wood"
 efficiency = 1
+
+[[strata.desires.goods]]
+good = "coal"
+efficiency = 0.5
+cap = 0.25
 
 [[strata.desires.goods]]
 good = "wood_tools"
@@ -44,13 +51,18 @@ efficiency = 0.75
 cap = 0.75
 
 [[strata.desires.goods]]
+good = "coal"
+efficiency = 0.5
+cap = 0.25
+
+[[strata.desires.goods]]
 good = "wood_tools"
 efficiency = 1.75
 use = true
 cap = 0.75
 
-# Hamlet. Same goods as householder. Crofter fills both a bit more.
-# Tenant keeps wood and fills tools less. Tools stay owned.
+# Hamlet. Same goods as householder. Crofter fills wood, coal, and tools
+# a bit more. Tenant keeps wood and fills tools less. Tools stay owned.
 
 [[strata]]
 id = 3
@@ -67,6 +79,11 @@ scalar = "all"
 good = "wood"
 efficiency = 1.25
 cap = 0.75
+
+[[strata.desires.goods]]
+good = "coal"
+efficiency = 0.75
+cap = 0.25
 
 [[strata.desires.goods]]
 good = "wood_tools"
@@ -89,6 +106,11 @@ scalar = "all"
 good = "wood"
 efficiency = 1
 cap = 0.75
+
+[[strata.desires.goods]]
+good = "coal"
+efficiency = 0.5
+cap = 0.25
 
 [[strata.desires.goods]]
 good = "wood_tools"

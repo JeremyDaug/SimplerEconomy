@@ -1,23 +1,23 @@
-use std::collections::HashSet;
+use super::tile::Tile;
 use hexx::Hex;
 use itertools::Itertools;
-use super::tile::Tile;
+use std::collections::HashSet;
 
 /// # Map
-/// 
-/// This stores our map in greater detail. 
-/// 
+///
+/// This stores our map in greater detail.
+///
 /// Stores hex data, and allows to organize and manipulate it.
-/// 
+///
 /// It also deals with the location and organization of the hexes relative to each other.
-/// 
+///
 /// The hex grid map is point donw, to create nice horizontal rows.
-/// 
-/// This is an Axial grid with pointy top. Each row is offset by half to the right 
+///
+/// This is an Axial grid with pointy top. Each row is offset by half to the right
 /// from the row below, while hexes directly to the left and right
-/// 
+///
 /// ## Wrapping
-/// 
+///
 /// The map is allowed to wrap (or not) in both the vertical or horizontal directions.
 /// If neither the map is flat and has corners.
 /// If it only wraps in one, it's cylyndrical.
@@ -34,25 +34,25 @@ pub struct Map {
     /// Horizontal Wrapping.
     pub hwrap: bool,
 
-    /// Our hexes, stored in a simple hex. The HexCoord is the location (x, y) of the 
+    /// Our hexes, stored in a simple hex. The HexCoord is the location (x, y) of the
     /// hex in question.
     pub tiles: Vec<Vec<Tile>>,
     /// The regions which currently exist.
-    /// 
+    ///
     /// First hex in each region is the current capital of the region.
-    /// 
-    /// For quick region lookup, look at the Tile's region rather than doing an 
+    ///
+    /// For quick region lookup, look at the Tile's region rather than doing an
     /// iterative search.
-    /// 
+    ///
     /// regions[region][idx]
     pub regions: Vec<Vec<Hex>>,
 }
 
 impl Map {
     /// # New
-    /// 
+    ///
     /// Creates a new map with the given parameters.
-    /// 
+    ///
     /// Assumes no wrapping.
     pub fn new(width: usize, height: usize) -> Self {
         let mut ret = Self {
@@ -86,9 +86,9 @@ impl Map {
     }
 
     /// # Wrap
-    /// 
+    ///
     /// Takes a hex and wraps it to within our height/width bounds.
-    /// 
+    ///
     /// If hex is outside our bounds and we don't wrap, we return None as a safety mechanism.
     pub fn wrap(&self, hex: Hex) -> Option<Hex> {
         let mut res = hex.clone();
@@ -112,11 +112,11 @@ impl Map {
     }
 
     /// # Get Region
-    /// 
+    ///
     /// Gets the region a hex is in. Returns the idx of the region.
-    /// 
+    ///
     /// If the hex is not in a region, it returns None.
-    /// 
+    ///
     /// Tiles keep track of this, so we can just ask them.
     pub fn get_region(&self, hex: Hex) -> Option<usize> {
         if let Some(tile) = self.get_tile(hex) {
@@ -127,9 +127,9 @@ impl Map {
     }
 
     /// # Find City
-    /// 
+    ///
     /// Given a hex, find the city tile which oversees it.
-    /// 
+    ///
     /// Returns the hex of the region's capital, or None if not in a region.
     pub fn find_city_hex(&mut self, hex: Hex) -> Option<Hex> {
         if let Some(region) = self.get_region(hex) {
@@ -140,9 +140,9 @@ impl Map {
     }
 
     /// # Get Cities
-    /// 
-    /// Gets all of the cities in the map. 
-    /// 
+    ///
+    /// Gets all of the cities in the map.
+    ///
     /// Cities are stored in the first spot of a region, their location in this
     /// list is the same location in the region's list.
     pub fn get_city_hexes(&self) -> Vec<Hex> {
@@ -150,9 +150,9 @@ impl Map {
     }
 
     /// # Get Tile
-    /// 
+    ///
     /// Gets the tile at the given hex, wrapping as needed.
-    /// 
+    ///
     /// Can return None and does not return mutable tile.
     pub fn get_tile(&self, hex: Hex) -> Option<&Tile> {
         if let Some(res) = self.wrap(hex) {
@@ -167,16 +167,16 @@ impl Map {
         &self.tiles[hex.x as usize][hex.y as usize]
     }
 
-    /// Internal get tile mut helper. Unsafe, and does NOT wrap the hex so use 
+    /// Internal get tile mut helper. Unsafe, and does NOT wrap the hex so use
     /// **cautiously**.
     fn unsafe_get_tile_mut(&mut self, hex: Hex) -> &mut Tile {
         &mut self.tiles[hex.x as usize][hex.y as usize]
     }
 
     /// # Get Region Neigbors
-    /// 
+    ///
     /// Gets all hexes that are adjacent to the region id selected.
-    /// 
+    ///
     /// This includes any wrapping of the map.
     pub fn get_region_neighbors(&self, region: usize) -> Vec<Hex> {
         let mut coverage = HashSet::new();
@@ -205,25 +205,29 @@ impl Map {
     }
 
     /// # Is region Neighbor
-    /// 
+    ///
     /// Checks that a hex is adjacent to an existing region.
-    /// 
+    ///
     /// This is slightly simplified from get_region_neighbors, instead just
-    /// looking for any hex in the selected region which is of distance 1 away and 
+    /// looking for any hex in the selected region which is of distance 1 away and
     /// not already in the region.
-    /// 
+    ///
     /// This will panic if region is out of bounds of our current regions list.
     pub fn is_region_neighbor(&self, region: usize, hex: Hex) -> bool {
         // check that we can get the tile,
         if let Some(tile) = self.get_tile(hex) {
-            if let Some(r) = tile.region && r == region{
+            if let Some(r) = tile.region
+                && r == region
+            {
                 // if in the targeted region, gtfo.
                 return false;
             }
             // get neighboring tiles
             let neighbors = self.get_region_neighbors(region);
             // check that our (wrapped) hex is in neighbors
-            if let Some(wrapped) = self.wrap(hex) && neighbors.contains(&wrapped) {
+            if let Some(wrapped) = self.wrap(hex)
+                && neighbors.contains(&wrapped)
+            {
                 return true;
             }
             return false;
@@ -232,18 +236,18 @@ impl Map {
     }
 
     /// # Add city
-    /// 
+    ///
     /// Adds a new region to our map. This new region starts as just the capital of the
     /// region.
-    /// 
+    ///
     /// Returns true if successful, false if the hex is already in a region.
-    /// 
+    ///
     /// Note:
-    /// 
+    ///
     /// This can safely add values outside of the map, it just modulo's them to
-    /// within the map. Do be aware of that. Reminder that the last row/column is 
+    /// within the map. Do be aware of that. Reminder that the last row/column is
     /// height/width - 1.
-    /// 
+    ///
     /// To create a region from an existing region, you'll want to do a split and move
     /// instead.
     pub fn add_city(&mut self, city: Hex) -> bool {
@@ -266,15 +270,15 @@ impl Map {
     }
 
     /// # Add to Region
-    /// 
+    ///
     /// Adds a hex to the selected region.
-    /// 
+    ///
     /// Returns true if successful, false otherwise.
-    /// 
+    ///
     /// Regions must be contiguous, including wrapping.
-    /// 
+    ///
     /// This does not move hexes from one region to another.
-    /// 
+    ///
     /// This can panic if the region does not exist.
     pub fn add_to_region(&mut self, region: usize, hex: Hex) -> bool {
         // check it is a tile
@@ -284,7 +288,7 @@ impl Map {
                 // if in any region, gtfo
                 return false;
             }
-            
+
             if self.is_region_neighbor(region, hex) {
                 // if a valid neighbor, add to the region
                 println!("{:?}", hex);
@@ -301,7 +305,6 @@ impl Map {
         }
     }
 }
-
 
 #[cfg(test)]
 mod map {
@@ -333,12 +336,16 @@ mod map {
             if let Some(underres) = testmap.wrap(undershoot) {
                 assert_eq!(underres.x, 6);
                 assert_eq!(underres.y, 7);
-            } else { assert!(false) }
+            } else {
+                assert!(false)
+            }
 
             if let Some(overres) = testmap.wrap(overshoot) {
                 assert_eq!(overres.x, 5);
                 assert_eq!(overres.y, 3);
-            } else { assert!(false) }
+            } else {
+                assert!(false)
+            }
         }
     }
 
@@ -352,8 +359,8 @@ mod map {
             testmap.tiles[1][1].region = Some(0);
 
             // check one from each grouping. Row zero should return none.
-            assert_eq!(testmap.get_region(Hex {x:0, y: 0}), None);
-            assert_eq!(testmap.get_region(Hex {x:1, y: 1}), Some(0));
+            assert_eq!(testmap.get_region(Hex { x: 0, y: 0 }), None);
+            assert_eq!(testmap.get_region(Hex { x: 1, y: 1 }), Some(0));
         }
     }
 
@@ -365,29 +372,33 @@ mod map {
         fn tests() {
             let mut testmap = Map::new(5, 5);
 
-            testmap.regions.push(vec![Hex {x: 2, y: 2}]);
+            testmap.regions.push(vec![Hex { x: 2, y: 2 }]);
             testmap.tiles[2][2].region = Some(0);
-            testmap.regions[0].push(Hex {x: 1, y: 2});
+            testmap.regions[0].push(Hex { x: 1, y: 2 });
             testmap.tiles[1][2].region = Some(0);
-            
-            testmap.regions.push(vec![Hex {x: 4, y: 4}]);
+
+            testmap.regions.push(vec![Hex { x: 4, y: 4 }]);
             testmap.tiles[4][4].region = Some(1);
-            testmap.regions[1].push(Hex {x: 4, y: 3});
+            testmap.regions[1].push(Hex { x: 4, y: 3 });
             testmap.tiles[4][3].region = Some(1);
-            
-            testmap.regions.push(vec![Hex {x: 3, y: 1}]);
+
+            testmap.regions.push(vec![Hex { x: 3, y: 1 }]);
             testmap.tiles[3][1].region = Some(2);
 
             // check both exact find, secondary, and failed find
             if let Some(res) = testmap.find_city_hex(Hex { x: 2, y: 2 }) {
                 assert_eq!(res, Hex { x: 2, y: 2 });
-            } else { assert!(false); }
+            } else {
+                assert!(false);
+            }
 
             if let Some(res) = testmap.find_city_hex(Hex { x: 4, y: 3 }) {
                 assert_eq!(res, Hex { x: 4, y: 4 });
-            } else { assert!(false); }
+            } else {
+                assert!(false);
+            }
 
-            assert!(testmap.find_city_hex(Hex {x: 0, y: 0}).is_none());
+            assert!(testmap.find_city_hex(Hex { x: 0, y: 0 }).is_none());
         }
     }
 
@@ -398,20 +409,20 @@ mod map {
         #[test]
         fn tests() {
             let mut testmap = Map::new(5, 5);
-            testmap.regions.push(vec![Hex {x: 2, y: 2}]);
-            testmap.regions[0].push(Hex {x: 1, y: 2});
-            
-            testmap.regions.push(vec![Hex {x: 4, y: 4}]);
-            testmap.regions[1].push(Hex {x: 4, y: 3});
-            
-            testmap.regions.push(vec![Hex {x: 5, y: 1}]);
+            testmap.regions.push(vec![Hex { x: 2, y: 2 }]);
+            testmap.regions[0].push(Hex { x: 1, y: 2 });
+
+            testmap.regions.push(vec![Hex { x: 4, y: 4 }]);
+            testmap.regions[1].push(Hex { x: 4, y: 3 });
+
+            testmap.regions.push(vec![Hex { x: 5, y: 1 }]);
 
             // check one from each grouping. Row zero should return none.
             let res = testmap.get_city_hexes();
             assert_eq!(res.len(), 3);
-            assert_eq!(res[0], Hex {x: 2, y: 2});
-            assert_eq!(res[1], Hex {x: 4, y: 4});
-            assert_eq!(res[2], Hex {x: 5, y: 1});
+            assert_eq!(res[0], Hex { x: 2, y: 2 });
+            assert_eq!(res[1], Hex { x: 4, y: 4 });
+            assert_eq!(res[2], Hex { x: 5, y: 1 });
         }
     }
 
@@ -424,7 +435,7 @@ mod map {
             let mut testmap = Map::new(5, 5);
 
             // set up a test region of size 1.
-            testmap.regions.push(vec![Hex { x: 3, y: 3}]);
+            testmap.regions.push(vec![Hex { x: 3, y: 3 }]);
             // check that all neighbors are there by removing matches.
             let neighbors = testmap.get_region_neighbors(0);
             assert_eq!(neighbors.len(), 6);
@@ -489,7 +500,7 @@ mod map {
             let mut testmap = Map::new(5, 5);
 
             // set up a test region.
-            testmap.regions.push(vec![Hex { x: 3, y: 3}]);
+            testmap.regions.push(vec![Hex { x: 3, y: 3 }]);
             testmap.regions[0].push(Hex { x: 2, y: 3 });
             testmap.regions[0].push(Hex { x: 4, y: 3 });
 
@@ -542,7 +553,10 @@ mod map {
             assert_eq!(testmap.regions.get(0).unwrap().len(), 1);
             assert_eq!(testmap.regions.get(0).unwrap().get(0).unwrap(), city1);
             assert_eq!(testmap.regions.get(1).unwrap().len(), 1);
-            assert_eq!(testmap.regions.get(1).unwrap().get(0).unwrap(), Hex {x: 2, y: 4});
+            assert_eq!(
+                testmap.regions.get(1).unwrap().get(0).unwrap(),
+                Hex { x: 2, y: 4 }
+            );
         }
     }
 
@@ -555,7 +569,7 @@ mod map {
             let mut testmap = Map::new(5, 5);
 
             // set up a test region.
-            testmap.regions.push(vec![Hex { x: 3, y: 3}]);
+            testmap.regions.push(vec![Hex { x: 3, y: 3 }]);
             testmap.regions[0].push(Hex { x: 2, y: 3 });
             testmap.regions[0].push(Hex { x: 4, y: 3 });
 
@@ -567,21 +581,21 @@ mod map {
             testmap.tiles[1][3].region = Some(1);
 
             // within region
-            assert!(!testmap.add_to_region(0, Hex {x: 3, y: 3}));
+            assert!(!testmap.add_to_region(0, Hex { x: 3, y: 3 }));
             // in another region
-            assert!(!testmap.add_to_region(0, Hex {x: 1, y: 3}));
+            assert!(!testmap.add_to_region(0, Hex { x: 1, y: 3 }));
             // not neighbor
-            assert!(!testmap.add_to_region(0, Hex {x: 0, y: 0}));
+            assert!(!testmap.add_to_region(0, Hex { x: 0, y: 0 }));
             // out of bounds
-            assert!(!testmap.add_to_region(0, Hex {x: 10, y: 10}));
+            assert!(!testmap.add_to_region(0, Hex { x: 10, y: 10 }));
             // wrapped neighbor
             testmap.hwrap = true;
-            assert!(testmap.add_to_region(0, Hex {x: 8, y: 4}));
+            assert!(testmap.add_to_region(0, Hex { x: 8, y: 4 }));
             assert_eq!(testmap.regions[0].len(), 4);
             assert_eq!(testmap.regions[0][3], Hex::new(3, 4));
             assert_eq!(testmap.tiles[3][4].region.unwrap(), 0);
             // normal neighbor
-            assert!(testmap.add_to_region(0, Hex {x: 3, y: 2}));
+            assert!(testmap.add_to_region(0, Hex { x: 3, y: 2 }));
             assert_eq!(testmap.regions[0].len(), 5);
             assert_eq!(testmap.regions[0][4], Hex::new(3, 2));
             assert_eq!(testmap.tiles[3][2].region.unwrap(), 0);

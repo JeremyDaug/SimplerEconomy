@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::game::{
-    desire::DemoDesire, effects::DemographicEffect, household::{BirthSentiment, DemographicRates},
+    desire::DemoDesire,
+    effects::DemographicEffect,
+    household::{BirthSentiment, DemographicRates},
 };
 
 /// # Religion
@@ -24,13 +26,13 @@ pub struct Religion {
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
     pub desires: HashMap<usize, DemoDesire>,
     /// The Unirversal effects on people who follow this religion.
-    /// 
+    ///
     /// This is for effects that are not contingent on other factors, like desires.
-    /// For example, Birthrate/Moratlity modifiers, satifsaciton boosts, 
+    /// For example, Birthrate/Moratlity modifiers, satifsaciton boosts,
     /// research/culture effects, labor efficiency, etc.
     pub religion_effects: Vec<DemographicEffect>,
-    /// A Religion's Demograhpic Effects on followers. 
-    /// 
+    /// A Religion's Demograhpic Effects on followers.
+    ///
     /// This is added to previous effects, and so defaults to 0.
     pub religion_demo_eff: DemographicRates,
     /// Added to the species birth-sentiment rates. Zero leaves those rates alone.

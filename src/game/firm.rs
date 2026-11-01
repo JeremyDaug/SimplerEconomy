@@ -4,8 +4,8 @@ use hexx::Hex;
 
 use crate::game::{
     actor::Actor, contract::Contract, deal::DealMaker, factuals::Factuals,
-    firmorganization::FirmOrganization, good::GoodTag, market::MarketHistory,
-    marketorder::MarketOrder, pop::Pop, workforce::Workforce,
+    firmorganization::FirmOrganization, good::GoodTag, market::MarketHistory, pop::Pop,
+    workforce::Workforce,
 };
 
 /// A firm is one workshop: production, stock, and the people tied to it.
@@ -225,24 +225,6 @@ impl DealMaker for Firm {
         Actor::Firm(self.id)
     }
 
-    /// Free stock (`quantity - reserve`) listed with no named payment good.
-    fn sell_orders(&self, history: &MarketHistory) -> Vec<MarketOrder> {
-        let mut orders = Vec::new();
-        for (&good, row) in &self.property {
-            let units = (row.quantity - row.reserve).floor();
-            if units >= 1.0 {
-                let price = history.price(good);
-                orders.push(MarketOrder::sell(self.actor(), good, units).with_accept_price(price));
-            }
-        }
-        orders
-    }
-
-    /// Firms do not post buys until they plan purchases again.
-    fn buy_orders(&self, _history: &MarketHistory) -> Vec<MarketOrder> {
-        Vec::new()
-    }
-
     fn free_units(&self, good: usize) -> f64 {
         self.property
             .get(&good)
@@ -258,19 +240,6 @@ impl DealMaker for Firm {
             .get(&good)
             .map(FirmPRow::fresh_share)
             .unwrap_or(0.0)
-    }
-
-    fn evaluate(
-        &self,
-        proposal: &crate::game::deal::ProposedDeal,
-        history: &MarketHistory,
-        _factuals: &Factuals,
-    ) -> crate::game::deal::DealResponse {
-        if crate::game::deal::seller_can_accept(self, proposal, history) {
-            crate::game::deal::DealResponse::Accept
-        } else {
-            crate::game::deal::DealResponse::Reject
-        }
     }
 
     fn finalize(&mut self, proposal: &crate::game::deal::ProposedDeal, factuals: &Factuals) {
