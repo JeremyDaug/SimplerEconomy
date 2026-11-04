@@ -8,9 +8,21 @@ craft_distance = 0.1
 # Births per woman, age-band deaths, aging, and the partnership step
 # use the annual rates divided by this. Infant and maternal mortality
 # stay fractions of the births in the turn.
-turn_length = 4
-# Currency AMV set aside per household at each savings level. The levels add.
-savings_amv = 1.0
+turn_length = 12
+# Multiplier on the mean price of a desire tier, per household, at each
+# savings level. The levels add. Three keeps three of that price: one more
+# day of it than a multiplier of two.
+savings_amv = 3.0
+# Runs the goods sent with a new household must be able to start.
+founding_runs = 3
+# Days of set-aside each leaving household takes. Three days each.
+founding_goods_weight = 3
+# Share of foundings that add a profitable process or drop an unprofitable line.
+founding_useful_share = 0.8
+# Days of set-aside, against one day of desires, before a pop may split.
+founding_wealth = 1.5
+# Market days from one founding to the next. One is every day.
+founding_gap = 5
 
 [market]
 transaction_cost = 1.0

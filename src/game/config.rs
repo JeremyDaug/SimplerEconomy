@@ -24,8 +24,18 @@ pub mod pop_constants {
     pub const CRAFT_DISTANCE: f64 = 0.1;
     /// Turns in one demographic year when config does not say. One turn is one year.
     pub const TURN_LENGTH: f64 = 1.0;
-    /// Currency AMV set aside per household at each savings level.
+    /// Multiplier on the mean tier price saved per household at each level.
     pub const SAVINGS_AMV: f64 = 1.0;
+    /// Runs the goods sent with a new pop must be able to start.
+    pub const FOUNDING_RUNS: f64 = 3.0;
+    /// Days of set-aside each leaving household takes.
+    pub const FOUNDING_GOODS_WEIGHT: f64 = 3.0;
+    /// Share of foundings that add a profitable process or drop an unprofitable one.
+    pub const FOUNDING_USEFUL_SHARE: f64 = 0.8;
+    /// Days of set-aside required before a pop may split.
+    pub const FOUNDING_WEALTH: f64 = 1.5;
+    /// Market days from one founding to the next. One is every day.
+    pub const FOUNDING_GAP: f64 = 5.0;
 }
 
 /// Transport bill pieces. Not prices.
@@ -121,10 +131,34 @@ pub struct PopConfig {
     /// [`crate::game::household::Household::update`] divides the annual stock
     /// rates by this. Must be `>= 1`.
     pub turn_length: f64,
-    /// Currency AMV saved per household at each savings level. Must be `>= 0`.
+    /// Multiplier on the mean tier price saved per household at each level.
     ///
-    /// The levels add. [`crate::game::ladder`] is the buyer.
+    /// Must be `>= 0`. The levels add. [`crate::game::ladder`] is the buyer.
     pub savings_amv: f64,
+    /// Runs of the new job the leaving goods must be able to start. Must be `>= 1`.
+    ///
+    /// [`crate::game::market::Market::found_pop`] reads it.
+    pub founding_runs: f64,
+    /// Days of set-aside each leaving household takes.
+    ///
+    /// Must be `>= 1`. The days are a share of the set-aside, capped at
+    /// the whole pile. Working goods move separately, with the households.
+    pub founding_goods_weight: f64,
+    /// Share of foundings that add a profitable process or drop an unprofitable line.
+    ///
+    /// Must be from 0 to 1. The rest add the process for an open bid.
+    pub founding_useful_share: f64,
+    /// Days of set-aside required before a pop may split.
+    ///
+    /// Must be `>= 0`. A day is one pass through the desire basket.
+    /// Zero accepts a pop with nothing set aside.
+    /// [`crate::game::market::Market::found_pop`] reads it.
+    pub founding_wealth: f64,
+    /// Market days from one founding to the next.
+    ///
+    /// Must be `>= 1`. One allows a founding every day.
+    /// [`crate::game::market::Market::found_pop`] reads it.
+    pub founding_gap: f64,
 }
 
 impl Default for PopConfig {
@@ -133,6 +167,11 @@ impl Default for PopConfig {
             craft_distance: pop_constants::CRAFT_DISTANCE,
             turn_length: pop_constants::TURN_LENGTH,
             savings_amv: pop_constants::SAVINGS_AMV,
+            founding_runs: pop_constants::FOUNDING_RUNS,
+            founding_goods_weight: pop_constants::FOUNDING_GOODS_WEIGHT,
+            founding_useful_share: pop_constants::FOUNDING_USEFUL_SHARE,
+            founding_wealth: pop_constants::FOUNDING_WEALTH,
+            founding_gap: pop_constants::FOUNDING_GAP,
         }
     }
 }
@@ -141,12 +180,28 @@ impl PopConfig {
     /// # Validate
     ///
     /// Appends a problem when `craft_distance` is non-finite or below 0,
-    /// when `turn_length` is non-finite or below 1, or when `savings_amv`
-    /// is non-finite or below 0.
+    /// when `turn_length` or `founding_runs` is non-finite or below 1,
+    /// when `savings_amv` or `founding_wealth` is non-finite or below 0, when
+    /// `founding_goods_weight` or `founding_gap` is non-finite or below 1, or when
+    /// `founding_useful_share` is outside 0 to 1.
     fn validate(&self, problems: &mut Vec<String>) {
         at_least(problems, "pop.craft_distance", self.craft_distance, 0.0);
         at_least(problems, "pop.turn_length", self.turn_length, 1.0);
         at_least(problems, "pop.savings_amv", self.savings_amv, 0.0);
+        at_least(problems, "pop.founding_wealth", self.founding_wealth, 0.0);
+        at_least(problems, "pop.founding_gap", self.founding_gap, 1.0);
+        at_least(problems, "pop.founding_runs", self.founding_runs, 1.0);
+        at_least(
+            problems,
+            "pop.founding_goods_weight",
+            self.founding_goods_weight,
+            1.0,
+        );
+        unit_share(
+            problems,
+            "pop.founding_useful_share",
+            self.founding_useful_share,
+        );
     }
 }
 
@@ -303,6 +358,54 @@ mod config_should {
     }
 
     #[test]
+    fn load_from_toml_reads_the_founding_stake() {
+        let cfg = GameConfig::load_from_toml(
+            "[pop]\nfounding_runs = 4\nfounding_goods_weight = 2\nfounding_useful_share = 0.5\n",
+        )
+        .expect("toml");
+        assert_eq!(cfg.pop.founding_runs, 4.0);
+        assert_eq!(cfg.pop.founding_goods_weight, 2.0);
+        assert_eq!(cfg.pop.founding_useful_share, 0.5);
+        assert_eq!(cfg.pop.founding_wealth, pop_constants::FOUNDING_WEALTH);
+        assert_eq!(cfg.pop.founding_gap, pop_constants::FOUNDING_GAP);
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_founding_gap_below_one() {
+        let err = GameConfig::load_from_toml("[pop]\nfounding_gap = 0\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.founding_gap"), "{msg}");
+    }
+
+    #[test]
+    fn load_from_toml_rejects_negative_founding_wealth() {
+        let err = GameConfig::load_from_toml("[pop]\nfounding_wealth = -1\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.founding_wealth"), "{msg}");
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_founding_weight_below_one() {
+        let err = GameConfig::load_from_toml("[pop]\nfounding_goods_weight = 0.5\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.founding_goods_weight"), "{msg}");
+    }
+
+    #[test]
+    fn load_from_toml_rejects_founding_runs_below_one() {
+        let err = GameConfig::load_from_toml("[pop]\nfounding_runs = 0\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.founding_runs"), "{msg}");
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_founding_share_above_one() {
+        let err = GameConfig::load_from_toml("[pop]\nfounding_useful_share = 1.5\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.founding_useful_share"), "{msg}");
+    }
+
+    #[test]
     fn load_from_toml_rejects_a_turn_length_below_one() {
         let err = GameConfig::load_from_toml("[pop]\nturn_length = 0.5\n").unwrap_err();
         let msg = err.to_string();
@@ -316,6 +419,7 @@ mod config_should {
         let cfg = GameConfig::load_from_path(&path).expect("world config");
         let mut expected = GameConfig::default();
         expected.pop.turn_length = 4.0;
+        expected.pop.savings_amv = 3.0;
         assert_eq!(cfg, expected);
     }
 

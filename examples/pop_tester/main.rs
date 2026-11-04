@@ -1,4 +1,4 @@
-//! A few pops, one market, a few days.
+//! One subsistence pop, one market, a few days. The market can found more pops.
 //!
 //! Loads world data and `data/pop_tester/`, then runs
 //! [`Market::market_day`]. The scenario folder sets the opening board, each
@@ -30,7 +30,7 @@ use rand::rngs::StdRng;
 use simpler_economy::game::actors::Actors;
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::job::{trade_rate, trade_score};
-use simpler_economy::game::market::{Market, MarketGood, MarketHistory, MassClose};
+use simpler_economy::game::market::{Market, MarketGood, MarketHistory, MassClose, PopExit};
 use simpler_economy::game::pop::{DayTape, Pop};
 
 fn main() {
@@ -128,7 +128,7 @@ fn set_population_caps(actors: &mut Actors, ids: &[usize], multiplier: f64) {
 
 /// # Run Day
 ///
-/// One market day: morning grant, the mass market, then the day's tables.
+/// One market day: morning grant, then the day's tables.
 ///
 /// `day` is the number printed on the header. Sizes for the growth column
 /// are taken after the morning grant and before the market day, from the
@@ -152,8 +152,8 @@ fn run_day(
     // Households before the day, so growth is on the same scale as migration.
     let households = household_counts(actors);
     market.market_day(actors, factuals, rng);
-    print_mass_market(factuals, market);
     print_pops(factuals, actors, &households, &history);
+    print_founding(factuals, actors, market);
     print_market_board(factuals, market);
 }
 
@@ -195,34 +195,6 @@ fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
         .unwrap_or("unknown")
 }
 
-/// # Print Mass Market
-///
-/// Prints one row per good the mass market quoted.
-///
-/// Columns are the good, units offered, units requested, units exchanged,
-/// and the clearing price. A book that did not trade prints `none` for
-/// the price. An empty day still prints the header.
-fn print_mass_market(factuals: &Factuals, market: &Market) {
-    let rows = market
-        .mass_closes()
-        .iter()
-        .map(|close| {
-            vec![
-                good_name(factuals, close.good).to_string(),
-                qty_text(close.offered),
-                qty_text(close.requested),
-                qty_text(close.exchanged),
-                mass_price(close),
-            ]
-        })
-        .collect::<Vec<_>>();
-    print_table(
-        "mass market",
-        &["good", "offered", "requested", "exchanged", "price"],
-        &rows,
-    );
-}
-
 /// # Mass Price
 ///
 /// The clearing AMV of one mass-market row, or `none` when it did not trade.
@@ -253,7 +225,8 @@ fn mass_price(close: &MassClose) -> String {
 /// each divided by the households still on the pop. Books are income over
 /// expenses from [`Pop::day_books`], priced on the same morning `history`
 /// as the schedule. The consumed column is that meal, written as a cost.
-/// The net is income minus both of those costs. A pop removed during the
+/// The net is income minus both of those costs. The last row is
+/// [`PopulationTally::row`]: the whole population. A pop removed during the
 /// day is absent from both tables.
 fn print_pops(
     factuals: &Factuals,
@@ -264,16 +237,29 @@ fn print_pops(
     let ids = living_pops(actors);
     let mut pops = Vec::new();
     let mut work = Vec::new();
+    let mut tally = PopulationTally::default();
     for id in ids {
         let pop = actors.pop_mut(id);
         let sol = pop.calculate_sol(factuals);
         let size = pop.demographics.total_population();
         let count = pop.demographics.household.count;
-        let growth = households
-            .get(&id)
-            .map(|before| growth_text(count - before))
-            .unwrap_or_else(|| "none".to_string());
+        let growth = households.get(&id).map(|before| count - before);
         let (income, expenses, meal) = pop.day_books(history);
+        tally.note(PopShare {
+            people: size,
+            households: count,
+            sol,
+            growth,
+            migration: pop.migration,
+            happy: pop.sentiment.happiness(),
+            content: pop.sentiment.contentment(),
+            anger: pop.sentiment.anger(),
+            fear: pop.sentiment.fear(),
+            hope: pop.sentiment.hope(),
+            income,
+            expenses,
+            meal,
+        });
         let income = per_household(pop, income);
         let expenses = per_household(pop, expenses);
         let meal = per_household(pop, meal);
@@ -282,7 +268,7 @@ fn print_pops(
             id.to_string(),
             qty_text(sol),
             qty_text(size),
-            growth,
+            growth.map(growth_text).unwrap_or_else(|| "none".to_string()),
             growth_text(pop.migration),
             qty_text(pop.sentiment.happiness()),
             qty_text(pop.sentiment.contentment()),
@@ -302,6 +288,9 @@ fn print_pops(
             held,
             traded,
         ]);
+    }
+    if tally.count > 0.0 {
+        pops.push(tally.row());
     }
     print_table(
         "work",
@@ -329,6 +318,169 @@ fn print_pops(
     );
 }
 
+/// # Print Founding
+///
+/// One row per pop still stored: set-aside, whether that pop may found,
+/// the earliest desire still short, and the goods it offered or made.
+/// A pop removed today is one more row.
+///
+/// Savings is [`Pop::set_aside_days`] on the card after this day: how many
+/// one-day desire baskets the set-aside covers. Found is `Y` when that
+/// count clears the world's founding wealth and the pop has enough households.
+/// That answer does not include the wait between foundings. A wait still
+/// running prints on the title line. The desire is
+/// [`Pop::lowest_unmet_desire`]: basic, then common, then luxury. Its goods
+/// are listed highest efficiency first. No short desire prints `none`.
+/// The goods column is [`offered_or_produced`]. A removed pop prints
+/// `left` in days and [`exit_text`] in the desire column.
+fn print_founding(factuals: &Factuals, actors: &Actors, market: &Market) {
+    let card = market.history();
+    let wealth = factuals.config.pop.founding_wealth;
+    let mut rows = living_pops(actors)
+        .into_iter()
+        .map(|id| {
+            let pop = actors.pop(id);
+            let ready = if market.is_founding_ready(pop, wealth) {
+                "Y"
+            } else {
+                "N"
+            };
+            vec![
+                id.to_string(),
+                qty_text(pop.set_aside_days(&card)),
+                ready.to_string(),
+                unmet_desire(factuals, pop),
+                offered_or_produced(factuals, pop),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut gone: Vec<_> = market.pop_removals().to_vec();
+    gone.sort_by_key(|removal| removal.id);
+    for removal in gone {
+        rows.push(vec![
+            removal.id.to_string(),
+            "left".to_string(),
+            String::new(),
+            exit_text(&removal.why),
+            String::new(),
+        ]);
+    }
+    let wait = market.founding_wait();
+    let title = if wait > 0 {
+        format!("founding wait: {wait}")
+    } else {
+        "founding".to_string()
+    };
+    print_table(
+        &title,
+        &["pop", "days", "found", "desire", "goods"],
+        &rows,
+    );
+}
+
+/// # Exit Text
+///
+/// The short reason a removed pop prints in the desire column.
+///
+/// Under one household is the prune. No work and no coin names who
+/// received that pop. A move that would have left under one household
+/// names who received that pop. The same demographic and process set names
+/// the earlier pop. No receiver omits the destination.
+fn exit_text(why: &PopExit) -> String {
+    match why {
+        PopExit::UnderOneHousehold => "under 1 household".to_string(),
+        PopExit::NoWorkNoCoin { to } => exit_dest("no work, no coin", to),
+        PopExit::UnderOneMove { to } => exit_dest("would leave under 1", to),
+        PopExit::SameJob { to } => exit_dest("same job", to),
+    }
+}
+
+/// # Exit Dest
+///
+/// `reason`, then the pop ids in `to`.
+///
+/// Ids stay in the order recorded. An empty list is the reason alone.
+fn exit_dest(reason: &str, to: &[usize]) -> String {
+    if to.is_empty() {
+        return reason.to_string();
+    }
+    let ids = to
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{reason}, to {ids}")
+}
+
+/// # Offered Or Produced
+///
+/// Goods this pop offered for sale or made today, names only.
+///
+/// `factuals` names the goods. `pop` supplies `produced` on each property
+/// row and today's sell offers. A good is kept when either amount prints
+/// as more than zero. A skill is left out. Lowest id comes first. No such
+/// good is `none`.
+fn offered_or_produced(factuals: &Factuals, pop: &Pop) -> String {
+    let tape = pop.day_tape();
+    let mut ids = Vec::new();
+    for (&id, row) in &pop.property {
+        if shown(row.produced) {
+            ids.push(id);
+        }
+    }
+    for (&id, &qty) in &tape.sell_offers {
+        if shown(qty) {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let names = ids
+        .into_iter()
+        .filter(|id| !factuals.get_good(*id).is_some_and(|good| good.is_skill()))
+        .map(|id| good_name(factuals, id))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// # Unmet Desire
+///
+/// The tier and goods of [`Pop::lowest_unmet_desire`].
+///
+/// `factuals` names the goods. Highest efficiency comes first. A desire
+/// with no goods is the tier alone. No short desire is `none`.
+fn unmet_desire(factuals: &Factuals, pop: &Pop) -> String {
+    let Some((tier, desire)) = pop.lowest_unmet_desire() else {
+        return "none".to_string();
+    };
+    let tier = match tier {
+        0 => "basic",
+        1 => "common",
+        _ => "luxury",
+    };
+    let mut targets = desire.target.clone();
+    targets.sort_by(|left, right| {
+        right
+            .efficiency
+            .partial_cmp(&left.efficiency)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let goods = targets
+        .iter()
+        .map(|target| good_name(factuals, target.good))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if goods.is_empty() {
+        tier.to_string()
+    } else {
+        format!("{tier}: {goods}")
+    }
+}
+
 /// # Per Household
 ///
 /// `amount` divided by the households still on `pop`.
@@ -343,6 +495,172 @@ fn per_household(pop: &Pop, amount: f64) -> f64 {
         1.0
     };
     amount / households
+}
+
+/// One pop's figures for [`PopulationTally`].
+struct PopShare {
+    people: f64,
+    households: f64,
+    sol: f64,
+    growth: Option<f64>,
+    migration: f64,
+    happy: f64,
+    content: f64,
+    anger: f64,
+    fear: f64,
+    hope: f64,
+    income: f64,
+    expenses: f64,
+    meal: f64,
+}
+
+/// Running sums for the last row of the pop table.
+#[derive(Default)]
+struct PopulationTally {
+    count: f64,
+    people: f64,
+    households: f64,
+    growth: f64,
+    saw_growth: bool,
+    migration: f64,
+    sol: Weighted,
+    happy: Weighted,
+    content: Weighted,
+    anger: Weighted,
+    fear: Weighted,
+    hope: Weighted,
+    income: f64,
+    expenses: f64,
+    meal: f64,
+}
+
+impl PopulationTally {
+    /// # Note
+    ///
+    /// Adds one printed pop.
+    ///
+    /// `share.people` adds to the population when it is finite. A positive
+    /// finite household count adds to the household total. Income, expenses,
+    /// and the meal add when they are finite. Growth adds when this pop had
+    /// a morning count. The other fields go to [`Weighted::note`].
+    fn note(&mut self, share: PopShare) {
+        self.count += 1.0;
+        if share.people.is_finite() {
+            self.people += share.people;
+        }
+        if share.households.is_finite() && share.households > 0.0 {
+            self.households += share.households;
+        }
+        if let Some(growth) = share.growth.filter(|growth| growth.is_finite()) {
+            self.growth += growth;
+            self.saw_growth = true;
+        }
+        if share.migration.is_finite() {
+            self.migration += share.migration;
+        }
+        let people = share.people;
+        self.sol.note(share.sol, people);
+        self.happy.note(share.happy, people);
+        self.content.note(share.content, people);
+        self.anger.note(share.anger, people);
+        self.fear.note(share.fear, people);
+        self.hope.note(share.hope, people);
+        if share.income.is_finite() {
+            self.income += share.income;
+        }
+        if share.expenses.is_finite() {
+            self.expenses += share.expenses;
+        }
+        if share.meal.is_finite() {
+            self.meal += share.meal;
+        }
+    }
+
+    /// # Row
+    ///
+    /// The whole-population row.
+    ///
+    /// People, the household change, and migration are sums. A day with no
+    /// morning count prints `none` for growth. Standard of living and the
+    /// five sentiment shares are [`Weighted::average`], weighted by people.
+    /// Books, the meal, and the net pool every pop's totals and divide by
+    /// the households still stored, the same per-household scale as the
+    /// other rows. Returns that row. The first cell is `all`.
+    fn row(&self) -> Vec<String> {
+        let share = if self.households.is_finite() && self.households > 0.0 {
+            self.households
+        } else {
+            1.0
+        };
+        let income = self.income / share;
+        let expenses = self.expenses / share;
+        let meal = self.meal / share;
+        let growth = if self.saw_growth {
+            growth_text(self.growth)
+        } else {
+            "none".to_string()
+        };
+        vec![
+            "all".to_string(),
+            qty_text(self.sol.average()),
+            qty_text(self.people),
+            growth,
+            growth_text(self.migration),
+            qty_text(self.happy.average()),
+            qty_text(self.content.average()),
+            qty_text(self.anger.average()),
+            qty_text(self.fear.average()),
+            qty_text(self.hope.average()),
+            format!("{}/{}", growth_text(income), growth_text(-expenses)),
+            growth_text(-meal),
+            growth_text(income - expenses - meal),
+        ]
+    }
+}
+
+/// A people-weighted average, with an equal average when no pop has people.
+#[derive(Default)]
+struct Weighted {
+    weighted: f64,
+    people: f64,
+    plain: f64,
+    samples: f64,
+}
+
+impl Weighted {
+    /// # Note
+    ///
+    /// Adds one finite `value`.
+    ///
+    /// A positive finite `people` weights that value. A non-finite value
+    /// is left out.
+    fn note(&mut self, value: f64, people: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        self.plain += value;
+        self.samples += 1.0;
+        if people.is_finite() && people > 0.0 {
+            self.weighted += value * people;
+            self.people += people;
+        }
+    }
+
+    /// # Average
+    ///
+    /// The people-weighted mean of the values [`Self::note`] kept.
+    ///
+    /// When no noted pop had people, the mean is equal across the pops
+    /// that had a finite value. No values returns 0.
+    fn average(&self) -> f64 {
+        if self.people > 0.0 {
+            self.weighted / self.people
+        } else if self.samples > 0.0 {
+            self.plain / self.samples
+        } else {
+            0.0
+        }
+    }
 }
 
 /// # Household Counts
@@ -408,61 +726,116 @@ fn craft_name(factuals: &Factuals, craft: usize) -> String {
 /// run, with a leading plus when the run gains holding. The percent is
 /// that gain over the absolute input holding. No priced input reads as
 /// `none`. A missing process reads as "unknown" and has no figures. No
-/// lines read as "idle".
+/// lines read as "idle". The last line is the complexity cost of the
+/// current targets, from [`Job::plan_complexity_cost`](simpler_economy::game::job::Job::plan_complexity_cost).
+/// The modifier is [`Pop::complexity_cost`].
 fn schedule(factuals: &Factuals, pop: &Pop, history: &MarketHistory) -> String {
-    if pop.job.lines.is_empty() {
-        return "idle".to_string();
-    }
-    pop.job
-        .lines
-        .iter()
-        .map(|line| {
-            let name = factuals
-                .get_process(line.process)
-                .map(|process| process.name.as_str())
-                .unwrap_or("unknown");
-            let target = line
-                .target
-                .map(qty_text)
-                .unwrap_or_else(|| "open".to_string());
-            match factuals.get_process(line.process) {
-                Some(process) => {
-                    let profit = growth_text(trade_score(process, history));
-                    let percent = trade_rate(process, history)
-                        .map(|share| format!("{}%", growth_text(share * 100.0)))
-                        .unwrap_or_else(|| "none".to_string());
-                    format!("{name} {target}:{profit}/{percent}")
+    let body = if pop.job.lines.is_empty() {
+        "idle".to_string()
+    } else {
+        pop.job
+            .lines
+            .iter()
+            .map(|line| {
+                let name = factuals
+                    .get_process(line.process)
+                    .map(|process| process.name.as_str())
+                    .unwrap_or("unknown");
+                let target = line
+                    .target
+                    .map(qty_text)
+                    .unwrap_or_else(|| "open".to_string());
+                match factuals.get_process(line.process) {
+                    Some(process) => {
+                        let profit = growth_text(trade_score(process, history));
+                        let percent = trade_rate(process, history)
+                            .map(|share| format!("{}%", growth_text(share * 100.0)))
+                            .unwrap_or_else(|| "none".to_string());
+                        format!("{name} {target}:{profit}/{percent}")
+                    }
+                    None => format!("{name} {target}"),
                 }
-                None => format!("{name} {target}"),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cost = pop
+        .job
+        .plan_complexity_cost(factuals, pop.complexity_cost(factuals));
+    format!("{body}\ncomplexity {}", qty_text(cost))
 }
 
 /// # Print Market Board
 ///
-/// Prints each good's AMV, salability, units lost to rot, and that loss as
-/// a percent of the stock it came from.
+/// Prints each good's AMV, salability, rot, and today's mass book.
+///
+/// A row is kept when the good is stored on the board or it drew a quote.
+/// Columns are the good, AMV, salability, units lost to rot, that loss as
+/// a percent of the stock it came from, then units offered, requested, and
+/// exchanged, and the clearing price. A good with no quote leaves the book
+/// blank. A quote that did not trade prints `none` for the price. A quote
+/// with no stored good leaves the board columns blank.
 fn print_market_board(factuals: &Factuals, market: &Market) {
+    let mut quoted: HashMap<usize, &MassClose> = HashMap::new();
+    for close in market.mass_closes() {
+        quoted.insert(close.good, close);
+    }
     let mut ids: Vec<usize> = market.goods.keys().copied().collect();
+    ids.extend(quoted.keys().copied());
     ids.sort_unstable();
+    ids.dedup();
     let rows = ids
         .into_iter()
         .map(|id| {
-            let good = &market.goods[&id];
+            let (amv, salability, decay, percent) = match market.goods.get(&id) {
+                Some(good) => (
+                    qty_text(good.amv),
+                    qty_text(good.salability),
+                    qty_text(good.decayed),
+                    format!("{}%", qty_text(decay_percent(good))),
+                ),
+                None => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ),
+            };
+            let (offered, requested, exchanged, price) = match quoted.get(&id) {
+                Some(close) => (
+                    qty_text(close.offered),
+                    qty_text(close.requested),
+                    qty_text(close.exchanged),
+                    mass_price(close),
+                ),
+                None => (String::new(), String::new(), String::new(), String::new()),
+            };
             vec![
                 good_name(factuals, id).to_string(),
-                qty_text(good.amv),
-                qty_text(good.salability),
-                qty_text(good.decayed),
-                format!("{}%", qty_text(decay_percent(good))),
+                amv,
+                salability,
+                decay,
+                percent,
+                offered,
+                requested,
+                exchanged,
+                price,
             ]
         })
         .collect::<Vec<_>>();
     print_table(
         "market board",
-        &["good", "amv", "salability", "decay", "decay %"],
+        &[
+            "good",
+            "amv",
+            "salability",
+            "decay",
+            "decay %",
+            "offered",
+            "requested",
+            "exchanged",
+            "price",
+        ],
         &rows,
     );
 }

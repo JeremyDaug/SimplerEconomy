@@ -35,6 +35,75 @@ scalar = "all"
 good = "water"
 efficiency = 1
 
+# Clothing at each tier. The same four goods fill it. Clothes satisfy the
+# most per unit, then fabric, thread, and cotton.
+
+[[species.desires]]
+id = 3
+tier = 0
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "clothes"
+efficiency = 5
+
+[[species.desires.goods]]
+good = "fabric"
+efficiency = 3
+
+[[species.desires.goods]]
+good = "thread"
+efficiency = 1
+
+[[species.desires.goods]]
+good = "cotton"
+efficiency = 0.5
+
+[[species.desires]]
+id = 4
+tier = 1
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "clothes"
+efficiency = 5
+
+[[species.desires.goods]]
+good = "fabric"
+efficiency = 3
+
+[[species.desires.goods]]
+good = "thread"
+efficiency = 1
+
+[[species.desires.goods]]
+good = "cotton"
+efficiency = 0.5
+
+[[species.desires]]
+id = 5
+tier = 2
+amount = 1
+scalar = "all"
+
+[[species.desires.goods]]
+good = "clothes"
+efficiency = 5
+
+[[species.desires.goods]]
+good = "fabric"
+efficiency = 3
+
+[[species.desires.goods]]
+good = "thread"
+efficiency = 1
+
+[[species.desires.goods]]
+good = "cotton"
+efficiency = 0.5
+
 # Leftover stock, after desires. Not reserved, shopped, or planned.
 # One household consuming one unit adds this much to its standard of living.
 

@@ -873,19 +873,7 @@ mod tests {
         );
         assert!((eff(tenant.desires.get(&1).expect("tenant"), "wood_tools") - 1.5).abs() < 1e-12);
 
-        let groups = [
-            (1, "human", "village", "householder", "hearth"),
-            (2, "human", "village", "householder", "hearth"),
-            (3, "human", "village", "householder", "hearth"),
-            (4, "human", "village", "householder", "hearth"),
-            (5, "human", "village", "householder", "hearth"),
-            (6, "human", "village", "householder", "hearth"),
-            (7, "human", "village", "householder", "hearth"),
-            (8, "human", "village", "householder", "hearth"),
-            (9, "human", "village", "householder", "hearth"),
-            (10, "human", "village", "householder", "hearth"),
-            (11, "human", "village", "householder", "hearth"),
-        ];
+        let groups = [(1, "human", "village", "householder", "hearth")];
         for (id, species_name, culture_name, stratum_name, religion_name) in groups {
             let pop = &scenario.actors.pop(id).demographics;
             assert_eq!(pop.species, species(species_name).id, "pop {id}");
@@ -962,20 +950,24 @@ mod tests {
         assert_eq!(firm.market.currencies(), [Some(token), None, None, None]);
     }
 
-    /// # Loaded Pops Default To Ten Households
+    /// # Loaded Pops Use The Scenario Count
     ///
-    /// Loads the pop tester and the firm tester. Each pop is 10 households
-    /// of 2 adults, 0.5 elders, and 2.5 children. Returns nothing. A load
-    /// failure or a different household fails.
+    /// The pop tester's opening pop is 100 households. The firm tester omits
+    /// the count and stays at 10. Each household is 2 adults, 0.5 elders,
+    /// and 2.5 children. Returns nothing. A load failure or a different
+    /// household fails.
     #[test]
-    fn loaded_pops_default_to_ten_households() {
+    fn loaded_pops_use_the_scenario_count() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
-        for (dir, ids) in [("pop_tester", 1..=9), ("firm_tester", 1..=3)] {
+        for (dir, ids, count) in [
+            ("pop_tester", 1..=1, 100.0),
+            ("firm_tester", 1..=3, 10.0),
+        ] {
             let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
             let scenario = load_scenario(&root.join(dir), &mut factuals).expect(dir);
             for id in ids {
                 let household = &scenario.actors.pop(id).demographics.household;
-                assert_eq!(household.count, 10.0, "{dir} pop {id}");
+                assert_eq!(household.count, count, "{dir} pop {id}");
                 assert_eq!(household.adult, 2.0, "{dir} pop {id}");
                 assert_eq!(household.elder, 0.5, "{dir} pop {id}");
                 assert_eq!(household.child, 2.5, "{dir} pop {id}");

@@ -3,7 +3,7 @@
 [[crafts]]
 id = 1
 name = "subsistence"
-processes = [29, 30, 31]
+processes = [29, 30, 31, 32]
 
 [[crafts]]
 id = 2
@@ -25,14 +25,20 @@ processes = [3]
 [[crafts]]
 id = 5
 name = "subsistence farming"
-processes = [29, 30, 31, 1]
+processes = [29, 30, 31, 32, 1]
 
 [[crafts]]
 id = 6
 name = "subsistence watering"
-processes = [29, 30, 31, 2]
+processes = [29, 30, 31, 32, 2]
 
 [[crafts]]
 id = 7
 name = "subsistence baking"
-processes = [29, 30, 31, 3]
+processes = [29, 30, 31, 32, 3]
+
+[[crafts]]
+id = 8
+name = "clothier"
+processes = [39, 40, 41, 42]
+complexity_modifier = 0.5

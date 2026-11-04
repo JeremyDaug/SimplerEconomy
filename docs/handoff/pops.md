@@ -5,20 +5,27 @@ Read this before changing the pop tester, `Market::market_day`, or the morning p
 places those pops on one market, grants the day's Time, and runs
 `Market::market_day`. The folder sets the opening board, crafts, stock,
 and the first morning's line targets. A missing household count is 10.
+The pop tester's opening pop is 100 households.
 A household table overrides the adult, elder, and child averages. The
 firm tester loads its pops through the same reader. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
 copies them onto each pop.
 
-The tester prints that morning's mass book, then each pop's work, then the
-pop table, then the market board. The mass book is offered, requested,
-exchanged, and the price. A book that did not trade prints `none`. The
+The tester prints each pop's work, then the pop table, then founding, then
+the market board. Founding is days of set-aside,
+whether that clears the wealth floor, the lowest unmet
+desire, and the goods offered or made today, skills left out. A pop
+removed today adds a row marked `left`, with why it went. The market board is AMV, salability, units lost to rot, and that loss as a percent, then the day's book: offered, requested,
+exchanged, and the price. A good that drew no quote leaves the book blank. A book that did not trade prints `none`. The
 work table is one line per good: the holding, then buy and sell together
 (`buy`, `sell`, `bought`, `sold`, `back+`, `back-`). A bare name is
 working stock that prints as zero. The line is there because the good was
-offered, bought, or sold. The schedule stays in its own column. The pop
+offered, bought, or sold. The schedule stays in its own column and ends
+with the complexity cost of the current targets. The pop
 table is standard of living, people, the change in households, net
-households from migration, and the five sentiment shares. Size is people.
+households from migration, and the five sentiment shares. The last row
+sums people, the household change, and migration, and averages the
+standard of living, sentiment, and the per-household books. Size is people.
 Growth is the household change since that morning. It does not choose
 baskets or prices. `docs/handoff/desire.md` sketches how a platonic desire
 becomes a demographic desire and then a pop desire.
@@ -34,50 +41,243 @@ The mass day is in. One sell book, then each pop buys. The morning plan is
 `Job::plan_purchases`. The night does not call `Pop::plan`. Firms are not
 on the ladder. `Firm::plan` stays empty. `PlayState` is not in this cut.
 
-The day order is reset, then each pop locks a meal and writes its purchase
-targets, `buy_ladder`, the input hold returns to property, produce,
+The day order is reset, then each pop writes its purchase targets,
+`buy_ladder` reserves each desire as the walk reaches it, the input hold
+returns to property, produce,
 consume, rest, sentiment, growth, the population cap, prune under one
-household, internal migration, decay, rescale desires, record keeping,
+household, internal migration, one founded pop, decay, rescale desires,
+record keeping,
 gather use, and the night card. Yesterday's mass offer and exchange stay
 on the history the plan reads. Sentiment runs before growth. Rescale runs
 after decay and after migration.
 
 `buy_ladder` orders pops by currency AMV per household, then the lower id.
-Each pop buys basic desires, saves, buys the job's inputs, saves, buys
-common desires, saves, then luxury. An unfilled whole input stops that pop
-before common and luxury. A desire the book cannot fill is still a bid,
-and the next desire runs while a whole coin remains. Tender the plan kept
-off the sell book stays in working stock. Desires do not spend it. The
-input buy and the currency save can.
+Each pop buys and reserves the job's inputs, then walks basic desires in
+order. For each desire the bucket is ranked
+by satisfaction per AMV first. The winning good is reserved from stock on
+hand, and that reservation comes off the sell line. The rest of the slice
+is the order, and an empty book still posts it.
+A buy that cannot finish leaves that good and the next one is
+tried. The slice rounds up to a whole unit, and so does each good's minimum
+share of one over twice the goods in the bucket. It then saves one level
+and saves another. A basic
+level the purse cannot buy stops before that save. The input buy has
+already run. Common walks its desires, then saves, then buys any inputs
+still open, then saves another level. An open common level still saves
+and still buys those inputs. Luxury
+keeps the shorter batch walk. A batch that does not finish saves the step
+already reached and leaves. An unfilled whole
+input stops that pop before the later tier. The next desire runs while a whole
+coin remains. The morning book lists
+every unit held, working and saved, including time and skills. An untradeable
+good that is not a skill stays off. Saved units leave the live line before
+the first buy. Tender the plan kept stays listed. Desires do not spend it,
+and the currency save does not either. The input buy does. A savings target
+the purse cannot finish still lets that buy run. A pop with no line running
+then stops. A line already set to run keeps buying the later tiers. A
+positive holding lists, including a fraction. A currency lists the whole
+pile. The buyer pays in whole coins, and
+one extra coin covers a remainder the coins do not divide. A currency is bought with other
+goods when the tender on hand cannot cover it, even when another tender
+is in stock. A good that is not a currency is paid only in tender.
+
+Each savings level is `savings_amv` times the mean card price of the desire
+tiers, per household. The world file sets that multiplier to 3. Goods in a tier are averaged equally, and the tiers
+are averaged equally. A pop with no priced tier saves one per household.
+The save takes a coin that is already the most durable, or a cheaper coin
+when a more durable one is on offer. A cheaper coin with nothing more
+durable for sale stays in the purse, and that step does not stop the walk.
+A short reservable purse writes the coins that fit. A level still short of
+its target stops a pop that is not running a line. A running line keeps the
+later buys with the coin the save left working. An empty reservable pool
+writes nothing and does not stop the walk. The durability swap then spends
+saved currency on a more durable coin that is in stock. The night's offer is what remained for sale
+plus what exchanged, so grain spent as tender or set aside is not an
+unsold offer. Beside that, the day records an initial offering (the morning
+book), an effective offering (that book minus reservations), and excess
+supply (what is still listed at the end). A maximal buy is the units a
+purse would take if money were not the limit. A real buy is the units
+purchased. Those five figures are not read by the night prices.
+[`MarketGood::stock`] stays yesterday's survivors, so it is not the
+initial offering. A pop that cannot pay still bids one unit of each good in
+the desire the walk stops on, and one unit of each currency when that pop
+did not already bid it. A later desire is not bid. A currency surplus
+does not move the card when no other tender was offered for at least one
+unit, and that one-unit bid does not count as the quote that would move
+it. Rot, process use, a print, flow, and an unmet buy
+do not move a good that did not trade. Nothing moves that AMV unless the
+good exchanged at least one unit. A book nobody could buy still falls when
+nothing traded, a real bid was left, and the night's step is a fall. The
+unpaid one-unit want is not that bid, so a surplus against only that want
+keeps its price. An empty offer with a real bid rises by the idle step,
+and a surplus fall stops, one idle step above the cheapest process that
+just pays. A price already there does not cross it. A good no process
+gains by raising keeps the old rule. A purchase bid larger than the offer
+raises it once that unit has traded, by that idle fraction as an amount of
+AMV. An open buy adds a flat step. Neither grows with the price, so a
+currency and the good it buys cannot lift each other without bound. A
+surplus still takes its fraction off the price. A two-sided book that traded, and
+that nobody could buy for one unit, falls by twice the idle fraction of
+its price. A traded book that
+would have held falls by the full idle step. A currency book with a
+purchase bid on both sides does move when it traded, because other goods
+can pay it. The price also moves once another tender is for sale and this
+good traded. Each good keeps the AMV its own day wrote. Units of a currency paid for other goods sit on both
+sides of that currency's idle step, so the spend shrinks the move and
+does not open one. A short bid the morning time grant already covers does not raise the
+card. Output made after the book, including a good that was eaten, saved,
+or never offered, does not cover that bid. An output that did not
+clear does not price its inputs. A rise in AMV that was not paid
+restores salability toward par by that gain, capped at one percent.
 
 A line pays when its trade score is positive. A specialty also pays when
 an offered output sold at least one unit. Subsistence drops that mark when
-a specialty pays. Paying lines are planned first, and the higher score is
-planned first. Time on hand is the ceiling of a line that still pays. A
-currency output is not treated as an unsold product. A positive score that
+a specialty pays. When no line pays, each line that can run still takes an
+equal share of the spare time and the spare points, on top of the runs a
+short desire already holds, and buys the inputs that share is short. A
+sought bid does not take that share back. A job
+that still has a paying line buys in list order. The morning stores that
+list upstream first, then by the higher trade score inside a band. The
+first line sees the spare time and the spare points. Each later line
+buys what that line left. Time on hand is the time still in the pile
+when that line buys. A
+currency input the pile is short is shopped with other goods, even when
+another tender was offered. When that tender was offered and the purse
+covers the card, the purse pays it instead, and a higher rate funds more
+of the ceiling from that purse. The goods or the tender that pay stay off
+the sell book. A currency output is not treated as an unsold product. A positive score that
 sold nothing still takes the day. Scaling a partial sale down to the sold
 share was tried and taken out. It cut the pops that were selling, and a
-pile that sold nothing kept the whole day.
+pile that sold nothing kept the whole day. A short desire holds time for the line that fills it best before a higher
+score takes the rest, including when that line also pays. Basic desires
+are first. When no specialty pays, common and luxury desires take what
+that cover leaves, and the hold stops when the time is gone. A specialty
+that pays keeps the day after the basic cover. A later desire that uses
+a good already in that cover stays there. The hold stands whether
+or not the pop has a coin. A specialty covering a subsistence good
+spends that subsistence complexity on the desire-cover runs. Further
+runs spend its own. A specialty that makes something else is shrunk
+before a subsistence cover is. A gap subsistence can fill with a
+different good stays on that subsistence line. A later desire no
+subsistence process makes spends the subsistence floor, ahead of a later
+subsistence tier, and it includes what an earlier desire will eat of that
+good, including a pile of a worse target that this good replaces, and a meal of that target already set aside. The
+water that desire drinks is not that recipe's water. Produce leaves that drink unspent, and the line that makes it runs those units before a later specialty keeps the points, so a later line spends only the surplus of the water just made. A later specialty
+that does not make a basic good waits behind that subsistence tier. That recipe is the new pop's line, and the founder does not add it to its own job. A line with no stored target writes the aim the same morning. A stored target closes a quarter of the gap toward a higher aim, so one morning does not jump to it. It does not step down because an input is short. It steps down when the score is not positive, or when a product was offered and a full unit did not sell and a buyer could have paid, and then only a quarter of the way toward the cover plus the sold share of the surplus. A cleared book on a line another line feeds, whose free pile is more than that sale grown by the same quarter, steps the same way, and that share is the sale over the sale plus the pile. A currency output is left out of that sale. `turn_length` divides population growth and does not change that step. Yesterday's target is scaled by today's household count before the step. A doubled pop doubles the aim because today's time and today's desires already follow the new size.
+Produce spends that cover rate on the
+cover runs and leaves those points for a later line. A paying line that
+another line feeds also keeps the points for the runs above that cover,
+and the feeder still spends the points those input runs take. A line that feeds
+another runs first. A line already running adds runs for an
+output still sought yesterday, by a quarter of the runs it already has.
+A subsistence line at zero still starts that bid. The time comes from what
+is still free, and from a quarter of the subsistence runs above the desire
+hold, so a shift between large lines moves more runs than the same shift
+between small ones. A specialty keeps its day. A
+currency the holder does not make lists
+the producer share when that good was still sought. A line that stays at zero for one
+turn, with no positive score, no sale, and no reserved run, is dropped.
+The last line stays.
 
 `turn_length` is 4. Infant and maternal mortality stay fractions of the
-births in the turn. Subsistence farm, water, and forage are processes
-29–31, complexity 0.25, 36 time for 3 output. Migration pace is 0.1. One
-calm point of living moves a twentieth of the households. Anger weighs
-half beside fear. A different craft closes above 1.10 times the origin's
-wealth. Half of the moving goods travel. A move that would leave fewer
-than one household takes the whole pop, and that pop is removed.
+births in the turn. Subsistence farm, water, forage, and cotton are
+processes 29–32, complexity 0.25, 12 time. Farm, water, and forage make
+3. Cotton makes 6. A further luxury level leaves the goods still on hand
+after produce, so spare cotton can sit in the next meal. Migration pace is 0.1. One
+calm point of living is a twentieth of the households before size. The offer
+and the room each multiply that share by log2 of the people, and each stops
+at the whole pop. Anger weighs
+half beside fear. Wealth is per person. Profit is the best running trade
+score, counted once per pop: a worse job pushes and a better job pulls,
+squared like living. A different craft closes above 1.10 times the origin's
+wealth per person. Half of the moving goods travel. A move that would leave fewer
+than one household takes the whole pop, and that pop is removed. A pop
+with no line running and no whole currency coin, in working stock or
+saved, offers every household. Pace, destination room, and the wealth
+gate do not cap that offer. It still will not cross species. A
+demographic gap still chooses who receives the whole count. Another pop
+in the same state is not a destination. With nowhere to sit, the paced
+offer stands. A dead pop that cannot leave, including the last pop,
+switches to every subsistence process it can run from time and the goods
+it already holds. A pop already on that set switches to one
+non-subsistence process it can run the same way. The search starts above
+the highest id it runs now, then wraps. Make time is not chosen. The
+switch does not remove households.
 
-A 100-day `pop_tester` on this tree loses five pops by day 41: the waterer,
-the brewer, the tool maker, the cabin maker, and the jeweler. Births stay
-slightly positive. Migration takes them from 10 households down to about
-one, and the next offer takes the rest. Those households arrive, mostly on
-the gold miner. On day 38 the book still has empty offers against 610 beer
-bids, 488 cabin bids, 1306 jewelry bids, and 5587 pot bids. Wood tools are
-5 offered and 22 requested, and none are exchanged. The waterer is still
-running water against an offer near 30,000. The farmer, the baker, the
-woodcutter, the gold miner, the bucket maker, and the coal pop are still
-on the market at day 100. A floor that keeps the last household was
-considered and left out. Unsuccessful pops should thin.
+The tester opens as one subsistence pop. The earlier eleven-pop file is
+no longer the opening. A founded pop's growth cell prints `none`, because
+it was not stored that morning. Its migration cell is the households it
+received.
+
+After internal migration, `Market::found_pop` may add one pop. The founder
+is the pop with the most days of set-aside, then the most households,
+then the higher finite standard of living, then the lower id. A pop with
+no edit is skipped, and the next pop in that order is asked. They need
+at least twenty-five households. They give five. The gift
+is recorded on `migration`.
+
+Working goods travel as those five households' share of working quantity.
+The parent keeps the same working goods per household. The set-aside gift
+is `founding_goods_weight` days per leaving household (default 3), capped
+at the whole set-aside. That gift is currency savings, saved goods past
+the meal and the input hold, meal units above one day of desires, and
+working currency above the night savings claim. It
+is added to the child's working quantity. A pop of twenty-five households
+therefore sends a fifth of its working stock and three fifths of one
+pop-day of set-aside. The parent may split once `founding_wealth` days of
+set-aside are on hand (default 1.5). A parent of twenty-five households
+sitting exactly on that floor gives 0.6 pop-days and keeps about 1.125
+days of desires for the twenty households that stay. Migration is unchanged:
+half of the moving share travels, and saved goods stay behind.
+
+The founding waits until that stake can run the edited job `founding_runs`
+times (default 3). The stake is the goods that would travel, counted
+before they move. Time is the morning grant and is not required on hand.
+A consumed or destroyed input must cover that many runs. Capital must be
+present once. The stake must also hold at least that many units in total,
+so a time-only process can be founded from any goods. Make time is not
+added. A drop is allowed only when a loaded process that remains can run
+that many times. Unloaded ids left on the job do not count. The last
+process is not dropped.
+
+`founding_useful_share` (default 0.8) of foundings draw from the useful
+pool. That pool adds a loaded process whose trade score is finite and
+positive, or drops a process whose score is finite and not positive. An
+add weighs 1, doubled when a variable
+output is a good no pop on this market already makes, and doubled again
+when that good is asked for. The ask is the book's request, and a desire
+target with a request under one counts as one. That ask then multiplies
+the weight by one plus its natural log. The founder's lowest unmet desire
+quadruples an add that makes one of its targets, including a target this
+market already makes. The roll can still choose a lighter process. A
+process whose trade score is not positive joins that pool only when it
+makes that desire and the stake can run it. A fixed output and time
+do not count as that good. A drop weighs 1, or half again when a variable product was offered for at least one unit and that offer covered the request. The other foundings add the
+process for an open bid that is not already in the useful pool, when the
+stake covers it. An open bid is still requested at least one and offered
+under one. An empty pool falls through to the other. One edit is tried.
+One founding in five also takes the other edit: an add drops one
+unprofitable line that is not the process just added, and a drop adds
+one process the stake can run. Adding a specialty also drops each
+subsistence process that makes the same variable good. That drop is
+part of the add. A
+desire no line can fill keeps extra runs on the lines that make its
+inputs, enough that the traveling share can start that recipe. A desire no line can make also adds runs on a line that can sell, enough that the extra output pays for buying it, and the inputs those runs spend stay on the lines that make them. A set
+the founder already runs founds nobody.
+
+An open craft with that exact process set supplies the craft id. Otherwise
+the subsistence craft supplies it when its processes are contained in the
+set. Another pop with that demographic and that set receives the household
+instead. No new id is taken. A pop that later has that demographic and
+that set joins the earlier one the same day. The goods it holds go with
+it. When the new job has no loaded process that
+runs on time and the goods that household carries, every subsistence
+process that does run on that stock is added. A new line starts at an
+open target. A line already on the joined pop keeps its target. The new
+pop copies the founder's species, culture, stratum, and religion, and has
+no population-cap share.
+Death is still the under-one prune. The new id is one higher than any
+pop id still stored. A dead id is not reused. Technology stays empty.
 
 `cargo test --lib` still fails
 `load_from_path_reads_world_dir_goods_and_processes`. The loader rejects a
@@ -85,19 +285,12 @@ non-subsistence time input above 1. The panic names whichever of those
 processes the map yields first.
 
 Left out of the next pass: writing prices from the job, seeding one run of
-a line that has never sold, retuning migration, `turn_length`, recipes,
-rot, or sentiment, and putting firms on this ladder. The pop tester still
+a line that has never sold, reusing a pop id after the under-one prune,
+retuning migration, `turn_length`, recipes, rot, or sentiment, and putting
+firms on this ladder. The pop tester still
 shares one ceiling. Each pop's starting size times a multiplier (default
-1000) is its share. After the days on the command line, it asks how many
-more to run.
-
-Next is new pop generation, the open 0.1 line in `TODO.md`. The tester
-should start with less than a demographic can do, and a pop should be able
-to create a new pop with a new job. That pass stays limited. It does not
-create a second pop with the same demographic and the same job. The split
-is not designed yet. Death stays as it is. An open bid with no offer is
-the pressure already on the book. The replacement does not have to copy
-the pop that died.
+1000) is its share. A founded pop is outside that ceiling. After the days
+on the command line, it asks how many more to run.
 
 ## Landed vs stub
 
@@ -109,13 +302,14 @@ the pop that died.
 | `Pop::consume` / `consume_tier` / `consume_one_desire` | Called from `Market::market_day` after produce and the input-hold release, before rest. `PlayState::phase_pop_consumption` is still `todo` |
 | Savings between tiers, and between luxury iterations | Written. Basic and common place that day on a good the desire eats. Luxury places it on the highest `salability * durability * fill` good. Withheld from selling and payment. The job does not spend that pile as an input. Basic, common, and the first luxury level may eat it. A further luxury level leaves it. See Savings |
 | `Market::match_deals` | Still in the tree. The live day does not call it. See Match |
-| `Market::market_day` | One market, in order: reset, meal and `plan_purchases`, `buy_ladder`, release the input hold, produce, consume, rest, sentiment, growth, `rebalance_population_cap`, prune under one household, internal migration, decay, `rescale_desires`, record keeping, gather use, then the night card. Yesterday's mass offer and exchange stay on the history the plan reads. Sentiment is before growth. Rescale is after decay and after migration. A pop with no share is left out of the ceiling. The morning does not call `apply_craft`. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
+| `Market::market_day` | One market, in order: reset, meal and `plan_purchases`, `buy_ladder`, release the input hold, produce, consume, rest, sentiment, growth, `rebalance_population_cap`, prune under one household, internal migration, `found_pop`, `fold_duplicate_pops`, decay, `rescale_desires`, record keeping, gather use, then the night card. Yesterday's mass offer and exchange stay on the history the plan reads. Sentiment is before growth. Rescale is after decay and after migration and founding. A pop with no share is left out of the ceiling. The morning does not call `apply_craft`. Firm produce, reserve, and plan are empty. Institutions keep the empty `DealMaker` defaults |
 | Cottage job | On the pop's stock. `plan_purchases` writes the morning runs and the input buy. The pop posts the sell book. The job does not set a price. See Where this stopped. The Cottage work section below is the earlier night plan |
 | `Pop::plan` | Still in the tree. `market_day` does not call it. The morning plan is `Job::plan_purchases`. `Firm::plan` is empty |
 | Stratum | Replaces class. A culture's economic subgroup. Id `0` is empty. Desires, rate addends, and the work-time addend stack with species, culture, and religion. The culture lists the stratum ids that derive from it. Stratification content is 0.3 |
 | `Desire.decay` | Morning reset multiplies each desire's satisfaction by it. `0.0` clears satisfaction |
 | Sentiment | Updated before growth. Desire sentiment arms and stored sentiment effects are collected first, and those stored arms are dropped. Unmet basic needs then move anger and fear. Common satisfaction, including a share above one full level, moves contentment. Luxury levels, counted again for each time they are met, move hope and happiness. Bonus satisfaction counts on the tier that holds it. Wealth per household, priced on the day's board and excluding time, moves hope, or fear when it is negative. Living above the average of the last five days then moves hope and happiness, and living below it moves anger and fear, at a larger rate than those flats. The first day has no average. Each other emotion moves 15 percent of its stored share into contentment in that same batch, and a larger stored share moves more. Growth scales births per woman by the stacked schedule on species, culture, stratum, and religion. The human default is +25% at full hope, +10% at full happiness, −30% at full fear, and −10% at full anger. Contentment does nothing. The scale uses the sentiment this day just wrote, so today's mood scales this year's births. Fear and anger also scale the migration offer, and hope scales the pull. Tester desires carry no sentiment arms |
-| Internal migration | After the cap and the under-one prune, before decay. Households move between pops on this market. The offer is the squared living gap plus the squared relative wealth shortfall, times fear and half of anger, then saturated by pace 0.1, so one calm point of living moves a twentieth of the households. A living standard above the average pulls, times hope. Demographic distance and wealth gate the destination. The distance cap averages the two cultures' assimilation with the two religions' conversion. A different species does not move. Stratum has no such ease. A different craft closes above 1.10 times the origin's wealth. Half of the moving share's goods travel. A move that would leave fewer than one household takes the whole pop, and that pop is removed. The per-pop migration methods stay `todo` |
+| Internal migration | After the cap and the under-one prune, before founding and decay. Households move between pops on this market. The offer is the squared living gap, the squared relative wealth shortfall per person, and the squared profit gap, times fear and half of anger, then saturated by pace 0.1. One calm point of living is a twentieth of the households before size. The offer and the room each multiply that share by log2 of the people and stop at the whole pop. Wealth is per person and the average weights people. Profit is the best running trade score, and the average counts each pop once. A living standard or a profit above that average pulls, squared, times hope. Demographic distance and wealth gate the destination. The distance cap averages the two cultures' assimilation with the two religions' conversion. A different species does not move. Stratum has no such ease. A different craft closes above 1.10 times the origin's wealth per person. Half of the moving share's goods travel. A move that would leave fewer than one household takes the whole pop, and that pop is removed. The per-pop migration methods stay `todo` |
+| Pop founding | After migration, before decay. One pop a day. See Where this stopped |
 | Skills | Goods, priced and tradeable. A job lists the skill goods its processes take. Day start raises each to 0.1 per household. Each process takes that skill as an optional input. Decay is 0.05. Skill that was used comes back fresh, so a fully used pile does not decay that night. Skills are not listed on the mass book |
 
 ## Satisfy
@@ -452,8 +646,9 @@ A firm sell is stamped with the card's raw AMV.
   miss is that last whole unit paying more raw AMV than it received.
   The seller does not allow that overshoot. The seller needs the satisfaction
   gain, or raw payment at least equal to the raw cost.
-- Sell orders offer the free units above what still feeds a desire and above the savings pile,
-  at the card's raw AMV. Buy orders are stamped with that same raw AMV.
+- Sell orders offer the free units above one level of a desire and above the savings pile,
+  at the card's raw AMV. A later tier of the same good does not reserve another level.
+  A meal already set aside counts as that level. Buy orders are stamped with that same raw AMV.
   Payment offers that surplus, and also units that feed only a later
   tier than the good being bought. Same-tier goods are not spent on each
   other. A purchase that feeds nothing spends the surplus alone. That room is the target's cap, `amount * cap`, minus what that
@@ -514,11 +709,12 @@ The day's exchange and rot sit on `MarketGood` with the card: `traded`,
 positive, and `production` when it is still positive. A snapshot taken
 before exchange has no sought units. `match_deals` adds `traded` and `paid`, records the print, then
 sets `sought_unmet` and `offered_unsold` from the book it left behind.
-After internal migration, `market_day` calls
+After internal migration and founding, `market_day` calls
 `note_decay(good, decayed, volume)` for each pop and firm. A good missing
 from the card is inserted at AMV `1` and salability `0.5`.
 
-`Market::record_keeping` is the night write:
+`Market::record_keeping` is the night write. A good keeps the AMV it opened
+with unless it exchanged at least one unit. The steps below are that write:
 
 - Accepted deals record a print from the morning card. Payment holding is
   split across received goods with positive holding, by holding times units.
@@ -534,18 +730,19 @@ from the card is inserted at AMV `1` and salability `0.5`.
   `1` when none were.
 - Rot, when `decayed` and a base are present: base is `volume`, or `stock`
   when volume is 0. AMV falls by `fraction * |AMV|`, fraction
-  `(decayed / base) / 4` clamped to `0..=1`.
+  `(decayed / base) / 4` clamped to `0..=1`. A currency with no other
+  tender offered keeps its AMV, so that rot is not taken off the card.
 - If AMV fell, salability falls by that loss over the old absolute AMV,
   capped at `0.01`. A night that took the good in payment and did not lose
   AMV raises salability by `0.05`, including past par. A good that was
-  bought and not paid out rises by the same step and stops at par. A good
-  that was only offered, and did not sell, does not rise that way.
+  bought and not paid out rises by the same step and stops at par. A rise
+  that was not paid restores salability toward par by that gain over the
+  old absolute AMV, capped at `0.01`. A good that was only offered, and
+  did not sell, does not rise that way.
 - The tape is cleared. Production and consumption are zeroed. Stock stays.
-- The card is then restated in one unit. That good is the positive-AMV row
-  with the highest salability. Equal salability goes to the largest payment
-  value (units paid times its pre-write holding value), then the lower id.
-  Every AMV is divided by the unit's AMV, so the unit is 1. A negative AMV
-  is divided by the same price. Salability is not written again.
+- Each good keeps the AMV its own day wrote. A price that landed in the
+  dead zone is lifted unless a seller valued that good below zero.
+  Salability is not written again.
 
 Actor `record_keeping` and `plan` read a snapshot taken after decay and
 `rescale_desires`, and before that night write, so they still see today's

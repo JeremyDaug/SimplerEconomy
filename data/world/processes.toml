@@ -3,8 +3,8 @@
 #
 # Specialized recipes: process id equals the output good id, except Time
 # (good 0) which is process 28 so id 0 stays none. Subsistence recipes are
-# 29..=31 (household farm / water / forage). complexity below 1.0 is
-# subsistence; these three use 0.25. Omitted complexity is 1.0, and the
+# 29..=32 (household farm / water / forage / cotton). complexity below 1.0 is
+# subsistence; these four use 0.25. Omitted complexity is 1.0, and the
 # value must be finite and > 0.
 #
 # Raw extracts take Time only as required input; grain and wood may take
@@ -22,6 +22,7 @@
 # smithing 34: iron, iron tools, blades, iron token.
 # metalworking 35: copper, tin, bronze, and their tools, mirror, and tokens.
 # mining 36: coal. pottery 37: clay and pots. brewing 38: beer.
+# clothworking 43: cotton, thread, fabric, clothes.
 #
 # input type: destroyed | consumed | capital | factor  (default destroyed)
 # optional = true to skip if the good is missing.
@@ -32,12 +33,13 @@ id = 1
 name = "make grain"
 inputs = [
     { good = 0, amount = 5.0 },
+    { good = 1, amount = 1.0 },
     { good = 2, amount = 0.5, optional = true, optional_effects = [{ output = 0.25 }] },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 29, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 29, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 1, amount = 6.0 },
+    { good = 1, amount = 40.0 },
     { good = 29, amount = 0.01, fixed = true },
 ]
 
@@ -50,7 +52,7 @@ inputs = [
     { good = 30, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 30, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 2, amount = 6.0 },
+    { good = 2, amount = 8.0 },
     { good = 30, amount = 0.01, fixed = true },
 ]
 
@@ -66,7 +68,7 @@ inputs = [
     { good = 31, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 31, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 3, amount = 3.0 },
+    { good = 3, amount = 12.0 },
     { good = 31, amount = 0.01, fixed = true },
 ]
 
@@ -354,7 +356,7 @@ inputs = [
     { good = 38, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 38, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 25, amount = 2.0 },
+    { good = 25, amount = 8.0 },
     { good = 38, amount = 0.01, fixed = true },
 ]
 
@@ -396,21 +398,24 @@ outputs = [
     { good = 28, amount = 0.01, fixed = true },
 ]
 
-# One human level is 5 units of grain, water, and wood. At 3 a run and
-# 36 time, the three meals are 180 time. A household's grant is 198, so
-# they fit with a little left to trade.
+# One human household is 5 people and about 198 time. Grain, water, and
+# wood fill a level at 5 units. Cotton fills one at 10 (efficiency 0.5).
+# Food, water, and wood yield 3 a run. Cotton yields 6. At 12 time a run
+# each of those levels is 20 time. Clothing is filled again at common and
+# at luxury, so six levels are 120 time. The points left make more cotton
+# than those levels eat, and that stock sits above the meal.
 
 [[processes]]
 id = 29
 name = "subsistence farm"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 36.0 },
+    { good = 0, amount = 12.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 1, amount = 3.0 },
+    { good = 1, amount = 6.0 },
     { good = 28, amount = 0.01, fixed = true },
 ]
 
@@ -419,7 +424,7 @@ id = 30
 name = "subsistence water"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 36.0 },
+    { good = 0, amount = 12.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -433,11 +438,80 @@ id = 31
 name = "subsistence forage"
 complexity = 0.25
 inputs = [
-    { good = 0, amount = 36.0 },
+    { good = 0, amount = 12.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
     { good = 7, amount = 3.0 },
     { good = 28, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 32
+name = "subsistence cotton"
+complexity = 0.25
+inputs = [
+    { good = 0, amount = 12.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 39, amount = 6.0 },
+    { good = 28, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 39
+name = "make cotton"
+inputs = [
+    { good = 0, amount = 5.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 39, amount = 6.0 },
+    { good = 43, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 40
+name = "make thread"
+inputs = [
+    { good = 0, amount = 3.0 },
+    { good = 39, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 40, amount = 1.0 },
+    { good = 43, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 41
+name = "make fabric"
+inputs = [
+    { good = 0, amount = 3.0 },
+    { good = 40, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 41, amount = 1.0 },
+    { good = 43, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 42
+name = "make clothes"
+inputs = [
+    { good = 0, amount = 3.0 },
+    { good = 41, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 42, amount = 1.0 },
+    { good = 43, amount = 0.01, fixed = true },
 ]

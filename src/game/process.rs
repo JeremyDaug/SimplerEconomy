@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::game::factuals::Factuals;
+use crate::game::good::TIME;
 use crate::game::household::HouseholdTarget;
 
 pub use crate::game::effects::ProcessEffect;
@@ -81,6 +82,20 @@ impl Process {
     /// a complexity value of < 1.0.
     pub fn is_subsistence(&self) -> bool {
         self.complexity < 1.0
+    }
+
+    /// # Variable Goods
+    ///
+    /// Variable outputs of this process, excluding time.
+    ///
+    /// A fixed output is left out. A non-positive amount is left out. Time
+    /// is left out. Returns those good ids.
+    pub fn variable_goods(&self) -> Vec<usize> {
+        self.outputs
+            .iter()
+            .filter(|output| !output.fixed && output.amount > 0.0 && output.good != TIME)
+            .map(|output| output.good)
+            .collect()
     }
 
     /// AMV-out / AMV-in of one iteration at `price`. Optional and factor

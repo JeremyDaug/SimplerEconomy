@@ -45,3 +45,19 @@ amv = 1
 [[market]]
 good = "coal"
 amv = 1
+
+[[market]]
+good = "cotton"
+amv = 1
+
+[[market]]
+good = "thread"
+amv = 1
+
+[[market]]
+good = "fabric"
+amv = 1
+
+[[market]]
+good = "clothes"
+amv = 1

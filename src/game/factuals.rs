@@ -867,6 +867,15 @@ impl Factuals {
         self.craft(id, None)
     }
 
+    /// # Each Craft
+    ///
+    /// Every craft stored in this world, open and attached.
+    ///
+    /// Map order. One pair is [`Self::craft`].
+    pub fn each_craft(&self) -> impl Iterator<Item = &Craft> {
+        self.crafts.values()
+    }
+
     /// # Craft
     ///
     /// The craft stored under `id` and `origin`.
@@ -1567,25 +1576,25 @@ processes = [29]
         let factuals = Factuals::load_from_path(repo_world_dir()).expect("world dir");
         let subsistence = factuals.get_craft(1).expect("subsistence");
         assert_eq!(subsistence.name, "subsistence");
-        assert_eq!(subsistence.processes, vec![29, 30, 31]);
+        assert_eq!(subsistence.processes, vec![29, 30, 31, 32]);
         assert!((subsistence.complexity_modifier - 1.0).abs() < 1e-12);
         assert_eq!(
             factuals
                 .get_craft(5)
                 .expect("subsistence farming")
                 .processes,
-            vec![29, 30, 31, 1]
+            vec![29, 30, 31, 32, 1]
         );
         assert_eq!(
             factuals
                 .get_craft(6)
                 .expect("subsistence watering")
                 .processes,
-            vec![29, 30, 31, 2]
+            vec![29, 30, 31, 32, 2]
         );
         assert_eq!(
             factuals.get_craft(7).expect("subsistence baking").processes,
-            vec![29, 30, 31, 3]
+            vec![29, 30, 31, 32, 3]
         );
     }
 
@@ -1608,6 +1617,7 @@ processes = [29]
         assert!(survival.tags.contains(&GoodTag::Untradeable));
         const RAW_EXTRACTS: &[&str] = &[
             "grain", "water", "gold", "wood", "iron", "copper", "tin", "bronze", "coal", "clay",
+            "cotton",
         ];
         for process in factuals.processes.values() {
             let time_in = process

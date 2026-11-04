@@ -30,7 +30,7 @@ id = 1
 name = "grain"
 mass = 1.0
 volume = 0.0015
-decay_rate = 0.12
+decay_rate = 0.05
 
 [[goods]]
 id = 2
@@ -297,6 +297,45 @@ tags = ["skill", "untradeable"]
 [[goods]]
 id = 38
 name = "brewing"
+mass = 0.0
+volume = 0.0
+decay_rate = 0.05
+tags = ["skill", "untradeable"]
+
+# Clothing. Cotton is the raw fiber. Thread, fabric, and clothes are the
+# steps up. Each keeps longer than the one before it.
+
+[[goods]]
+id = 39
+name = "cotton"
+mass = 0.2
+volume = 0.002
+decay_rate = 0.12
+
+[[goods]]
+id = 40
+name = "thread"
+mass = 0.1
+volume = 0.0005
+decay_rate = 0.08
+
+[[goods]]
+id = 41
+name = "fabric"
+mass = 0.2
+volume = 0.001
+decay_rate = 0.05
+
+[[goods]]
+id = 42
+name = "clothes"
+mass = 0.4
+volume = 0.003
+decay_rate = 0.03
+
+[[goods]]
+id = 43
+name = "clothworking"
 mass = 0.0
 volume = 0.0
 decay_rate = 0.05
