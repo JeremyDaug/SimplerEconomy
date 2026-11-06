@@ -22,6 +22,8 @@ pub const TIME_PER_LABOR: f64 = 64.0;
 pub mod pop_constants {
     /// Full weight of one extra process in [`crate::game::craft::Craft::craft_distance`].
     pub const CRAFT_DISTANCE: f64 = 0.1;
+    /// Each process outside a craft multiplies that craft's complexity modifier by this.
+    pub const EXTRA_PROCESS_ACCEL: f64 = 1.2;
     /// Turns in one demographic year when config does not say. One turn is one year.
     pub const TURN_LENGTH: f64 = 1.0;
     /// Multiplier on the mean tier price saved per household at each level.
@@ -126,6 +128,11 @@ pub struct PopConfig {
     ///
     /// Must be `>= 0`.
     pub craft_distance: f64,
+    /// Each process outside a craft multiplies that craft's complexity modifier by this.
+    ///
+    /// Must be `>= 1`. One leaves the modifier unchanged.
+    /// [`crate::game::craft::Craft::complexity_cost`] reads it.
+    pub extra_process_accel: f64,
     /// Turns in one demographic year.
     ///
     /// [`crate::game::household::Household::update`] divides the annual stock
@@ -165,6 +172,7 @@ impl Default for PopConfig {
     fn default() -> Self {
         Self {
             craft_distance: pop_constants::CRAFT_DISTANCE,
+            extra_process_accel: pop_constants::EXTRA_PROCESS_ACCEL,
             turn_length: pop_constants::TURN_LENGTH,
             savings_amv: pop_constants::SAVINGS_AMV,
             founding_runs: pop_constants::FOUNDING_RUNS,
@@ -180,12 +188,19 @@ impl PopConfig {
     /// # Validate
     ///
     /// Appends a problem when `craft_distance` is non-finite or below 0,
+    /// when `extra_process_accel` is non-finite or below 1,
     /// when `turn_length` or `founding_runs` is non-finite or below 1,
     /// when `savings_amv` or `founding_wealth` is non-finite or below 0, when
     /// `founding_goods_weight` or `founding_gap` is non-finite or below 1, or when
     /// `founding_useful_share` is outside 0 to 1.
     fn validate(&self, problems: &mut Vec<String>) {
         at_least(problems, "pop.craft_distance", self.craft_distance, 0.0);
+        at_least(
+            problems,
+            "pop.extra_process_accel",
+            self.extra_process_accel,
+            1.0,
+        );
         at_least(problems, "pop.turn_length", self.turn_length, 1.0);
         at_least(problems, "pop.savings_amv", self.savings_amv, 0.0);
         at_least(problems, "pop.founding_wealth", self.founding_wealth, 0.0);
@@ -331,6 +346,20 @@ mod config_should {
         let err = GameConfig::load_from_toml("[pop]\ncraft_distance = -0.1\n").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("pop.craft_distance"), "{msg}");
+    }
+
+    #[test]
+    fn load_from_toml_reads_extra_process_accel() {
+        let cfg = GameConfig::load_from_toml("[pop]\nextra_process_accel = 1.5\n").expect("toml");
+        assert!((cfg.pop.extra_process_accel - 1.5).abs() < 1e-12);
+        assert_eq!(cfg.pop.craft_distance, pop_constants::CRAFT_DISTANCE);
+    }
+
+    #[test]
+    fn load_from_toml_rejects_an_extra_process_accel_below_one() {
+        let err = GameConfig::load_from_toml("[pop]\nextra_process_accel = 0.5\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.extra_process_accel"), "{msg}");
     }
 
     #[test]

@@ -61,6 +61,16 @@ const AMV_UNMET_NUDGE: f64 = 0.01;
 /// larger step.
 const MASS_IDLE_STEP: f64 = 0.03;
 
+/// Margin above the least efficient break-even an empty offer rests at.
+///
+/// [`stagnant_rest`] multiplies that break-even by this.
+const STAGNANT_MARGIN: f64 = 1.10;
+
+/// Share of the remaining gap [`stagnant_rise`] closes after a higher rest is added.
+///
+/// The first night has no stored rest, so this share is the whole step.
+const STAGNANT_MARCH: f64 = 0.25;
+
 /// A rise nobody can pay is replaced by this many times that rise, downward.
 ///
 /// [`drag_unaffordable`] applies it. The fall is the rise it replaces, and
@@ -172,6 +182,11 @@ pub struct Market {
     unaffordable: HashSet<usize>,
     /// Market days left before another household may leave to found.
     founding_rest: u32,
+    /// Open market days since that wait last closed, with nobody leaving.
+    ///
+    /// The first day the wait is open is 0. [`Self::found_pop`] adds one
+    /// when that day ends and nobody left. A founding sets it back to 0.
+    founding_open: u32,
     /// Pops removed today. [`Self::reset_day`] clears them.
     pop_removals: Vec<PopRemoval>,
     /// Units listed at the open, before a reservation or a sale.
@@ -194,6 +209,11 @@ pub struct Market {
     ///
     /// [`Self::reset_day`] clears it. The night prices do not read it.
     real_order: HashMap<usize, f64>,
+    /// Last night's stagnant rest, by good.
+    ///
+    /// [`stagnant_rest`] writes it. The next empty offer adds the increase.
+    /// A night with no such process drops the good. [`Self::reset_day`] leaves it.
+    stagnant_rest: HashMap<usize, f64>,
 }
 
 impl Market {
@@ -219,12 +239,14 @@ impl Market {
             unpaid_wants: HashMap::new(),
             unaffordable: HashSet::new(),
             founding_rest: 0,
+            founding_open: 0,
             pop_removals: Vec::new(),
             initial_offering: HashMap::new(),
             effective_offering: HashMap::new(),
             excess_supply: HashMap::new(),
             maximal_order: HashMap::new(),
             real_order: HashMap::new(),
+            stagnant_rest: HashMap::new(),
         }
     }
 
@@ -386,9 +408,10 @@ impl Market {
     /// AMV it opened at, unless a real bid was left and the night's step is a
     /// fall. The unpaid one-unit want is not that bid. A surplus against only
     /// that want keeps the price it opened at.
-    /// An empty offer with a real bid rises by the idle step, and a surplus
-    /// fall stops, at [`make_ceiling`]. A price already on that ask does not
-    /// cross it. No process that gains from a higher ask leaves the old rule.
+    /// An empty offer with a real bid buyers could pay rises toward
+    /// [`stagnant_rest`] by [`stagnant_rise`]. No such process leaves the
+    /// idle step, which still stops at [`make_ceiling`]. A surplus fall
+    /// stops there too. A price already on that ask does not cross it.
     /// [`Self::keep_positive_asks`] then lifts a price that
     /// landed in the dead zone.
     /// `factuals` is that tradeable check. Rot itself was added
@@ -437,6 +460,14 @@ impl Market {
                 .map(|good| good.salability)
                 .unwrap_or(SALABILITY_DEFAULT);
             let ceiling = make_ceiling(factuals, &history, id, salability);
+            // Last night's rest, then today's. The next empty offer adds the increase.
+            let prior = self.stagnant_rest.get(&id).copied();
+            let rest = stagnant_rest(factuals, &history, id, salability);
+            if let Some(ask) = rest {
+                self.stagnant_rest.insert(id, ask);
+            } else {
+                self.stagnant_rest.remove(&id);
+            }
             let good = self
                 .goods
                 .get_mut(&id)
@@ -538,19 +569,26 @@ impl Market {
                 }
             } else if !moved
                 && price_live
-                && step > 0.0
                 && offered < 1.0
                 && real_bid >= 1.0
                 && !self.unaffordable.contains(&id)
-                && ceiling.is_some_and(|ask| old < ask)
                 && mass_book_can_move(factuals, &currencies, &history, id)
             {
-                // Nobody offered, and a buyer could pay. Rise toward the make.
-                let next = valued_price(
-                    self.negative_value.contains(&id),
-                    hold_the_make(old, old + idle_move(old, step), ceiling),
-                );
-                good.set_amv(next);
+                if let Some(ask) = rest.filter(|ask| old < *ask) {
+                    // Nobody offered, and a buyer could pay. Rise toward the rest.
+                    let next = valued_price(
+                        self.negative_value.contains(&id),
+                        stagnant_rise(old, ask, prior),
+                    );
+                    good.set_amv(next);
+                } else if rest.is_none() && step > 0.0 && ceiling.is_some_and(|ask| old < ask) {
+                    // No process sets a rest. Rise by the idle step toward the cheapest make.
+                    let next = valued_price(
+                        self.negative_value.contains(&id),
+                        hold_the_make(old, old + idle_move(old, step), ceiling),
+                    );
+                    good.set_amv(next);
+                }
             }
             // Salability. A fall lowers it. Payment without a fall raises it,
             // including past par. A good that was bought and not paid out
@@ -1923,13 +1961,16 @@ impl Market {
     /// `actors` holds the pops. `factuals` supplies processes and crafts.
     /// The candidates are [`founding_candidates`]. The first whose edit can leave is the
     /// founder. A pop with no edit does not block the next. A pop under
-    /// [`FOUNDING_MIN_HOUSEHOLDS`] cannot found,
-    /// and neither can one whose set-aside covers fewer days than
-    /// [`crate::game::config::PopConfig::founding_wealth`]. A founding
+    /// [`FOUNDING_MIN_HOUSEHOLDS`] does not clear that list,
+    /// and neither does one whose set-aside covers fewer days than
+    /// [`crate::game::config::PopConfig::founding_wealth`]. When the wait is
+    /// open and that list is empty, [`drought_chance`] may still send a pop
+    /// from [`founding_stranded`]. A founding
     /// then waits [`crate::game::config::PopConfig::founding_gap`] market
     /// days before another party may leave. The job is
     /// [`founding_processes`]: the founder's lines with one process added,
-    /// one removed, or both. [`craft_id_for`] names the craft. One pop is added,
+    /// one removed, or both.
+    /// [`craft_id_for`] names the craft. One pop is added,
     /// unless another pop already has that demographic and that process
     /// set. That pop receives the households instead. [`floor_processes`]
     /// adds subsistence the new job cannot run, and that floor is part of
@@ -1957,7 +1998,41 @@ impl Market {
         }
         let wealth = factuals.config.pop.founding_wealth;
         let savings_days = factuals.config.pop.founding_goods_weight;
-        for founder in founding_candidates(self, actors, wealth) {
+        let ready = founding_candidates(self, actors, wealth);
+        if self.send_founding(actors, factuals, rng, &ready, savings_days) {
+            return;
+        }
+        // Nobody cleared the gate. A pop that can still give five may leave.
+        if ready.is_empty() {
+            let stranded = founding_stranded(self, actors);
+            if !stranded.is_empty()
+                && drought_hits(self.founding_open, rng)
+                && self.send_founding(actors, factuals, rng, &stranded, savings_days)
+            {
+                return;
+            }
+        }
+        self.founding_open = self.founding_open.saturating_add(1);
+    }
+
+    /// # Send Founding
+    ///
+    /// Asks each id in `founders` to give [`FOUNDING_HOUSEHOLDS`].
+    ///
+    /// `actors` holds the pops. `factuals` supplies the edit and the gap.
+    /// `rng` draws that edit. `savings_days` is the set-aside each leaving
+    /// household takes. The first pop whose edit leaves is the founder, and
+    /// the wait is armed. A pop with no edit does not block the next. Returns
+    /// whether a household left.
+    fn send_founding(
+        &mut self,
+        actors: &mut Actors,
+        factuals: &Factuals,
+        rng: &mut impl Rng,
+        founders: &[usize],
+        savings_days: f64,
+    ) -> bool {
+        for &founder in founders {
             let Some(choice) = founding_processes(self, actors, factuals, founder, rng) else {
                 continue;
             };
@@ -2043,9 +2118,10 @@ impl Market {
             };
             if sent {
                 self.arm_founding_gap(factuals.config.pop.founding_gap);
-                return;
+                return true;
             }
         }
+        false
     }
 
     /// # Fold Duplicate Pops
@@ -2102,8 +2178,10 @@ impl Market {
     ///
     /// `gap` is the market days from this founding to the next one that may
     /// leave. One day, or a gap that is not finite, arms nothing. A longer
-    /// gap blocks the calls in between.
+    /// gap blocks the calls in between. Either way the open-day count goes
+    /// back to 0, so the next open day starts at one percent again.
     fn arm_founding_gap(&mut self, gap: f64) {
+        self.founding_open = 0;
         if !gap.is_finite() || gap <= 1.0 {
             return;
         }
@@ -2128,6 +2206,17 @@ impl Market {
     /// Zero means the next founding may leave. Returns that count.
     pub fn founding_wait(&self) -> u32 {
         self.founding_rest
+    }
+
+    /// # Founding Drought Chance
+    ///
+    /// The chance a pop founds when nobody clears the gate.
+    ///
+    /// The wait is not part of this answer. The chance is
+    /// [`drought_chance`] for the open days since that wait last closed.
+    /// Returns that chance.
+    pub fn founding_drought_chance(&self) -> f64 {
+        drought_chance(self.founding_open)
     }
 
     /// # Retool Stranded
@@ -2577,6 +2666,62 @@ fn drag_unaffordable(step: f64, offered: f64, requested: f64, unaffordable: bool
     } else {
         step
     }
+}
+
+/// # Stagnant Rest
+///
+/// The ask a tenth above the least efficient process that gains when `good` rises.
+///
+/// `factuals` supplies the processes. `history` prices their other goods.
+/// `salability` is this good's liquidity. [`break_even_amv`] is the ask
+/// where a run scores zero. The highest positive ask is the least efficient
+/// method that still has to be paid to succeed. A process that already pays
+/// at every positive ask is skipped. [`STAGNANT_MARGIN`] is that tenth.
+/// No positive break-even returns `None`. Returns that ask.
+fn stagnant_rest(
+    factuals: &Factuals,
+    history: &MarketHistory,
+    good: usize,
+    salability: f64,
+) -> Option<f64> {
+    let mut worst: Option<f64> = None;
+    for process in factuals.each_process() {
+        let Some(zero) = break_even_amv(process, good, history, salability) else {
+            continue;
+        };
+        // Already pays at every positive ask. That is not a rest.
+        if zero <= 0.0 {
+            continue;
+        }
+        worst = Some(worst.map_or(zero, |old| old.max(zero)));
+    }
+    worst.map(|zero| zero * STAGNANT_MARGIN)
+}
+
+/// # Stagnant Rise
+///
+/// `old` stepped toward `rest` for one night.
+///
+/// `previous` is last night's rest, when one was stored. The first night
+/// closes [`STAGNANT_MARCH`] of the gap. A later night first adds the whole
+/// increase in the rest, then that same share of what remains. A rest that
+/// fell adds nothing. The step does not cross `rest` and does not go below
+/// `old`. A price already at or above the rest, and a value that is not
+/// finite, returns `old`.
+fn stagnant_rise(old: f64, rest: f64, previous: Option<f64>) -> f64 {
+    if !old.is_finite() || !rest.is_finite() || old >= rest {
+        return old;
+    }
+    let tracked = match previous {
+        Some(prior) if prior.is_finite() => (old + (rest - prior).max(0.0)).min(rest),
+        Some(_) => return old,
+        None => old,
+    };
+    let next = tracked + STAGNANT_MARCH * (rest - tracked);
+    if !next.is_finite() {
+        return old;
+    }
+    next.clamp(old, rest)
 }
 
 /// # Make Ceiling
@@ -3064,6 +3209,11 @@ const FOUNDING_HOUSEHOLDS: f64 = 5.0;
 ///
 /// Five is a fifth of this count.
 const FOUNDING_MIN_HOUSEHOLDS: f64 = 25.0;
+/// Chance added each open day that a pop founds when nobody clears the gate.
+///
+/// The first open day is one step. Each later open day adds another.
+/// [`drought_chance`] stops at certainty.
+const FOUNDING_DROUGHT_STEP: f64 = 0.01;
 /// Share of foundings that apply both an add and a drop.
 const FOUNDING_BOTH_SHARE: f64 = 0.2;
 /// Half again a drop's base weight, when its product's offer already covered the request.
@@ -4667,23 +4817,49 @@ fn add_map(sum: &mut HashMap<usize, f64>, part: &HashMap<usize, f64>) {
 
 /// # Founding Candidates
 ///
-/// The pops on `market` that can give [`FOUNDING_HOUSEHOLDS`], most days first.
+/// The pops on `market` that clear the founding gate, in [`ranked_founders`] order.
 ///
 /// `actors` holds the pops. A candidate has to [`clears_founding_gate`].
-/// The most [`Pop::set_aside_days`] comes first, then more households,
-/// then a higher finite standard of living. A non-finite living ranks last.
-/// The lower id breaks the rest. `wealth` is the floor that gate reads.
-/// Returns those ids. An empty list is nobody.
+/// `wealth` is the floor that gate reads. Returns those ids. An empty
+/// list is nobody.
 fn founding_candidates(market: &Market, actors: &Actors, wealth: f64) -> Vec<usize> {
+    ranked_founders(market, actors, |pop, history| {
+        clears_founding_gate(pop, history, wealth)
+    })
+}
+
+/// # Founding Stranded
+///
+/// Pops that can give [`FOUNDING_HOUSEHOLDS`] and keep at least one household.
+///
+/// `actors` holds the pops. The wealth floor and [`FOUNDING_MIN_HOUSEHOLDS`]
+/// are not read. The order is [`ranked_founders`]. Returns those ids. An
+/// empty list is nobody who can leave five households behind them.
+fn founding_stranded(market: &Market, actors: &Actors) -> Vec<usize> {
+    ranked_founders(market, actors, |pop, _history| {
+        pop_households(pop) >= FOUNDING_HOUSEHOLDS + 1.0
+    })
+}
+
+/// # Ranked Founders
+///
+/// Pop ids on `market` that `keep` accepts, most set-aside days first.
+///
+/// `actors` holds the pops. A missing pop is left out. The most
+/// [`Pop::set_aside_days`] comes first, then more households, then a higher
+/// finite standard of living. A non-finite living ranks last. The lower id
+/// breaks the rest. Returns those ids.
+fn ranked_founders(
+    market: &Market,
+    actors: &Actors,
+    keep: impl Fn(&Pop, &MarketHistory) -> bool,
+) -> Vec<usize> {
     let history = market.history();
     let mut ids: Vec<usize> = market
         .pops
         .iter()
         .copied()
-        .filter(|&id| {
-            actors.pops.contains_key(&id)
-                && clears_founding_gate(actors.pop(id), &history, wealth)
-        })
+        .filter(|&id| actors.pops.contains_key(&id) && keep(actors.pop(id), &history))
         .collect();
     ids.sort_by(|&left, &right| {
         let rank = |id| {
@@ -4702,6 +4878,32 @@ fn founding_candidates(market: &Market, actors: &Actors, wealth: f64) -> Vec<usi
             .then(left.cmp(&right))
     });
     ids
+}
+
+/// # Drought Chance
+///
+/// The chance a pop founds on an open day when nobody clears the gate.
+///
+/// `open_turns` is how many open days have already passed with nobody
+/// leaving. The first open day is 0 and the chance is one
+/// [`FOUNDING_DROUGHT_STEP`]. Each day after that adds another step. The
+/// chance stops at 1. Returns that chance.
+fn drought_chance(open_turns: u32) -> f64 {
+    (FOUNDING_DROUGHT_STEP * (1.0 + open_turns as f64)).min(1.0)
+}
+
+/// # Drought Hits
+///
+/// Whether this open day's roll lands inside [`drought_chance`].
+///
+/// `open_turns` is that chance's input. `rng` draws one value in 0 to 1.
+/// A chance of 1 hits on any roll. A non-finite roll misses. Returns that
+/// answer.
+fn drought_hits(open_turns: u32, rng: &mut impl Rng) -> bool {
+    let chance = drought_chance(open_turns);
+    let roll = rng.r#gen::<f64>();
+    let roll = if roll.is_finite() { roll } else { 1.0 };
+    chance >= 1.0 || roll < chance
 }
 
 /// # Clears Founding Gate
@@ -5168,7 +5370,7 @@ fn output_ask(process: &Process, demanded: &HashSet<usize>, closes: &[MassClose]
 ///
 /// `market` supplies the open bids, the price board, and the pops already
 /// working. `actors` holds those pops. `factuals` supplies processes and
-/// the founding settings. `rng` draws the pool and then the edit. The
+/// the founding settings. `rng` draws the pool and the edit. The
 /// stake is [`founding_stake`], priced before anything moves. An edit has to pass [`is_process_stocked`] for
 /// [`crate::game::config::PopConfig::founding_runs`]. The useful pool adds
 /// a process whose [`trade_score`] is finite and positive, and a process
@@ -5183,7 +5385,6 @@ fn output_ask(process: &Process, demanded: &HashSet<usize>, closes: &[MassClose]
 /// id order, adds before drops. A drop weighs [`founding_drop_weight`].
 /// One edit is applied, then
 /// [`apply_both_edit`]. An add also calls [`drop_replaced_subsistence`].
-/// [`complete_craft_groups`] then fills a multi-step craft the set already runs.
 /// An empty set is skipped. A set the
 /// founder already runs is skipped. Another pop with that demographic and
 /// that set is [`FoundingChoice::Join`]. Returns that choice, or `None`.
@@ -5338,58 +5539,7 @@ fn founding_processes(
         &mut next,
         rng,
     );
-    complete_craft_groups(factuals, &mut next);
     consider(&next)
-}
-
-/// # Complete Craft Groups
-///
-/// Unions a multi-step craft onto `next` when the job already runs part of it.
-///
-/// `factuals` supplies the crafts. A craft qualifies when it has no origin,
-/// lists more than one process, and does not list every process of the open
-/// subsistence craft. No open subsistence craft leaves `next` unchanged.
-/// Each process of a qualifying craft that meets `next` is added. Each of
-/// those processes then drops the subsistence line that makes the same good.
-/// Nothing is returned.
-fn complete_craft_groups(factuals: &Factuals, next: &mut Vec<usize>) {
-    let base: HashSet<usize> = factuals
-        .each_craft()
-        .filter(|craft| craft.origin.is_none() && craft.name == "subsistence")
-        .flat_map(|craft| craft.processes.iter().copied())
-        .collect();
-    if base.is_empty() {
-        return;
-    }
-    let mut ids: Vec<usize> = factuals
-        .each_craft()
-        .filter(|craft| {
-            if craft.origin.is_some() {
-                return false;
-            }
-            let own: HashSet<usize> = craft.processes.iter().copied().collect();
-            own.len() > 1 && !base.is_subset(&own) && own.iter().any(|id| next.contains(id))
-        })
-        .map(|craft| craft.id)
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    for id in ids {
-        let processes = factuals
-            .get_craft(id)
-            .map(|craft| craft.processes.clone())
-            .unwrap_or_default();
-        for process in &processes {
-            if !next.contains(process) {
-                next.push(*process);
-            }
-        }
-        for process in &processes {
-            if next.contains(process) {
-                drop_replaced_subsistence(factuals, next, *process);
-            }
-        }
-    }
 }
 
 /// # Apply Both Edit
@@ -5894,7 +6044,8 @@ mod tests {
         clearing_price, make_change, mix_change, monetary_rating, payment_tender, payment_tenders,
         ration,
     };
-    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand::{RngCore, SeedableRng};
 
     use crate::game::actor::Actor;
     use crate::game::actors::Actors;
@@ -7115,8 +7266,8 @@ mod tests {
         assert!((market.goods[&2].amv - 2.03).abs() < 1e-9);
     }
 
-    /// An empty offer with a real bid rises by the idle step, and stops at the make.
-    /// A book nobody could buy does not rise. A price already above the make stays.
+    /// An empty offer with a real bid closes a quarter of the gap to the stagnant rest.
+    /// A book nobody could buy does not rise. A price already above that rest stays.
     #[test]
     fn record_keeping_raises_an_empty_offer_toward_the_make() {
         let mut market = Market::new(1);
@@ -7129,7 +7280,7 @@ mod tests {
             .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
         market.mass_closes.push(idle_close(2, 0.0, 8.0, 0.0));
         market.record_keeping(&paying_output());
-        assert!((market.goods[&2].amv - 1.03).abs() < 1e-9);
+        assert!((market.goods[&2].amv - 1.3).abs() < 1e-9);
 
         market.goods.get_mut(&2).unwrap().set_amv(1.0);
         market.unaffordable.insert(2);
@@ -7142,6 +7293,146 @@ mod tests {
         market.mass_closes = vec![idle_close(2, 0.0, 8.0, 0.0)];
         market.record_keeping(&paying_output());
         assert!((market.goods[&2].amv - 3.0).abs() < 1e-9);
+    }
+
+    /// A higher rest is added in full, then a quarter of what remains.
+    /// The step stops on the rest when that increase would pass it.
+    #[test]
+    fn record_keeping_tracks_a_rise_in_the_stagnant_rest() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(2, 0.0, 8.0, 0.0));
+        market.record_keeping(&paying_output());
+        assert!((market.goods[&2].amv - 1.3).abs() < 1e-9);
+        assert!((market.stagnant_rest[&2] - 2.2).abs() < 1e-9);
+
+        market.goods.get_mut(&1).unwrap().set_amv(2.0);
+        market.mass_closes = vec![idle_close(2, 0.0, 8.0, 0.0)];
+        market.record_keeping(&paying_output());
+        assert!((market.goods[&2].amv - 2.625).abs() < 1e-9);
+        assert!((market.stagnant_rest[&2] - 3.3).abs() < 1e-9);
+
+        market.goods.get_mut(&1).unwrap().set_amv(5.0);
+        market.goods.get_mut(&2).unwrap().set_amv(4.0);
+        market.mass_closes = vec![idle_close(2, 0.0, 8.0, 0.0)];
+        market.record_keeping(&paying_output());
+        assert!((market.goods[&2].amv - 6.6).abs() < 1e-9);
+    }
+
+    /// The rest is the least efficient method, a tenth above it.
+    /// A method that already pays at every positive ask does not set the rest,
+    /// and it does not keep the cheaper method's ceiling from being passed.
+    #[test]
+    fn record_keeping_aims_an_empty_offer_at_the_least_efficient_make() {
+        let factuals = Factuals::new()
+            .with_process(
+                Process::new(3, "cottage", 0)
+                    .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(2, 1.0, false)),
+            )
+            .with_process(
+                Process::new(4, "mill", 0)
+                    .with_input(ProcessInput::new(1, 1.0, true, InputType::Destroyed, false))
+                    .with_output(ProcessOutput::new(2, 2.0, false)),
+            )
+            .with_process(
+                Process::new(5, "works", 0)
+                    .with_output(ProcessOutput::new(2, 1.0, false))
+                    .with_output(ProcessOutput::new(9, 10.0, false)),
+            );
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(2, 0.0, 8.0, 0.0));
+        market.record_keeping(&factuals);
+        assert!((market.goods[&2].amv - 1.3).abs() < 1e-9);
+        assert!((market.stagnant_rest[&2] - 2.2).abs() < 1e-9);
+    }
+
+    /// A listed offer that did not trade is not an empty offer.
+    /// The rest is still stored for a later empty night.
+    #[test]
+    fn record_keeping_leaves_a_listed_offer_off_the_stagnant_rise() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.mass_closes.push(idle_close(2, 10.0, 2.0, 0.0));
+        market.record_keeping(&paying_output());
+        assert!((market.goods[&2].amv - 1.0).abs() < 1e-9);
+        assert!((market.stagnant_rest[&2] - 2.2).abs() < 1e-9);
+    }
+
+    /// A sold-out book and a scarce book stay on the cheapest make.
+    /// The empty-offer rise is for a good nobody offered. A larger offer
+    /// stays. A price already above that make stays.
+    #[test]
+    fn record_keeping_leaves_a_traded_book_off_the_stagnant_rise() {
+        let mut market = Market::new(1);
+        insert_salability_anchor(&mut market);
+        market
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market
+            .goods
+            .insert(2, MarketGood::new().with_amv(2.03).with_salability(1.0));
+        market.mass_closes.push(idle_close(2, 4.0, 4.0, 4.0));
+        market.record_keeping(&paying_output());
+        assert!((market.goods[&2].amv - 2.03).abs() < 1e-9);
+
+        let mut scarce = Market::new(1);
+        insert_salability_anchor(&mut scarce);
+        scarce
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        scarce
+            .goods
+            .insert(2, MarketGood::new().with_amv(2.03).with_salability(1.0));
+        scarce.mass_closes.push(idle_close(2, 1.0, 6.0, 1.0));
+        scarce.record_keeping(&paying_output());
+        assert!((scarce.goods[&2].amv - 2.03).abs() < 1e-9);
+
+        let mut glut = Market::new(1);
+        insert_salability_anchor(&mut glut);
+        glut
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        glut
+            .goods
+            .insert(2, MarketGood::new().with_amv(2.03).with_salability(1.0));
+        glut.mass_closes.push(idle_close(2, 10.0, 2.0, 2.0));
+        glut.record_keeping(&paying_output());
+        assert!((glut.goods[&2].amv - 2.03).abs() < 1e-9);
+
+        let mut above = Market::new(1);
+        insert_salability_anchor(&mut above);
+        above
+            .goods
+            .insert(1, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        above
+            .goods
+            .insert(2, MarketGood::new().with_amv(3.0).with_salability(1.0));
+        above.mass_closes.push(idle_close(2, 4.0, 4.0, 4.0));
+        above.record_keeping(&paying_output());
+        assert!((above.goods[&2].amv - 3.0).abs() < 1e-9);
     }
 
     /// Both sides quoted and never shared a price. The card stays, and the
@@ -9481,6 +9772,53 @@ mod tests {
         market.found_pop(actors, factuals, &mut rng);
     }
 
+    /// Draws `lead` once, then continues from [`StdRng`] seed 1.
+    ///
+    /// `lead` is the first `f64` in 0 to 1. Later draws are the seed.
+    struct LeadRoll {
+        lead: Option<u64>,
+        rest: StdRng,
+    }
+
+    impl LeadRoll {
+        /// A roll of `lead`, then seed 1.
+        ///
+        /// `lead` is clamped into 0 to 1. The first `f64` draw is that value.
+        fn open(lead: f64) -> Self {
+            let lead = if lead.is_finite() { lead.clamp(0.0, 1.0) } else { 1.0 };
+            let bits = ((lead * (1u64 << 53) as f64) as u64).min((1u64 << 53) - 1);
+            Self {
+                lead: Some(bits << 11),
+                rest: StdRng::seed_from_u64(1),
+            }
+        }
+    }
+
+    impl RngCore for LeadRoll {
+        fn next_u32(&mut self) -> u32 {
+            self.next_u64() as u32
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            if let Some(bits) = self.lead.take() {
+                return bits;
+            }
+            self.rest.next_u64()
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            for chunk in dest.chunks_mut(8) {
+                let bytes = self.next_u64().to_le_bytes();
+                chunk.copy_from_slice(&bytes[..chunk.len()]);
+            }
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
     fn subsistence_job() -> Job {
         Job::new(
             1,
@@ -9603,55 +9941,6 @@ mod tests {
         let lines: Vec<usize> = child.job.lines.iter().map(|line| line.process).collect();
         assert_eq!(lines, vec![29, 30, 31, 1, 2]);
         assert!((child.property[&8].quantity - 4.0).abs() < 1e-9);
-    }
-
-    /// Make cotton is already on the job. The clothier list is filled in,
-    /// subsistence cotton comes off, and the job is named clothier.
-    /// Subsistence farming is not filled in. A set that contains it is named
-    /// for that larger list.
-    #[test]
-    fn complete_craft_groups_fills_the_clothier_and_drops_subsistence_cotton() {
-        let factuals = founding_factuals()
-            .with_process(
-                Process::new(32, "subsistence cotton", 0)
-                    .with_complexity(0.25)
-                    .with_output(ProcessOutput::new(39, 6.0, false)),
-            )
-            .with_process(
-                Process::new(39, "make cotton", 0).with_output(ProcessOutput::new(39, 6.0, false)),
-            )
-            .with_process(
-                Process::new(40, "make thread", 0)
-                    .with_input(ProcessInput::new(39, 1.0, true, InputType::Destroyed, false))
-                    .with_output(ProcessOutput::new(40, 1.0, false)),
-            )
-            .with_process(
-                Process::new(41, "make fabric", 0)
-                    .with_input(ProcessInput::new(40, 1.0, true, InputType::Destroyed, false))
-                    .with_output(ProcessOutput::new(41, 1.0, false)),
-            )
-            .with_process(
-                Process::new(42, "make clothes", 0)
-                    .with_input(ProcessInput::new(41, 1.0, true, InputType::Destroyed, false))
-                    .with_output(ProcessOutput::new(42, 1.0, false)),
-            )
-            .with_craft(
-                Craft::new(8, "clothier")
-                    .with_process(39)
-                    .with_process(40)
-                    .with_process(41)
-                    .with_process(42)
-                    .with_complexity_modifier(0.5),
-            );
-        let mut next = vec![29, 30, 31, 32, 39];
-        super::complete_craft_groups(&factuals, &mut next);
-        assert_eq!(next, vec![29, 30, 31, 39, 40, 41, 42]);
-        assert_eq!(super::craft_id_for(&factuals, &next), 8);
-
-        let mut farm = vec![29, 30, 31];
-        super::complete_craft_groups(&factuals, &mut farm);
-        assert_eq!(farm, vec![29, 30, 31]);
-        assert_eq!(super::craft_id_for(&factuals, &[29, 30, 31, 1, 2]), 5);
     }
 
     /// The farm loses holding. Pots can run on the grain stake, so the child keeps pots.
@@ -10080,6 +10369,160 @@ mod tests {
             .map(|line| line.process)
             .collect();
         assert_eq!(lines, vec![29, 3]);
+    }
+
+    /// The first open day is 1%. Day 100 is certain.
+    #[test]
+    fn found_pop_drought_chance_rises_one_percent_a_day() {
+        assert!((super::drought_chance(0) - 0.01).abs() < 1e-12);
+        assert!((super::drought_chance(1) - 0.02).abs() < 1e-12);
+        assert!((super::drought_chance(99) - 1.0).abs() < 1e-12);
+        assert!((super::drought_chance(140) - 1.0).abs() < 1e-12);
+    }
+
+    /// One saved unit is one day, under a floor of two. A hit still sends
+    /// five households, a fifth of the grain, and three fifths of that day.
+    #[test]
+    fn found_pop_leaves_anyway_below_the_wealth_floor() {
+        let mut factuals = bakery_factuals();
+        factuals.config.pop.founding_wealth = 2.0;
+        factuals.config.pop.founding_gap = 5.0;
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut founder = mover(1, 25.0, 1.0, 20.0);
+        founder.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        aim(&mut founder, 2);
+        founder.saved.insert(9, 1.0);
+        seat(&mut market, &mut actors, founder);
+        market.goods.insert(2, MarketGood::new().with_amv(2.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        assert!(!market.is_founding_ready(actors.pop(1), 2.0));
+
+        let mut rng = LeadRoll::open(0.0);
+        market.found_pop(&mut actors, &factuals, &mut rng);
+
+        assert!((actors.pop(1).demographics.household.count - 20.0).abs() < 1e-9);
+        assert!((actors.pop(1).property[&1].quantity - 16.0).abs() < 1e-9);
+        assert!((actors.pop(1).saved[&9] - 0.4).abs() < 1e-9);
+        let child = actors.pop(2);
+        assert!((child.demographics.household.count - 5.0).abs() < 1e-9);
+        assert!((child.property[&1].quantity - 4.0).abs() < 1e-9);
+        assert!((child.property[&9].quantity - 0.6).abs() < 1e-9);
+        assert_eq!(market.founding_wait(), 4);
+        assert_eq!(market.founding_open, 0);
+
+        for _ in 0..4 {
+            let mut rng = LeadRoll::open(0.0);
+            market.found_pop(&mut actors, &factuals, &mut rng);
+        }
+        assert!(actors.pops.get(&3).is_none());
+        assert_eq!(market.founding_wait(), 0);
+        assert_eq!(market.founding_open, 0);
+    }
+
+    /// A roll above the first day's 1% leaves the pop in place and counts the day.
+    #[test]
+    fn found_pop_misses_the_drought_roll_and_counts_the_open_day() {
+        let mut factuals = bakery_factuals();
+        factuals.config.pop.founding_wealth = 2.0;
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut founder = mover(1, 25.0, 1.0, 20.0);
+        founder.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        aim(&mut founder, 2);
+        founder.saved.insert(9, 1.0);
+        seat(&mut market, &mut actors, founder);
+        market.goods.insert(2, MarketGood::new().with_amv(2.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+
+        let mut rng = LeadRoll::open(0.5);
+        market.found_pop(&mut actors, &factuals, &mut rng);
+
+        assert!(actors.pops.get(&2).is_none());
+        assert!((actors.pop(1).demographics.household.count - 25.0).abs() < 1e-9);
+        assert!((actors.pop(1).saved[&9] - 1.0).abs() < 1e-9);
+        assert_eq!(market.founding_open, 1);
+        assert!((market.founding_drought_chance() - 0.02).abs() < 1e-12);
+    }
+
+    /// Ten households are under the gate. A hit still sends five.
+    #[test]
+    fn found_pop_leaves_anyway_under_twenty_five_households() {
+        let mut factuals = bakery_factuals();
+        factuals.config.pop.founding_wealth = 2.0;
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut founder = mover(1, 10.0, 1.0, 20.0);
+        founder.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        aim(&mut founder, 2);
+        founder.saved.insert(9, 1.0);
+        seat(&mut market, &mut actors, founder);
+        market.goods.insert(2, MarketGood::new().with_amv(2.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        assert!(!market.is_founding_ready(actors.pop(1), 2.0));
+
+        let mut rng = LeadRoll::open(0.0);
+        market.found_pop(&mut actors, &factuals, &mut rng);
+
+        assert!((actors.pop(1).demographics.household.count - 5.0).abs() < 1e-9);
+        assert!(actors.pops.get(&2).is_some());
+        assert!((actors.pop(2).demographics.household.count - 5.0).abs() < 1e-9);
+    }
+
+    /// Five households cannot give five and keep one, even at certainty.
+    #[test]
+    fn found_pop_drought_leaves_five_households_in_place() {
+        let mut factuals = bakery_factuals();
+        factuals.config.pop.founding_wealth = 2.0;
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut founder = mover(1, 5.0, 1.0, 20.0);
+        founder.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        aim(&mut founder, 2);
+        founder.saved.insert(9, 8.0);
+        seat(&mut market, &mut actors, founder);
+        market.founding_open = 99;
+
+        let mut rng = LeadRoll::open(0.0);
+        market.found_pop(&mut actors, &factuals, &mut rng);
+
+        assert!(actors.pops.get(&2).is_none());
+        assert!((actors.pop(1).demographics.household.count - 5.0).abs() < 1e-9);
+        assert_eq!(market.founding_open, 100);
+    }
+
+    /// The wait closes the out. A zero roll does not move the open-day count.
+    #[test]
+    fn found_pop_drought_stays_quiet_during_the_wait() {
+        let mut factuals = bakery_factuals();
+        factuals.config.pop.founding_wealth = 2.0;
+        let mut market = Market::new(1);
+        let mut actors = Actors::new();
+        let mut founder = mover(1, 25.0, 1.0, 20.0);
+        founder.job = Job::new(1, vec![JobLine::new(29, Some(0.0), vec![])]);
+        aim(&mut founder, 2);
+        founder.saved.insert(9, 1.0);
+        seat(&mut market, &mut actors, founder);
+        market.goods.insert(2, MarketGood::new().with_amv(2.0));
+        market
+            .goods
+            .insert(9, MarketGood::new().with_amv(1.0).with_salability(1.0));
+        market.founding_rest = 2;
+        market.founding_open = 7;
+
+        let mut rng = LeadRoll::open(0.0);
+        market.found_pop(&mut actors, &factuals, &mut rng);
+
+        assert!(actors.pops.get(&2).is_none());
+        assert!((actors.pop(1).demographics.household.count - 25.0).abs() < 1e-9);
+        assert_eq!(market.founding_wait(), 1);
+        assert_eq!(market.founding_open, 7);
     }
 
     /// One day of bread is the meal. Two units past that day are two days

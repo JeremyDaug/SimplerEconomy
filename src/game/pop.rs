@@ -1319,8 +1319,9 @@ impl Pop {
     /// This pop's complexity cost for its job against the effective craft.
     ///
     /// `factuals` resolves the craft from the job's craft id and this pop's
-    /// culture and religion, and supplies the craft-distance weight. The
-    /// job's lines are the processes measured. No base craft returns `1.0`.
+    /// culture and religion, and supplies the craft-distance weight and
+    /// `extra_process_accel`. The job's lines are the processes measured.
+    /// No base craft returns `1.0`.
     pub fn complexity_cost(&self, factuals: &Factuals) -> f64 {
         let Some(craft) = factuals.effective_craft(
             self.job.craft,
@@ -1329,8 +1330,11 @@ impl Pop {
         ) else {
             return 1.0;
         };
-        self.job
-            .complexity_cost(&craft, factuals.config.pop.craft_distance)
+        self.job.complexity_cost(
+            &craft,
+            factuals.config.pop.craft_distance,
+            factuals.config.pop.extra_process_accel,
+        )
     }
 
     /// Removes this good's row and returns the on-hand quantity.
@@ -7326,8 +7330,8 @@ mod pop {
         assert!((pop.complexity_cost(&cultured) - 0.2).abs() < 1e-12);
 
         pop.job.lines.push(JobLine::new(2, Some(0.0), vec![]));
-        cultured.config.pop.craft_distance = 0.2;
-        assert!((pop.complexity_cost(&cultured) - 0.4).abs() < 1e-12);
+        cultured.config.pop.extra_process_accel = 1.2;
+        assert!((pop.complexity_cost(&cultured) - 0.24).abs() < 1e-12);
 
         pop.job.craft = 0;
         assert!((pop.complexity_cost(&cultured) - 1.0).abs() < 1e-12);

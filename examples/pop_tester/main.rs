@@ -10,8 +10,8 @@
 //! (default 3). The second is the population cap, as a multiplier on each
 //! pop's starting size (default 1000). Those shares add up to one ceiling.
 //! After growth, if the pops pass it, every pop is scaled by the same
-//! factor. After those days, enter runs one
-//! more, a number runs that many, and 0 quits.
+//! factor. After those days, enter runs one more, a number runs that many,
+//! and 0 quits. `pop N` or `p N` prints that pop and asks again.
 //!
 //! ```text
 //! cargo run --example pop_tester
@@ -66,21 +66,23 @@ fn main() {
 
     let mut day = 1u32;
     let mut left = days;
+    // Morning card from the last day, so a look prices the schedule the same way.
+    let mut morning: Option<MarketHistory> = None;
     loop {
         if left == 0 {
-            left = more_days();
+            left = more_days(&factuals, &actors, morning.as_ref());
             if left == 0 {
                 break;
             }
         }
-        run_day(
+        morning = Some(run_day(
             day,
             &mut actors,
             &mut markets,
             &factuals,
             market_id,
             &mut rng,
-        );
+        ));
         day += 1;
         left -= 1;
     }
@@ -130,10 +132,11 @@ fn set_population_caps(actors: &mut Actors, ids: &[usize], multiplier: f64) {
 ///
 /// One market day: morning grant, then the day's tables.
 ///
-/// `day` is the number printed on the header. Sizes for the growth column
-/// are taken after the morning grant and before the market day, from the
-/// pops still stored. The tables after the day read that store again, so a
-/// pop pruned during the day is left off.
+/// `day` is printed before the tables and again after them. Sizes for the
+/// growth column are taken after the morning grant and before the market
+/// day, from the pops still stored. The tables after the day read that
+/// store again, so a pop pruned during the day is left off. Returns the
+/// morning card the schedule was priced on.
 fn run_day(
     day: u32,
     actors: &mut Actors,
@@ -141,7 +144,7 @@ fn run_day(
     factuals: &Factuals,
     market_id: usize,
     rng: &mut StdRng,
-) {
+) -> MarketHistory {
     println!("=== day {day} ===");
     actors.start_day(markets, factuals);
     let market = markets
@@ -154,7 +157,21 @@ fn run_day(
     market.market_day(actors, factuals, rng);
     print_pops(factuals, actors, &households, &history);
     print_founding(factuals, actors, market);
-    print_market_board(factuals, market);
+    print_market_board(factuals, market, &history);
+    println!("=== day {day} ===");
+    history
+}
+
+/// One line typed at the day prompt.
+enum DayPrompt {
+    /// Run this many days. Zero quits.
+    Days(u32),
+    /// Print the pop with this id.
+    Look(usize),
+    /// A pop look that did not include an id.
+    BadLook,
+    /// Not a day count and not a pop look.
+    Again,
 }
 
 /// # More Days
@@ -162,29 +179,114 @@ fn run_day(
 /// Reads how many more market days to run.
 ///
 /// An empty line is one day. `0` quits. Any other whole number is that
-/// many days. A line that is not a whole number asks again. End of input
-/// quits.
-fn more_days() -> u32 {
+/// many days. `pop N` or `p N` prints that pop from the last day and asks
+/// again. `history` is that day's morning card. A line that is neither
+/// asks again. End of input quits.
+fn more_days(
+    factuals: &Factuals,
+    actors: &Actors,
+    history: Option<&MarketHistory>,
+) -> u32 {
     loop {
         println!();
-        print!("run more days (enter = 1, 0 = quit): ");
+        print!("run more days (enter = 1, 0 = quit, pop N = look): ");
         let _ = io::stdout().flush();
         let mut line = String::new();
         match io::stdin().read_line(&mut line) {
             Ok(0) => return 0,
-            Ok(_) => {
-                let line = line.trim();
-                if line.is_empty() {
-                    return 1;
+            Ok(_) => match prompt_line(line.trim()) {
+                DayPrompt::Days(days) => return days,
+                DayPrompt::Look(id) => match history {
+                    Some(history) => print_pop_look(factuals, actors, history, id),
+                    None => println!("no day yet"),
+                },
+                DayPrompt::BadLook => println!("use pop N or p N"),
+                DayPrompt::Again => {
+                    println!("enter a whole number, press enter for one day, or pop N to look")
                 }
-                match line.parse::<u32>() {
-                    Ok(days) => return days,
-                    Err(_) => println!("enter a whole number, or press enter for one day"),
-                }
-            }
+            },
             Err(_) => return 0,
         }
     }
+}
+
+/// # Prompt Line
+///
+/// What `line` asks the tester to do.
+///
+/// An empty line is one day. A whole number is that many days, and `0`
+/// quits. `pop N` or `p N` looks at that pop. The word ignores case, and
+/// the id may sit against the word (`p12`). A pop word with no id is
+/// [`DayPrompt::BadLook`]. Anything else is [`DayPrompt::Again`].
+fn prompt_line(line: &str) -> DayPrompt {
+    if line.is_empty() {
+        return DayPrompt::Days(1);
+    }
+    if let Ok(days) = line.parse::<u32>() {
+        return DayPrompt::Days(days);
+    }
+    let mut parts = line.split_whitespace();
+    let Some(word) = parts.next() else {
+        return DayPrompt::Again;
+    };
+    let (is_pop, glued) = pop_word(word);
+    if !is_pop {
+        return DayPrompt::Again;
+    }
+    let id_text = if let Some(glued) = glued {
+        if parts.next().is_some() {
+            return DayPrompt::BadLook;
+        }
+        glued
+    } else {
+        match parts.next() {
+            Some(id) if parts.next().is_none() => id,
+            _ => return DayPrompt::BadLook,
+        }
+    };
+    match id_text.parse::<usize>() {
+        Ok(id) => DayPrompt::Look(id),
+        Err(_) => DayPrompt::BadLook,
+    }
+}
+
+/// # Pop Word
+///
+/// Whether `word` is `pop` or `p`.
+///
+/// Case is ignored. Digits glued to the word are the id text. A longer
+/// word that only starts with those letters is not a pop word. Returns
+/// the flag and that id text, when the digits were glued on.
+fn pop_word(word: &str) -> (bool, Option<&str>) {
+    let rest = if let Some(rest) = strip_ignore(word, "pop") {
+        rest
+    } else if let Some(rest) = strip_ignore(word, "p") {
+        rest
+    } else {
+        return (false, None);
+    };
+    if rest.is_empty() {
+        return (true, None);
+    }
+    if rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        (true, Some(rest))
+    } else {
+        (false, None)
+    }
+}
+
+/// # Strip Ignore
+///
+/// The tail of `word` after `prefix`, ignoring ASCII case.
+///
+/// A word shorter than `prefix`, or one whose head is not that prefix,
+/// returns nothing. The tail is the rest of `word`.
+fn strip_ignore<'a>(word: &'a str, prefix: &str) -> Option<&'a str> {
+    if !word.is_char_boundary(prefix.len()) {
+        return None;
+    }
+    let (head, tail) = word.split_at(prefix.len());
+    head.eq_ignore_ascii_case(prefix).then_some(tail)
 }
 
 fn good_name<'a>(factuals: &'a Factuals, id: usize) -> &'a str {
@@ -209,10 +311,10 @@ fn mass_price(close: &MassClose) -> String {
 ///
 /// Prints the work table, then the pop table, for the pops still stored.
 ///
-/// The work table is the craft, the schedule left on the job, and one
-/// line per good. That line is the holding, then buy and sell together.
+/// The work table is the craft and the schedule left on the job.
 /// Schedule lines stay in their own column. `history` is the card the
-/// schedule's profit is priced on.
+/// schedule's profit is priced on. Holdings and the day's book are
+/// [`print_pop_look`].
 ///
 /// The pop table is one row each: id, standard of living, size, growth,
 /// migration, the five sentiment shares, today's books, the meal, and
@@ -279,24 +381,16 @@ fn print_pops(
             growth_text(-meal),
             growth_text(net),
         ]);
-        let tape = pop.day_tape();
-        let (held, traded) = good_lines(factuals, pop, &tape);
         work.push(vec![
             id.to_string(),
             craft_name(factuals, pop.job.craft),
             schedule(factuals, pop, history),
-            held,
-            traded,
         ]);
     }
     if tally.count > 0.0 {
         pops.push(tally.row());
     }
-    print_table(
-        "work",
-        &["pop", "craft", "schedule", "holdings", "buy/sell"],
-        &work,
-    );
+    print_table("work", &["pop", "craft", "schedule"], &work);
     print_table(
         "pops",
         &[
@@ -328,7 +422,8 @@ fn print_pops(
 /// one-day desire baskets the set-aside covers. Found is `Y` when that
 /// count clears the world's founding wealth and the pop has enough households.
 /// That answer does not include the wait between foundings. A wait still
-/// running prints on the title line. The desire is
+/// running prints on the title line. When the wait is open and no pop is
+/// ready, the title is the chance the next day will use. The desire is
 /// [`Pop::lowest_unmet_desire`]: basic, then common, then luxury. Its goods
 /// are listed highest efficiency first. No short desire prints `none`.
 /// The goods column is [`offered_or_produced`]. A removed pop prints
@@ -366,8 +461,12 @@ fn print_founding(factuals: &Factuals, actors: &Actors, market: &Market) {
         ]);
     }
     let wait = market.founding_wait();
+    let ready = rows.iter().any(|row| row.get(2).is_some_and(|cell| cell == "Y"));
     let title = if wait > 0 {
         format!("founding wait: {wait}")
+    } else if !ready {
+        let percent = (market.founding_drought_chance() * 100.0).round() as u32;
+        format!("founding drought: {percent}%")
     } else {
         "founding".to_string()
     };
@@ -770,12 +869,14 @@ fn schedule(factuals: &Factuals, pop: &Pop, history: &MarketHistory) -> String {
 /// Prints each good's AMV, salability, rot, and today's mass book.
 ///
 /// A row is kept when the good is stored on the board or it drew a quote.
-/// Columns are the good, AMV, salability, units lost to rot, that loss as
-/// a percent of the stock it came from, then units offered, requested, and
-/// exchanged, and the clearing price. A good with no quote leaves the book
-/// blank. A quote that did not trade prints `none` for the price. A quote
-/// with no stored good leaves the board columns blank.
-fn print_market_board(factuals: &Factuals, market: &Market) {
+/// A skill is omitted unless [`shows_good`] keeps it. Columns are the good,
+/// AMV, salability, units lost to rot, that loss as a percent of the stock
+/// it came from, then units offered, requested, and exchanged, and the
+/// clearing price. The AMV starts with [`amv_move`]: how tonight's ask
+/// moved from `morning`. A good with no quote leaves the book blank. A quote
+/// that did not trade prints `none` for the price. A quote with no stored
+/// good leaves the board columns blank.
+fn print_market_board(factuals: &Factuals, market: &Market, morning: &MarketHistory) {
     let mut quoted: HashMap<usize, &MassClose> = HashMap::new();
     for close in market.mass_closes() {
         quoted.insert(close.good, close);
@@ -786,14 +887,21 @@ fn print_market_board(factuals: &Factuals, market: &Market) {
     ids.dedup();
     let rows = ids
         .into_iter()
+        .filter(|id| {
+            let exchanged = quoted.get(id).map(|close| close.exchanged).unwrap_or(0.0);
+            shows_good(factuals, *id, shown(exchanged))
+        })
         .map(|id| {
             let (amv, salability, decay, percent) = match market.goods.get(&id) {
-                Some(good) => (
-                    qty_text(good.amv),
-                    qty_text(good.salability),
-                    qty_text(good.decayed),
-                    format!("{}%", qty_text(decay_percent(good))),
-                ),
+                Some(good) => {
+                    let marks = amv_move(morning.prices.get(&id).copied(), good.amv);
+                    (
+                        format!("{marks} {}", qty_text(good.amv)),
+                        qty_text(good.salability),
+                        qty_text(good.decayed),
+                        format!("{}%", qty_text(decay_percent(good))),
+                    )
+                }
                 None => (
                     String::new(),
                     String::new(),
@@ -840,6 +948,41 @@ fn print_market_board(factuals: &Factuals, market: &Market) {
     );
 }
 
+/// Share of the morning ask that still counts as one mark.
+const AMV_MOVE_MILD: f64 = 0.03;
+
+/// Share of the morning ask that still counts as two marks.
+const AMV_MOVE_STRONG: f64 = 0.10;
+
+/// # AMV Move
+///
+/// Three columns for how `after` moved from the morning ask.
+///
+/// `before` is that ask, when the good was on the morning card. No card
+/// leaves the columns blank. `=` is a price the board still prints the same,
+/// so a negative ask is not written with a dash. `^` is a rise and `v` is a
+/// fall. One mark is under [`AMV_MOVE_MILD`]. Two marks are under
+/// [`AMV_MOVE_STRONG`]. Three marks are anything larger. The result is
+/// always three columns, so the two extra marks have room.
+fn amv_move(before: Option<f64>, after: f64) -> String {
+    let Some(before) = before else {
+        return "   ".to_string();
+    };
+    if !before.is_finite() || !after.is_finite() || qty_text(before) == qty_text(after) {
+        return format!("{:<3}", "=");
+    }
+    let share = (after - before).abs() / before.abs().max(1e-9);
+    let count = if share < AMV_MOVE_MILD {
+        1
+    } else if share < AMV_MOVE_STRONG {
+        2
+    } else {
+        3
+    };
+    let glyph = if after > before { "^" } else { "v" };
+    format!("{:<3}", glyph.repeat(count))
+}
+
 /// # Decay Percent
 ///
 /// Units lost over the stock they came from, as a percent.
@@ -859,16 +1002,58 @@ fn decay_percent(good: &MarketGood) -> f64 {
     }
 }
 
+/// # Shows Good
+///
+/// Whether a table keeps `id`.
+///
+/// A skill stays only when `traded` is true. Any other good stays.
+/// `traded` is the deal: units exchanged, or units this pop bought or
+/// sold. A holding, a listing, and decay are not a deal. Returns that
+/// answer.
+fn shows_good(factuals: &Factuals, id: usize, traded: bool) -> bool {
+    traded || !factuals.get_good(id).is_some_and(|good| good.is_skill())
+}
+
+/// # Print Pop Look
+///
+/// The work row for one pop: craft, schedule, holdings, and buy/sell.
+///
+/// `history` prices the schedule, the morning card from the day just
+/// printed. Holdings and the book are the pop's state now. A skill line
+/// stays when [`shows_good`] keeps it. A missing pop prints that and
+/// returns.
+fn print_pop_look(factuals: &Factuals, actors: &Actors, history: &MarketHistory, id: usize) {
+    if !living_pops(actors).contains(&id) {
+        println!("no pop {id}");
+        return;
+    }
+    let pop = actors.pop(id);
+    let tape = pop.day_tape();
+    let (held, traded) = good_lines(factuals, pop, &tape);
+    print_table(
+        &format!("pop {id}"),
+        &["pop", "craft", "schedule", "holdings", "buy/sell"],
+        &[vec![
+            id.to_string(),
+            craft_name(factuals, pop.job.craft),
+            schedule(factuals, pop, history),
+            held,
+            traded,
+        ]],
+    );
+}
+
 /// # Good Lines
 ///
 /// One line per good, shared by holdings and the columns beside it.
 ///
 /// Goods are lowest id first. A line is kept when the pop holds the good
-/// or the day tape has a buy or a sell. A holding that prints as zero
-/// shows the name alone, so a buy with no stock still has a line. Buy
-/// and sell share the second cell: `buy` and `sell` are offers, `bought`
-/// and `sold` are the deal good, and `back+` and `back-` are change.
-/// No goods returns `nothing` for the holding and an empty cell beside it.
+/// or the day tape has a buy or a sell, and [`shows_good`] keeps it. A
+/// holding that prints as zero shows the name alone, so a buy with no
+/// stock still has a line. Buy and sell share the second cell: `buy` and
+/// `sell` are offers, `bought` and `sold` are the deal good, and `back+`
+/// and `back-` are change. No goods returns `nothing` for the holding and an
+/// empty cell beside it.
 fn good_lines(factuals: &Factuals, pop: &Pop, tape: &DayTape) -> (String, String) {
     let mut ids = Vec::new();
     for (&id, row) in &pop.property {
@@ -898,6 +1083,10 @@ fn good_lines(factuals: &Factuals, pop: &Pop, tape: &DayTape) -> (String, String
     let mut held = Vec::new();
     let mut traded = Vec::new();
     for id in ids {
+        let dealt = shown(tape_qty(&tape.bought, id)) || shown(tape_qty(&tape.sold, id));
+        if !shows_good(factuals, id, dealt) {
+            continue;
+        }
         let name = good_name(factuals, id);
         let qty = pop.property.get(&id).map(|row| row.quantity).unwrap_or(0.0);
         if shown(qty) {
@@ -913,6 +1102,9 @@ fn good_lines(factuals: &Factuals, pop: &Pop, tape: &DayTape) -> (String, String
             mark("back+", tape_qty(&tape.change_in, id)),
             mark("back-", tape_qty(&tape.change_out, id)),
         ]));
+    }
+    if held.is_empty() {
+        return ("nothing".to_string(), String::new());
     }
     (held.join("\n"), traded.join("\n"))
 }
@@ -1056,5 +1248,25 @@ fn qty_text(qty: f64) -> String {
             .trim_end_matches('0')
             .trim_end_matches('.')
             .to_string()
+    }
+}
+
+#[cfg(test)]
+mod amv_move_tests {
+    use super::amv_move;
+
+    /// A held price is `=`. A rise and a fall take one, two, or three marks.
+    #[test]
+    fn amv_move_marks_direction_and_size() {
+        assert_eq!(amv_move(None, 1.0), "   ");
+        assert_eq!(amv_move(Some(1.0), 1.0), "=  ");
+        assert_eq!(amv_move(Some(1.0), 1.00004), "=  ");
+        assert_eq!(amv_move(Some(1.0), 1.02), "^  ");
+        assert_eq!(amv_move(Some(1.0), 1.05), "^^ ");
+        assert_eq!(amv_move(Some(1.0), 1.2), "^^^");
+        assert_eq!(amv_move(Some(2.0), 1.95), "v  ");
+        assert_eq!(amv_move(Some(2.0), 1.9), "vv ");
+        assert_eq!(amv_move(Some(-2.0), -2.4), "vvv");
+        assert_eq!(amv_move(Some(-2.0), -1.6), "^^^");
     }
 }

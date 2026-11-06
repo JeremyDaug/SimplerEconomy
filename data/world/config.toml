@@ -4,6 +4,8 @@
 
 [pop]
 craft_distance = 0.1
+# Each process outside a craft multiplies that craft's complexity modifier by this.
+extra_process_accel = 1.2
 # Turns in one demographic year. 4 is a season, 12 is a month.
 # Births per woman, age-band deaths, aging, and the partnership step
 # use the annual rates divided by this. Infant and maternal mortality

@@ -93,15 +93,20 @@ impl Craft {
     /// # Complexity Cost
     ///
     /// The complexity cost of our list of processes against this craft.
-    /// Basen on the difference of processes, not the complexity of the processses
+    /// Based on the difference of processes, not the complexity of the processes
     /// themselves.
     ///
-    /// `weight` is the full distance of one extra process, passed to
-    /// [`Self::craft_distance`]. Distance adds to the modifier until the
-    /// cost caps at 1.0.
-    pub fn complexity_cost(&self, processes: &Vec<usize>, weight: f64) -> f64 {
-        let distance = self.craft_distance(processes, weight);
-        (self.complexity_modifier + distance).min(1.0)
+    /// `weight` is the full cost of one missing baseline process. A missing
+    /// process costs half of it. Each process id counts once. Each process
+    /// outside this craft multiplies [`Self::complexity_modifier`] by
+    /// `accel`. Returns that cost.
+    pub fn complexity_cost(&self, processes: &Vec<usize>, weight: f64, accel: f64) -> f64 {
+        let baseline: HashSet<usize> = self.processes.iter().copied().collect();
+        let present: HashSet<usize> = processes.iter().copied().collect();
+        let missing = baseline.iter().filter(|id| !present.contains(*id)).count();
+        let extra = present.iter().filter(|id| !baseline.contains(*id)).count();
+        let grown = accel.powi(extra as i32);
+        self.complexity_modifier * grown + missing as f64 * weight * 0.5
     }
 
     /// # Craft Distance
@@ -151,14 +156,17 @@ mod craft {
     }
 
     #[test]
-    fn cost_adds_distance_until_it_caps_at_one() {
+    fn cost_adds_distance_past_one() {
         let craft = subsistence();
 
-        assert!((craft.complexity_cost(&vec![1, 2], 0.1) - 0.4).abs() < 1e-12);
-        assert!((craft.complexity_cost(&vec![1, 2, 3], 0.1) - 0.5).abs() < 1e-12);
+        assert!((craft.complexity_cost(&vec![1, 2], 0.1, 1.2) - 0.4).abs() < 1e-12);
+        assert!((craft.complexity_cost(&vec![1, 2, 3], 0.1, 1.2) - 0.48).abs() < 1e-12);
+        assert!((craft.complexity_cost(&vec![1, 2, 3, 4], 0.1, 1.2) - 0.576).abs() < 1e-12);
+        // Process 2 is missing. That costs half of 0.1 and does not accelerate.
+        assert!((craft.complexity_cost(&vec![1], 0.1, 1.2) - 0.45).abs() < 1e-12);
 
         let near = craft.with_complexity_modifier(0.95);
-        assert!((near.complexity_cost(&vec![1, 2, 3], 0.1) - 1.0).abs() < 1e-12);
+        assert!((near.complexity_cost(&vec![1, 2, 3], 0.1, 1.2) - 1.14).abs() < 1e-12);
     }
 
     #[test]

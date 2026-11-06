@@ -46,15 +46,15 @@ scalar = "all"
 
 [[species.desires.goods]]
 good = "clothes"
-efficiency = 5
+efficiency = 10
 
 [[species.desires.goods]]
 good = "fabric"
-efficiency = 3
+efficiency = 5
 
 [[species.desires.goods]]
 good = "thread"
-efficiency = 1
+efficiency = 2
 
 [[species.desires.goods]]
 good = "cotton"
@@ -68,15 +68,15 @@ scalar = "all"
 
 [[species.desires.goods]]
 good = "clothes"
-efficiency = 5
+efficiency = 10
 
 [[species.desires.goods]]
 good = "fabric"
-efficiency = 3
+efficiency = 5
 
 [[species.desires.goods]]
 good = "thread"
-efficiency = 1
+efficiency = 2
 
 [[species.desires.goods]]
 good = "cotton"
@@ -90,15 +90,15 @@ scalar = "all"
 
 [[species.desires.goods]]
 good = "clothes"
-efficiency = 5
+efficiency = 10
 
 [[species.desires.goods]]
 good = "fabric"
-efficiency = 3
+efficiency = 5
 
 [[species.desires.goods]]
 good = "thread"
-efficiency = 1
+efficiency = 2
 
 [[species.desires.goods]]
 good = "cotton"

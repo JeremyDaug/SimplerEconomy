@@ -1,0 +1,63 @@
+# Opening board for examples/pop_tester. Good names are world names.
+# An omitted amv or salability is 1.0.
+# Tender slots, in order. The first pays for an ordinary good.
+currencies = ["grain", "gold"]
+
+[[market]]
+good = "time"
+amv = 0.1
+
+[[market]]
+good = "grain"
+amv = 1
+
+[[market]]
+good = "water"
+amv = 1
+
+[[market]]
+good = "bread"
+amv = 1
+
+[[market]]
+good = "gold"
+amv = 1
+
+[[market]]
+good = "gold_token"
+amv = 1
+
+# Opening rows so the first day's bids can clear. A good left off the
+# board waits until supply or decay notes it.
+
+[[market]]
+good = "buckets"
+amv = 1
+
+[[market]]
+good = "pots"
+amv = 1
+
+[[market]]
+good = "clay"
+amv = 1
+
+[[market]]
+good = "coal"
+amv = 1
+
+[[market]]
+good = "cotton"
+amv = 1
+
+[[market]]
+good = "thread"
+amv = 1
+
+[[market]]
+good = "fabric"
+amv = 1
+
+[[market]]
+good = "clothes"
+amv = 1

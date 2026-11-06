@@ -840,7 +840,7 @@ mod tests {
             .find(|target| factuals.goods[&target.good].name == "time")
             .expect("shrine time")
             .cap;
-        assert!((time_cap - 1.0).abs() < 1e-12);
+        assert!((time_cap - 0.5).abs() < 1e-12);
         assert!(matches!(
             shrine
                 .bucket
@@ -948,6 +948,49 @@ mod tests {
         let firm = load_scenario(&root.join("firm_tester"), &mut factuals).expect("firm_tester");
         let token = id_of(&factuals, "gold_token");
         assert_eq!(firm.market.currencies(), [Some(token), None, None, None]);
+    }
+
+    /// # Developed Scenario Loads
+    ///
+    /// Loads `data/scenarios/developed`. Eight pops, grain then gold, and
+    /// the opening cards for wood, thread, clothes, and wood tools. Returns
+    /// nothing. A missing file, a bad name, or a different card fails.
+    #[test]
+    fn developed_scenario_loads() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let mut factuals = Factuals::load_from_path(&root.join("world")).expect("world");
+        let scenario = load_scenario(
+            &root.join("scenarios").join("developed"),
+            &mut factuals,
+        )
+        .expect("developed");
+        assert_eq!(scenario.actors.pops.len(), 8);
+        let id_of = |name: &str| {
+            factuals
+                .goods
+                .values()
+                .find(|good| good.name == name)
+                .unwrap_or_else(|| panic!("good {name}"))
+                .id
+        };
+        let grain = id_of("grain");
+        let gold = id_of("gold");
+        assert_eq!(
+            scenario.market.currencies(),
+            [Some(grain), Some(gold), None, None]
+        );
+        let amv = |name: &str| scenario.market.goods.get(&id_of(name)).expect(name).amv;
+        assert!((amv("wood") - 2.0).abs() < 1e-9);
+        assert!((amv("thread") - 3.5).abs() < 1e-9);
+        assert!((amv("clothes") - 5.5).abs() < 1e-9);
+        assert!((amv("wood_tools") - 4.0).abs() < 1e-9);
+        let counts = [60.0, 80.0, 40.0, 40.0, 60.0, 30.0, 40.0, 30.0];
+        for (index, count) in counts.into_iter().enumerate() {
+            let id = index + 1;
+            let pop = scenario.actors.pop(id);
+            assert_eq!(pop.demographics.household.count, count, "pop {id}");
+            assert!(pop.job.lines.len() >= 5, "pop {id}");
+        }
     }
 
     /// # Loaded Pops Use The Scenario Count

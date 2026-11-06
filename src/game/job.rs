@@ -3264,31 +3264,35 @@ impl Job {
     ///
     /// This job's modifier against `baseline`.
     ///
-    /// `weight` is the full distance of one extra process. Each line's
-    /// process id is counted once. Returns [`Craft::complexity_cost`]:
-    /// the craft's complexity modifier plus that distance, capped at 1.0.
-    pub fn complexity_cost(&self, baseline: &Craft, weight: f64) -> f64 {
+    /// `weight` is the full cost of one missing baseline process. `accel`
+    /// multiplies the modifier once per process outside the craft. Each line's
+    /// process id is counted once. Returns [`Craft::complexity_cost`].
+    pub fn complexity_cost(&self, baseline: &Craft, weight: f64, accel: f64) -> f64 {
         let mut processes = Vec::new();
         for line in &self.lines {
             if !processes.contains(&line.process) {
                 processes.push(line.process);
             }
         }
-        baseline.complexity_cost(&processes, weight)
+        baseline.complexity_cost(&processes, weight, accel)
     }
 
     /// # Craft Point Scale
     ///
     /// The share of a day's points this job's craft spends.
     ///
-    /// `factuals` supplies the craft and the craft-distance weight. A
-    /// missing craft, and a [`Self::complexity_cost`] that is not positive,
-    /// spend the whole budget. Returns that share.
+    /// `factuals` supplies the craft, the craft-distance weight, and
+    /// `extra_process_accel`. A missing craft, and a [`Self::complexity_cost`]
+    /// that is not positive, spend the whole budget. Returns that share.
     pub(crate) fn craft_point_scale(&self, factuals: &Factuals) -> f64 {
         let Some(craft) = factuals.get_craft(self.craft) else {
             return 1.0;
         };
-        let cost = self.complexity_cost(craft, factuals.config.pop.craft_distance);
+        let cost = self.complexity_cost(
+            craft,
+            factuals.config.pop.craft_distance,
+            factuals.config.pop.extra_process_accel,
+        );
         if cost.is_finite() && cost > 0.0 {
             cost
         } else {
@@ -9847,12 +9851,12 @@ mod job {
             ],
         );
 
-        assert!((matched.complexity_cost(&craft, 0.1) - 0.4).abs() < 1e-12);
-        assert!((extra.complexity_cost(&craft, 0.1) - 0.5).abs() < 1e-12);
+        assert!((matched.complexity_cost(&craft, 0.1, 1.2) - 0.4).abs() < 1e-12);
+        assert!((extra.complexity_cost(&craft, 0.1, 1.2) - 0.48).abs() < 1e-12);
     }
 
-    /// An exact clothier spends half a point. Three extra processes at the
-    /// default distance of 0.1 bring that to 0.8. A missing craft spends one.
+    /// An exact clothier spends half a point. Three extra processes bring
+    /// that to half of 1.2 cubed. A missing craft spends one.
     #[test]
     fn craft_point_scale_uses_the_craft_cost() {
         let factuals = Factuals::new().with_craft(
@@ -9887,7 +9891,7 @@ mod job {
         let missing = Job::new(0, vec![JobLine::new(39, Some(0.0), vec![])]);
 
         assert!((matched.craft_point_scale(&factuals) - 0.5).abs() < 1e-12);
-        assert!((household.craft_point_scale(&factuals) - 0.8).abs() < 1e-12);
+        assert!((household.craft_point_scale(&factuals) - 0.5 * 1.2_f64.powi(3)).abs() < 1e-9);
         assert!((missing.craft_point_scale(&factuals) - 1.0).abs() < 1e-12);
     }
 
@@ -9943,8 +9947,8 @@ mod job {
             ],
         );
 
-        // Missing process 1 costs half of 0.1. Process 2 is one extra process.
-        assert!((doubled.complexity_cost(&craft, 0.1) - 0.55).abs() < 1e-12);
+        // Missing process 1 costs half of 0.1. Process 2 multiplies the modifier by 1.2.
+        assert!((doubled.complexity_cost(&craft, 0.1, 1.2) - 0.53).abs() < 1e-12);
     }
 
     #[test]

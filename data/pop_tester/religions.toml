@@ -51,9 +51,8 @@ efficiency = 1
 cap = 0.75
 
 # Same luxury desires as hearth. Jewelry fills a bit more. Cabins and
-# time fill a bit less. Hearth time still caps at half the level. Shrine
-# time does not, so hours can finish a shrine level and a shrine pop can
-# bid for them. Cabins stay owned. Buckets fill a bit less and pots a
+# time fill a bit less. Hearth time and shrine time both cap at half a
+# level. Cabins stay owned. Buckets fill a bit less and pots a
 # bit more. Half of hearth's conversion.
 
 [[religions]]
@@ -78,6 +77,7 @@ use = true
 
 [[religions.desires.goods]]
 good = "time"
+cap = 0.5
 efficiency = 0.75
 
 # Same vessel desire. Buckets still owned, pots still eaten. Each still

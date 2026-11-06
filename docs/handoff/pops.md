@@ -15,13 +15,14 @@ The tester prints each pop's work, then the pop table, then founding, then
 the market board. Founding is days of set-aside,
 whether that clears the wealth floor, the lowest unmet
 desire, and the goods offered or made today, skills left out. A pop
-removed today adds a row marked `left`, with why it went. The market board is AMV, salability, units lost to rot, and that loss as a percent, then the day's book: offered, requested,
+removed today adds a row marked `left`, with why it went. The market board is AMV with a mark for the move from the morning ask (`^` up, `v` down, `=` the same, and up to two extra marks on a larger move), salability, units lost to rot, and that loss as a percent, then the day's book: offered, requested,
 exchanged, and the price. A good that drew no quote leaves the book blank. A book that did not trade prints `none`. The
-work table is one line per good: the holding, then buy and sell together
-(`buy`, `sell`, `bought`, `sold`, `back+`, `back-`). A bare name is
-working stock that prints as zero. The line is there because the good was
-offered, bought, or sold. The schedule stays in its own column and ends
-with the complexity cost of the current targets. The pop
+work table is the craft and the schedule. The schedule stays in its own
+column and ends with the complexity cost of the current targets. `pop N`
+or `p N` prints that pop's holdings and buy/sell (`buy`, `sell`, `bought`,
+`sold`, `back+`, `back-`). A bare name is working stock that prints as
+zero. A skill stays off the market board and that look unless it traded.
+Each day starts and ends with its number. The pop
 table is standard of living, people, the change in households, net
 households from migration, and the five sentiment shares. The last row
 sums people, the household change, and migration, and averages the
@@ -109,10 +110,15 @@ do not move a good that did not trade. Nothing moves that AMV unless the
 good exchanged at least one unit. A book nobody could buy still falls when
 nothing traded, a real bid was left, and the night's step is a fall. The
 unpaid one-unit want is not that bid, so a surplus against only that want
-keeps its price. An empty offer with a real bid rises by the idle step,
-and a surplus fall stops, one idle step above the cheapest process that
-just pays. A price already there does not cross it. A good no process
-gains by raising keeps the old rule. A purchase bid larger than the offer
+keeps its price. An empty offer with a real bid buyers could pay rises
+toward a tenth above the least efficient process that just pays. The first
+night closes a quarter of that gap. A later night adds the whole increase
+in that rest, then a quarter of what remains. The rise does not cross the
+rest and does not pull a higher price down. A traded good does not take
+that rise. No such process leaves the idle
+step, which still stops one idle step above the cheapest process that just
+pays. A surplus fall stops there too. A price already on that ask does not
+cross it. A purchase bid larger than the offer
 raises it once that unit has traded, by that idle fraction as an amount of
 AMV. An open buy adds a flat step. Neither grows with the price, so a
 currency and the good it buys cannot lift each other without bound. A
@@ -227,7 +233,12 @@ therefore sends a fifth of its working stock and three fifths of one
 pop-day of set-aside. The parent may split once `founding_wealth` days of
 set-aside are on hand (default 1.5). A parent of twenty-five households
 sitting exactly on that floor gives 0.6 pop-days and keeps about 1.125
-days of desires for the twenty households that stay. Migration is unchanged:
+days of desires for the twenty households that stay. When the wait is open
+and no pop clears that gate, a founding can still leave. The chance is 1%
+on the first open day and rises by 1% each open day after that, stopping
+at certainty. The same five households leave, and they still take
+`founding_goods_weight` days of set-aside each. A pop that cannot give
+five and keep one household does not leave. Migration is unchanged:
 half of the moving share travels, and saved goods stay behind.
 
 The founding waits until that stake can run the edited job `founding_runs`
@@ -258,7 +269,7 @@ stake covers it. An open bid is still requested at least one and offered
 under one. An empty pool falls through to the other. One edit is tried.
 One founding in five also takes the other edit: an add drops one
 unprofitable line that is not the process just added, and a drop adds
-one process the stake can run. Adding a specialty also drops each
+one process the stake can run. Adding a specialty drops each
 subsistence process that makes the same variable good. That drop is
 part of the add. A
 desire no line can fill keeps extra runs on the lines that make its
@@ -560,11 +571,11 @@ whole and steps the surplus above the old cover. Sought runs then step
 from that whole line. A paying line whose stored cover is still 0 steps
 its current target toward the new cover plus the surplus and those runs.
 
-`Job::complexity_cost` is the modifier `(complexity_modifier +
-craft_distance)`, capped at `1.0`. Each process id counts once. The
-weight is `pop.craft_distance` in config (default `0.1`): half for a
-missing baseline process, full for an extra process. No base craft makes
-`Pop::complexity_cost` return `1.0`.
+`Job::complexity_cost` multiplies `complexity_modifier` by
+`pop.extra_process_accel` (default `1.2`) for each process outside the
+craft. Each process id counts once. A missing baseline process adds half
+of `pop.craft_distance` (default `0.1`) and does not accelerate. No base
+craft makes `Pop::complexity_cost` return `1.0`.
 
 `Job::plan` then stores `plan_cost`. Each positive target adds
 `modifier * (complexity^2 - overlap) * iterations`. Overlap is the

@@ -465,7 +465,7 @@ outputs = [
 id = 39
 name = "make cotton"
 inputs = [
-    { good = 0, amount = 5.0 },
+    { good = 0, amount = 3.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -478,8 +478,8 @@ outputs = [
 id = 40
 name = "make thread"
 inputs = [
-    { good = 0, amount = 3.0 },
-    { good = 39, amount = 1.0 },
+    { good = 0, amount = 1.0 },
+    { good = 39, amount = 2.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -492,13 +492,13 @@ outputs = [
 id = 41
 name = "make fabric"
 inputs = [
-    { good = 0, amount = 3.0 },
-    { good = 40, amount = 1.0 },
+    { good = 0, amount = 1.0 },
+    { good = 40, amount = 2.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 41, amount = 1.0 },
+    { good = 41, amount = 2.0 },
     { good = 43, amount = 0.01, fixed = true },
 ]
 
@@ -506,12 +506,12 @@ outputs = [
 id = 42
 name = "make clothes"
 inputs = [
-    { good = 0, amount = 3.0 },
-    { good = 41, amount = 1.0 },
+    { good = 0, amount = 2.0 },
+    { good = 41, amount = 2.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 43, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 42, amount = 1.0 },
+    { good = 42, amount = 2.0 },
     { good = 43, amount = 0.01, fixed = true },
 ]

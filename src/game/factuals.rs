@@ -1596,6 +1596,12 @@ processes = [29]
             factuals.get_craft(7).expect("subsistence baking").processes,
             vec![29, 30, 31, 32, 3]
         );
+        let carpenter = factuals.get_craft(9).expect("carpenter");
+        assert_eq!(carpenter.processes, vec![7, 9, 10]);
+        assert!((carpenter.complexity_modifier - 0.5).abs() < 1e-12);
+        let potter = factuals.get_craft(10).expect("potter");
+        assert_eq!(potter.processes, vec![23, 26, 27]);
+        assert!((potter.complexity_modifier - 0.5).abs() < 1e-12);
     }
 
     #[test]
