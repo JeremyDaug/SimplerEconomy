@@ -5,7 +5,7 @@ Read this before changing the pop tester, `Market::market_day`, or the morning p
 places those pops on one market, grants the day's Time, and runs
 `Market::market_day`. The folder sets the opening board, crafts, stock,
 and the first morning's line targets. A missing household count is 10.
-The pop tester's opening pop is 100 households.
+The pop tester's opening pop is 1000 households.
 A household table overrides the adult, elder, and child averages. The
 firm tester loads its pops through the same reader. Species, culture,
 stratum, and religion files hold the demographic desires, and `Pop::update_desires`
@@ -37,6 +37,14 @@ day is this stop note and `src/game/ladder.rs`. `TODO.md` still describes
 that older day in its 0.1 paragraph. This note is the status.
 
 ## Where this stopped
+
+The last commit is `be2543e`. Morning buy and sell commitments were tried and put back, and so were the planning changes that kept a profitable target through an unsold product and marched a craft's outputs faster than its other lines. The ladder is the walk in that commit. A desire reserves stock on hand, and that reservation comes off the sell line. A stored target still closes a quarter of the gap. An unsold product still steps that target down.
+
+The rest of this note is that commit plus the pieces still uncommitted. A reset to `be2543e` drops those pieces. They are the empty-offer rise, the founding drought, `extra_process_accel` at 1.2 with no cap at 1, the tester's day marks and `pop N` look, carpenter and potter, and the textile and clothing numbers here. `data/scenarios/subsistence/` and `data/scenarios/developed/` are written and are not loaded. The tester still reads `data/world` and `data/pop_tester/`.
+
+Clothier is processes 39–42, carpenter is 7, 9, and 10, and potter is 23, 26, and 27. Each uses complexity modifier 0.5. Human clothing, on the basic, common, and luxury tiers, is clothes at 10, fabric at 5, thread at 2, and cotton at 0.5. Make cotton is 3 time for 6 cotton. Make thread is 1 time and 2 cotton for 1 thread. Make fabric is 1 time and 2 thread for 2 fabric. Make clothes is 2 time and 2 fabric for 2 clothes. Shrine time caps at half a level, as hearth time does.
+
+Another price rule and another buy rule stay out. A traded good does not take the empty-offer rise. A one-percent shrink of a process target that is still buying, and still holds a pile, is not in the tree. Filling every process of a craft onto a founding, and a chance to found onto a craft the market is not running, stay out.
 
 The mass day is in. One sell book, then each pop buys. The morning plan is
 `Job::plan_purchases`. The night does not call `Pop::plan`. Firms are not
@@ -185,7 +193,7 @@ the producer share when that good was still sought. A line that stays at zero fo
 turn, with no positive score, no sale, and no reserved run, is dropped.
 The last line stays.
 
-`turn_length` is 4. Infant and maternal mortality stay fractions of the
+`turn_length` in `data/world/config.toml` is 12. Infant and maternal mortality stay fractions of the
 births in the turn. Subsistence farm, water, forage, and cotton are
 processes 29–32, complexity 0.25, 12 time. Farm, water, and forage make
 3. Cotton makes 6. A further luxury level leaves the goods still on hand
@@ -290,18 +298,26 @@ no population-cap share.
 Death is still the under-one prune. The new id is one higher than any
 pop id still stored. A dead id is not reused. Technology stays empty.
 
-`cargo test --lib` still fails
-`load_from_path_reads_world_dir_goods_and_processes`. The loader rejects a
-non-subsistence time input above 1. The panic names whichever of those
-processes the map yields first.
+`cargo test --lib` still fails three checks that read `data/world`.
+`load_from_path_reads_world_config_file` expects `turn_length` 4, and the
+file is 12. `load_from_path_reads_the_world_goods_file` expects good 1 to
+decay at 0.12. `load_from_path_reads_world_dir_goods_and_processes` panics
+when a non-subsistence time input is above 1. The panic names whichever
+of those processes the map yields first. The pop tester's
+`loaded_pops_use_the_scenario_count` expects 100 households, and
+`data/pop_tester/pops.toml` sets 1000. Those checks were left as they are.
 
-Left out of the next pass: writing prices from the job, seeding one run of
-a line that has never sold, reusing a pop id after the under-one prune,
-retuning migration, `turn_length`, recipes, rot, or sentiment, and putting
-firms on this ladder. The pop tester still
+Left out of the next pass: another price rule, another buy rule, morning
+buy and sell commitments, a one-percent shrink of a process target that
+is still buying, filling a whole craft onto a founding, a chance to found
+onto a craft the market is not running, writing prices from the job,
+seeding one run of a line that has never sold, reusing a pop id after the
+under-one prune, retuning migration, `turn_length`, recipes, rot, or
+sentiment, and putting firms on this ladder. The pop tester still
 shares one ceiling. Each pop's starting size times a multiplier (default
 1000) is its share. A founded pop is outside that ceiling. After the days
-on the command line, it asks how many more to run.
+on the command line, enter runs one more day, a number runs that many,
+0 quits, and `pop N` or `p N` prints that pop.
 
 ## Landed vs stub
 
