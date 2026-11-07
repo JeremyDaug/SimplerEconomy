@@ -1,9 +1,3 @@
-use std::collections::HashMap;
-
-use crate::game::{
-    actor::Actor, deal::DealMaker, factuals::Factuals, firm::Firm, market::Market, pop::Pop,
-};
-
 pub use crate::game::effects::{EffectScope, InstitutionEffect};
 
 /// # Institution
@@ -29,7 +23,7 @@ pub struct Institution {
     pub id: usize,
     /// Display name.
     pub name: String,
-    /// State / player with high-level control (`None` = independent / NPC).
+    /// Nation / player with high-level control (`None` = independent / NPC).
     pub owner: Option<usize>,
     /// What kind of institution this is.
     pub kind: InstitutionKind,
@@ -57,7 +51,7 @@ pub enum InstitutionKind {
     Religion,
     Military,
     Bureaucracy,
-    /// Merchant / craft.
+    /// Merchant guild.
     Guild,
     /// Research / culture.
     Academy,
@@ -67,9 +61,11 @@ pub enum InstitutionKind {
 }
 
 impl Institution {
+    /// # New
+    ///
     /// Creates an institution with the given id and name.
     ///
-    /// Defaults: no owner, [`InstitutionKind::Special`], empty markets/firms,
+    /// Defaults: no owner, [`InstitutionKind::Special`], empty markets and firms,
     /// level `0`, loyalty `1.0`, no effects.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
@@ -85,91 +81,75 @@ impl Institution {
         }
     }
 
+    /// # With Id
+    ///
     /// Sets the institution's unique id.
     pub fn with_id(mut self, id: usize) -> Self {
         self.id = id;
         self
     }
 
+    /// # With Name
+    ///
     /// Sets the display name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
-    /// Sets the controlling state id, or `None` for independent / NPC.
+    /// # With Owner
+    ///
+    /// Sets the controlling nation id, or `None` for independent / NPC.
     pub fn with_owner(mut self, owner: Option<usize>) -> Self {
         self.owner = owner;
         self
     }
 
+    /// # With Kind
+    ///
     /// Sets the institution kind.
     pub fn with_kind(mut self, kind: InstitutionKind) -> Self {
         self.kind = kind;
         self
     }
 
+    /// # With Market
+    ///
     /// Adds a market id where this institution is present.
     pub fn with_market(mut self, market_id: usize) -> Self {
         self.markets.push(market_id);
         self
     }
 
+    /// # With Firm
+    ///
     /// Adds a controlled firm id.
     pub fn with_firm(mut self, firm_id: usize) -> Self {
         self.firm_ids.push(firm_id);
         self
     }
 
+    /// # With Level
+    ///
     /// Sets the flat development level.
     pub fn with_level(mut self, level: u32) -> Self {
         self.level = level;
         self
     }
 
+    /// # With Loyalty
+    ///
     /// Sets loyalty (typically `[0.0, 1.0]`).
     pub fn with_loyalty(mut self, loyalty: f64) -> Self {
         self.loyalty = loyalty;
         self
     }
 
+    /// # With Effect
+    ///
     /// Adds a passive institution effect.
     pub fn with_effect(mut self, effect: InstitutionEffect) -> Self {
         self.effects.push(effect);
         self
-    }
-
-    /// Passive effects are stored on the institution and not applied yet.
-    pub fn apply_passive_effects(
-        &self,
-        pops: &mut HashMap<usize, Pop>,
-        firms: &mut HashMap<usize, Firm>,
-        markets: &HashMap<usize, Market>,
-    ) {
-        let _ = (self, pops, firms, markets);
-    }
-
-    /// End-of-day bookkeeping for this institution.
-    /// Only external input is factuals.
-    pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Institution record keeping")
-    }
-
-    /// End-of-day good decay for this institution (property when present).
-    /// Only external input is factuals.
-    pub fn decay_goods(&mut self, factuals: &Factuals) {
-        let _ = (self, factuals);
-        todo!("Institution decay goods")
-    }
-}
-
-impl DealMaker for Institution {
-    fn actor(&self) -> Actor {
-        Actor::Institution(self.id)
-    }
-
-    fn free_units(&self, _good: usize) -> f64 {
-        0.0
     }
 }

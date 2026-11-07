@@ -1,38 +1,28 @@
-# Live surface on EconCiv-Reboot
+# Live surface
 
-Confirm against the branch tip. Refreshed 2026-10-02 for fresh versus produced output, craft origin, and day-end desire rescale.
+Confirm against the working tree. The longer note is `docs/handoff/current.md`.
 
 ## Landed
 
-- `Pop::satisfy` reserves free stock in tier order and stops on the first target it cannot fill. Bookmark is written. Calling `satisfy` again from the top can double-reserve a half-filled cap.
-- `Pop::satisfy_continue` resumes from that bookmark. After new stock arrives inside a day, `reevaluate` uses this, not a fresh `satisfy`.
-- `Pop::consume` / `consume_tier` / `consume_one_desire` run after exchange in `Market::market_day`. Consume ignores satisfaction already recorded and can count a level twice if both satisfy and consume run. That is the current day path.
-- `Market::match_deals` pairs on one good. Buyer proposes, seller accepts or rejects. Only an accepted basket moves goods and pays freight. Both sides reevaluate after.
-- `Market::market_day` order — reset, reserve, produce, `match_deals`, consume, pop growth, decay, `rescale_desires`, actor books and planning, night card. Rescale is after decay so this day's desire effects stay at the old size. A pop's reserve is satisfy, then `apply_craft`, then the job reserve. `market_day` does not grant Time.
-- A pop `Job` plans, reserves, produces, and shops on the pop's stock. Craft `0` is no baseline; lines still run. An empty line list skips the work. `Pop::plan` rewrites every line target after `rescale_desires`. `Pop::complexity_cost` is available and does not scale iterations. New output lands in `quantity`, `fresh`, and `produced`. Deals move `fresh` and leave `produced`.
-- `examples/pop_tester` loads `data/pop_tester/scenario.toml` and calls `Actors::start_day` before `market_day`. The scenario's line targets are the first morning. The night plan replaces them.
-- Night `record_keeping` writes trade pressure, production flow, rot, and salability drift. Deals do not write the published AMV/salability card during the day. History snapshots the card at the start of `match_deals`.
+- `Good` and `Process`, including `Process::do_process` and `do_process_leg`.
+- `Household`, `BirthSentiment`, `DemographicRates`, and `HouseholdTarget`, including their methods and tests. `Household::update` reads `PopConfig`.
+- Loaders: `Good::load_from_path` / `load_from_toml`, `Process::load_from_path` / `load_from_toml`, `GameConfig::load_from_path` / `load_from_toml`. `Factuals::load_from_path` reads a world folder or one TOML document. See `docs/handoff/loaders.md`.
+- `data/world/goods.toml` and `data/world/processes.toml` are the world tables. `data/world/config.toml` leaves its keys commented. `pop` and `market` hold the tunables. The other config sections are empty.
+- `Map` wrapping, regions, `add_city`, `add_to_region`, and the map tests.
+- `src/game/util.rs`: `random_index`, `lerp`, `whole_units_up`. `Household` calls `lerp`. The other two have no caller.
 
-## Empty or stub
+## Present, not a day loop
 
-- `Firm::reserve_for_day`, `Firm::produce`, `Firm::plan`
-- `PlayState` phase methods including intramarket and pop consumption. `phase_pop_growth` only grows. A turn that also runs `market_day` grows those pops twice.
-- Class desires
-- `Desire.decay` field exists; nothing multiplies satisfaction by it
-- Savings between tiers and between luxury iterations
-- `Unit`, `TechTree`
-- Institution decay / institution record keeping panic if called
+Fields stay. Add a method only when asked. `#![allow(dead_code)]` is on desire, job, market, pop, and species.
 
-## Deal rules that bite
+`PlayState`, pop, job, desire, market, firm, map data, sentiment, species, culture, institution, workforce. `Unit`, `TechTree`, and `FirmOrganization` are empty shells. `Plot` is the terrain enum. `Technology` has node fields. Household is not a stub.
 
-- Holding value of a positive AMV is `amv * amv_scale(salability)`. Negative AMV is not scaled.
-- Goods that still feed the open (lowest) tier stay off the payment book.
-- With a satisfaction gain, cost may run up to `credit * LOSS_LIMIT` (`4`).
-- Propose does not see the seller's desires. A seller who still needs the match good rejects.
-- Freight is `transaction_cost + bulk * market friction`, or 0 when the world has no transport good. Freight is inside the same goods map, not a second list.
+Species and cultures are not loaded. There is no stratum or religion map. `DemographicSource::Religion` returns no desire.
 
-## Tests and examples
+## Gone from this tree
 
-- `cargo test --lib`
-- `examples/pop_tester` — scenario file, one market, `Actors::start_day`, then `Market::market_day`
-- `examples/rates_tester` — household demographics
+Religion, stratum, deal, `DealMaker`, contract, ladder, craft, `examples/pop_tester`, `examples/firm_tester`, `examples/rates_tester`, `data/pop_tester`, `data/firm_tester`, `data/scenarios`, `data/world/crafts.toml`.
+
+## Check
+
+`cargo test --lib`

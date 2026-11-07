@@ -1,7 +1,7 @@
+use std::collections::HashSet;
+
 use super::tile::Tile;
 use hexx::Hex;
-use itertools::Itertools;
-use std::collections::HashSet;
 
 /// # Map
 ///
@@ -53,7 +53,7 @@ impl Map {
     ///
     /// Creates a new map with the given parameters.
     ///
-    /// Assumes no wrapping.
+    /// Assumes no wrapping. One tile is stored at each column and row.
     pub fn new(width: usize, height: usize) -> Self {
         let mut ret = Self {
             width,
@@ -73,13 +73,17 @@ impl Map {
         ret
     }
 
-    /// Sets vwrap to true.
+    /// # With Vwrap
+    ///
+    /// Sets vertical wrapping and returns this map.
     pub fn with_vwrap(mut self) -> Self {
         self.vwrap = true;
         self
     }
 
-    /// Sets hwrap to true.
+    /// # With Hwrap
+    ///
+    /// Sets horizontal wrapping and returns this map.
     pub fn with_hwrap(mut self) -> Self {
         self.hwrap = true;
         self
@@ -87,9 +91,10 @@ impl Map {
 
     /// # Wrap
     ///
-    /// Takes a hex and wraps it to within our height/width bounds.
+    /// Takes a hex and wraps it to within our height and width bounds.
     ///
-    /// If hex is outside our bounds and we don't wrap, we return None as a safety mechanism.
+    /// If the hex is outside those bounds and that axis does not wrap, returns
+    /// `None`.
     pub fn wrap(&self, hex: Hex) -> Option<Hex> {
         let mut res = hex.clone();
         if hex.x < 0 || hex.x >= self.width as i32 {
@@ -111,13 +116,23 @@ impl Map {
         Some(res)
     }
 
+    /// # Get Tile
+    ///
+    /// The tile at `hex`, after [`Self::wrap`].
+    ///
+    /// Returns `None` when the hex is outside a map that does not wrap.
+    pub fn get_tile(&self, hex: Hex) -> Option<&Tile> {
+        if let Some(res) = self.wrap(hex) {
+            return Some(&self.tiles[res.x as usize][res.y as usize]);
+        }
+        None
+    }
+
     /// # Get Region
     ///
-    /// Gets the region a hex is in. Returns the idx of the region.
+    /// The region index of `hex`.
     ///
-    /// If the hex is not in a region, it returns None.
-    ///
-    /// Tiles keep track of this, so we can just ask them.
+    /// Returns `None` when the hex is not on a tile, or that tile has no region.
     pub fn get_region(&self, hex: Hex) -> Option<usize> {
         if let Some(tile) = self.get_tile(hex) {
             tile.region
@@ -126,12 +141,13 @@ impl Map {
         }
     }
 
-    /// # Find City
+    /// # Find City Hex
     ///
-    /// Given a hex, find the city tile which oversees it.
+    /// The capital hex of the region that contains `hex`.
     ///
-    /// Returns the hex of the region's capital, or None if not in a region.
-    pub fn find_city_hex(&mut self, hex: Hex) -> Option<Hex> {
+    /// Returns `None` when the hex is not in a region. The capital is the
+    /// first hex stored on that region.
+    pub fn find_city_hex(&self, hex: Hex) -> Option<Hex> {
         if let Some(region) = self.get_region(hex) {
             Some(self.regions[region][0])
         } else {
@@ -139,61 +155,34 @@ impl Map {
         }
     }
 
-    /// # Get Cities
+    /// # Get City Hexes
     ///
-    /// Gets all of the cities in the map.
-    ///
-    /// Cities are stored in the first spot of a region, their location in this
-    /// list is the same location in the region's list.
+    /// The capital of each region, in region order.
     pub fn get_city_hexes(&self) -> Vec<Hex> {
-        self.regions.iter().map(|x| x[0]).collect_vec()
+        self.regions.iter().map(|region| region[0]).collect()
     }
 
-    /// # Get Tile
+    /// # Get Region Neighbors
     ///
-    /// Gets the tile at the given hex, wrapping as needed.
+    /// Hexes adjacent to region `region`, after wrapping.
     ///
-    /// Can return None and does not return mutable tile.
-    pub fn get_tile(&self, hex: Hex) -> Option<&Tile> {
-        if let Some(res) = self.wrap(hex) {
-            return Some(&self.tiles[res.x as usize][res.y as usize]);
-        }
-        None
-    }
-
-    /// Internal getter for tiles. Skips safety checks, does NOT wrap the hex and returns
-    /// the Tile. Use **Cautiously!**
-    fn _unsafe_get_tile(&self, hex: Hex) -> &Tile {
-        &self.tiles[hex.x as usize][hex.y as usize]
-    }
-
-    /// Internal get tile mut helper. Unsafe, and does NOT wrap the hex so use
-    /// **cautiously**.
-    fn unsafe_get_tile_mut(&mut self, hex: Hex) -> &mut Tile {
-        &mut self.tiles[hex.x as usize][hex.y as usize]
-    }
-
-    /// # Get Region Neigbors
-    ///
-    /// Gets all hexes that are adjacent to the region id selected.
-    ///
-    /// This includes any wrapping of the map.
+    /// Hexes outside a map that does not wrap are left out. The region's own
+    /// hexes are left out.
     pub fn get_region_neighbors(&self, region: usize) -> Vec<Hex> {
         let mut coverage = HashSet::new();
 
-        // get region and neighbors
+        // Neighbors of every hex in the region, including the region itself.
         let region = &self.regions[region];
         for hex in region.iter() {
             coverage.insert(*hex);
-            for neighbors in hex.all_neighbors() {
-                coverage.insert(neighbors);
+            for neighbor in hex.all_neighbors() {
+                coverage.insert(neighbor);
             }
         }
-        // remove region to leave neighbors
+        // Leave only the hexes that are not already in the region.
         for hex in region.iter() {
             coverage.remove(hex);
         }
-        // then wrap coverage to within our bounds, or cull those outside of it.
         let mut result = vec![];
         for hex in coverage.iter() {
             if let Some(wrapped) = self.wrap(*hex) {
@@ -204,27 +193,20 @@ impl Map {
         result
     }
 
-    /// # Is region Neighbor
+    /// # Is Region Neighbor
     ///
-    /// Checks that a hex is adjacent to an existing region.
+    /// Whether `hex` is adjacent to region `region` and not already in it.
     ///
-    /// This is slightly simplified from get_region_neighbors, instead just
-    /// looking for any hex in the selected region which is of distance 1 away and
-    /// not already in the region.
-    ///
-    /// This will panic if region is out of bounds of our current regions list.
+    /// A hex already in that region is false. A hex the map cannot hold is
+    /// false. Panics when `region` is outside the region list.
     pub fn is_region_neighbor(&self, region: usize, hex: Hex) -> bool {
-        // check that we can get the tile,
         if let Some(tile) = self.get_tile(hex) {
-            if let Some(r) = tile.region
-                && r == region
+            if let Some(tile_region) = tile.region
+                && tile_region == region
             {
-                // if in the targeted region, gtfo.
                 return false;
             }
-            // get neighboring tiles
             let neighbors = self.get_region_neighbors(region);
-            // check that our (wrapped) hex is in neighbors
             if let Some(wrapped) = self.wrap(hex)
                 && neighbors.contains(&wrapped)
             {
@@ -235,74 +217,59 @@ impl Map {
         false
     }
 
-    /// # Add city
+    /// # Tile Mut
     ///
-    /// Adds a new region to our map. This new region starts as just the capital of the
-    /// region.
+    /// The tile at `hex`.
     ///
-    /// Returns true if successful, false if the hex is already in a region.
-    ///
-    /// Note:
-    ///
-    /// This can safely add values outside of the map, it just modulo's them to
-    /// within the map. Do be aware of that. Reminder that the last row/column is
-    /// height/width - 1.
-    ///
-    /// To create a region from an existing region, you'll want to do a split and move
-    /// instead.
-    pub fn add_city(&mut self, city: Hex) -> bool {
-        // restrict to our bounds
-        if let Some(city) = self.wrap(city) {
-            // check that the city hex is not in a region.
-            if let Some(_) = self.get_region(city) {
-                false
-            } else {
-                // if not, already in a region, it's safe to add.
-                // add to tile
-                self.unsafe_get_tile_mut(city).region = Some(self.regions.len());
-                // then to region.
-                self.regions.push(vec![city]);
-                true
-            }
-        } else {
-            false
-        }
+    /// `hex` is already inside the map. [`Self::wrap`] is the check that
+    /// makes that true.
+    fn tile_mut(&mut self, hex: Hex) -> &mut Tile {
+        &mut self.tiles[hex.x as usize][hex.y as usize]
     }
 
-    /// # Add to Region
+    /// # Add City
     ///
-    /// Adds a hex to the selected region.
+    /// Starts a region whose only hex is `city`.
     ///
-    /// Returns true if successful, false otherwise.
-    ///
-    /// Regions must be contiguous, including wrapping.
-    ///
-    /// This does not move hexes from one region to another.
-    ///
-    /// This can panic if the region does not exist.
-    pub fn add_to_region(&mut self, region: usize, hex: Hex) -> bool {
-        // check it is a tile
-        if let Some(tile) = self.get_tile(hex) {
-            println!("{:?}", hex);
-            if let Some(_) = tile.region {
-                // if in any region, gtfo
-                return false;
-            }
-
-            if self.is_region_neighbor(region, hex) {
-                // if a valid neighbor, add to the region
-                println!("{:?}", hex);
-                let wrapped = self.wrap(hex).unwrap();
-                self.regions[region].push(wrapped);
-                self.unsafe_get_tile_mut(wrapped).region = Some(region);
-                return true;
-            }
-            // otherwise, return false.
-            false
-        } else {
-            // if cannot be wrapped, we cannot add.
-            false
+    /// `city` is wrapped onto the map. A hex the map cannot hold is rejected.
+    /// A hex already in a region is rejected. On success the new region's
+    /// index is stored on the tile, and the capital is that hex. Returns
+    /// whether the city was added.
+    pub fn add_city(&mut self, city: Hex) -> bool {
+        let Some(city) = self.wrap(city) else {
+            return false;
+        };
+        if self.get_region(city).is_some() {
+            return false;
         }
+        // The new region index is the length before the push.
+        self.tile_mut(city).region = Some(self.regions.len());
+        self.regions.push(vec![city]);
+        true
+    }
+
+    /// # Add To Region
+    ///
+    /// Adds `hex` to `region` when it touches that region and is free.
+    ///
+    /// `hex` is wrapped onto the map. A hex the map cannot hold, a hex already
+    /// in any region, or a hex that is not a neighbor is rejected. This does
+    /// not move a hex between regions. Panics when `region` is outside the
+    /// region list. Returns whether the hex was added.
+    pub fn add_to_region(&mut self, region: usize, hex: Hex) -> bool {
+        if self.get_tile(hex).is_none() {
+            return false;
+        }
+        if self.get_region(hex).is_some() {
+            return false;
+        }
+        if !self.is_region_neighbor(region, hex) {
+            return false;
+        }
+        let wrapped = self.wrap(hex).expect("hex is on the map");
+        self.regions[region].push(wrapped);
+        self.tile_mut(wrapped).region = Some(region);
+        true
     }
 }
 

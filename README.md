@@ -1,14 +1,9 @@
 # Simpler Economy
 
-Working title. The design pin is [docs/Overview.md](docs/Overview.md).
+Working title. The design pin is [Design_V3.md](Design_V3.md). It is in progress. [docs/Overview.md](docs/Overview.md) is the previous pin.
 
-Simpler Economy is a market-oriented grand-strategy game: a long historical span, a detailed barter-first market, and civilizations built from institutions, pops, and regions. The market is the keystone. Players mostly massage production, consumption, and logistics. They do not operate them directly.
-
-This repository is the simulation library. World data is under `data/world`. There is no game client yet.
+This repository is the simulation library. World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. There is no game client yet. The working note is [docs/handoff/current.md](docs/handoff/current.md).
 
 ```text
 cargo test --lib
-cargo run --example rates_tester
 ```
-
-`rates_tester` probes household demographics.

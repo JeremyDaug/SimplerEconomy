@@ -18,9 +18,9 @@ pub struct Culture {
     pub id: usize,
     /// The name of the culture.
     pub name: String,
-    /// The ID of the state this is connected to. If a culture is not connected to any
-    /// state, it is set to 0.
-    pub state: usize,
+    /// The ID of the nation this is connected to. If a culture is not connected to any
+    /// nation, it is set to 0.
+    pub nation: usize,
     /// Demographic desires keyed by `DemoDesire.id` for O(1) lookup.
     ///
     /// Tier lives on each `DemoDesire`; amounts are scaled for 1 household.
@@ -67,12 +67,12 @@ impl Culture {
     /// # New
     ///
     /// Creates a culture with the given id and name.
-    /// State defaults to 0 (no state). Desires start empty.
+    /// Nation starts at 0. Desires start empty.
     pub fn new(id: usize, name: impl Into<String>) -> Self {
         Self {
             id,
             name: name.into(),
-            state: 0,
+            nation: 0,
             desires: HashMap::new(),
             culture_effects: vec![],
             culture_demo_eff: DemographicRates::zero(),
@@ -88,28 +88,33 @@ impl Culture {
     ///
     /// Sets assimilation ease. `0` is insular and `1` is open.
     ///
-    /// Returns this culture. [`crate::game::market::Market::internal_migration`]
-    /// clamps the stored value to `0..=1` when it reads it.
+    /// Returns this culture.
     pub fn with_assimilation(mut self, assimilation: f64) -> Self {
         self.assimilation = assimilation;
         self
     }
 
+    /// # With Id
+    ///
     /// Sets the culture's unique ID.
     pub fn with_id(mut self, id: usize) -> Self {
         self.id = id;
         self
     }
 
+    /// # With Name
+    ///
     /// Sets the culture's display name.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
-    /// Sets the connected state ID (0 means none).
-    pub fn with_state(mut self, state: usize) -> Self {
-        self.state = state;
+    /// # With Nation
+    ///
+    /// Sets the connected nation id. `0` means none.
+    pub fn with_nation(mut self, nation: usize) -> Self {
+        self.nation = nation;
         self
     }
 
@@ -138,6 +143,8 @@ impl Culture {
         }
     }
 
+    /// # With Desire
+    ///
     /// Adds a demographic desire keyed by its id.
     /// Debug-asserts that the desire's tier is 0, 1, or 2.
     /// Panics if a desire with the same id already exists.
@@ -150,6 +157,8 @@ impl Culture {
         self
     }
 
+    /// # Find Desire
+    ///
     /// Finds a demo desire by id.
     pub fn find_desire(&self, desire_id: usize) -> Option<&DemoDesire> {
         self.desires.get(&desire_id)

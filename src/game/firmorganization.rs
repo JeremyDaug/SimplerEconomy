@@ -6,6 +6,9 @@
 pub struct FirmOrganization {}
 
 impl FirmOrganization {
+    /// # Empty
+    ///
+    /// An organization with no weights. Same value as [`Self::default`].
     pub fn empty() -> Self {
         Self {}
     }

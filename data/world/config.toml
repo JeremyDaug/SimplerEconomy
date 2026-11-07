@@ -1,34 +1,19 @@
 # World data: gameplay tunables.
 # Missing keys keep the defaults in src/game/config.rs.
-# Other GameConfig sections are reserved and currently empty.
 
-[pop]
-craft_distance = 0.1
-# Each process outside a craft multiplies that craft's complexity modifier by this.
-extra_process_accel = 1.2
-# Turns in one demographic year. 4 is a season, 12 is a month.
-# Births per woman, age-band deaths, aging, and the partnership step
-# use the annual rates divided by this. Infant and maternal mortality
-# stay fractions of the births in the turn.
-turn_length = 12
-# Multiplier on the mean price of a desire tier, per household, at each
-# savings level. The levels add. Three keeps three of that price: one more
-# day of it than a multiplier of two.
-savings_amv = 3.0
-# Runs the goods sent with a new household must be able to start.
-founding_runs = 3
-# Days of set-aside each leaving household takes. Three days each.
-founding_goods_weight = 3
-# Share of foundings that add a profitable process or drop an unprofitable line.
-founding_useful_share = 0.8
-# Days of set-aside, against one day of desires, before a pop may split.
-founding_wealth = 1.5
-# Market days from one founding to the next. One is every day.
-founding_gap = 5
+# [pop]
+# childhood_years = 20.0
+# adulthood_years = 40.0
+# child_sex_ratio = 0.5
+# partnership_trend = 0.13
 
-[market]
-transaction_cost = 1.0
-friction = 1.0
-# Working currency surplus listed by a holder, and by a pop who produces it.
-currency_holder_share = 0.5
-currency_producer_share = 1.0
+# [market]
+# amv_epsilon = 1e-9
+# salability_default = 0.5
+# migration_anger_weight = 0.5
+# migration_pace = 0.1
+# founding_households = 5.0
+# founding_min_households = 25.0
+# founding_drought_step = 0.01
+# founding_both_share = 0.2
+# founding_available_drop = 1.5

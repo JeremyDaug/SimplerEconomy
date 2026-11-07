@@ -1,56 +1,14 @@
 //! Gameplay tunables. Defaults live here. `data/world/config.toml` may override them.
 //!
-//! Missing keys keep [`Default`]. Load rejects values outside the bounds on each
-//! field. Call sites with [`crate::game::factuals::Factuals`] should read
-//! `factuals.config`.
+//! Missing keys keep [`Default`]. Call sites with [`crate::game::factuals::Factuals`]
+//! should read `factuals.config`.
 //!
-//! Section structs stay so later pop, firm, and market work has a place to put
-//! knobs. Most of the old shopping, priority, and planning fields are gone.
+//! Section structs stay so later pop, firm, and market work has a place to put knobs.
 
 use std::fmt;
 use std::path::Path;
 
 use serde::Deserialize;
-
-/// Time goods granted per unit of household labor.
-///
-/// Adult labor 1.0, elder 0.7, child 0.3 are the household defaults.
-/// 1 labor is a 16 hour day, counted as 64 quarter-hours.
-pub const TIME_PER_LABOR: f64 = 64.0;
-
-/// Pop cottage-work tunables.
-pub mod pop_constants {
-    /// Full weight of one extra process in [`crate::game::craft::Craft::craft_distance`].
-    pub const CRAFT_DISTANCE: f64 = 0.1;
-    /// Each process outside a craft multiplies that craft's complexity modifier by this.
-    pub const EXTRA_PROCESS_ACCEL: f64 = 1.2;
-    /// Turns in one demographic year when config does not say. One turn is one year.
-    pub const TURN_LENGTH: f64 = 1.0;
-    /// Multiplier on the mean tier price saved per household at each level.
-    pub const SAVINGS_AMV: f64 = 1.0;
-    /// Runs the goods sent with a new pop must be able to start.
-    pub const FOUNDING_RUNS: f64 = 3.0;
-    /// Days of set-aside each leaving household takes.
-    pub const FOUNDING_GOODS_WEIGHT: f64 = 3.0;
-    /// Share of foundings that add a profitable process or drop an unprofitable one.
-    pub const FOUNDING_USEFUL_SHARE: f64 = 0.8;
-    /// Days of set-aside required before a pop may split.
-    pub const FOUNDING_WEALTH: f64 = 1.5;
-    /// Market days from one founding to the next. One is every day.
-    pub const FOUNDING_GAP: f64 = 5.0;
-}
-
-/// Transport bill pieces. Not prices.
-pub mod market_constants {
-    /// Flat transport units charged per meeting. Not AMV.
-    pub const TRANSACTION_COST: f64 = 1.0;
-    /// Multiplier on deal bulk. `transport = TRANSACTION_COST + bulk * FRICTION`.
-    pub const FRICTION: f64 = 1.0;
-    /// Share of working currency surplus a holder lists.
-    pub const CURRENCY_HOLDER_SHARE: f64 = 0.5;
-    /// Share of working currency surplus a producer of that currency lists.
-    pub const CURRENCY_PRODUCER_SHARE: f64 = 1.0;
-}
 
 /// Failed to load gameplay config from a world-data file.
 #[derive(Debug)]
@@ -93,21 +51,31 @@ pub struct GameConfig {
 }
 
 impl GameConfig {
+    /// # Load From Path
+    ///
     /// Loads tunables from a TOML file. Missing keys keep [`Default`].
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, ConfigLoadError> {
         let text = std::fs::read_to_string(path.as_ref()).map_err(ConfigLoadError::Io)?;
         Self::load_from_toml(&text)
     }
 
+    /// # Load From Toml
+    ///
     /// Loads tunables from TOML text. Missing keys keep [`Default`].
-    /// Rejects values outside the bounds written on each field.
+    ///
+    /// [`Self::validate`] checks the loaded values. A value outside its bound
+    /// is [`ConfigLoadError::Invalid`].
     pub fn load_from_toml(text: &str) -> Result<Self, ConfigLoadError> {
         let cfg: Self = toml::from_str(text).map_err(ConfigLoadError::Toml)?;
         cfg.validate()?;
         Ok(cfg)
     }
 
-    /// Returns `Err` when a loaded value is outside its stated bound.
+    /// # Validate
+    ///
+    /// Checks loaded tunables against the bounds on each field.
+    ///
+    /// Returns every failure together. An empty list is `Ok`.
     pub fn validate(&self) -> Result<(), ConfigLoadError> {
         let mut problems = Vec::new();
         self.pop.validate(&mut problems);
@@ -121,65 +89,35 @@ impl GameConfig {
 }
 
 /// Pop-day tunables.
+///
+/// [`crate::game::household::Household::update`] reads the age lengths, the
+/// birth sex ratio, and the partnership step.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PopConfig {
-    /// Full per-process weight for [`crate::game::craft::Craft::craft_distance`].
+    /// Years in childhood before aging into adulthood. Must be `> 0`.
+    pub childhood_years: f64,
+    /// Years in adulthood before aging into elderhood. Must be `> 0`.
+    pub adulthood_years: f64,
+    /// Female fraction of live births. `0` is all male and `1` is all female.
     ///
-    /// Must be `>= 0`.
-    pub craft_distance: f64,
-    /// Each process outside a craft multiplies that craft's complexity modifier by this.
-    ///
-    /// Must be `>= 1`. One leaves the modifier unchanged.
-    /// [`crate::game::craft::Craft::complexity_cost`] reads it.
-    pub extra_process_accel: f64,
-    /// Turns in one demographic year.
-    ///
-    /// [`crate::game::household::Household::update`] divides the annual stock
-    /// rates by this. Must be `>= 1`.
-    pub turn_length: f64,
-    /// Multiplier on the mean tier price saved per household at each level.
-    ///
-    /// Must be `>= 0`. The levels add. [`crate::game::ladder`] is the buyer.
-    pub savings_amv: f64,
-    /// Runs of the new job the leaving goods must be able to start. Must be `>= 1`.
-    ///
-    /// [`crate::game::market::Market::found_pop`] reads it.
-    pub founding_runs: f64,
-    /// Days of set-aside each leaving household takes.
-    ///
-    /// Must be `>= 1`. The days are a share of the set-aside, capped at
-    /// the whole pile. Working goods move separately, with the households.
-    pub founding_goods_weight: f64,
-    /// Share of foundings that add a profitable process or drop an unprofitable line.
-    ///
-    /// Must be from 0 to 1. The rest add the process for an open bid.
-    pub founding_useful_share: f64,
-    /// Days of set-aside required before a pop may split.
-    ///
-    /// Must be `>= 0`. A day is one pass through the desire basket.
-    /// Zero accepts a pop with nothing set aside.
-    /// [`crate::game::market::Market::found_pop`] reads it.
-    pub founding_wealth: f64,
-    /// Market days from one founding to the next.
-    ///
-    /// Must be `>= 1`. One allows a founding every day.
-    /// [`crate::game::market::Market::found_pop`] reads it.
-    pub founding_gap: f64,
+    /// Must be from 0 to 1.
+    pub child_sex_ratio: f64,
+    /// Share of the partnership gap closed in one year. Must be from 0 to 1.
+    pub partnership_trend: f64,
 }
 
 impl Default for PopConfig {
+    /// # Default
+    ///
+    /// Childhood is 20 years, adulthood is 40, births are half female, and
+    /// the partnership step closes 0.13 of the gap in one year.
     fn default() -> Self {
         Self {
-            craft_distance: pop_constants::CRAFT_DISTANCE,
-            extra_process_accel: pop_constants::EXTRA_PROCESS_ACCEL,
-            turn_length: pop_constants::TURN_LENGTH,
-            savings_amv: pop_constants::SAVINGS_AMV,
-            founding_runs: pop_constants::FOUNDING_RUNS,
-            founding_goods_weight: pop_constants::FOUNDING_GOODS_WEIGHT,
-            founding_useful_share: pop_constants::FOUNDING_USEFUL_SHARE,
-            founding_wealth: pop_constants::FOUNDING_WEALTH,
-            founding_gap: pop_constants::FOUNDING_GAP,
+            childhood_years: 20.0,
+            adulthood_years: 40.0,
+            child_sex_ratio: 0.5,
+            partnership_trend: 0.13,
         }
     }
 }
@@ -187,36 +125,13 @@ impl Default for PopConfig {
 impl PopConfig {
     /// # Validate
     ///
-    /// Appends a problem when `craft_distance` is non-finite or below 0,
-    /// when `extra_process_accel` is non-finite or below 1,
-    /// when `turn_length` or `founding_runs` is non-finite or below 1,
-    /// when `savings_amv` or `founding_wealth` is non-finite or below 0, when
-    /// `founding_goods_weight` or `founding_gap` is non-finite or below 1, or when
-    /// `founding_useful_share` is outside 0 to 1.
+    /// Appends a problem when an age length is not finite or not above 0,
+    /// or when a share is outside 0 to 1.
     fn validate(&self, problems: &mut Vec<String>) {
-        at_least(problems, "pop.craft_distance", self.craft_distance, 0.0);
-        at_least(
-            problems,
-            "pop.extra_process_accel",
-            self.extra_process_accel,
-            1.0,
-        );
-        at_least(problems, "pop.turn_length", self.turn_length, 1.0);
-        at_least(problems, "pop.savings_amv", self.savings_amv, 0.0);
-        at_least(problems, "pop.founding_wealth", self.founding_wealth, 0.0);
-        at_least(problems, "pop.founding_gap", self.founding_gap, 1.0);
-        at_least(problems, "pop.founding_runs", self.founding_runs, 1.0);
-        at_least(
-            problems,
-            "pop.founding_goods_weight",
-            self.founding_goods_weight,
-            1.0,
-        );
-        unit_share(
-            problems,
-            "pop.founding_useful_share",
-            self.founding_useful_share,
-        );
+        above(problems, "pop.childhood_years", self.childhood_years, 0.0);
+        above(problems, "pop.adulthood_years", self.adulthood_years, 0.0);
+        unit_share(problems, "pop.child_sex_ratio", self.child_sex_ratio);
+        unit_share(problems, "pop.partnership_trend", self.partnership_trend);
     }
 }
 
@@ -226,53 +141,172 @@ impl PopConfig {
 #[serde(default)]
 pub struct PlayerResourceConfig {}
 
-/// Market transport knobs. Price movement is not configured here.
+/// Market tunables.
+///
+/// `salability_default` is the salability of a good with no record.
+/// `amv_epsilon` is the half-width of the stored-AMV dead zone. The
+/// migration and founding knobs are loaded here. Those passes are not
+/// written yet.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MarketConfig {
-    /// Flat transport units charged per meeting. Must be `>= 0`.
-    pub transaction_cost: f64,
-    /// Multiplier on deal bulk for the wagon bill. Must be `>= 0`.
-    pub friction: f64,
-    /// Share of working currency surplus a holder lists. Must be from 0 to 1.
-    pub currency_holder_share: f64,
-    /// Share of working currency surplus a producer of that currency lists.
+    /// Half-width of the AMV dead zone around zero. Must be `> 0`.
     ///
-    /// Must be from 0 to 1. A producer lists this instead of
-    /// [`Self::currency_holder_share`].
-    pub currency_producer_share: f64,
+    /// A stored AMV inside this band is not kept. It lands on this value
+    /// with the opposite sign from the previous AMV. This is not a price floor.
+    pub amv_epsilon: f64,
+    /// Salability of a good with no recorded value yet. Must be from 0 to 1.
+    pub salability_default: f64,
+    /// Weight of anger beside fear on the way out. Must be `>= 0`.
+    pub migration_anger_weight: f64,
+    /// Share of a saturated push or pull that moves in one year.
+    ///
+    /// Must be from 0 to 1. The saturated fraction stays under this share.
+    pub migration_pace: f64,
+    /// Households one founding moves. Must be `> 0`.
+    pub founding_households: f64,
+    /// Households a pop needs before a founding may leave. Must be `> 0`.
+    pub founding_min_households: f64,
+    /// Chance added each open day that a pop founds when nobody clears the gate.
+    ///
+    /// Must be from 0 to 1. The first open day is one step. Each later open
+    /// day adds another. The chance stops at 1.
+    pub founding_drought_step: f64,
+    /// Share of foundings that apply both an add and a drop. Must be from 0 to 1.
+    pub founding_both_share: f64,
+    /// Extra weight on a drop whose product already covered the request.
+    ///
+    /// Must be `>= 0`. `1` leaves the base weight.
+    pub founding_available_drop: f64,
 }
 
 impl Default for MarketConfig {
+    /// # Default
+    ///
+    /// The AMV dead zone is `1e-9`. Salability starts at one half. Anger
+    /// weighs half of fear. One tenth of a saturated push moves in a year.
+    /// A founding moves 5 households out of a pop of at least 25. An open
+    /// day adds one hundredth to the drought chance. One fifth of foundings
+    /// both add and drop. A covered drop weighs half again its base.
     fn default() -> Self {
         Self {
-            transaction_cost: market_constants::TRANSACTION_COST,
-            friction: market_constants::FRICTION,
-            currency_holder_share: market_constants::CURRENCY_HOLDER_SHARE,
-            currency_producer_share: market_constants::CURRENCY_PRODUCER_SHARE,
+            amv_epsilon: 1e-9,
+            salability_default: 0.5,
+            migration_anger_weight: 0.5,
+            migration_pace: 0.1,
+            founding_households: 5.0,
+            founding_min_households: 25.0,
+            founding_drought_step: 0.01,
+            founding_both_share: 0.2,
+            founding_available_drop: 1.5,
         }
     }
 }
 
 impl MarketConfig {
+    /// # Validate
+    ///
+    /// Appends a problem when `amv_epsilon` or a household count is not
+    /// finite or not above 0, when a weight is not finite or below 0, or
+    /// when a share is outside 0 to 1.
     fn validate(&self, problems: &mut Vec<String>) {
+        above(problems, "market.amv_epsilon", self.amv_epsilon, 0.0);
+        unit_share(
+            problems,
+            "market.salability_default",
+            self.salability_default,
+        );
         at_least(
             problems,
-            "market.transaction_cost",
-            self.transaction_cost,
+            "market.migration_anger_weight",
+            self.migration_anger_weight,
             0.0,
         );
-        at_least(problems, "market.friction", self.friction, 0.0);
-        unit_share(
+        unit_share(problems, "market.migration_pace", self.migration_pace);
+        above(
             problems,
-            "market.currency_holder_share",
-            self.currency_holder_share,
+            "market.founding_households",
+            self.founding_households,
+            0.0,
+        );
+        above(
+            problems,
+            "market.founding_min_households",
+            self.founding_min_households,
+            0.0,
         );
         unit_share(
             problems,
-            "market.currency_producer_share",
-            self.currency_producer_share,
+            "market.founding_drought_step",
+            self.founding_drought_step,
         );
+        unit_share(
+            problems,
+            "market.founding_both_share",
+            self.founding_both_share,
+        );
+        at_least(
+            problems,
+            "market.founding_available_drop",
+            self.founding_available_drop,
+            0.0,
+        );
+    }
+}
+
+/// # Finite
+///
+/// Whether `value` is finite.
+///
+/// Appends a problem for `name` when it is not. Returns that check.
+fn finite(problems: &mut Vec<String>, name: &str, value: f64) -> bool {
+    if value.is_finite() {
+        true
+    } else {
+        problems.push(format!("{name} must be finite"));
+        false
+    }
+}
+
+/// # Unit Share
+///
+/// Appends a problem when `value` is not a finite share from 0 to 1.
+///
+/// `name` is the key in the message. Nothing is returned.
+fn unit_share(problems: &mut Vec<String>, name: &str, value: f64) {
+    if !finite(problems, name, value) {
+        return;
+    }
+    if !(0.0..=1.0).contains(&value) {
+        problems.push(format!("{name} must be from 0 to 1, got {value}"));
+    }
+}
+
+/// # At Least
+///
+/// Appends a problem when `value` is not finite or is below `min`.
+///
+/// `name` is the key in the message. Nothing is returned.
+fn at_least(problems: &mut Vec<String>, name: &str, value: f64, min: f64) {
+    if !finite(problems, name, value) {
+        return;
+    }
+    if value < min {
+        problems.push(format!("{name} must be >= {min}, got {value}"));
+    }
+}
+
+/// # Above
+///
+/// Appends a problem when `value` is not finite or is not above `min`.
+///
+/// `name` is the key in the message. Nothing is returned.
+fn above(problems: &mut Vec<String>, name: &str, value: f64, min: f64) {
+    if !finite(problems, name, value) {
+        return;
+    }
+    if value <= min {
+        problems.push(format!("{name} must be > {min}, got {value}"));
     }
 }
 
@@ -297,33 +331,6 @@ pub struct LaborConfig {}
 #[serde(default)]
 pub struct FirmConfig {}
 
-fn finite(problems: &mut Vec<String>, name: &str, value: f64) -> bool {
-    if value.is_finite() {
-        true
-    } else {
-        problems.push(format!("{name} must be finite"));
-        false
-    }
-}
-
-fn unit_share(problems: &mut Vec<String>, name: &str, value: f64) {
-    if !finite(problems, name, value) {
-        return;
-    }
-    if !(0.0..=1.0).contains(&value) {
-        problems.push(format!("{name} must be from 0 to 1, got {value}"));
-    }
-}
-
-fn at_least(problems: &mut Vec<String>, name: &str, value: f64, min: f64) {
-    if !finite(problems, name, value) {
-        return;
-    }
-    if value < min {
-        problems.push(format!("{name} must be >= {min}, got {value}"));
-    }
-}
-
 #[cfg(test)]
 mod config_should {
     use super::*;
@@ -335,127 +342,29 @@ mod config_should {
     }
 
     #[test]
-    fn load_from_toml_reads_craft_distance() {
-        let cfg = GameConfig::load_from_toml("[pop]\ncraft_distance = 0.2\n").expect("toml");
-        assert!((cfg.pop.craft_distance - 0.2).abs() < 1e-12);
-        assert_eq!(cfg.market.friction, market_constants::FRICTION);
-    }
-
-    #[test]
-    fn load_from_toml_rejects_negative_craft_distance() {
-        let err = GameConfig::load_from_toml("[pop]\ncraft_distance = -0.1\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.craft_distance"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_reads_extra_process_accel() {
-        let cfg = GameConfig::load_from_toml("[pop]\nextra_process_accel = 1.5\n").expect("toml");
-        assert!((cfg.pop.extra_process_accel - 1.5).abs() < 1e-12);
-        assert_eq!(cfg.pop.craft_distance, pop_constants::CRAFT_DISTANCE);
-    }
-
-    #[test]
-    fn load_from_toml_rejects_an_extra_process_accel_below_one() {
-        let err = GameConfig::load_from_toml("[pop]\nextra_process_accel = 0.5\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.extra_process_accel"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_reads_market_transport() {
-        let cfg = GameConfig::load_from_toml("[market]\nfriction = 2.0\n").expect("toml");
-        assert_eq!(cfg.market.friction, 2.0);
-        assert_eq!(
-            cfg.market.transaction_cost,
-            market_constants::TRANSACTION_COST
-        );
-    }
-
-    #[test]
-    fn load_from_toml_rejects_negative_friction() {
-        let err = GameConfig::load_from_toml("[market]\nfriction = -1.0\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("market.friction"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_reads_turn_length() {
-        let cfg = GameConfig::load_from_toml("[pop]\nturn_length = 12\n").expect("toml");
-        assert_eq!(cfg.pop.turn_length, 12.0);
-        assert_eq!(cfg.pop.craft_distance, pop_constants::CRAFT_DISTANCE);
-    }
-
-    #[test]
-    fn load_from_toml_reads_the_founding_stake() {
-        let cfg = GameConfig::load_from_toml(
-            "[pop]\nfounding_runs = 4\nfounding_goods_weight = 2\nfounding_useful_share = 0.5\n",
-        )
-        .expect("toml");
-        assert_eq!(cfg.pop.founding_runs, 4.0);
-        assert_eq!(cfg.pop.founding_goods_weight, 2.0);
-        assert_eq!(cfg.pop.founding_useful_share, 0.5);
-        assert_eq!(cfg.pop.founding_wealth, pop_constants::FOUNDING_WEALTH);
-        assert_eq!(cfg.pop.founding_gap, pop_constants::FOUNDING_GAP);
-    }
-
-    #[test]
-    fn load_from_toml_rejects_a_founding_gap_below_one() {
-        let err = GameConfig::load_from_toml("[pop]\nfounding_gap = 0\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.founding_gap"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_rejects_negative_founding_wealth() {
-        let err = GameConfig::load_from_toml("[pop]\nfounding_wealth = -1\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.founding_wealth"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_rejects_a_founding_weight_below_one() {
-        let err = GameConfig::load_from_toml("[pop]\nfounding_goods_weight = 0.5\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.founding_goods_weight"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_rejects_founding_runs_below_one() {
-        let err = GameConfig::load_from_toml("[pop]\nfounding_runs = 0\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.founding_runs"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_rejects_a_founding_share_above_one() {
-        let err = GameConfig::load_from_toml("[pop]\nfounding_useful_share = 1.5\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.founding_useful_share"), "{msg}");
-    }
-
-    #[test]
-    fn load_from_toml_rejects_a_turn_length_below_one() {
-        let err = GameConfig::load_from_toml("[pop]\nturn_length = 0.5\n").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("pop.turn_length"), "{msg}");
-    }
-
-    #[test]
     fn load_from_path_reads_world_config_file() {
         let path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/config.toml");
-        let cfg = GameConfig::load_from_path(&path).expect("world config");
-        let mut expected = GameConfig::default();
-        expected.pop.turn_length = 4.0;
-        expected.pop.savings_amv = 3.0;
-        assert_eq!(cfg, expected);
+        let cfg = GameConfig::load_from_path(path).expect("world config");
+        assert_eq!(cfg, GameConfig::default());
     }
 
     #[test]
-    fn default_config_passes_validate() {
-        GameConfig::default()
-            .validate()
-            .expect("defaults are in bounds");
+    fn load_from_toml_reads_pop_and_market_keys() {
+        let cfg = GameConfig::load_from_toml(
+            "[pop]\nchildhood_years = 16\n[market]\nsalability_default = 0.25\n",
+        )
+        .expect("toml");
+        assert_eq!(cfg.pop.childhood_years, 16.0);
+        assert_eq!(cfg.pop.adulthood_years, PopConfig::default().adulthood_years);
+        assert_eq!(cfg.market.salability_default, 0.25);
+        assert_eq!(cfg.market.amv_epsilon, MarketConfig::default().amv_epsilon);
+    }
+
+    #[test]
+    fn load_from_toml_rejects_a_childhood_of_zero() {
+        let err = GameConfig::load_from_toml("[pop]\nchildhood_years = 0\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("pop.childhood_years"), "{msg}");
     }
 }

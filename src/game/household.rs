@@ -1,3 +1,4 @@
+use crate::game::config::PopConfig;
 use crate::game::util::lerp;
 use bitflags::*;
 
@@ -9,8 +10,8 @@ use bitflags::*;
 ///
 /// ## Assumptions
 ///
-/// Age ranges are fixed for round numbers: childhood 20 years, adulthood 40 years.
-/// Each game turn is one year.
+/// Age lengths, the birth sex ratio, and the partnership step come from
+/// [`PopConfig`]. `turn_length` is how many turns make one year.
 ///
 /// Sex fields (`*_mf`) are **female fractions** in `0.0..=1.0`
 /// (`0.0` = all male, `1.0` = all female). Birth math uses adult women =
@@ -46,15 +47,6 @@ pub struct Household {
     /// The Current Partnership rate of the households (household Adults + children).
     pub partnership_rate: f64,
 }
-
-/// Years spent in childhood before aging into adulthood.
-const CHILDHOOD_YEARS: f64 = 20.0;
-/// Years spent in adulthood before aging into elderhood.
-const ADULTHOOD_YEARS: f64 = 40.0;
-/// The default ratio of females to males in births (1.0 all female).
-const CHILD_SEX_RATIO: f64 = 0.5;
-/// The rate partnership moves closer to the targeted partnership rate.
-const PARTNERSHIP_TREND: f64 = 0.13;
 
 impl Household {
     /// # New
@@ -282,28 +274,41 @@ impl Household {
     /// `rates` is the annual bundle for this tick: baseline demographic rates
     /// plus modifiers already folded in by the caller. This method does not
     /// apply a second modifier pass. `turn_length` is how many turns make one
-    /// year. Births per woman, age-band mortality, aging, and the partnership
-    /// step are those annual rates divided by `turn_length`. Infant mortality
-    /// and maternal mortality stay fractions of the births in this turn. The
-    /// partnership target is not divided.
+    /// year. `pop` supplies the age lengths, the birth sex ratio, and the
+    /// partnership step. Births per woman, age-band mortality, aging, and the
+    /// partnership step are those annual rates divided by `turn_length`.
+    /// Infant mortality and maternal mortality stay fractions of the births
+    /// in this turn. The partnership target is not divided.
     ///
     /// Negative rates go to zero where they are applied. Infant mortality is
     /// capped at 1.
     ///
     /// Flow (start-of-turn composition is non-negative by invariant):
-    /// 1. Live births from adult women, reduced by infant mortality; newborns 50/50 sex.
+    /// 1. Live births from adult women, reduced by infant mortality. The female
+    ///    share is [`PopConfig::child_sex_ratio`].
     /// 2. Age-band deaths (rate = total + sex, stacked), then maternal deaths on remaining women.
-    /// 3. Aging from survivors (children over 20 years, adults over 40), scaled by
-    ///    `turn_length`, so bands cannot go negative.
+    /// 3. Aging from survivors over [`PopConfig::childhood_years`] and
+    ///    [`PopConfig::adulthood_years`], scaled by `turn_length`, so bands
+    ///    cannot go negative.
     /// 4. `count = (total_adults + total_elders) / partnership_rate` when adults+elders remain;
     ///    averages and female fractions are rebuilt from end-of-turn totals.
     ///
     /// Labor rates are not modified. Empty groups zero out composition and count.
     /// Nothing is returned.
-    pub fn update(&mut self, rates: &DemographicRates, turn_length: f64) {
+    pub fn update(&mut self, rates: &DemographicRates, turn_length: f64, pop: &PopConfig) {
         debug_assert!(
             self.count >= 1.0,
             "Household must have 1 or more households at the start."
+        );
+        debug_assert!(
+            pop.childhood_years.is_finite() && pop.childhood_years > 0.0,
+            "childhood_years must be finite and > 0, got {}",
+            pop.childhood_years
+        );
+        debug_assert!(
+            pop.adulthood_years.is_finite() && pop.adulthood_years > 0.0,
+            "adulthood_years must be finite and > 0, got {}",
+            pop.adulthood_years
         );
         debug_assert!(
             rates.partnership_rate > 0.0 && rates.partnership_rate.is_finite(),
@@ -340,7 +345,7 @@ impl Household {
 
         // --- 1. Births ------------------------------------------------------
         let live_births = curr_adults_f * birth_per_woman * (1.0 - infant_mortality);
-        let births_m = live_births * CHILD_SEX_RATIO;
+        let births_m = live_births * pop.child_sex_ratio;
         let births_f = live_births - births_m;
 
         // --- 2. Deaths, then maternal on remaining adult women --------------
@@ -362,8 +367,8 @@ impl Household {
         remain_adults_f -= maternal_deaths;
 
         // --- 3. Aging from survivors (keeps end bands non-negative) ---------
-        let childhood = CHILDHOOD_YEARS * turn_length;
-        let adulthood = ADULTHOOD_YEARS * turn_length;
+        let childhood = pop.childhood_years * turn_length;
+        let adulthood = pop.adulthood_years * turn_length;
         let child_aging_m = remain_children_m / childhood;
         let child_aging_f = remain_children_f / childhood;
         let adult_aging_m = remain_adults_m / adulthood;
@@ -398,7 +403,7 @@ impl Household {
         let new_partnership = lerp(
             curr_partnership,
             rates.partnership_rate,
-            PARTNERSHIP_TREND / turn_length,
+            pop.partnership_trend / turn_length,
         );
         let partners = end_adults + end_elders;
         if partners > 0.0 {
@@ -653,9 +658,10 @@ impl DemographicRates {
 
     /// # Zero
     ///
-    /// All-zero delta (safe to add onto baseline or other rate bundles).
-    /// Partnership target is 0 so additive mods do not shift household size
-    /// unless the mod sets a non-zero partnership delta.
+    /// Every field is 0.
+    ///
+    /// [`Self::add`] sums the other fields, so these zeros leave them as they
+    /// are. Partnership is averaged, so this 0 pulls that average toward 0.
     pub fn zero() -> Self {
         Self {
             birth_per_woman: 0.0,
@@ -670,9 +676,11 @@ impl DemographicRates {
 
     /// # Add
     ///
-    /// Field-wise sum of two rate bundles (including mortality triples and
-    /// partnership target). Used to stack baseline + species + culture + religion
-    /// + same-day modifiers.
+    /// Sum of two rate bundles, except partnership.
+    ///
+    /// Birth, mortality, and the mortality triples add. Partnership is the
+    /// average of the two targets. Used to stack baseline + species + culture
+    /// + religion + same-day modifiers.
     pub fn add(&self, other: &Self) -> Self {
         Self {
             birth_per_woman: self.birth_per_woman + other.birth_per_woman,
@@ -693,7 +701,7 @@ impl DemographicRates {
                 self.elder_mortality.1 + other.elder_mortality.1,
                 self.elder_mortality.2 + other.elder_mortality.2,
             ),
-            partnership_rate: self.partnership_rate + other.partnership_rate,
+            partnership_rate: (self.partnership_rate + other.partnership_rate) / 2.0,
         }
     }
 
@@ -787,6 +795,7 @@ bitflags! {
 #[cfg(test)]
 mod household_new_update_should {
     use super::*;
+    use crate::game::config::PopConfig;
 
     fn assert_finite_household(h: &Household) {
         assert!(h.count.is_finite());
@@ -798,7 +807,7 @@ mod household_new_update_should {
     #[should_panic(expected = "Household must have 1 or more households")]
     fn update_requires_count_at_least_one() {
         let mut h = Household::with_count(0.0);
-        h.update(&DemographicRates::baseline(), 1.0);
+        h.update(&DemographicRates::baseline(), 1.0, &PopConfig::default());
     }
 
     #[test]
@@ -818,7 +827,7 @@ mod household_new_update_should {
         let mut h = Household::with_count(10.0);
         let rates = DemographicRates::baseline();
         let before = h.total_count();
-        h.update(&rates, 1.0);
+        h.update(&rates, 1.0, &PopConfig::default());
         assert_finite_household(&h);
         assert!(h.count > 0.0);
         assert!(h.total_count() > 0.0);
@@ -844,7 +853,7 @@ mod household_new_update_should {
         rates.adult_mortality = (0.0, 0.0, 0.5);
         rates.birth_per_woman = 0.0;
         rates.maternal_mortality = 0.0;
-        h.update(&rates, 1.0);
+        h.update(&rates, 1.0, &PopConfig::default());
         assert!(
             h.adult_mf < 0.5,
             "female-heavy adult mortality should lower adult female fraction, got {}",
@@ -869,7 +878,7 @@ mod household_new_update_should {
             elder_mortality: (2.0, 0.0, 0.0),
             partnership_rate: 2.5,
         };
-        h.update(&rates, 1.0);
+        h.update(&rates, 1.0, &PopConfig::default());
         assert_eq!(h.count, 0.0);
         assert_eq!(h.adult, 0.0);
         assert_eq!(h.elder, 0.0);
@@ -889,7 +898,7 @@ mod household_new_update_should {
         rates.maternal_mortality = 0.0;
         rates.infant_mortality = 0.0;
         rates.birth_per_woman = 1.0; // one birth per woman
-        h.update(&rates, 1.0);
+        h.update(&rates, 1.0, &PopConfig::default());
         assert!(h.child > 0.0);
         assert!(
             (h.child_mf - 0.5).abs() < 1e-9,
@@ -906,7 +915,8 @@ mod household_new_update_should {
         rates.birth_per_woman = 0.30;
         rates.infant_mortality = 0.10;
         rates.partnership_rate = 2.0;
-        h.update(&rates, 12.0);
+        let pop = PopConfig::default();
+        h.update(&rates, 12.0, &pop);
         // One woman. Births are 0.30/12. A tenth of those births die.
         assert!(
             (h.child * h.count - 0.0225).abs() < 1e-9,
@@ -914,7 +924,7 @@ mod household_new_update_should {
             h.child * h.count
         );
         assert!(
-            (h.elder * h.count - 2.0 / 480.0).abs() < 1e-9,
+            (h.elder * h.count - 2.0 / (pop.adulthood_years * 12.0)).abs() < 1e-9,
             "elders {}",
             h.elder * h.count
         );
@@ -926,14 +936,45 @@ mod household_new_update_should {
         h.partnership_rate = 4.0;
         let mut rates = DemographicRates::zero();
         rates.partnership_rate = 2.5;
-        h.update(&rates, 12.0);
+        let pop = PopConfig::default();
+        h.update(&rates, 12.0, &pop);
         // The step sets adults+elders per household. The stored rate stays.
-        let expected = 4.0 + (2.5 - 4.0) * (0.13 / 12.0);
+        let expected = 4.0 + (2.5 - 4.0) * (pop.partnership_trend / 12.0);
         assert!(
             (h.adult + h.elder - expected).abs() < 1e-9,
             "adults+elders {}",
             h.adult + h.elder
         );
+    }
+}
+
+#[cfg(test)]
+mod demographic_rates_should {
+    use super::DemographicRates;
+
+    #[test]
+    fn add_averages_partnership_and_sums_the_other_rates() {
+        let base = DemographicRates::baseline();
+        let mut extra = DemographicRates::zero();
+        extra.birth_per_woman = 0.1;
+        extra.infant_mortality = 0.05;
+        extra.adult_mortality = (0.01, 0.0, 0.02);
+        extra.partnership_rate = 3.5;
+        let stacked = base.add(&extra);
+        assert!((stacked.birth_per_woman - (base.birth_per_woman + 0.1)).abs() < 1e-12);
+        assert!((stacked.infant_mortality - (base.infant_mortality + 0.05)).abs() < 1e-12);
+        assert_eq!(
+            stacked.adult_mortality,
+            (
+                base.adult_mortality.0 + 0.01,
+                base.adult_mortality.1,
+                base.adult_mortality.2 + 0.02,
+            )
+        );
+        assert!((stacked.partnership_rate - (2.5 + 3.5) / 2.0).abs() < 1e-12);
+        let with_zero = base.add(&DemographicRates::zero());
+        assert!((with_zero.birth_per_woman - base.birth_per_woman).abs() < 1e-12);
+        assert!((with_zero.partnership_rate - 2.5 / 2.0).abs() < 1e-12);
     }
 }
 

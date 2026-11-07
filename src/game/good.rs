@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -241,5 +243,63 @@ impl Hash for GoodTag {
         if let Self::Transport(efficiency) = self {
             efficiency.to_bits().hash(state);
         }
+    }
+}
+
+/// Failed to load goods from a world-data file.
+#[derive(Debug)]
+pub enum GoodLoadError {
+    Io(std::io::Error),
+    Toml(toml::de::Error),
+    Duplicate(usize),
+}
+
+impl fmt::Display for GoodLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "read goods: {err}"),
+            Self::Toml(err) => write!(f, "parse goods: {err}"),
+            Self::Duplicate(id) => write!(f, "duplicate good id {id} in world data"),
+        }
+    }
+}
+
+impl std::error::Error for GoodLoadError {}
+
+/// TOML document that carries a `goods` array. Other tables are ignored.
+#[derive(Debug, Deserialize)]
+struct GoodsFile {
+    #[serde(default)]
+    goods: Vec<Good>,
+}
+
+impl Good {
+    /// # Load From Path
+    ///
+    /// `path` is a TOML file.
+    ///
+    /// Reads the file and passes the text to [`Self::load_from_toml`].
+    /// Returns the goods keyed by id, or the first error.
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<HashMap<usize, Good>, GoodLoadError> {
+        let text = std::fs::read_to_string(path.as_ref()).map_err(GoodLoadError::Io)?;
+        Self::load_from_toml(&text)
+    }
+
+    /// # Load From Toml
+    ///
+    /// `text` is a TOML document. The `goods` array is read. Other tables
+    /// stay for their own loaders.
+    ///
+    /// Returns the goods keyed by id. A repeated id is [`GoodLoadError::Duplicate`].
+    pub fn load_from_toml(text: &str) -> Result<HashMap<usize, Good>, GoodLoadError> {
+        let file: GoodsFile = toml::from_str(text).map_err(GoodLoadError::Toml)?;
+        let mut goods = HashMap::new();
+        for good in file.goods {
+            if goods.contains_key(&good.id) {
+                return Err(GoodLoadError::Duplicate(good.id));
+            }
+            goods.insert(good.id, good);
+        }
+        Ok(goods)
     }
 }

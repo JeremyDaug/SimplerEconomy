@@ -20,6 +20,9 @@ pub struct Tile {
 }
 
 impl Tile {
+    /// # New
+    ///
+    /// A tile at `hex` with no region, no claims, and no occupier.
     pub fn new(hex: Hex) -> Self {
         Self {
             hex,
@@ -29,7 +32,9 @@ impl Tile {
         }
     }
 
-    /// Region fluent setter.
+    /// # In Region
+    ///
+    /// Sets the region and returns this tile.
     pub fn in_region(mut self, region: usize) -> Self {
         self.region = Some(region);
         self

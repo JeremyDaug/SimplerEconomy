@@ -32,7 +32,7 @@ pub enum EffectKind {
     /// specified in the [`HouseholdTarget`](crate::game::household::HouseholdTarget).
     MortalityRate(HouseholdTarget, f64),
 
-    // --- Soft power / state ---
+    // --- Soft power / nation ---
     Research(f64),
     Culture(f64),
     Faith(f64),
@@ -131,137 +131,6 @@ pub enum DesireEffect {
     Legitimacy(f64, bool),
 }
 
-impl DesireEffect {
-    /// Catalog kind (ignores bonus/malus; use [`Self::is_bonus`] for that).
-    pub fn to_kind(self) -> EffectKind {
-        match self {
-            DesireEffect::Mortality(target, v, _) => EffectKind::MortalityRate(target, v),
-            DesireEffect::Birthrate(v, _) => EffectKind::BirthRate(v),
-            DesireEffect::BonusGood(good, amount, _) => EffectKind::BonusGood { good, amount },
-            DesireEffect::Satisfaction(amount, _) => EffectKind::Satisfaction(amount),
-            DesireEffect::SentimentFlat(kind, amount, _) => {
-                EffectKind::SentimentFlat { kind, amount }
-            }
-            DesireEffect::SentimentRelative(kind, relative, _) => {
-                EffectKind::SentimentRelative { kind, relative }
-            }
-            DesireEffect::Culture(v, _) => EffectKind::Culture(v),
-            DesireEffect::Research(v, _) => EffectKind::Research(v),
-            DesireEffect::Faith(v, _) => EffectKind::Faith(v),
-            DesireEffect::Authority(v, _) => EffectKind::Authority(v),
-            DesireEffect::Legitimacy(v, _) => EffectKind::Legitimacy(v),
-        }
-    }
-
-    /// True if this effect scales with satisfaction (bonus), false if with lack (malus).
-    pub fn is_bonus(self) -> bool {
-        match self {
-            DesireEffect::Mortality(_, _, b)
-            | DesireEffect::Birthrate(_, b)
-            | DesireEffect::BonusGood(_, _, b)
-            | DesireEffect::Satisfaction(_, b)
-            | DesireEffect::SentimentFlat(_, _, b)
-            | DesireEffect::SentimentRelative(_, _, b)
-            | DesireEffect::Culture(_, b)
-            | DesireEffect::Research(_, b)
-            | DesireEffect::Faith(_, b)
-            | DesireEffect::Authority(_, b)
-            | DesireEffect::Legitimacy(_, b) => b,
-        }
-    }
-
-    /// Magnitude after applying satisfaction in `[0, 1]`.
-    ///
-    /// Bonus → `+rate * sat`; malus → `-rate * (1 - sat)`.
-    pub fn signed_strength(self, sat01: f64) -> f64 {
-        self.signed_strength_raw(sat01.clamp(0.0, 1.0))
-    }
-
-    /// Like [`Self::signed_strength`], but `sat` is not clamped to 1.
-    ///
-    /// Floor at 0. Malus uses `max(0, 1 - sat)` so luxury oversat does not
-    /// invert the malus. Use this for luxury player-resource harvest; keep
-    /// [`Self::signed_strength`] for growth / sentiment / common.
-    pub fn signed_strength_raw(self, sat: f64) -> f64 {
-        debug_assert!(sat.is_finite(), "satisfaction must be finite");
-        let sat = sat.max(0.0);
-        let lack = (1.0 - sat).max(0.0);
-        let rate = match self {
-            DesireEffect::Mortality(_, v, _) | DesireEffect::Birthrate(v, _) => v,
-            DesireEffect::BonusGood(_, amount, _) => amount,
-            DesireEffect::Satisfaction(amount, _) => amount,
-            DesireEffect::SentimentFlat(_, amount, _) => amount,
-            DesireEffect::SentimentRelative(_, relative, _) => relative,
-            DesireEffect::Culture(v, _)
-            | DesireEffect::Research(v, _)
-            | DesireEffect::Faith(v, _)
-            | DesireEffect::Authority(v, _)
-            | DesireEffect::Legitimacy(v, _) => v,
-        };
-        if self.is_bonus() {
-            rate * sat
-        } else {
-            -rate * lack
-        }
-    }
-
-    /// True for culture / research / faith / authority / legitimacy arms.
-    pub fn is_player_resource(self) -> bool {
-        matches!(
-            self,
-            DesireEffect::Culture(..)
-                | DesireEffect::Research(..)
-                | DesireEffect::Faith(..)
-                | DesireEffect::Authority(..)
-                | DesireEffect::Legitimacy(..)
-        )
-    }
-
-    /// Growth arms left for growth phase.
-    pub fn is_growth(self) -> bool {
-        matches!(
-            self,
-            DesireEffect::Birthrate(..) | DesireEffect::Mortality(..)
-        )
-    }
-
-    /// Goods paid out at decay.
-    pub fn is_bonus_good(self) -> bool {
-        matches!(self, DesireEffect::BonusGood(..))
-    }
-
-    /// Additive yields that grow with pop size (player resources and bonus goods).
-    /// Rates (birth/mortality) and percent-like arms (sentiment, satisfaction) do not.
-    pub fn is_additive(self) -> bool {
-        self.is_player_resource() || self.is_bonus_good()
-    }
-
-    /// # Scale By
-    ///
-    /// Scales our Desire Effect by a given scalar, returning the new version.
-    pub(crate) fn scale_by(&self, effect_scale: f64) -> Self {
-        match self {
-            DesireEffect::Mortality(household_target, v, b) => {
-                DesireEffect::Mortality(*household_target, v * effect_scale, *b)
-            }
-            DesireEffect::Birthrate(v, b) => DesireEffect::Birthrate(v * effect_scale, *b),
-            DesireEffect::BonusGood(g, v, b) => DesireEffect::BonusGood(*g, v * effect_scale, *b),
-            DesireEffect::Satisfaction(v, b) => DesireEffect::Satisfaction(v * effect_scale, *b),
-            DesireEffect::SentimentFlat(sentiment_kind, v, b) => {
-                DesireEffect::SentimentFlat(*sentiment_kind, v * effect_scale, *b)
-            }
-            DesireEffect::SentimentRelative(sentiment_kind, v, b) => {
-                DesireEffect::SentimentRelative(*sentiment_kind, v * effect_scale, *b)
-            }
-            DesireEffect::Culture(v, b) => DesireEffect::Culture(v * effect_scale, *b),
-            DesireEffect::Research(v, b) => DesireEffect::Research(v * effect_scale, *b),
-            DesireEffect::Faith(v, b) => DesireEffect::Faith(v * effect_scale, *b),
-            DesireEffect::Authority(v, b) => DesireEffect::Authority(v * effect_scale, *b),
-            DesireEffect::Legitimacy(v, b) => DesireEffect::Legitimacy(v * effect_scale, *b),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pop effects (ephemeral, same-day)
 // ---------------------------------------------------------------------------
@@ -316,57 +185,6 @@ pub enum PopEffect {
     Legitimacy(f64),
 }
 
-impl PopEffect {
-    pub fn to_kind(self) -> EffectKind {
-        match self {
-            PopEffect::Birthrate(v) => EffectKind::BirthRate(v),
-            PopEffect::Mortality(target, v) => EffectKind::MortalityRate(target, v),
-            PopEffect::Satisfaction { amount, .. } => EffectKind::Satisfaction(amount),
-            PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
-            PopEffect::SentimentFlat { kind, delta } => EffectKind::SentimentFlat {
-                kind,
-                amount: delta,
-            },
-            PopEffect::SentimentRelative { kind, relative } => {
-                EffectKind::SentimentRelative { kind, relative }
-            }
-            PopEffect::Culture(v) => EffectKind::Culture(v),
-            PopEffect::Research(v) => EffectKind::Research(v),
-            PopEffect::Faith(v) => EffectKind::Faith(v),
-            PopEffect::Authority(v) => EffectKind::Authority(v),
-            PopEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
-        }
-    }
-
-    /// Growth arms left for growth phase.
-    pub fn is_growth(self) -> bool {
-        matches!(self, PopEffect::Birthrate(..) | PopEffect::Mortality(..))
-    }
-
-    /// Goods paid out at decay.
-    pub fn is_bonus_good(self) -> bool {
-        matches!(self, PopEffect::BonusGood { .. })
-    }
-
-    /// True for culture / research / faith / authority / legitimacy arms.
-    pub fn is_player_resource(self) -> bool {
-        matches!(
-            self,
-            PopEffect::Culture(_)
-                | PopEffect::Research(_)
-                | PopEffect::Faith(_)
-                | PopEffect::Authority(_)
-                | PopEffect::Legitimacy(_)
-        )
-    }
-}
-
-impl From<PopEffect> for EffectKind {
-    fn from(value: PopEffect) -> Self {
-        value.to_kind()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Demographic effects (structural household mods)
 // ---------------------------------------------------------------------------
@@ -390,26 +208,6 @@ pub enum DemographicEffect {
     CultureRate(f64),
 }
 
-impl DemographicEffect {
-    pub fn to_kind(self) -> EffectKind {
-        match self {
-            DemographicEffect::AdultEfficiency(v) => EffectKind::AdultEfficiency(v),
-            DemographicEffect::ElderEfficiency(v) => EffectKind::ElderEfficiency(v),
-            DemographicEffect::ChildEfficiency(v) => EffectKind::ChildEfficiency(v),
-            DemographicEffect::BirthRate(v) => EffectKind::BirthRate(v),
-            DemographicEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
-            DemographicEffect::ResearchRate(v) => EffectKind::HouseholdResearchRate(v),
-            DemographicEffect::CultureRate(v) => EffectKind::HouseholdCultureRate(v),
-        }
-    }
-}
-
-impl From<DemographicEffect> for EffectKind {
-    fn from(value: DemographicEffect) -> Self {
-        value.to_kind()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Institution effects
 // ---------------------------------------------------------------------------
@@ -426,72 +224,6 @@ pub enum InstitutionEffect {
         rate: f64,
         scope: EffectScope,
     },
-}
-
-impl InstitutionEffect {
-    pub fn member_birthrate(rate: f64) -> Self {
-        Self::BirthRate {
-            rate,
-            scope: EffectScope::Members,
-        }
-    }
-
-    /// Member mortality on adults (legacy default; matches prior adult-only push).
-    pub fn member_mortality(rate: f64) -> Self {
-        Self::MortalityRate {
-            target: HouseholdTarget::ADULT,
-            rate,
-            scope: EffectScope::Members,
-        }
-    }
-
-    pub fn member_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
-        Self::MortalityRate {
-            target,
-            rate,
-            scope: EffectScope::Members,
-        }
-    }
-
-    pub fn realm_birthrate(rate: f64) -> Self {
-        Self::BirthRate {
-            rate,
-            scope: EffectScope::OwnerRealm,
-        }
-    }
-
-    /// Realm mortality on adults (legacy default; matches prior adult-only push).
-    pub fn realm_mortality(rate: f64) -> Self {
-        Self::MortalityRate {
-            target: HouseholdTarget::ADULT,
-            rate,
-            scope: EffectScope::OwnerRealm,
-        }
-    }
-
-    pub fn realm_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
-        Self::MortalityRate {
-            target,
-            rate,
-            scope: EffectScope::OwnerRealm,
-        }
-    }
-
-    pub fn to_kind(self) -> EffectKind {
-        match self {
-            InstitutionEffect::BirthRate { rate, .. } => EffectKind::BirthRate(rate),
-            InstitutionEffect::MortalityRate { target, rate, .. } => {
-                EffectKind::MortalityRate(target, rate)
-            }
-        }
-    }
-
-    pub fn scope(self) -> EffectScope {
-        match self {
-            InstitutionEffect::BirthRate { scope, .. }
-            | InstitutionEffect::MortalityRate { scope, .. } => scope,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -518,33 +250,11 @@ pub enum ProcessEffect {
 }
 
 impl ProcessEffect {
-    pub fn to_kind(self) -> EffectKind {
-        match self {
-            ProcessEffect::Research(v) => EffectKind::Research(v),
-            ProcessEffect::Culture(v) => EffectKind::Culture(v),
-            ProcessEffect::Faith(v) => EffectKind::Faith(v),
-            ProcessEffect::Authority(v) => EffectKind::Authority(v),
-            ProcessEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
-            ProcessEffect::BirthRate(v) => EffectKind::BirthRate(v),
-            ProcessEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
-        }
-    }
-
-    /// Scales the effect by the given multiplier, returning a new effect.
-    pub fn scale(self, multiplier: f64) -> Self {
-        match self {
-            ProcessEffect::Research(v) => ProcessEffect::Research(v * multiplier),
-            ProcessEffect::Culture(v) => ProcessEffect::Culture(v * multiplier),
-            ProcessEffect::Faith(v) => ProcessEffect::Faith(v * multiplier),
-            ProcessEffect::Authority(v) => ProcessEffect::Authority(v * multiplier),
-            ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * multiplier),
-            ProcessEffect::BirthRate(v) => ProcessEffect::BirthRate(v * multiplier),
-            ProcessEffect::MortalityRate(target, v) => {
-                ProcessEffect::MortalityRate(target, v * multiplier)
-            }
-        }
-    }
-
+    /// # Add
+    ///
+    /// Adds `other` onto this effect when they are the same arm.
+    ///
+    /// Mortality adds only when both targets match. A different arm returns `None`.
     pub fn add(&self, other: &ProcessEffect) -> Option<Self> {
         match (self, other) {
             (ProcessEffect::Research(v1), ProcessEffect::Research(v2)) => {
@@ -573,10 +283,369 @@ impl ProcessEffect {
             _ => None,
         }
     }
+
+    /// # To Kind
+    ///
+    /// The catalog arm for this yield. The mortality target is kept.
+    pub fn to_kind(self) -> EffectKind {
+        match self {
+            ProcessEffect::Research(v) => EffectKind::Research(v),
+            ProcessEffect::Culture(v) => EffectKind::Culture(v),
+            ProcessEffect::Faith(v) => EffectKind::Faith(v),
+            ProcessEffect::Authority(v) => EffectKind::Authority(v),
+            ProcessEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
+            ProcessEffect::BirthRate(v) => EffectKind::BirthRate(v),
+            ProcessEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
+        }
+    }
+
+    /// # Scale
+    ///
+    /// Scales the effect by the given multiplier, returning a new effect.
+    pub fn scale(self, multiplier: f64) -> Self {
+        match self {
+            ProcessEffect::Research(v) => ProcessEffect::Research(v * multiplier),
+            ProcessEffect::Culture(v) => ProcessEffect::Culture(v * multiplier),
+            ProcessEffect::Faith(v) => ProcessEffect::Faith(v * multiplier),
+            ProcessEffect::Authority(v) => ProcessEffect::Authority(v * multiplier),
+            ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * multiplier),
+            ProcessEffect::BirthRate(v) => ProcessEffect::BirthRate(v * multiplier),
+            ProcessEffect::MortalityRate(target, v) => {
+                ProcessEffect::MortalityRate(target, v * multiplier)
+            }
+        }
+    }
 }
 
 impl From<ProcessEffect> for EffectKind {
+    /// # From
+    ///
+    /// [`ProcessEffect::to_kind`].
     fn from(value: ProcessEffect) -> Self {
         value.to_kind()
+    }
+}
+
+impl DesireEffect {
+    /// # To Kind
+    ///
+    /// Catalog kind (ignores bonus/malus; use [`Self::is_bonus`] for that).
+    pub fn to_kind(self) -> EffectKind {
+        match self {
+            DesireEffect::Mortality(target, v, _) => EffectKind::MortalityRate(target, v),
+            DesireEffect::Birthrate(v, _) => EffectKind::BirthRate(v),
+            DesireEffect::BonusGood(good, amount, _) => EffectKind::BonusGood { good, amount },
+            DesireEffect::Satisfaction(amount, _) => EffectKind::Satisfaction(amount),
+            DesireEffect::SentimentFlat(kind, amount, _) => {
+                EffectKind::SentimentFlat { kind, amount }
+            }
+            DesireEffect::SentimentRelative(kind, relative, _) => {
+                EffectKind::SentimentRelative { kind, relative }
+            }
+            DesireEffect::Culture(v, _) => EffectKind::Culture(v),
+            DesireEffect::Research(v, _) => EffectKind::Research(v),
+            DesireEffect::Faith(v, _) => EffectKind::Faith(v),
+            DesireEffect::Authority(v, _) => EffectKind::Authority(v),
+            DesireEffect::Legitimacy(v, _) => EffectKind::Legitimacy(v),
+        }
+    }
+
+    /// # Is Bonus
+    ///
+    /// True if this effect scales with satisfaction (bonus), false if with lack (malus).
+    pub fn is_bonus(self) -> bool {
+        match self {
+            DesireEffect::Mortality(_, _, b)
+            | DesireEffect::Birthrate(_, b)
+            | DesireEffect::BonusGood(_, _, b)
+            | DesireEffect::Satisfaction(_, b)
+            | DesireEffect::SentimentFlat(_, _, b)
+            | DesireEffect::SentimentRelative(_, _, b)
+            | DesireEffect::Culture(_, b)
+            | DesireEffect::Research(_, b)
+            | DesireEffect::Faith(_, b)
+            | DesireEffect::Authority(_, b)
+            | DesireEffect::Legitimacy(_, b) => b,
+        }
+    }
+
+    /// # Signed Strength
+    ///
+    /// Magnitude after applying satisfaction in `[0, 1]`.
+    ///
+    /// Bonus → `+rate * sat`; malus → `-rate * (1 - sat)`.
+    pub fn signed_strength(self, sat01: f64) -> f64 {
+        self.signed_strength_raw(sat01.clamp(0.0, 1.0))
+    }
+
+    /// # Signed Strength Raw
+    ///
+    /// Like [`Self::signed_strength`], but `sat` is not clamped to 1.
+    ///
+    /// Floor at 0. Malus uses `max(0, 1 - sat)` so luxury oversat does not
+    /// invert the malus. Use this for luxury player-resource harvest; keep
+    /// [`Self::signed_strength`] for growth / sentiment / common.
+    pub fn signed_strength_raw(self, sat: f64) -> f64 {
+        debug_assert!(sat.is_finite(), "satisfaction must be finite");
+        let sat = sat.max(0.0);
+        let lack = (1.0 - sat).max(0.0);
+        let rate = match self {
+            DesireEffect::Mortality(_, v, _) | DesireEffect::Birthrate(v, _) => v,
+            DesireEffect::BonusGood(_, amount, _) => amount,
+            DesireEffect::Satisfaction(amount, _) => amount,
+            DesireEffect::SentimentFlat(_, amount, _) => amount,
+            DesireEffect::SentimentRelative(_, relative, _) => relative,
+            DesireEffect::Culture(v, _)
+            | DesireEffect::Research(v, _)
+            | DesireEffect::Faith(v, _)
+            | DesireEffect::Authority(v, _)
+            | DesireEffect::Legitimacy(v, _) => v,
+        };
+        if self.is_bonus() {
+            rate * sat
+        } else {
+            -rate * lack
+        }
+    }
+
+    /// # Is Player Resource
+    ///
+    /// True for culture / research / faith / authority / legitimacy arms.
+    pub fn is_player_resource(self) -> bool {
+        matches!(
+            self,
+            DesireEffect::Culture(..)
+                | DesireEffect::Research(..)
+                | DesireEffect::Faith(..)
+                | DesireEffect::Authority(..)
+                | DesireEffect::Legitimacy(..)
+        )
+    }
+
+    /// # Is Growth
+    ///
+    /// Growth arms left for growth phase.
+    pub fn is_growth(self) -> bool {
+        matches!(
+            self,
+            DesireEffect::Birthrate(..) | DesireEffect::Mortality(..)
+        )
+    }
+
+    /// # Is Bonus Good
+    ///
+    /// Goods paid out at decay.
+    pub fn is_bonus_good(self) -> bool {
+        matches!(self, DesireEffect::BonusGood(..))
+    }
+
+    /// # Is Additive
+    ///
+    /// Additive yields that grow with pop size (player resources and bonus goods).
+    /// Rates (birth/mortality) and percent-like arms (sentiment, satisfaction) do not.
+    pub fn is_additive(self) -> bool {
+        self.is_player_resource() || self.is_bonus_good()
+    }
+
+    /// # Scale By
+    ///
+    /// Scales our Desire Effect by a given scalar, returning the new version.
+    pub(crate) fn scale_by(&self, effect_scale: f64) -> Self {
+        match self {
+            DesireEffect::Mortality(household_target, v, b) => {
+                DesireEffect::Mortality(*household_target, v * effect_scale, *b)
+            }
+            DesireEffect::Birthrate(v, b) => DesireEffect::Birthrate(v * effect_scale, *b),
+            DesireEffect::BonusGood(g, v, b) => DesireEffect::BonusGood(*g, v * effect_scale, *b),
+            DesireEffect::Satisfaction(v, b) => DesireEffect::Satisfaction(v * effect_scale, *b),
+            DesireEffect::SentimentFlat(sentiment_kind, v, b) => {
+                DesireEffect::SentimentFlat(*sentiment_kind, v * effect_scale, *b)
+            }
+            DesireEffect::SentimentRelative(sentiment_kind, v, b) => {
+                DesireEffect::SentimentRelative(*sentiment_kind, v * effect_scale, *b)
+            }
+            DesireEffect::Culture(v, b) => DesireEffect::Culture(v * effect_scale, *b),
+            DesireEffect::Research(v, b) => DesireEffect::Research(v * effect_scale, *b),
+            DesireEffect::Faith(v, b) => DesireEffect::Faith(v * effect_scale, *b),
+            DesireEffect::Authority(v, b) => DesireEffect::Authority(v * effect_scale, *b),
+            DesireEffect::Legitimacy(v, b) => DesireEffect::Legitimacy(v * effect_scale, *b),
+        }
+    }
+}
+
+impl PopEffect {
+    /// # To Kind
+    ///
+    /// The catalog arm. Satisfaction drops its tier. Sentiment keeps the axis.
+    pub fn to_kind(self) -> EffectKind {
+        match self {
+            PopEffect::Birthrate(v) => EffectKind::BirthRate(v),
+            PopEffect::Mortality(target, v) => EffectKind::MortalityRate(target, v),
+            PopEffect::Satisfaction { amount, .. } => EffectKind::Satisfaction(amount),
+            PopEffect::BonusGood { good, amount } => EffectKind::BonusGood { good, amount },
+            PopEffect::SentimentFlat { kind, delta } => EffectKind::SentimentFlat {
+                kind,
+                amount: delta,
+            },
+            PopEffect::SentimentRelative { kind, relative } => {
+                EffectKind::SentimentRelative { kind, relative }
+            }
+            PopEffect::Culture(v) => EffectKind::Culture(v),
+            PopEffect::Research(v) => EffectKind::Research(v),
+            PopEffect::Faith(v) => EffectKind::Faith(v),
+            PopEffect::Authority(v) => EffectKind::Authority(v),
+            PopEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
+        }
+    }
+
+    /// # Is Growth
+    ///
+    /// Growth arms left for growth phase.
+    pub fn is_growth(self) -> bool {
+        matches!(self, PopEffect::Birthrate(..) | PopEffect::Mortality(..))
+    }
+
+    /// # Is Bonus Good
+    ///
+    /// Goods paid out at decay.
+    pub fn is_bonus_good(self) -> bool {
+        matches!(self, PopEffect::BonusGood { .. })
+    }
+
+    /// # Is Player Resource
+    ///
+    /// True for culture / research / faith / authority / legitimacy arms.
+    pub fn is_player_resource(self) -> bool {
+        matches!(
+            self,
+            PopEffect::Culture(_)
+                | PopEffect::Research(_)
+                | PopEffect::Faith(_)
+                | PopEffect::Authority(_)
+                | PopEffect::Legitimacy(_)
+        )
+    }
+}
+
+impl From<PopEffect> for EffectKind {
+    /// # From
+    ///
+    /// [`PopEffect::to_kind`].
+    fn from(value: PopEffect) -> Self {
+        value.to_kind()
+    }
+}
+
+impl DemographicEffect {
+    /// # To Kind
+    ///
+    /// The catalog arm. Research and culture rates use the household catalog names.
+    pub fn to_kind(self) -> EffectKind {
+        match self {
+            DemographicEffect::AdultEfficiency(v) => EffectKind::AdultEfficiency(v),
+            DemographicEffect::ElderEfficiency(v) => EffectKind::ElderEfficiency(v),
+            DemographicEffect::ChildEfficiency(v) => EffectKind::ChildEfficiency(v),
+            DemographicEffect::BirthRate(v) => EffectKind::BirthRate(v),
+            DemographicEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
+            DemographicEffect::ResearchRate(v) => EffectKind::HouseholdResearchRate(v),
+            DemographicEffect::CultureRate(v) => EffectKind::HouseholdCultureRate(v),
+        }
+    }
+}
+
+impl From<DemographicEffect> for EffectKind {
+    /// # From
+    ///
+    /// [`DemographicEffect::to_kind`].
+    fn from(value: DemographicEffect) -> Self {
+        value.to_kind()
+    }
+}
+
+impl InstitutionEffect {
+    /// # Member Birthrate
+    ///
+    /// A birth-rate delta on the institution's members.
+    pub fn member_birthrate(rate: f64) -> Self {
+        Self::BirthRate {
+            rate,
+            scope: EffectScope::Members,
+        }
+    }
+
+    /// # Member Mortality
+    ///
+    /// Member mortality on adults.
+    pub fn member_mortality(rate: f64) -> Self {
+        Self::MortalityRate {
+            target: HouseholdTarget::ADULT,
+            rate,
+            scope: EffectScope::Members,
+        }
+    }
+
+    /// # Member Mortality On
+    ///
+    /// Member mortality on `target`.
+    pub fn member_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
+        Self::MortalityRate {
+            target,
+            rate,
+            scope: EffectScope::Members,
+        }
+    }
+
+    /// # Realm Birthrate
+    ///
+    /// A birth-rate delta on the owning nation's realm.
+    pub fn realm_birthrate(rate: f64) -> Self {
+        Self::BirthRate {
+            rate,
+            scope: EffectScope::OwnerRealm,
+        }
+    }
+
+    /// # Realm Mortality
+    ///
+    /// Realm mortality on adults.
+    pub fn realm_mortality(rate: f64) -> Self {
+        Self::MortalityRate {
+            target: HouseholdTarget::ADULT,
+            rate,
+            scope: EffectScope::OwnerRealm,
+        }
+    }
+
+    /// # Realm Mortality On
+    ///
+    /// Realm mortality on `target`.
+    pub fn realm_mortality_on(target: HouseholdTarget, rate: f64) -> Self {
+        Self::MortalityRate {
+            target,
+            rate,
+            scope: EffectScope::OwnerRealm,
+        }
+    }
+
+    /// # To Kind
+    ///
+    /// The catalog arm. Scope is dropped.
+    pub fn to_kind(self) -> EffectKind {
+        match self {
+            InstitutionEffect::BirthRate { rate, .. } => EffectKind::BirthRate(rate),
+            InstitutionEffect::MortalityRate { target, rate, .. } => {
+                EffectKind::MortalityRate(target, rate)
+            }
+        }
+    }
+
+    /// # Scope
+    ///
+    /// Who this effect applies to.
+    pub fn scope(self) -> EffectScope {
+        match self {
+            InstitutionEffect::BirthRate { scope, .. }
+            | InstitutionEffect::MortalityRate { scope, .. } => scope,
+        }
     }
 }

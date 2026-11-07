@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::path::Path;
+
+use serde::Deserialize;
 
 use crate::game::factuals::Factuals;
-use crate::game::good::TIME;
+use crate::game::good::{Good, TIME};
 use crate::game::household::HouseholdTarget;
 
 pub use crate::game::effects::ProcessEffect;
@@ -41,6 +45,7 @@ pub struct Process {
     ///
     /// Defaults to 1.0. Below 1.0 the process is subsistence.
     pub complexity: f64,
+    pub process_tags: Vec<ProcessTag>,
 }
 
 impl Process {
@@ -57,6 +62,7 @@ impl Process {
             effects: Vec::new(),
             tech_source,
             complexity: 1.0,
+            process_tags: Vec::new(),
         }
     }
 
@@ -778,6 +784,339 @@ impl ProcessOutput {
             good,
             amount,
             fixed,
+        }
+    }
+}
+
+/// # Process Tag
+/// 
+/// The tags available for a process. Not excluvise with each other, but
+/// not all should be mixed.
+#[derive(Debug, Clone)]
+pub enum ProcessTag {
+    /// Internal processes are 'helper' processes, which everyone has access to and can 
+    /// be used for transformations that have some complexity to them, like Transportation use.
+    Internal,
+    /// Process is instant, allowing it to be inserted and used in random places.
+    Instant,
+    /// Agricultural processes are used for farming and related activities.
+    /// Typically requires land, seed (seed grain) or capital (orchards), and correct climate
+    /// alongside other inputs.
+    Agricultural,
+    /// Extraction processes are used for gathering raw materials from the environment.
+    Extraction,
+    /// Craft processes are simple production processes that anyone could do as a cottage industry.
+    Craft,
+    /// Industrial processes are complex production methods that typically require heavy machinery, 
+    /// skilled labor, and significant capital investment, or advanced technology.
+    Industrial,
+    /// Maintenance processes are used for repairing and upkeep of equipment and infrastructure.
+    /// 
+    /// These are allowed to consume used goods and refresh them to keep them intact.
+    Maintenance,
+    /// Labor processes are used for transforming time and skills into labors for more complex
+    /// processes.
+    Labor,
+}
+
+/// Failed to load processes from a world-data file.
+#[derive(Debug)]
+pub enum ProcessLoadError {
+    Io(std::io::Error),
+    Toml(toml::de::Error),
+    Duplicate(usize),
+    DuplicateInput { process: usize, good: usize },
+    Invalid(String),
+}
+
+impl fmt::Display for ProcessLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "read processes: {err}"),
+            Self::Toml(err) => write!(f, "parse processes: {err}"),
+            Self::Duplicate(id) => write!(f, "duplicate process id {id} in world data"),
+            Self::DuplicateInput { process, good } => write!(f, "process {process} repeats input good {good}"),
+            Self::Invalid(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ProcessLoadError {}
+
+/// TOML document that carries a `processes` array. Other tables are ignored.
+#[derive(Debug, Deserialize)]
+struct ProcessesFile {
+    #[serde(default)]
+    processes: Vec<ProcessFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessFile {
+    id: usize,
+    name: String,
+    #[serde(default)]
+    tech_source: usize,
+    #[serde(default)]
+    inputs: Vec<ProcessInputFile>,
+    #[serde(default)]
+    outputs: Vec<ProcessOutputFile>,
+    #[serde(default)]
+    effects: Vec<ProcessEffectFile>,
+    /// Management overhead. Omitted world data is 1.0. Below 1.0 is subsistence.
+    #[serde(default = "default_process_complexity")]
+    complexity: f64,
+}
+
+/// # Default Process Complexity
+///
+/// World data that omits complexity loads as 1.0, which is not subsistence.
+fn default_process_complexity() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessInputFile {
+    good: usize,
+    amount: f64,
+    #[serde(default)]
+    fixed: bool,
+    #[serde(default, rename = "type")]
+    kind: InputTypeFile,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    optional_effects: Vec<InputEffectFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessOutputFile {
+    good: usize,
+    amount: f64,
+    #[serde(default)]
+    fixed: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputTypeFile {
+    #[default]
+    Destroyed,
+    Consumed,
+    Capital,
+    Factor,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputEffectFile {
+    Throughput(f64),
+    Input(f64),
+    Output(f64),
+    ExtraOutput { good: usize, amount: f64 },
+    BirthRate(f64),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProcessEffectFile {
+    Research(f64),
+    Culture(f64),
+    Faith(f64),
+    Authority(f64),
+    Legitimacy(f64),
+    BirthRate(f64),
+}
+
+impl Process {
+    /// # Load From Path
+    ///
+    /// `path` is a TOML file. `goods` are the goods already loaded, keyed by id.
+    ///
+    /// Reads the file and passes the text to [`Self::load_from_toml`].
+    /// Returns the processes keyed by id, or the first error.
+    pub fn load_from_path(
+        path: impl AsRef<Path>,
+        goods: &HashMap<usize, Good>,
+    ) -> Result<HashMap<usize, Process>, ProcessLoadError> {
+        let text = std::fs::read_to_string(path.as_ref()).map_err(ProcessLoadError::Io)?;
+        Self::load_from_toml(&text, goods)
+    }
+
+    /// # Load From Toml
+    ///
+    /// `text` is a TOML document. `goods` are the goods already loaded, keyed by id.
+    /// The `processes` array is read. Other tables stay for their own loaders.
+    ///
+    /// An empty `goods` map does not check good ids, so a process document can
+    /// load before any goods. A non-empty map rejects a good id that is missing.
+    /// Complexity and amounts must be finite and greater than 0.
+    ///
+    /// Returns the processes keyed by id, or the first error.
+    pub fn load_from_toml(
+        text: &str,
+        goods: &HashMap<usize, Good>,
+    ) -> Result<HashMap<usize, Process>, ProcessLoadError> {
+        let file: ProcessesFile = toml::from_str(text).map_err(ProcessLoadError::Toml)?;
+        let mut processes = HashMap::new();
+        for row in file.processes {
+            if processes.contains_key(&row.id) {
+                return Err(ProcessLoadError::Duplicate(row.id));
+            }
+            let process = row.into_process(goods)?;
+            processes.insert(process.id, process);
+        }
+        Ok(processes)
+    }
+}
+
+impl ProcessFile {
+    fn into_process(self, goods: &HashMap<usize, Good>) -> Result<Process, ProcessLoadError> {
+        let id = self.id;
+        check_process_complexity(id, self.complexity)?;
+        let mut seen_inputs = HashSet::new();
+        let mut process =
+            Process::new(id, self.name, self.tech_source).with_complexity(self.complexity);
+        for input in self.inputs {
+            if !seen_inputs.insert(input.good) {
+                return Err(ProcessLoadError::DuplicateInput {
+                    process: id,
+                    good: input.good,
+                });
+            }
+            process = process.with_input(input.into_input(id, goods)?);
+        }
+        for output in self.outputs {
+            process = process.with_output(output.into_output(id, goods)?);
+        }
+        for effect in self.effects {
+            process = process.with_effect(effect.into());
+        }
+        Ok(process)
+    }
+}
+
+impl ProcessInputFile {
+    fn into_input(
+        self,
+        process: usize,
+        goods: &HashMap<usize, Good>,
+    ) -> Result<ProcessInput, ProcessLoadError> {
+        check_process_amount(process, "input", self.amount)?;
+        check_process_good(process, self.good, goods)?;
+        let optional = self.optional || !self.optional_effects.is_empty();
+        let mut input = ProcessInput::new(
+            self.good,
+            self.amount,
+            self.fixed,
+            self.kind.into(),
+            optional,
+        );
+        for effect in self.optional_effects {
+            input = input.with_optional(effect.into());
+        }
+        Ok(input)
+    }
+}
+
+impl ProcessOutputFile {
+    fn into_output(
+        self,
+        process: usize,
+        goods: &HashMap<usize, Good>,
+    ) -> Result<ProcessOutput, ProcessLoadError> {
+        check_process_amount(process, "output", self.amount)?;
+        check_process_good(process, self.good, goods)?;
+        Ok(ProcessOutput::new(self.good, self.amount, self.fixed))
+    }
+}
+
+/// # Check Process Complexity
+///
+/// `process` is the process id. `complexity` is the value from world data.
+///
+/// Accepts a finite number greater than 0. Anything else is an invalid process.
+fn check_process_complexity(process: usize, complexity: f64) -> Result<(), ProcessLoadError> {
+    if complexity > 0.0 && complexity.is_finite() {
+        Ok(())
+    } else {
+        Err(ProcessLoadError::Invalid(format!(
+            "process {process} complexity must be finite and > 0"
+        )))
+    }
+}
+
+/// # Check Process Amount
+///
+/// `process` is the process id. `kind` is `"input"` or `"output"`. `amount`
+/// is the value from world data.
+///
+/// Accepts a finite number greater than 0. Anything else is an invalid process.
+fn check_process_amount(
+    process: usize,
+    kind: &str,
+    amount: f64,
+) -> Result<(), ProcessLoadError> {
+    if amount > 0.0 && amount.is_finite() {
+        Ok(())
+    } else {
+        Err(ProcessLoadError::Invalid(format!(
+            "process {process} {kind} amount must be finite and > 0"
+        )))
+    }
+}
+
+/// # Check Process Good
+///
+/// `process` is the process id. `good` is the good id named by that row.
+/// `goods` are the goods already loaded.
+///
+/// An empty `goods` map skips the check. A non-empty map requires `good`.
+fn check_process_good(
+    process: usize,
+    good: usize,
+    goods: &HashMap<usize, Good>,
+) -> Result<(), ProcessLoadError> {
+    if goods.is_empty() || goods.contains_key(&good) {
+        Ok(())
+    } else {
+        Err(ProcessLoadError::Invalid(format!(
+            "process {process} references missing good {good}"
+        )))
+    }
+}
+
+impl From<InputTypeFile> for InputType {
+    fn from(kind: InputTypeFile) -> Self {
+        match kind {
+            InputTypeFile::Destroyed => InputType::Destroyed,
+            InputTypeFile::Consumed => InputType::Consumed,
+            InputTypeFile::Capital => InputType::Capital,
+            InputTypeFile::Factor => InputType::Factor,
+        }
+    }
+}
+
+impl From<InputEffectFile> for InputEffect {
+    fn from(effect: InputEffectFile) -> Self {
+        match effect {
+            InputEffectFile::Throughput(v) => InputEffect::Throughput(v),
+            InputEffectFile::Input(v) => InputEffect::Input(v),
+            InputEffectFile::Output(v) => InputEffect::Output(v),
+            InputEffectFile::ExtraOutput { good, amount } => InputEffect::ExtraOutput(good, amount),
+            InputEffectFile::BirthRate(v) => InputEffect::BirthRate(v),
+        }
+    }
+}
+
+impl From<ProcessEffectFile> for ProcessEffect {
+    fn from(effect: ProcessEffectFile) -> Self {
+        match effect {
+            ProcessEffectFile::Research(v) => ProcessEffect::Research(v),
+            ProcessEffectFile::Culture(v) => ProcessEffect::Culture(v),
+            ProcessEffectFile::Faith(v) => ProcessEffect::Faith(v),
+            ProcessEffectFile::Authority(v) => ProcessEffect::Authority(v),
+            ProcessEffectFile::Legitimacy(v) => ProcessEffect::Legitimacy(v),
+            ProcessEffectFile::BirthRate(v) => ProcessEffect::BirthRate(v),
         }
     }
 }

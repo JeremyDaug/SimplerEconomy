@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 itertools = "0.14.0"
-rayon = "1.10"
 hexx = "0.24.0"
 bitflags = "2.13.1"
 serde = { version = "1", features = ["derive"] }

@@ -2,7 +2,7 @@
 ///
 /// A common enum which stores values for any part which can act in our system.
 ///
-/// Pops, Firms, Institutions, and States (Players).
+/// Pops, Firms, Institutions, and Nations (Players).
 ///
 /// All work the same, the tag, and the ID of the actor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -10,5 +10,5 @@ pub enum Actor {
     Pop(usize),
     Firm(usize),
     Institution(usize),
-    State(usize),
+    Nation(usize),
 }

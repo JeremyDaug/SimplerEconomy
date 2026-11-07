@@ -8,7 +8,7 @@ Buildings and upkeep are goods, not a separate system. They show up in whatever 
 
 ## 0.1.0 Pop Tester Alpha (current)
 
-Focus: pops, jobs, goods, processes, and one market. The cut ends when there is no more work that can be done with only pops and jobs. `examples/pop_tester` already runs one day. Cottage work, satisfy, consume, `match_deals`, and the night card are in. `docs/handoff/pops.md` is the status note.
+Focus: pops, jobs, goods, processes, and one market. The cut ends when there is no more work that can be done with only pops and jobs. `examples/pop_tester` already runs one day. Cottage work, satisfy, consume, `match_deals`, and the night card are in. `docs/handoff/current.md` is the status note.
 
 The day stays on the tester and `Market::market_day`. Do not wire `PlayState` here.
 
@@ -39,38 +39,23 @@ Enough wages, owners, and firm strategy to scaffold and test. Not the full strat
 
 Shells already in tree: `Firm`, `Owners`, `Workforce` (hours, labor, wage basket, profit share; morning settlement is not written), `Contract` (empty), `FirmOrganization` (empty). `reserve_for_day`, `produce`, and `plan` are empty. A firm seller still only checks `seller_can_accept`.
 
-- [ ] A firm tester, same shape as `pop_tester`: one market, firms that produce and trade, printed meetings.
-- [ ] Firm reserve, produce, and plan.
-- [ ] Firm propose / evaluate, not only the stock check.
-- [ ] Wage settlement and owner profit, enough to test. Morning settlement is not written.
-- [ ] One or a few firm strategies, as scaffolding. Not every strategy in the Ideas list.
-- [ ] First parts of decentralized innovation, on firms. Not a beaker pile. `Technology.cost` still reads like one. Do not finish the tree here. States and institutions finish it in 0.3. Leave `TechTree` empty until this cut is the work.
-- [ ] Sentiment, migration, and contracts may start. They stay secondary. They do not block the firm tester. Migration is not finished until 0.4.
+n
 
 ## 0.3.0 Full Market Alpha
 
-Focus: environmental effects, plots and land, terrain, dynamic friction, institutions, and a player / state (AI). One market. This is the first cut that uses `PlayState`.
+Focus: environmental effects, plots and land, terrain, dynamic friction, institutions, and a player / nation (AI). One market. This is the first cut that uses `PlayState`.
 
-`Map`, `Region`, `Tile` (claims, occupier), `Plot` (terrain enum only), and `Institution` (kind, markets, firms, level, loyalty, passive effects) are already in the tree. Institution property, ability trees, and mandate AI are marked later on the type. `Players::decay_goods` and `State::record_keeping` are `todo`.
+`Map`, `Region`, `Tile` (claims, occupier), `Plot` (terrain enum only), and `Institution` (kind, markets, firms, level, loyalty, passive effects) are already in the tree. Institution property, ability trees, and mandate AI are marked later on the type. `Players::decay_goods` and `Nation::record_keeping` are `todo`.
 
 Land, as chosen: a tile is made of plots, and a plot is subdivided into units of land, which then get used. Finer detail is in the vault and may change when this cut is tested. Do not open the vault unless a note is named.
 
 Dynamic friction, as chosen: a market-size scalar multiplies bulk transport cost by the size of the market, so a market does not grow for free. This cut is where a growing market can first be simulated, because plots and land arrive here.
 
-- [ ] `PlayState` becomes the day for this tester. Call the market day once. Do not also grow those pops inside `market_day`.
-- [ ] Environment refresh and random effects.
-- [ ] Plots on tiles, and land units on plots. The terrain enum is not that model.
-- [ ] The market-size scalar on bulk transport cost.
-- [ ] Stratum desires and stratification. The type is already in the tree. Not before this cut.
-- [ ] Tech finished here, once states and institutions can direct it. Still not a beaker pile.
-- [ ] Sentiment, migration, and contracts become meaningful. Migration is still not finished.
-- [ ] Institution day that does not panic. The AI modifies institutions. It does not need the full mandate tree on day one.
-- [ ] State AI for internal market management and for modifying institutions. `phase_player_actions` still says unit and map actions. That comment is ahead of this cut. Units are 0.4.
-- [ ] Game save and load starts. It finishes in 0.4. Simulation data loading stays as-needed.
+
 
 ## 0.4.0 Multi-Market Alpha
 
-Focus: more than one market. Inter-market firms, institutions, and states. Trade, travel, and units on the map.
+Focus: more than one market. Inter-market firms, institutions, and nations. Trade, travel, and units on the map.
 
 `phase_inter_market_trade` is `todo`. Institution `markets` is already a list. `Unit` is an empty shell. Leave it empty until this cut. It stays thin until a client can show it.
 
@@ -78,7 +63,7 @@ Focus: more than one market. Inter-market firms, institutions, and states. Trade
 - [ ] Inter-market trade as concrete routes: specific goods, costs, and distance. Not a market above markets.
 - [ ] Travel between markets.
 - [ ] A thin `Unit`. Map actors, including military. Behavior stays thin. Do not build a full unit game here.
-- [ ] Firms, institutions, and states that act in more than one market.
+- [ ] Firms, institutions, and nations that act in more than one market.
 - [ ] Migration finished, including inter-market moves.
 - [ ] Game save and load finished.
 

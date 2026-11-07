@@ -9,8 +9,6 @@ pub enum DemographicSource {
     Species(usize),
     /// A culture.
     Culture(usize),
-    /// A stratum of a culture. This is the economic subgroup, in place of a class.
-    Stratum(usize),
     /// A religion.
     Religion(usize),
 }
@@ -21,19 +19,18 @@ impl DemographicSource {
     /// The demographic id this source names.
     pub fn id(self) -> usize {
         match self {
-            Self::Species(id) | Self::Culture(id) | Self::Stratum(id) | Self::Religion(id) => id,
+            Self::Species(id) | Self::Culture(id) | Self::Religion(id) => id,
         }
     }
 
     /// # Order Rank
     ///
-    /// Sort key for desire ordering: Species, then Culture, then Stratum, then Religion.
+    /// Sort key for desire ordering: Species, then Culture, then Religion.
     pub fn order_rank(self) -> u8 {
         match self {
             Self::Species(_) => 0,
             Self::Culture(_) => 1,
-            Self::Stratum(_) => 2,
-            Self::Religion(_) => 3,
+            Self::Religion(_) => 2,
         }
     }
 }

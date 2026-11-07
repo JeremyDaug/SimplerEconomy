@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::game::{actors::Actors, factuals::Factuals, map::Map, market::Market, players::Players};
+use crate::game::{
+    actors::Actors, factuals::Factuals, map::Map, market::Market, players::Players,
+};
 
 /// # Map Data
 ///
@@ -14,13 +16,45 @@ pub struct MapData {
 }
 
 impl MapData {
-    pub(crate) fn decay_goods(&mut self, factuals: &Factuals) {
+    /// # Market
+    ///
+    /// The market stored under `id`.
+    ///
+    /// Panics if that market is missing.
+    pub fn market(&self, id: usize) -> &Market {
+        self.markets
+            .get(&id)
+            .unwrap_or_else(|| panic!("market {id} is not in MapData"))
+    }
+
+    /// # Market Mut
+    ///
+    /// Mutable access to the market stored under `id`.
+    ///
+    /// Panics if that market is missing.
+    pub fn market_mut(&mut self, id: usize) -> &mut Market {
+        self.markets
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("market {id} is not in MapData"))
+    }
+
+    /// # Decay Goods
+    ///
+    /// Decays goods held in markets and on tiles outside a market.
+    ///
+    /// `factuals` supplies the goods. The pass is not written yet.
+    pub fn decay_goods(&mut self, factuals: &Factuals) {
         let _ = (self, factuals);
         todo!("Decay goods in Markets and any tiles not contained in a market.")
     }
 
-    /// Organized / mass migration (migratory firms, institutions, player efforts).
-    /// Cross-market; must run sequentially.
+    /// # Process Organized Migration
+    ///
+    /// Moves migratory firms, institutions, and player efforts across markets.
+    ///
+    /// `actors` are the movers, `players` are the efforts, and `factuals`
+    /// supplies the world. The pass is not written yet. Cross-market work
+    /// must run one market after another.
     pub fn process_organized_migration(
         &mut self,
         actors: &mut Actors,
@@ -31,8 +65,12 @@ impl MapData {
         todo!("Process organized migration efforts across markets")
     }
 
-    /// Personal long-distance migration between markets from the migrant pool.
-    /// Cross-market; must run sequentially.
+    /// # Process Inter Market Migration
+    ///
+    /// Moves people from the migrant pool between markets.
+    ///
+    /// `actors` hold the pops and `factuals` supplies the world. The pass is
+    /// not written yet. Cross-market work must run one market after another.
     pub fn process_inter_market_migration(&mut self, actors: &mut Actors, factuals: &Factuals) {
         let _ = (self, actors, factuals);
         todo!("Process inter-market personal migration")

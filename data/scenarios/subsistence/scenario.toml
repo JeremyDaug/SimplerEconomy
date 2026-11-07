@@ -1,3 +1,0 @@
-# Not loaded. The pop tester reads this folder as separate files:
-# market.toml, pops.toml, and species.toml.
-# cultures.toml, strata.toml, and religions.toml are read when they are present.

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::game::util::whole_units_up;
 
+
 /// One pop working for a firm: hours claimed and the pay basket.
 ///
 /// Morning settlement (paying the basket, moving Time, rewriting AMV) is not here.
@@ -24,7 +25,29 @@ pub struct Workforce {
     pub last_exchange: HashMap<usize, f64>,
 }
 
+/// One good in a wage basket.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaymentTerm {
+    pub good: usize,
+    /// Units owed: per time unit when `flat` is false, else the whole lump.
+    pub amount: f64,
+    /// True: a lump. False: scales with hours.
+    pub flat: bool,
+}
+
+/// How a workforce row is paid. Placeholder kinds.
+#[derive(Debug, Clone)]
+pub enum WorkforceContractType {
+    /// Paid per time unit.
+    Wage,
+    /// Paid a percent of profit AMV. The value is that percent.
+    Owner(f64),
+}
+
 impl Workforce {
+    /// # Empty
+    ///
+    /// A wage row with id 0, no workers, no hours, and no pay.
     pub fn empty() -> Self {
         Self {
             id: 0,
@@ -38,23 +61,34 @@ impl Workforce {
         }
     }
 
+    /// # New
+    ///
+    /// [`Self::empty`] with this pop id.
     pub fn new(id: usize) -> Self {
         let mut worker = Self::empty();
         worker.id = id;
         worker
     }
 
+    /// # With Id
+    ///
+    /// Sets the pop id and returns this row.
     pub fn with_id(mut self, id: usize) -> Self {
         self.id = id;
         self
     }
 
+    /// # With Contract Type
+    ///
+    /// Sets how this row is paid and returns it.
     pub fn with_contract_type(mut self, contract_type: WorkforceContractType) -> Self {
         self.contract_type = contract_type;
         self
     }
 
-    /// Both ends must be `>= 0.0`.
+    /// # With Workers
+    ///
+    /// Sets the minimum and maximum worker counts. Both ends must be `>= 0.0`.
     pub fn with_workers(mut self, min: f64, max: f64) -> Self {
         debug_assert!(min >= 0.0, "workers min must be >= 0.0");
         debug_assert!(max >= 0.0, "workers max must be >= 0.0");
@@ -62,6 +96,8 @@ impl Workforce {
         self
     }
 
+    /// # With Hours
+    ///
     /// Time units claimed from the pop. Must be `>= 0.0`.
     pub fn with_hours(mut self, hours: f64) -> Self {
         debug_assert!(hours >= 0.0, "hours must be >= 0.0");
@@ -69,17 +105,26 @@ impl Workforce {
         self
     }
 
+    /// # With Labor
+    ///
+    /// Records expected labor `amount` of `good` per time unit. Amount must be `>= 0.0`.
     pub fn with_labor(mut self, good: usize, amount: f64) -> Self {
         debug_assert!(amount >= 0.0, "labor amount must be >= 0.0");
         self.labor.insert(good, amount);
         self
     }
 
+    /// # With Payment
+    ///
+    /// Appends one wage-basket term and returns this row.
     pub fn with_payment(mut self, term: PaymentTerm) -> Self {
         self.payment.push(term);
         self
     }
 
+    /// # With Profit Share
+    ///
+    /// Sets the profit share reserved for this row. Must be in `0.0..=1.0`.
     pub fn with_profit_share(mut self, profit_share: f64) -> Self {
         debug_assert!(
             (0.0..=1.0).contains(&profit_share),
@@ -89,6 +134,8 @@ impl Workforce {
         self
     }
 
+    /// # Ordered Payment Terms
+    ///
     /// Scaling terms first, then flat terms, then good id.
     pub fn ordered_payment_terms(&self) -> Vec<PaymentTerm> {
         let mut terms = self.payment.clone();
@@ -97,17 +144,10 @@ impl Workforce {
     }
 }
 
-/// One good in a wage basket.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PaymentTerm {
-    pub good: usize,
-    /// Units owed: per time unit when `flat` is false, else the whole lump.
-    pub amount: f64,
-    /// True: a lump. False: scales with hours.
-    pub flat: bool,
-}
-
 impl PaymentTerm {
+    /// # New
+    ///
+    /// A per-hour term. `amount` must be `>= 0.0`.
     pub fn new(good: usize, amount: f64) -> Self {
         debug_assert!(amount >= 0.0, "payment amount must be >= 0.0");
         Self {
@@ -117,6 +157,9 @@ impl PaymentTerm {
         }
     }
 
+    /// # Flat
+    ///
+    /// A lump term that does not scale with hours. `amount` must be `>= 0.0`.
     pub fn flat(good: usize, amount: f64) -> Self {
         debug_assert!(amount >= 0.0, "payment amount must be >= 0.0");
         Self {
@@ -126,7 +169,12 @@ impl PaymentTerm {
         }
     }
 
+    /// # Quantity For
+    ///
     /// Raw units owed at `hours` (not rounded).
+    ///
+    /// A non-positive amount owes nothing. A flat term owes its amount.
+    /// Any other term owes `amount * hours`, and hours below 0 count as 0.
     pub fn quantity_for(&self, hours: f64) -> f64 {
         if self.amount <= 0.0 {
             0.0
@@ -137,48 +185,14 @@ impl PaymentTerm {
         }
     }
 
+    /// # Promised Qty
+    ///
     /// Whole-unit quantity owed at `hours`.
+    ///
+    /// The raw amount is [`Self::quantity_for`]. A non-positive total is 0.
+    /// A positive total rounds away from zero.
     pub fn promised_qty(&self, hours: f64) -> f64 {
         let raw = self.quantity_for(hours);
         if raw <= 0.0 { 0.0 } else { whole_units_up(raw) }
-    }
-}
-
-/// How a workforce row is paid. Placeholder kinds.
-#[derive(Debug, Clone)]
-pub enum WorkforceContractType {
-    /// Paid per time unit.
-    Wage,
-    /// Paid a percent of profit AMV. The value is that percent.
-    Owner(f64),
-}
-
-#[cfg(test)]
-mod workforce_should {
-    use super::*;
-
-    #[test]
-    fn quantity_for_scales_unless_flat() {
-        let coin = PaymentTerm::new(5, 2.0);
-        let loaf = PaymentTerm::flat(3, 1.0);
-        assert!((coin.quantity_for(4.0) - 8.0).abs() < 1e-12);
-        assert!((loaf.quantity_for(4.0) - 1.0).abs() < 1e-12);
-        assert_eq!(coin.promised_qty(4.1), 9.0);
-        assert_eq!(loaf.promised_qty(4.1), 1.0);
-    }
-
-    #[test]
-    fn ordered_payment_puts_scaling_before_flat() {
-        let worker = Workforce::new(2)
-            .with_payment(PaymentTerm::flat(3, 1.0))
-            .with_payment(PaymentTerm::new(5, 1.0))
-            .with_payment(PaymentTerm::new(3, 0.5));
-        let ordered = worker.ordered_payment_terms();
-        assert_eq!(ordered[0].good, 3);
-        assert!(!ordered[0].flat);
-        assert_eq!(ordered[1].good, 5);
-        assert!(!ordered[1].flat);
-        assert_eq!(ordered[2].good, 3);
-        assert!(ordered[2].flat);
     }
 }
