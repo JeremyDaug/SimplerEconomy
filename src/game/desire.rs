@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::game::config::PopConfig;
 use crate::game::demographic_source::DemographicSource;
 use crate::game::pop::Pop;
 use crate::game::scalingfactor::ScalingFactor;
@@ -26,9 +27,10 @@ pub struct PlatonicDesire {
     ///
     /// This always assumes that 1.0 satisfaction => 1.0 effects.
     pub effect_rate: DesireEffectRate,
-    /// The rate of decay for this desire once satisfied.
-    /// 0.0 means total decay between days, 1.0 would mean none.
-    /// Bounded between [0.0, 1.0), decay likely shouldn't go above 0.8 or so.
+    /// Fraction of satisfaction lost each day.
+    ///
+    /// 0.0 keeps the satisfaction. 1.0 clears it. Same scale as a good's
+    /// decay rate. In `[0.0, 1.0]`.
     pub decay: f64,
     /// What category(s) of goods should go into this desire.
     ///
@@ -153,12 +155,6 @@ pub struct Desire {
     /// The current satisfaction of the desire in units. Does not differentiate goods.
     pub satisfaction: f64,
 
-    /// Satisfaction already reserved from each bucket target toward the open
-    /// level. Parallel to [`Self::target`]. Cleared with satisfaction on the
-    /// morning reset, and when a level is completed so the next luxury level
-    /// can use its caps again.
-    pub target_taken: Vec<f64>,
-
     /// Desires should have a category of good they are restricted to expanding into.
     ///
     /// Not Currently Used.
@@ -175,15 +171,10 @@ pub struct Desire {
     /// household, or it is on a 'per house' basis.
     pub scalar: ScalingFactor,
 
-    /// The rate at which the satisfaction of a desire over time.
+    /// Fraction of satisfaction lost each day. Copied from the demographic
+    /// desire.
     ///
-    /// The satisfaction is multiplied by this value each turn.
-    ///
-    /// This should be within [0.0, 1.0).
-    ///
-    /// 0.0 means the desire is reset each day.
-    ///
-    /// It should never be 1.0, as that would mean the desire never get's unsatisfied.
+    /// Satisfaction kept is multiplied by `1.0 - decay`.
     pub decay: f64,
 }
 
@@ -511,11 +502,11 @@ impl DemoDesire {
     /// # With Decay
     ///
     /// Sets the satisfaction decay rate between days.
-    /// Debug-asserts that `decay` is in `[0.0, 1.0)`.
+    /// Debug-asserts that `decay` is in `[0.0, 1.0]`.
     pub fn with_decay(mut self, decay: f64) -> Self {
         debug_assert!(
-            0.0 <= decay && decay < 1.0,
-            "Decay must be between 0.0 inclusive and 1.0 exclusive."
+            0.0 <= decay && decay <= 1.0,
+            "Decay must be between 0.0 and 1.0 inclusive."
         );
         self.decay = decay;
         self
@@ -574,7 +565,6 @@ impl DemoDesire {
             target: self.bucket.clone(),
             amount: self.amount * scale,
             satisfaction: 0.0,
-            target_taken: vec![0.0; self.bucket.len()],
             category: None,
             effect: self.scaled_effects(scale),
             scalar: self.scalar,
@@ -623,6 +613,70 @@ impl Desire {
             }
         });
         targets
+    }
+
+    /// # Implicit Minimum
+    ///
+    /// Preferred share of this desire for each good in the bucket.
+    ///
+    /// `config` supplies [`PopConfig::desire_share_minimum_divisor`]. `0`
+    /// turns this off and returns 0. At `1` or above, the share is
+    /// `1 / (divisor * goods)`. `goods` is the number of targets. An empty
+    /// bucket returns 0.
+    pub fn implicit_minimum(&self, config: &PopConfig) -> f64 {
+        let divisor = config.desire_share_minimum_divisor;
+        debug_assert!(divisor.is_finite() && (divisor == 0.0 || divisor >= 1.0));
+        let goods = self.target.len();
+        if divisor == 0.0 || goods == 0 {
+            0.0
+        } else {
+            1.0 / (divisor * goods as f64)
+        }
+    }
+
+    /// # Implicit Cap
+    ///
+    /// Share of this desire one good may fill.
+    ///
+    /// `config` supplies the same divisor as [`Self::implicit_minimum`].
+    /// `0` turns this off and returns 1. At `1` or above, the share is
+    /// `1 / divisor` plus the implicit minimum. An empty bucket returns 1.
+    pub fn implicit_cap(&self, config: &PopConfig) -> f64 {
+        let divisor = config.desire_share_minimum_divisor;
+        debug_assert!(divisor.is_finite() && (divisor == 0.0 || divisor >= 1.0));
+        if divisor == 0.0 || self.target.is_empty() {
+            1.0
+        } else {
+            (1.0 / divisor) + self.implicit_minimum(config)
+        }
+    }
+
+    /// # Minimum
+    ///
+    /// Share of this desire `slot` is brought toward first.
+    ///
+    /// The higher of that target's stored minimum and [`Self::implicit_minimum`].
+    /// `config` supplies the divisor.
+    pub fn minimum(&self, slot: usize, config: &PopConfig) -> f64 {
+        let defined = self.target[slot].min;
+        debug_assert!(defined.is_finite() && defined >= 0.0);
+        defined.max(self.implicit_minimum(config))
+    }
+
+    /// # Cap
+    ///
+    /// Share of this desire `slot` may fill.
+    ///
+    /// The lower of that target's stored cap and [`Self::implicit_cap`].
+    /// A divisor of 0 keeps the stored cap. `config` supplies the divisor.
+    pub fn cap(&self, slot: usize, config: &PopConfig) -> f64 {
+        let defined = self.target[slot].cap;
+        debug_assert!(defined.is_finite() && defined >= 0.0);
+        if config.desire_share_minimum_divisor == 0.0 {
+            defined
+        } else {
+            defined.min(self.implicit_cap(config))
+        }
     }
 
     /// # Get Bonus Satisfaction
@@ -719,5 +773,87 @@ impl DesireTarget {
     pub fn with_high_priority(mut self, high_priority: bool) -> Self {
         self.high_priority = high_priority;
         self
+    }
+}
+
+#[cfg(test)]
+mod share_should {
+    use super::{DemographicSource, Desire, DesireTarget, DesireTargetType, ScalingFactor};
+    use crate::game::config::PopConfig;
+
+    fn bucket(targets: Vec<DesireTarget>) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: targets,
+            amount: 1.0,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        }
+    }
+
+    fn config_with(divisor: f64) -> PopConfig {
+        let mut config = PopConfig::default();
+        config.desire_share_minimum_divisor = divisor;
+        config
+    }
+
+    fn target(good: usize) -> DesireTarget {
+        DesireTarget::new(good, DesireTargetType::Consume, 1.0)
+    }
+
+    fn near(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn default_divisor_uses_half_the_bucket() {
+        let desire = bucket(vec![target(1), target(2)]);
+        let config = PopConfig::default();
+        near(desire.implicit_minimum(&config), 0.25);
+        near(desire.implicit_cap(&config), 0.75);
+        near(desire.minimum(0, &config), 0.25);
+        near(desire.cap(0, &config), 0.75);
+    }
+
+    #[test]
+    fn one_good_at_the_default_covers_the_desire() {
+        let desire = bucket(vec![target(1)]);
+        let config = PopConfig::default();
+        near(desire.implicit_minimum(&config), 0.5);
+        near(desire.implicit_cap(&config), 1.0);
+    }
+
+    #[test]
+    fn a_divisor_of_one_splits_two_goods_in_half() {
+        let desire = bucket(vec![target(1), target(2)]);
+        let config = config_with(1.0);
+        near(desire.implicit_minimum(&config), 0.5);
+        near(desire.implicit_cap(&config), 1.5);
+        near(desire.cap(0, &config), 1.0);
+    }
+
+    #[test]
+    fn a_tighter_stored_bound_wins() {
+        let desire = bucket(vec![target(1).with_min(0.4).with_cap(0.5), target(2)]);
+        let config = PopConfig::default();
+        near(desire.minimum(0, &config), 0.4);
+        near(desire.cap(0, &config), 0.5);
+        near(desire.minimum(1, &config), 0.25);
+        near(desire.cap(1, &config), 0.75);
+    }
+
+    #[test]
+    fn zero_keeps_the_stored_shares() {
+        let desire = bucket(vec![target(1).with_min(0.2).with_cap(0.8)]);
+        let config = config_with(0.0);
+        assert_eq!(desire.implicit_minimum(&config), 0.0);
+        assert_eq!(desire.implicit_cap(&config), 1.0);
+        near(desire.minimum(0, &config), 0.2);
+        near(desire.cap(0, &config), 0.8);
     }
 }

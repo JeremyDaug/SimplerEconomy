@@ -1,5 +1,9 @@
 pub use crate::game::effects::{EffectScope, InstitutionEffect};
 
+use crate::game::factuals::Factuals;
+use crate::game::market::Market;
+use crate::game::pop::SellOffer;
+
 /// # Institution
 ///
 /// An organization not purely focused on profit: state branches, religions, guilds,
@@ -151,5 +155,33 @@ impl Institution {
     pub fn with_effect(mut self, effect: InstitutionEffect) -> Self {
         self.effects.push(effect);
         self
+    }
+
+    /// # Produce
+    ///
+    /// Runs this institution's production.
+    ///
+    /// `factuals` supplies the world. The pass is not written yet.
+    pub fn produce(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+    }
+
+    /// # Market Day
+    ///
+    /// This institution's buys in `market`.
+    ///
+    /// `factuals` supplies the world. `offers` are the sell offers already
+    /// posted. The pass is not written yet.
+    pub fn market_day(&self, market: &Market, factuals: &Factuals, offers: &[SellOffer]) {
+        let _ = (self, market, factuals, offers);
+    }
+
+    /// # Planning
+    ///
+    /// Runs this institution's planning.
+    ///
+    /// `factuals` supplies the world. The pass is not written yet.
+    pub fn planning(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
     }
 }

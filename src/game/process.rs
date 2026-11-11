@@ -94,12 +94,14 @@ impl Process {
     ///
     /// Variable outputs of this process, excluding time.
     ///
-    /// A fixed output is left out. A non-positive amount is left out. Time
-    /// is left out. Returns those good ids.
+    /// A fixed output is left out. Time is left out. Returns those good ids.
     pub fn variable_goods(&self) -> Vec<usize> {
         self.outputs
             .iter()
-            .filter(|output| !output.fixed && output.amount > 0.0 && output.good != TIME)
+            .filter(|output| {
+                debug_assert!(output.amount.is_finite() && output.amount > 0.0);
+                !output.fixed && output.good != TIME
+            })
             .map(|output| output.good)
             .collect()
     }
@@ -112,11 +114,17 @@ impl Process {
             if input.is_optional() || matches!(input.input_type, InputType::Factor) {
                 continue;
             }
-            cost += input.amount.max(0.0) * price(input.good).max(0.0);
+            debug_assert!(input.amount.is_finite() && input.amount > 0.0);
+            let priced = price(input.good);
+            debug_assert!(priced.is_finite() && priced >= 0.0);
+            cost += input.amount * priced;
         }
         let mut output = 0.0;
         for row in &self.outputs {
-            output += row.amount.max(0.0) * price(row.good).max(0.0);
+            debug_assert!(row.amount.is_finite() && row.amount > 0.0);
+            let priced = price(row.good);
+            debug_assert!(priced.is_finite() && priced >= 0.0);
+            output += row.amount * priced;
         }
         if cost > 1e-12 { output / cost } else { output }
     }
@@ -587,8 +595,8 @@ impl Process {
         // finish with process level bonuses.
         for effect in &self.effects {
             let scaled_effect = match *effect {
-                ProcessEffect::Research(v) => ProcessEffect::Research(v * shortest),
-                ProcessEffect::Culture(v) => ProcessEffect::Culture(v * shortest),
+                ProcessEffect::Development(v) => ProcessEffect::Development(v * shortest),
+                ProcessEffect::Unity(v) => ProcessEffect::Unity(v * shortest),
                 ProcessEffect::Faith(v) => ProcessEffect::Faith(v * shortest),
                 ProcessEffect::Authority(v) => ProcessEffect::Authority(v * shortest),
                 ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * shortest),
@@ -685,7 +693,10 @@ impl ProcessInput {
         input_type: InputType,
         optional: bool,
     ) -> Self {
-        debug_assert!(amount > 0.0, "Input amount must be greater than 0.");
+        debug_assert!(
+            amount.is_finite() && amount > 0.0,
+            "Input amount must be finite and greater than 0."
+        );
         ProcessInput {
             good,
             amount,
@@ -779,7 +790,18 @@ pub struct ProcessOutput {
 }
 
 impl ProcessOutput {
+    /// # New
+    ///
+    /// One output row.
+    ///
+    /// `good` is the good id. `amount` is units per iteration and must be
+    /// finite and greater than 0. `fixed` marks an output that does not
+    /// scale with bonuses.
     pub fn new(good: usize, amount: f64, fixed: bool) -> Self {
+        debug_assert!(
+            amount.is_finite() && amount > 0.0,
+            "Output amount must be finite and greater than 0."
+        );
         ProcessOutput {
             good,
             amount,
@@ -919,8 +941,8 @@ enum InputEffectFile {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ProcessEffectFile {
-    Research(f64),
-    Culture(f64),
+    Development(f64),
+    Unity(f64),
     Faith(f64),
     Authority(f64),
     Legitimacy(f64),
@@ -1111,8 +1133,8 @@ impl From<InputEffectFile> for InputEffect {
 impl From<ProcessEffectFile> for ProcessEffect {
     fn from(effect: ProcessEffectFile) -> Self {
         match effect {
-            ProcessEffectFile::Research(v) => ProcessEffect::Research(v),
-            ProcessEffectFile::Culture(v) => ProcessEffect::Culture(v),
+            ProcessEffectFile::Development(v) => ProcessEffect::Development(v),
+            ProcessEffectFile::Unity(v) => ProcessEffect::Unity(v),
             ProcessEffectFile::Faith(v) => ProcessEffect::Faith(v),
             ProcessEffectFile::Authority(v) => ProcessEffect::Authority(v),
             ProcessEffectFile::Legitimacy(v) => ProcessEffect::Legitimacy(v),
@@ -1645,7 +1667,7 @@ mod processes {
                     InputType::Destroyed,
                     vec![InputEffect::BirthRate(0.5)],
                 ))
-                .with_effect(ProcessEffect::Research(100.0));
+                .with_effect(ProcessEffect::Development(100.0));
 
             let mut available = HashMap::new();
             available.insert(REQ_GOOD, 100.0);
@@ -1664,7 +1686,7 @@ mod processes {
             assert_eq!(result.changes.get(&DECAY_OUTPUT), Some(&100.0));
             assert_eq!(result.used_inputs.len(), 0);
             assert_eq!(result.effects.len(), 2);
-            assert!(result.effects.contains(&ProcessEffect::Research(10000.0)));
+            assert!(result.effects.contains(&ProcessEffect::Development(10000.0)));
             assert!(result.effects.contains(&ProcessEffect::BirthRate(50.0)));
         }
 

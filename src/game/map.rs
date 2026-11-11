@@ -128,6 +128,15 @@ impl Map {
         None
     }
 
+    /// # Region Hexes
+    ///
+    /// Hexes of region `region`, capital first.
+    ///
+    /// Returns `None` when that region is not on the map.
+    pub fn region_hexes(&self, region: usize) -> Option<&[Hex]> {
+        self.regions.get(region).map(Vec::as_slice)
+    }
+
     /// # Get Region
     ///
     /// The region index of `hex`.

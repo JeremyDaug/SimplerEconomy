@@ -10,8 +10,8 @@ use bitflags::*;
 ///
 /// ## Assumptions
 ///
-/// Age lengths, the birth sex ratio, and the partnership step come from
-/// [`PopConfig`]. `turn_length` is how many turns make one year.
+/// Age lengths, the birth sex ratio, the partnership step, and
+/// [`PopConfig::turn_length`] come from [`PopConfig`].
 ///
 /// Sex fields (`*_mf`) are **female fractions** in `0.0..=1.0`
 /// (`0.0` = all male, `1.0` = all female). Birth math uses adult women =
@@ -67,7 +67,7 @@ impl Household {
             adult_labor: 1.0,
             elder_labor: 0.7,
             child_labor: 0.3,
-            partnership_rate: 2.5,
+            partnership_rate: DemographicRates::DEFAULT_PARTNERSHIP,
         }
     }
 
@@ -196,9 +196,10 @@ impl Household {
     /// Count adds. Adult, elder, and child averages rebuild from the two
     /// totals. Female fractions rebuild from the people in that age band.
     /// Partnership rate and the three labor rates blend by household count.
-    /// `households` at or below 0 leaves this group unchanged.
+    /// A count of 0 leaves this group unchanged.
     pub fn absorb(&mut self, from: &Household, households: f64) {
-        if !households.is_finite() || households <= 0.0 {
+        debug_assert!(households.is_finite() && households >= 0.0);
+        if households == 0.0 {
             return;
         }
         let old = self.count;
@@ -453,14 +454,11 @@ fn blend_band(
     add_mf: f64,
     new_count: f64,
 ) -> (f64, f64) {
+    debug_assert!(new_count.is_finite() && new_count > 0.0);
     let old_people = old_count * old_avg;
     let add_people = add_count * add_avg;
     let people = old_people + add_people;
-    let avg = if new_count > 0.0 {
-        people / new_count
-    } else {
-        old_avg
-    };
+    let avg = people / new_count;
     let mf = if people > 0.0 {
         (old_people * old_mf + add_people * add_mf) / people
     } else {
@@ -473,12 +471,10 @@ fn blend_band(
 ///
 /// Household-weighted blend of one rate.
 ///
-/// `old_count` households at `old_rate`, plus `add_count` at `add_rate`.
-/// `new_count` at or below 0 returns `old_rate`.
+/// `old_count` households at `old_rate`, plus `add_count` at `add_rate`,
+/// over `new_count`.
 fn blend_rate(old_count: f64, old_rate: f64, add_count: f64, add_rate: f64, new_count: f64) -> f64 {
-    if new_count <= 0.0 {
-        return old_rate;
-    }
+    debug_assert!(new_count.is_finite() && new_count > 0.0);
     (old_count * old_rate + add_count * add_rate) / new_count
 }
 
@@ -589,19 +585,25 @@ impl BirthSentiment {
     ///
     /// `1` plus each rate times that emotion's share of the pop.
     ///
-    /// `hope`, `happiness`, `fear`, and `anger` are shares. The result is
-    /// not below 0. A non-finite result is 1.
+    /// `hope`, `happiness`, `fear`, and `anger` are shares. Each share and
+    /// each rate is finite. The result is not below 0.
     pub fn multiplier(self, hope: f64, happiness: f64, fear: f64, anger: f64) -> f64 {
+        debug_assert!(
+            hope.is_finite() && happiness.is_finite() && fear.is_finite() && anger.is_finite()
+        );
+        debug_assert!(
+            self.hope.is_finite()
+                && self.happiness.is_finite()
+                && self.fear.is_finite()
+                && self.anger.is_finite()
+        );
         let factor = 1.0
             + self.hope * hope
             + self.happiness * happiness
             + self.fear * fear
             + self.anger * anger;
-        if factor.is_finite() {
-            factor.max(0.0)
-        } else {
-            1.0
-        }
+        debug_assert!(factor.is_finite());
+        factor.max(0.0)
     }
 }
 
@@ -637,11 +639,14 @@ pub struct DemographicRates {
 }
 
 impl DemographicRates {
+    /// Adults and elders per household when a bundle does not name a rate.
+    pub const DEFAULT_PARTNERSHIP: f64 = 2.5;
+
     /// # Baseline
     ///
     /// Rough starting rates aimed near ~2 adults, ~2.5 children, ~0.5 elders
     /// and positive growth when sex balance is even. Partnership target is
-    /// adults+elders = 2.5 (2.0 + 0.5).
+    /// adults+elders = [`Self::DEFAULT_PARTNERSHIP`] (2.0 + 0.5).
     pub fn baseline() -> Self {
         let maternal_mortality = 0.01;
         let birth_per_woman = 0.30;
@@ -652,7 +657,7 @@ impl DemographicRates {
             child_mortality: (0.025, 0.0, 0.0),
             adult_mortality: (0.013, maternal_mortality * birth_per_woman, 0.0),
             elder_mortality: (0.09, 0.0, 0.0),
-            partnership_rate: 2.5,
+            partnership_rate: Self::DEFAULT_PARTNERSHIP,
         }
     }
 
@@ -661,7 +666,7 @@ impl DemographicRates {
     /// Every field is 0.
     ///
     /// [`Self::add`] sums the other fields, so these zeros leave them as they
-    /// are. Partnership is averaged, so this 0 pulls that average toward 0.
+    /// are. A partnership of 0 is not a rate.
     pub fn zero() -> Self {
         Self {
             birth_per_woman: 0.0,
@@ -678,8 +683,10 @@ impl DemographicRates {
     ///
     /// Sum of two rate bundles, except partnership.
     ///
-    /// Birth, mortality, and the mortality triples add. Partnership is the
-    /// average of the two targets. Used to stack baseline + species + culture
+    /// Birth, mortality, and the mortality triples add. A partnership above 0
+    /// is a rate. Zero is not a rate: the defined side is kept, both defined
+    /// sides are averaged, and [`Self::DEFAULT_PARTNERSHIP`] is used when
+    /// neither side names one. Used to stack baseline + species + culture
     /// + religion + same-day modifiers.
     pub fn add(&self, other: &Self) -> Self {
         Self {
@@ -701,7 +708,7 @@ impl DemographicRates {
                 self.elder_mortality.1 + other.elder_mortality.1,
                 self.elder_mortality.2 + other.elder_mortality.2,
             ),
-            partnership_rate: (self.partnership_rate + other.partnership_rate) / 2.0,
+            partnership_rate: stacked_partnership(self.partnership_rate, other.partnership_rate),
         }
     }
 
@@ -751,6 +758,21 @@ impl DemographicRates {
         if ages.contains(HouseholdTarget::ELDER) {
             apply_sex_band_mortality(&mut self.elder_mortality, target, rate);
         }
+    }
+}
+
+/// # Stacked Partnership
+///
+/// The partnership arm of [`DemographicRates::add`].
+///
+/// `left` and `right` are the two bundles' rates.
+fn stacked_partnership(left: f64, right: f64) -> f64 {
+    debug_assert!(left.is_finite() && right.is_finite());
+    match (left > 0.0, right > 0.0) {
+        (true, true) => (left + right) / 2.0,
+        (true, false) => left,
+        (false, true) => right,
+        (false, false) => DemographicRates::DEFAULT_PARTNERSHIP,
     }
 }
 
@@ -974,7 +996,14 @@ mod demographic_rates_should {
         assert!((stacked.partnership_rate - (2.5 + 3.5) / 2.0).abs() < 1e-12);
         let with_zero = base.add(&DemographicRates::zero());
         assert!((with_zero.birth_per_woman - base.birth_per_woman).abs() < 1e-12);
-        assert!((with_zero.partnership_rate - 2.5 / 2.0).abs() < 1e-12);
+        assert!((with_zero.partnership_rate - 2.5).abs() < 1e-12);
+        let mut unnamed = DemographicRates::zero();
+        unnamed.birth_per_woman = 0.1;
+        let stacked_unnamed = base.add(&unnamed);
+        assert!((stacked_unnamed.birth_per_woman - (base.birth_per_woman + 0.1)).abs() < 1e-12);
+        assert!((stacked_unnamed.partnership_rate - 2.5).abs() < 1e-12);
+        let neither = DemographicRates::zero().add(&DemographicRates::zero());
+        assert!((neither.partnership_rate - 2.5).abs() < 1e-12);
     }
 }
 
@@ -1056,9 +1085,9 @@ mod birth_sentiment_should {
     }
 
     #[test]
-    fn a_non_finite_share_returns_one() {
-        let scale = BirthSentiment::human().multiplier(f64::NAN, 0.0, 0.0, 0.0);
-        assert_eq!(scale, 1.0);
+    #[should_panic]
+    fn a_non_finite_share_is_an_error() {
+        let _ = BirthSentiment::human().multiplier(f64::NAN, 0.0, 0.0, 0.0);
     }
 
     #[test]

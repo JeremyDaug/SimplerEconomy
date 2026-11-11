@@ -27,6 +27,13 @@ impl MapData {
             .unwrap_or_else(|| panic!("market {id} is not in MapData"))
     }
 
+    /// # Markets Mut
+    ///
+    /// Mutable access to every market.
+    pub fn markets_mut(&mut self) -> &mut HashMap<usize, Market> {
+        &mut self.markets
+    }
+
     /// # Market Mut
     ///
     /// Mutable access to the market stored under `id`.
@@ -53,8 +60,9 @@ impl MapData {
     /// Moves migratory firms, institutions, and player efforts across markets.
     ///
     /// `actors` are the movers, `players` are the efforts, and `factuals`
-    /// supplies the world. The pass is not written yet. Cross-market work
-    /// must run one market after another.
+    /// supplies the world. [`crate::playstate::PlayState`] calls this from
+    /// growth, after people have moved between markets. Cross-market work
+    /// runs one market after another. The pass is not written yet.
     pub fn process_organized_migration(
         &mut self,
         actors: &mut Actors,
@@ -62,18 +70,18 @@ impl MapData {
         factuals: &Factuals,
     ) {
         let _ = (self, actors, players, factuals);
-        todo!("Process organized migration efforts across markets")
     }
 
     /// # Process Inter Market Migration
     ///
     /// Moves people from the migrant pool between markets.
     ///
-    /// `actors` hold the pops and `factuals` supplies the world. The pass is
-    /// not written yet. Cross-market work must run one market after another.
+    /// `actors` hold the pops and `factuals` supplies the world.
+    /// [`crate::playstate::PlayState`] calls this from growth, after
+    /// migration inside each market. Cross-market work runs one market
+    /// after another. Not written in this version.
     pub fn process_inter_market_migration(&mut self, actors: &mut Actors, factuals: &Factuals) {
         let _ = (self, actors, factuals);
-        todo!("Process inter-market personal migration")
     }
 }
 

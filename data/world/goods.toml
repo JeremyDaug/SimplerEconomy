@@ -1,7 +1,7 @@
 # World data: goods (factuals).
 # Human-editable. Starting prices, pops, and firms are initialization data, not here.
 #
-# Tags (optional): "fixed", "exposure", "untradeable", or { transport = 1.0 }
+# Tags (optional): "fixed", "exposure", "untradeable", "skill", "industrial", or { transport = 1.0 }
 #
 # Time is id 0 on purpose: it is foundational. Other goods start at 1.
 # 0 still means none for pops, owners, and most other ids.

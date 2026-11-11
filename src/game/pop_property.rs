@@ -32,13 +32,14 @@ pub struct PopPRow {
     /// Fresh units inside `quantity`.
     ///
     /// [`crate::game::pop::Pop::decay_goods`] leaves this portion in place.
+    /// [`crate::game::pop::Pop::record_keeping`] clears it after that.
     pub fresh: f64,
     /// Units lost to rot tonight.
     ///
     /// [`crate::game::pop::Pop::decay_goods`] writes this.
-    /// [`crate::game::pop::Pop::reset_day`] clears it.
+    /// [`crate::game::pop::Pop::record_keeping`] clears it.
     pub lost: f64,
-    /// Consumed today. Removed from `quantity` when recorded, destroyed at decay.
+    /// Consumed today. Removed from `quantity` when recorded.
     pub consumed: f64,
 
     // Process values
@@ -46,7 +47,7 @@ pub struct PopPRow {
     pub produced: f64,
     /// Units a process destroyed today. Capital set aside is `used`, not this.
     ///
-    /// [`crate::game::pop::Pop::reset_day`] clears it.
+    /// [`crate::game::pop::Pop::record_keeping`] clears it.
     pub spent: f64,
     /// Used and not destroyed. Returned to `quantity` at day end, then decayed.
     pub used: f64,
@@ -172,7 +173,12 @@ impl PopPRow {
     /// # Available
     ///
     /// On-hand units not earmarked.
+    ///
+    /// `quantity` and `reserved` are finite, and `quantity` is at least
+    /// `reserved`.
     pub fn available(&self) -> f64 {
+        debug_assert!(self.quantity.is_finite() && self.reserved.is_finite());
+        debug_assert!(self.quantity >= self.reserved);
         self.quantity - self.reserved
     }
 
@@ -180,27 +186,34 @@ impl PopPRow {
     ///
     /// Consumes our goods, spending old before fresh.
     ///
-    /// Negative units are ignored, and overdrawing stops at 0.0.
+    /// A zero amount changes nothing. `fresh` is a portion of `quantity`,
+    /// and `units` is no greater than `quantity`.
     pub fn spend_aged_first(&mut self, units: f64) {
-        if units <= 0.0 {
+        debug_assert!(units.is_finite() && units >= 0.0);
+        debug_assert!(self.quantity.is_finite() && self.quantity >= 0.0);
+        debug_assert!(self.fresh.is_finite() && self.fresh >= 0.0);
+        debug_assert!(self.fresh <= self.quantity);
+        debug_assert!(units <= self.quantity);
+        if units == 0.0 {
             return;
         }
-        let aged = (self.quantity - self.fresh).max(0.0);
+        let aged = self.quantity - self.fresh;
         let from_fresh = (units - aged).max(0.0);
-        self.fresh = (self.fresh - from_fresh).max(0.0);
+        self.fresh -= from_fresh;
     }
 
     /// # Fresh Share
     ///
     /// Fraction of `quantity` that is fresh.
     ///
-    /// `fresh` is clamped into `0..=quantity`, then divided by `quantity`.
-    /// Returns `0` when `quantity` is `0`.
+    /// `fresh` is a portion of `quantity`. Returns `0` when `quantity` is `0`.
     pub fn fresh_share(&self) -> f64 {
-        let quantity = self.quantity.max(0.0);
-        if quantity == 0.0 {
+        debug_assert!(self.quantity.is_finite() && self.quantity >= 0.0);
+        debug_assert!(self.fresh.is_finite() && self.fresh >= 0.0);
+        debug_assert!(self.fresh <= self.quantity);
+        if self.quantity == 0.0 {
             return 0.0;
         }
-        self.fresh.max(0.0).min(quantity) / quantity
+        self.fresh / self.quantity
     }
 }

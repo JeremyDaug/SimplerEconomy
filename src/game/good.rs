@@ -139,6 +139,13 @@ impl Good {
         self.tags.contains(&GoodTag::Skill)
     }
 
+    /// # Is Industrial
+    ///
+    /// True when this good is tagged [`GoodTag::Industrial`].
+    pub fn is_industrial(&self) -> bool {
+        self.tags.contains(&GoodTag::Industrial)
+    }
+
     /// True if this good can pay intramarket transport / friction.
     pub fn is_transport(&self) -> bool {
         self.tags
@@ -197,6 +204,8 @@ pub enum GoodTag {
     Untradeable,
     /// A skill. Priced like any other good, and tradeable.
     Skill,
+    /// An industrial good. Capital-intensive, and not made by subsistence.
+    Industrial,
     /// Pays intramarket friction (time, cargo, shipping). The value is
     /// friction cover per unit (1.0 = time baseline). Barter spends it from
     /// the buyer. A mass fill spends it from both sides.
@@ -228,7 +237,8 @@ impl PartialEq for GoodTag {
             (Self::Fixed, Self::Fixed)
             | (Self::Exposure, Self::Exposure)
             | (Self::Untradeable, Self::Untradeable)
-            | (Self::Skill, Self::Skill) => true,
+            | (Self::Skill, Self::Skill)
+            | (Self::Industrial, Self::Industrial) => true,
             (Self::Transport(a), Self::Transport(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }

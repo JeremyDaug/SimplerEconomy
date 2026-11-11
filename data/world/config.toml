@@ -6,10 +6,16 @@
 # adulthood_years = 40.0
 # child_sex_ratio = 0.5
 # partnership_trend = 0.13
+# turn_length = 1.0
+# subsistence_anchor = 0.6
+# subsistence_common_share = 0.5
+# desire_share_minimum_divisor = 2.0
 
 # [market]
 # amv_epsilon = 1e-9
 # salability_default = 0.5
+# price_gain = 0.10
+# price_cap = 0.20
 # migration_anger_weight = 0.5
 # migration_pace = 0.1
 # founding_households = 5.0
@@ -17,3 +23,6 @@
 # founding_drought_step = 0.01
 # founding_both_share = 0.2
 # founding_available_drop = 1.5
+
+# [labor]
+# time_per_labor = 16.0

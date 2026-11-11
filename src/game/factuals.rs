@@ -11,7 +11,7 @@ use crate::game::{
     household::{BirthSentiment, DemographicRates},
     pop_property::DemoRow,
     process::{Process, ProcessLoadError},
-    species::{Species, SpeciesSink},
+    species::Species,
 };
 
 /// Failed to load factuals from a world-data file.
@@ -474,7 +474,7 @@ name = "test mill"
 tech_source = 2
 inputs = [{ good = 1, amount = 2.0, type = "consumed", optional = true }]
 outputs = [{ good = 3, amount = 1.0, fixed = true }]
-effects = [{ research = 4.0 }]
+effects = [{ development = 4.0 }]
 "#,
         )
         .expect("toml");
@@ -484,7 +484,7 @@ effects = [{ research = 4.0 }]
         assert!(mill.inputs[0].is_optional());
         assert!(matches!(mill.inputs[0].input_type, InputType::Consumed));
         assert!(mill.outputs[0].fixed);
-        assert!(matches!(mill.effects[0], ProcessEffect::Research(v) if v == 4.0));
+        assert!(matches!(mill.effects[0], ProcessEffect::Development(v) if v == 4.0));
         assert!(!mill.is_subsistence());
         assert!((mill.complexity - 1.0).abs() < 1e-12);
     }

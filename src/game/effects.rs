@@ -33,8 +33,8 @@ pub enum EffectKind {
     MortalityRate(HouseholdTarget, f64),
 
     // --- Soft power / nation ---
-    Research(f64),
-    Culture(f64),
+    Development(f64),
+    Unity(f64),
     Faith(f64),
     Authority(f64),
     Legitimacy(f64),
@@ -43,10 +43,10 @@ pub enum EffectKind {
     AdultEfficiency(f64),
     ElderEfficiency(f64),
     ChildEfficiency(f64),
-    /// Passive research generation per household (not tech points from processes).
-    HouseholdResearchRate(f64),
-    /// Passive culture generation per household.
-    HouseholdCultureRate(f64),
+    /// Passive development generation per household (not tech points from processes).
+    HouseholdDevelopmentRate(f64),
+    /// Passive unity generation per household.
+    HouseholdUnityRate(f64),
 
     // --- Goods ---
     /// Extra goods granted (e.g. desire bonus transport).
@@ -92,7 +92,7 @@ pub enum EffectScope {
 /// The `bool` is **true = bonus** (scales with satisfaction), **false = malus**
 /// (scales with lack of satisfaction).
 ///
-/// Player-resource arms (culture, research, faith, authority, legitimacy) are
+/// Player-resource arms (unity, development, faith, authority, legitimacy) are
 /// harvested in [`crate::game::pop::Pop::extract_special_resources`]. Common
 /// sat is clamped to `[0, 1]` at harvest; luxury sat is unclamped so extra
 /// levels scale. A catch-all `PlayerResource` arm (id + amount + bonus) will
@@ -119,10 +119,10 @@ pub enum DesireEffect {
     /// Relative scale of one sentiment axis, then renormalize.
     /// Applied in [`crate::game::pop::Pop::update_sentiments`].
     SentimentRelative(SentimentKind, f64, bool),
-    /// Culture points for the owning player.
-    Culture(f64, bool),
-    /// Research points for the owning player.
-    Research(f64, bool),
+    /// Unity points for the owning player.
+    Unity(f64, bool),
+    /// Development points for the owning player.
+    Development(f64, bool),
     /// Faith for the owning player (decays on the pool).
     Faith(f64, bool),
     /// Authority for the owning player.
@@ -173,10 +173,10 @@ pub enum PopEffect {
         kind: SentimentKind,
         relative: f64,
     },
-    /// Culture points already scaled; harvested at extract.
-    Culture(f64),
-    /// Research points already scaled; harvested at extract.
-    Research(f64),
+    /// Unity points already scaled; harvested at extract.
+    Unity(f64),
+    /// Development points already scaled; harvested at extract.
+    Development(f64),
     /// Faith already scaled; harvested at extract.
     Faith(f64),
     /// Authority already scaled; harvested at extract.
@@ -200,12 +200,12 @@ pub enum DemographicEffect {
     ChildEfficiency(f64),
     BirthRate(f64),
     MortalityRate(HouseholdTarget, f64),
-    /// Passive research per household. Harvested at extract.
+    /// Passive development per household. Harvested at extract.
     /// TODO, expand to include rates for each part of the household.
-    ResearchRate(f64),
-    /// Passive culture per household. Harvested at extract.
+    DevelopmentRate(f64),
+    /// Passive unity per household. Harvested at extract.
     /// TODO, expand to include rates for each part of the household.
-    CultureRate(f64),
+    UnityRate(f64),
 }
 
 // ---------------------------------------------------------------------------
@@ -233,10 +233,10 @@ pub enum InstitutionEffect {
 /// Additional effects a process produces when run (scaled by iterations).
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum ProcessEffect {
-    /// Research points → firm.
-    Research(f64),
-    /// Culture → worker cultures.
-    Culture(f64),
+    /// Development points → firm.
+    Development(f64),
+    /// Unity points for worker cultures.
+    Unity(f64),
     /// Faith → worker religions.
     Faith(f64),
     /// Authority → territory owner.
@@ -257,11 +257,11 @@ impl ProcessEffect {
     /// Mortality adds only when both targets match. A different arm returns `None`.
     pub fn add(&self, other: &ProcessEffect) -> Option<Self> {
         match (self, other) {
-            (ProcessEffect::Research(v1), ProcessEffect::Research(v2)) => {
-                Some(ProcessEffect::Research(v1 + v2))
+            (ProcessEffect::Development(v1), ProcessEffect::Development(v2)) => {
+                Some(ProcessEffect::Development(v1 + v2))
             }
-            (ProcessEffect::Culture(v1), ProcessEffect::Culture(v2)) => {
-                Some(ProcessEffect::Culture(v1 + v2))
+            (ProcessEffect::Unity(v1), ProcessEffect::Unity(v2)) => {
+                Some(ProcessEffect::Unity(v1 + v2))
             }
             (ProcessEffect::Faith(v1), ProcessEffect::Faith(v2)) => {
                 Some(ProcessEffect::Faith(v1 + v2))
@@ -289,8 +289,8 @@ impl ProcessEffect {
     /// The catalog arm for this yield. The mortality target is kept.
     pub fn to_kind(self) -> EffectKind {
         match self {
-            ProcessEffect::Research(v) => EffectKind::Research(v),
-            ProcessEffect::Culture(v) => EffectKind::Culture(v),
+            ProcessEffect::Development(v) => EffectKind::Development(v),
+            ProcessEffect::Unity(v) => EffectKind::Unity(v),
             ProcessEffect::Faith(v) => EffectKind::Faith(v),
             ProcessEffect::Authority(v) => EffectKind::Authority(v),
             ProcessEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
@@ -299,13 +299,30 @@ impl ProcessEffect {
         }
     }
 
+    /// # To Pop Effect
+    ///
+    /// The same-day pop effect for this yield.
+    ///
+    /// The magnitude is copied. Iterations have already scaled it.
+    pub fn to_pop_effect(self) -> PopEffect {
+        match self {
+            ProcessEffect::Development(v) => PopEffect::Development(v),
+            ProcessEffect::Unity(v) => PopEffect::Unity(v),
+            ProcessEffect::Faith(v) => PopEffect::Faith(v),
+            ProcessEffect::Authority(v) => PopEffect::Authority(v),
+            ProcessEffect::Legitimacy(v) => PopEffect::Legitimacy(v),
+            ProcessEffect::BirthRate(v) => PopEffect::Birthrate(v),
+            ProcessEffect::MortalityRate(target, v) => PopEffect::Mortality(target, v),
+        }
+    }
+
     /// # Scale
     ///
     /// Scales the effect by the given multiplier, returning a new effect.
     pub fn scale(self, multiplier: f64) -> Self {
         match self {
-            ProcessEffect::Research(v) => ProcessEffect::Research(v * multiplier),
-            ProcessEffect::Culture(v) => ProcessEffect::Culture(v * multiplier),
+            ProcessEffect::Development(v) => ProcessEffect::Development(v * multiplier),
+            ProcessEffect::Unity(v) => ProcessEffect::Unity(v * multiplier),
             ProcessEffect::Faith(v) => ProcessEffect::Faith(v * multiplier),
             ProcessEffect::Authority(v) => ProcessEffect::Authority(v * multiplier),
             ProcessEffect::Legitimacy(v) => ProcessEffect::Legitimacy(v * multiplier),
@@ -326,6 +343,15 @@ impl From<ProcessEffect> for EffectKind {
     }
 }
 
+impl From<ProcessEffect> for PopEffect {
+    /// # From
+    ///
+    /// [`ProcessEffect::to_pop_effect`].
+    fn from(value: ProcessEffect) -> Self {
+        value.to_pop_effect()
+    }
+}
+
 impl DesireEffect {
     /// # To Kind
     ///
@@ -342,8 +368,8 @@ impl DesireEffect {
             DesireEffect::SentimentRelative(kind, relative, _) => {
                 EffectKind::SentimentRelative { kind, relative }
             }
-            DesireEffect::Culture(v, _) => EffectKind::Culture(v),
-            DesireEffect::Research(v, _) => EffectKind::Research(v),
+            DesireEffect::Unity(v, _) => EffectKind::Unity(v),
+            DesireEffect::Development(v, _) => EffectKind::Development(v),
             DesireEffect::Faith(v, _) => EffectKind::Faith(v),
             DesireEffect::Authority(v, _) => EffectKind::Authority(v),
             DesireEffect::Legitimacy(v, _) => EffectKind::Legitimacy(v),
@@ -361,8 +387,8 @@ impl DesireEffect {
             | DesireEffect::Satisfaction(_, b)
             | DesireEffect::SentimentFlat(_, _, b)
             | DesireEffect::SentimentRelative(_, _, b)
-            | DesireEffect::Culture(_, b)
-            | DesireEffect::Research(_, b)
+            | DesireEffect::Unity(_, b)
+            | DesireEffect::Development(_, b)
             | DesireEffect::Faith(_, b)
             | DesireEffect::Authority(_, b)
             | DesireEffect::Legitimacy(_, b) => b,
@@ -395,8 +421,8 @@ impl DesireEffect {
             DesireEffect::Satisfaction(amount, _) => amount,
             DesireEffect::SentimentFlat(_, amount, _) => amount,
             DesireEffect::SentimentRelative(_, relative, _) => relative,
-            DesireEffect::Culture(v, _)
-            | DesireEffect::Research(v, _)
+            DesireEffect::Unity(v, _)
+            | DesireEffect::Development(v, _)
             | DesireEffect::Faith(v, _)
             | DesireEffect::Authority(v, _)
             | DesireEffect::Legitimacy(v, _) => v,
@@ -410,33 +436,33 @@ impl DesireEffect {
 
     /// # Is Player Resource
     ///
-    /// True for culture / research / faith / authority / legitimacy arms.
+    /// True for unity / development / faith / authority / legitimacy arms.
     pub fn is_player_resource(self) -> bool {
-        matches!(
+        return matches!(
             self,
-            DesireEffect::Culture(..)
-                | DesireEffect::Research(..)
+            DesireEffect::Unity(..)
+                | DesireEffect::Development(..)
                 | DesireEffect::Faith(..)
                 | DesireEffect::Authority(..)
                 | DesireEffect::Legitimacy(..)
-        )
+        );
     }
 
     /// # Is Growth
     ///
     /// Growth arms left for growth phase.
     pub fn is_growth(self) -> bool {
-        matches!(
+        return matches!(
             self,
             DesireEffect::Birthrate(..) | DesireEffect::Mortality(..)
-        )
+        );
     }
 
     /// # Is Bonus Good
     ///
     /// Goods paid out at decay.
     pub fn is_bonus_good(self) -> bool {
-        matches!(self, DesireEffect::BonusGood(..))
+        return matches!(self, DesireEffect::BonusGood(..));
     }
 
     /// # Is Additive
@@ -444,7 +470,52 @@ impl DesireEffect {
     /// Additive yields that grow with pop size (player resources and bonus goods).
     /// Rates (birth/mortality) and percent-like arms (sentiment, satisfaction) do not.
     pub fn is_additive(self) -> bool {
-        self.is_player_resource() || self.is_bonus_good()
+        return self.is_player_resource() || self.is_bonus_good();
+    }
+
+    /// # To Pop Effect
+    ///
+    /// The same-day pop effect at `tiers` levels satisfied.
+    ///
+    /// `tier` is the desire's tier. Satisfaction, and a luxury player
+    /// resource, use [`Self::signed_strength_raw`]. Every other arm uses
+    /// [`Self::signed_strength`]. A strength of 0 is left out.
+    pub fn to_pop_effect(self, tier: usize, tiers: f64) -> Option<PopEffect> {
+        let strength = if matches!(self, DesireEffect::Satisfaction(..))
+            || (tier == 2 && self.is_player_resource())
+        {
+            self.signed_strength_raw(tiers)
+        } else {
+            self.signed_strength(tiers)
+        };
+        if strength == 0.0 {
+            return None;
+        }
+        Some(match self {
+            DesireEffect::Mortality(target, _, _) => PopEffect::Mortality(target, strength),
+            DesireEffect::Birthrate(_, _) => PopEffect::Birthrate(strength),
+            DesireEffect::BonusGood(good, _, _) => PopEffect::BonusGood {
+                good,
+                amount: strength,
+            },
+            DesireEffect::Satisfaction(_, _) => PopEffect::Satisfaction {
+                tier,
+                amount: strength,
+            },
+            DesireEffect::SentimentFlat(kind, _, _) => PopEffect::SentimentFlat {
+                kind,
+                delta: strength,
+            },
+            DesireEffect::SentimentRelative(kind, _, _) => PopEffect::SentimentRelative {
+                kind,
+                relative: strength,
+            },
+            DesireEffect::Unity(_, _) => PopEffect::Unity(strength),
+            DesireEffect::Development(_, _) => PopEffect::Development(strength),
+            DesireEffect::Faith(_, _) => PopEffect::Faith(strength),
+            DesireEffect::Authority(_, _) => PopEffect::Authority(strength),
+            DesireEffect::Legitimacy(_, _) => PopEffect::Legitimacy(strength),
+        })
     }
 
     /// # Scale By
@@ -464,8 +535,8 @@ impl DesireEffect {
             DesireEffect::SentimentRelative(sentiment_kind, v, b) => {
                 DesireEffect::SentimentRelative(*sentiment_kind, v * effect_scale, *b)
             }
-            DesireEffect::Culture(v, b) => DesireEffect::Culture(v * effect_scale, *b),
-            DesireEffect::Research(v, b) => DesireEffect::Research(v * effect_scale, *b),
+            DesireEffect::Unity(v, b) => DesireEffect::Unity(v * effect_scale, *b),
+            DesireEffect::Development(v, b) => DesireEffect::Development(v * effect_scale, *b),
             DesireEffect::Faith(v, b) => DesireEffect::Faith(v * effect_scale, *b),
             DesireEffect::Authority(v, b) => DesireEffect::Authority(v * effect_scale, *b),
             DesireEffect::Legitimacy(v, b) => DesireEffect::Legitimacy(v * effect_scale, *b),
@@ -490,8 +561,8 @@ impl PopEffect {
             PopEffect::SentimentRelative { kind, relative } => {
                 EffectKind::SentimentRelative { kind, relative }
             }
-            PopEffect::Culture(v) => EffectKind::Culture(v),
-            PopEffect::Research(v) => EffectKind::Research(v),
+            PopEffect::Unity(v) => EffectKind::Unity(v),
+            PopEffect::Development(v) => EffectKind::Development(v),
             PopEffect::Faith(v) => EffectKind::Faith(v),
             PopEffect::Authority(v) => EffectKind::Authority(v),
             PopEffect::Legitimacy(v) => EffectKind::Legitimacy(v),
@@ -502,28 +573,28 @@ impl PopEffect {
     ///
     /// Growth arms left for growth phase.
     pub fn is_growth(self) -> bool {
-        matches!(self, PopEffect::Birthrate(..) | PopEffect::Mortality(..))
+        return matches!(self, PopEffect::Birthrate(..) | PopEffect::Mortality(..));
     }
 
     /// # Is Bonus Good
     ///
     /// Goods paid out at decay.
     pub fn is_bonus_good(self) -> bool {
-        matches!(self, PopEffect::BonusGood { .. })
+        return matches!(self, PopEffect::BonusGood { .. });
     }
 
     /// # Is Player Resource
     ///
-    /// True for culture / research / faith / authority / legitimacy arms.
+    /// True for unity / development / faith / authority / legitimacy arms.
     pub fn is_player_resource(self) -> bool {
-        matches!(
+        return matches!(
             self,
-            PopEffect::Culture(_)
-                | PopEffect::Research(_)
+            PopEffect::Unity(_)
+                | PopEffect::Development(_)
                 | PopEffect::Faith(_)
                 | PopEffect::Authority(_)
                 | PopEffect::Legitimacy(_)
-        )
+        );
     }
 }
 
@@ -539,7 +610,7 @@ impl From<PopEffect> for EffectKind {
 impl DemographicEffect {
     /// # To Kind
     ///
-    /// The catalog arm. Research and culture rates use the household catalog names.
+    /// The catalog arm. Development and unity rates use the household catalog names.
     pub fn to_kind(self) -> EffectKind {
         match self {
             DemographicEffect::AdultEfficiency(v) => EffectKind::AdultEfficiency(v),
@@ -547,8 +618,8 @@ impl DemographicEffect {
             DemographicEffect::ChildEfficiency(v) => EffectKind::ChildEfficiency(v),
             DemographicEffect::BirthRate(v) => EffectKind::BirthRate(v),
             DemographicEffect::MortalityRate(target, v) => EffectKind::MortalityRate(target, v),
-            DemographicEffect::ResearchRate(v) => EffectKind::HouseholdResearchRate(v),
-            DemographicEffect::CultureRate(v) => EffectKind::HouseholdCultureRate(v),
+            DemographicEffect::DevelopmentRate(v) => EffectKind::HouseholdDevelopmentRate(v),
+            DemographicEffect::UnityRate(v) => EffectKind::HouseholdUnityRate(v),
         }
     }
 }

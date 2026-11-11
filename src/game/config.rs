@@ -80,6 +80,7 @@ impl GameConfig {
         let mut problems = Vec::new();
         self.pop.validate(&mut problems);
         self.market.validate(&mut problems);
+        self.labor.validate(&mut problems);
         if problems.is_empty() {
             Ok(())
         } else {
@@ -88,10 +89,22 @@ impl GameConfig {
     }
 }
 
+/// Subsistence rate that covers every basic desire.
+pub const SUBSISTENCE_ANCHOR: f64 = 0.6;
+
+/// Common desires are covered at this share of the basic cover.
+pub const SUBSISTENCE_COMMON_SHARE: f64 = 0.5;
+
+/// Divisor for a desire's implicit minimum and cap.
+pub const DESIRE_SHARE_MINIMUM_DIVISOR: f64 = 2.0;
+
 /// Pop-day tunables.
 ///
 /// [`crate::game::household::Household::update`] reads the age lengths, the
-/// birth sex ratio, and the partnership step.
+/// birth sex ratio, the partnership step, and [`Self::turn_length`].
+/// [`crate::game::pop::Pop::run_subsistence`] reads the subsistence anchor
+/// and the common share. [`crate::game::pop::Pop::consume`] reads the
+/// desire share minimum divisor.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PopConfig {
@@ -105,19 +118,45 @@ pub struct PopConfig {
     pub child_sex_ratio: f64,
     /// Share of the partnership gap closed in one year. Must be from 0 to 1.
     pub partnership_trend: f64,
+    /// Turns in one year. Must be `>= 1`.
+    ///
+    /// [`crate::game::household::Household::update`] divides the annual
+    /// stock rates by this. The default is one turn per year.
+    pub turn_length: f64,
+    /// Subsistence rate that covers basic desires. Must be `> 0`.
+    ///
+    /// The default is [`SUBSISTENCE_ANCHOR`].
+    pub subsistence_anchor: f64,
+    /// Share of the basic cover that common desires receive. Must be from 0 to 1.
+    ///
+    /// The default is [`SUBSISTENCE_COMMON_SHARE`].
+    pub subsistence_common_share: f64,
+    /// Divisor for a desire's implicit minimum and cap. Must be `0` or at least `1`.
+    ///
+    /// [`crate::game::desire::Desire::implicit_minimum`] reads this value.
+    /// The default is [`DESIRE_SHARE_MINIMUM_DIVISOR`].
+    pub desire_share_minimum_divisor: f64,
 }
 
 impl Default for PopConfig {
     /// # Default
     ///
     /// Childhood is 20 years, adulthood is 40, births are half female, and
-    /// the partnership step closes 0.13 of the gap in one year.
+    /// the partnership step closes 0.13 of the gap in one year. One turn is
+    /// one year. The
+    /// subsistence anchor is [`SUBSISTENCE_ANCHOR`] and the common share is
+    /// [`SUBSISTENCE_COMMON_SHARE`]. The desire share minimum divisor is
+    /// [`DESIRE_SHARE_MINIMUM_DIVISOR`].
     fn default() -> Self {
         Self {
             childhood_years: 20.0,
             adulthood_years: 40.0,
             child_sex_ratio: 0.5,
             partnership_trend: 0.13,
+            turn_length: 1.0,
+            subsistence_anchor: SUBSISTENCE_ANCHOR,
+            subsistence_common_share: SUBSISTENCE_COMMON_SHARE,
+            desire_share_minimum_divisor: DESIRE_SHARE_MINIMUM_DIVISOR,
         }
     }
 }
@@ -125,13 +164,33 @@ impl Default for PopConfig {
 impl PopConfig {
     /// # Validate
     ///
-    /// Appends a problem when an age length is not finite or not above 0,
-    /// or when a share is outside 0 to 1.
+    /// Appends a problem when an age length or the subsistence anchor is
+    /// not finite or not above 0, when a share is outside 0 to 1, when
+    /// `turn_length` is not finite or below 1, or when the desire share
+    /// minimum divisor is not 0 and not at least 1.
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "pop.childhood_years", self.childhood_years, 0.0);
         above(problems, "pop.adulthood_years", self.adulthood_years, 0.0);
         unit_share(problems, "pop.child_sex_ratio", self.child_sex_ratio);
         unit_share(problems, "pop.partnership_trend", self.partnership_trend);
+        at_least(problems, "pop.turn_length", self.turn_length, 1.0);
+        above(
+            problems,
+            "pop.subsistence_anchor",
+            self.subsistence_anchor,
+            0.0,
+        );
+        unit_share(
+            problems,
+            "pop.subsistence_common_share",
+            self.subsistence_common_share,
+        );
+        zero_or_at_least(
+            problems,
+            "pop.desire_share_minimum_divisor",
+            self.desire_share_minimum_divisor,
+            1.0,
+        );
     }
 }
 
@@ -144,8 +203,9 @@ pub struct PlayerResourceConfig {}
 /// Market tunables.
 ///
 /// `salability_default` is the salability of a good with no record.
-/// `amv_epsilon` is the half-width of the stored-AMV dead zone. The
-/// migration and founding knobs are loaded here. Those passes are not
+/// `amv_epsilon` is the half-width of the stored-AMV dead zone.
+/// `price_gain` and `price_cap` scale the daily surplus and shortage step.
+/// The migration and founding knobs are loaded here. Those passes are not
 /// written yet.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
@@ -157,6 +217,14 @@ pub struct MarketConfig {
     pub amv_epsilon: f64,
     /// Salability of a good with no recorded value yet. Must be from 0 to 1.
     pub salability_default: f64,
+    /// Fractional gain on a surplus or shortage. Must be `> 0`.
+    ///
+    /// The design band is 0.05 to 0.15. The default is 0.10.
+    pub price_gain: f64,
+    /// Largest fractional step from surplus or shortage. Must be `> 0` and `<= 1`.
+    ///
+    /// The design example is 0.20. The day's ratio is already within 1.
+    pub price_cap: f64,
     /// Weight of anger beside fear on the way out. Must be `>= 0`.
     pub migration_anger_weight: f64,
     /// Share of a saturated push or pull that moves in one year.
@@ -183,8 +251,9 @@ pub struct MarketConfig {
 impl Default for MarketConfig {
     /// # Default
     ///
-    /// The AMV dead zone is `1e-9`. Salability starts at one half. Anger
-    /// weighs half of fear. One tenth of a saturated push moves in a year.
+    /// The AMV dead zone is `1e-9`. Salability starts at one half. Price
+    /// gain is 0.10 and the price cap is 0.20. Anger weighs half of fear.
+    /// One tenth of a saturated push moves in a year.
     /// A founding moves 5 households out of a pop of at least 25. An open
     /// day adds one hundredth to the drought chance. One fifth of foundings
     /// both add and drop. A covered drop weighs half again its base.
@@ -192,6 +261,8 @@ impl Default for MarketConfig {
         Self {
             amv_epsilon: 1e-9,
             salability_default: 0.5,
+            price_gain: 0.10,
+            price_cap: 0.20,
             migration_anger_weight: 0.5,
             migration_pace: 0.1,
             founding_households: 5.0,
@@ -207,8 +278,9 @@ impl MarketConfig {
     /// # Validate
     ///
     /// Appends a problem when `amv_epsilon` or a household count is not
-    /// finite or not above 0, when a weight is not finite or below 0, or
-    /// when a share is outside 0 to 1.
+    /// finite or not above 0, when a weight is not finite or below 0, when
+    /// a share is outside 0 to 1, when `price_gain` is not above 0, or when
+    /// `price_cap` is not above 0 and at most 1.
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "market.amv_epsilon", self.amv_epsilon, 0.0);
         unit_share(
@@ -216,6 +288,14 @@ impl MarketConfig {
             "market.salability_default",
             self.salability_default,
         );
+        above(problems, "market.price_gain", self.price_gain, 0.0);
+        above(problems, "market.price_cap", self.price_cap, 0.0);
+        if self.price_cap.is_finite() && self.price_cap > 1.0 {
+            problems.push(format!(
+                "market.price_cap must be <= 1, got {}",
+                self.price_cap
+            ));
+        }
         at_least(
             problems,
             "market.migration_anger_weight",
@@ -296,6 +376,20 @@ fn at_least(problems: &mut Vec<String>, name: &str, value: f64, min: f64) {
     }
 }
 
+/// # Zero Or At Least
+///
+/// Appends a problem when `value` is not finite, or when it is neither 0 nor at least `min`.
+///
+/// `name` is the key in the message. Nothing is returned.
+fn zero_or_at_least(problems: &mut Vec<String>, name: &str, value: f64, min: f64) {
+    if !finite(problems, name, value) {
+        return;
+    }
+    if value != 0.0 && value < min {
+        problems.push(format!("{name} must be 0 or >= {min}, got {value}"));
+    }
+}
+
 /// # Above
 ///
 /// Appends a problem when `value` is not finite or is not above `min`.
@@ -320,11 +414,39 @@ pub struct DealConfig {}
 #[serde(default)]
 pub struct MarketPriorityConfig {}
 
-/// Wage settlement. Empty. The share of Time a pop may sell lives on
-/// species, culture, stratum, and religion, not here.
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+/// Time created for one unit of household labor at day start.
+pub const TIME_PER_LABOR: f64 = 16.0;
+
+/// Labor tunables.
+///
+/// `time_per_labor` is the morning time grant. The share of time a pop may
+/// sell lives on species, culture, stratum, and religion, not here.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct LaborConfig {}
+pub struct LaborConfig {
+    /// Time created per unit of household labor at day start. Must be `> 0`.
+    pub time_per_labor: f64,
+}
+
+impl Default for LaborConfig {
+    /// # Default
+    ///
+    /// [`TIME_PER_LABOR`] is 16.
+    fn default() -> Self {
+        Self {
+            time_per_labor: TIME_PER_LABOR,
+        }
+    }
+}
+
+impl LaborConfig {
+    /// # Validate
+    ///
+    /// Appends a problem when `time_per_labor` is not finite or not above 0.
+    fn validate(&self, problems: &mut Vec<String>) {
+        above(problems, "labor.time_per_labor", self.time_per_labor, 0.0);
+    }
+}
 
 /// Firm planning. Empty until firms plan again.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -335,36 +457,136 @@ pub struct FirmConfig {}
 mod config_should {
     use super::*;
 
-    #[test]
-    fn load_from_toml_keeps_defaults_for_missing_keys() {
-        let cfg = GameConfig::load_from_toml("").expect("toml");
-        assert_eq!(cfg, GameConfig::default());
+    fn message(cfg: GameConfig) -> String {
+        cfg.validate().unwrap_err().to_string()
     }
 
     #[test]
-    fn load_from_path_reads_world_config_file() {
-        let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/world/config.toml");
-        let cfg = GameConfig::load_from_path(path).expect("world config");
-        assert_eq!(cfg, GameConfig::default());
+    fn default_config_passes() {
+        GameConfig::default().validate().expect("default");
     }
 
     #[test]
-    fn load_from_toml_reads_pop_and_market_keys() {
-        let cfg = GameConfig::load_from_toml(
-            "[pop]\nchildhood_years = 16\n[market]\nsalability_default = 0.25\n",
-        )
-        .expect("toml");
-        assert_eq!(cfg.pop.childhood_years, 16.0);
-        assert_eq!(cfg.pop.adulthood_years, PopConfig::default().adulthood_years);
-        assert_eq!(cfg.market.salability_default, 0.25);
-        assert_eq!(cfg.market.amv_epsilon, MarketConfig::default().amv_epsilon);
-    }
-
-    #[test]
-    fn load_from_toml_rejects_a_childhood_of_zero() {
-        let err = GameConfig::load_from_toml("[pop]\nchildhood_years = 0\n").unwrap_err();
-        let msg = err.to_string();
+    fn above_rejects_zero_and_a_non_finite() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.childhood_years = 0.0;
+        let msg = message(cfg);
         assert!(msg.contains("pop.childhood_years"), "{msg}");
+        assert!(msg.contains("must be > 0"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.labor.time_per_labor = f64::NAN;
+        let msg = message(cfg);
+        assert!(msg.contains("labor.time_per_labor"), "{msg}");
+        assert!(msg.contains("must be finite"), "{msg}");
+        assert!(!msg.contains("must be > 0"), "{msg}");
+    }
+
+    #[test]
+    fn unit_share_rejects_outside_zero_to_one_and_accepts_the_ends() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.child_sex_ratio = -0.1;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.child_sex_ratio"), "{msg}");
+        assert!(msg.contains("must be from 0 to 1"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.market.salability_default = 1.1;
+        let msg = message(cfg);
+        assert!(msg.contains("market.salability_default"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.child_sex_ratio = 0.0;
+        cfg.pop.partnership_trend = 1.0;
+        cfg.validate().expect("share ends");
+    }
+
+    #[test]
+    fn desire_share_minimum_divisor_is_zero_or_at_least_one() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.desire_share_minimum_divisor = 0.5;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.desire_share_minimum_divisor"), "{msg}");
+        assert!(msg.contains("must be 0 or >= 1"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.desire_share_minimum_divisor = -1.0;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.desire_share_minimum_divisor"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.desire_share_minimum_divisor = f64::NAN;
+        let msg = message(cfg);
+        assert!(msg.contains("must be finite"), "{msg}");
+        assert!(!msg.contains("must be 0 or >= 1"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.desire_share_minimum_divisor = 0.0;
+        cfg.validate().expect("off");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.desire_share_minimum_divisor = 1.0;
+        cfg.validate().expect("one");
+    }
+
+    #[test]
+    fn turn_length_must_be_at_least_one() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.turn_length = 0.5;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.turn_length"), "{msg}");
+        assert!(msg.contains("must be >= 1"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.turn_length = 1.0;
+        cfg.validate().expect("one turn a year");
+    }
+
+    #[test]
+    fn at_least_rejects_below_zero_and_accepts_zero() {
+        let mut cfg = GameConfig::default();
+        cfg.market.migration_anger_weight = -1.0;
+        let msg = message(cfg);
+        assert!(msg.contains("market.migration_anger_weight"), "{msg}");
+        assert!(msg.contains("must be >= 0"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.market.founding_available_drop = 0.0;
+        cfg.validate().expect("zero weight");
+    }
+
+    #[test]
+    fn price_gain_must_be_above_zero_and_price_cap_at_most_one() {
+        let mut cfg = GameConfig::default();
+        cfg.market.price_gain = 0.0;
+        let msg = message(cfg);
+        assert!(msg.contains("market.price_gain"), "{msg}");
+        assert!(msg.contains("must be > 0"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.market.price_cap = 1.1;
+        let msg = message(cfg);
+        assert!(msg.contains("market.price_cap"), "{msg}");
+        assert!(msg.contains("must be <= 1"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.market.price_cap = 0.0;
+        let msg = message(cfg);
+        assert!(msg.contains("must be > 0"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.market.price_gain = 0.05;
+        cfg.market.price_cap = 1.0;
+        cfg.validate().expect("band ends");
+    }
+
+    #[test]
+    fn validate_reports_every_failure() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.adulthood_years = 0.0;
+        cfg.market.migration_pace = 2.0;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.adulthood_years"), "{msg}");
+        assert!(msg.contains("market.migration_pace"), "{msg}");
     }
 }

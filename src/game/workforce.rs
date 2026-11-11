@@ -173,15 +173,15 @@ impl PaymentTerm {
     ///
     /// Raw units owed at `hours` (not rounded).
     ///
-    /// A non-positive amount owes nothing. A flat term owes its amount.
-    /// Any other term owes `amount * hours`, and hours below 0 count as 0.
+    /// `amount` and `hours` are finite and at least 0. A flat term owes its
+    /// amount. Any other term owes `amount * hours`.
     pub fn quantity_for(&self, hours: f64) -> f64 {
-        if self.amount <= 0.0 {
-            0.0
-        } else if self.flat {
+        debug_assert!(self.amount.is_finite() && self.amount >= 0.0);
+        debug_assert!(hours.is_finite() && hours >= 0.0);
+        if self.flat {
             self.amount
         } else {
-            self.amount * hours.max(0.0)
+            self.amount * hours
         }
     }
 
@@ -189,10 +189,10 @@ impl PaymentTerm {
     ///
     /// Whole-unit quantity owed at `hours`.
     ///
-    /// The raw amount is [`Self::quantity_for`]. A non-positive total is 0.
-    /// A positive total rounds away from zero.
+    /// The raw amount is [`Self::quantity_for`]. It rounds away from zero.
     pub fn promised_qty(&self, hours: f64) -> f64 {
         let raw = self.quantity_for(hours);
-        if raw <= 0.0 { 0.0 } else { whole_units_up(raw) }
+        debug_assert!(raw.is_finite() && raw >= 0.0);
+        whole_units_up(raw)
     }
 }

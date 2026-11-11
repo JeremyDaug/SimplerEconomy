@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use hexx::Hex;
 
 use crate::game::factuals::Factuals;
+use crate::game::market::Market;
+use crate::game::pop::SellOffer;
 use crate::game::good::GoodTag;
 use crate::game::{actor::Actor, firmorganization::FirmOrganization, workforce::Workforce};
 
@@ -167,23 +169,30 @@ impl Firm {
         let mut rot: HashMap<usize, (f64, f64)> = HashMap::new();
 
         for (&good_id, row) in self.property.iter_mut() {
-            if row.used != 0.0 {
+            debug_assert!(row.used.is_finite() && row.used >= 0.0);
+            if row.used > 0.0 {
                 row.quantity += row.used;
                 row.used = 0.0;
             }
 
-            let volume = (row.quantity.max(0.0) + row.consumed.max(0.0)).max(0.0);
+            debug_assert!(row.quantity.is_finite() && row.quantity >= 0.0);
+            debug_assert!(row.consumed.is_finite() && row.consumed >= 0.0);
+            debug_assert!(row.fresh.is_finite() && row.fresh >= 0.0);
+            debug_assert!(row.fresh <= row.quantity);
+            let volume = row.quantity + row.consumed;
             let good = factuals.find_good(good_id);
             let exposure = good.tags.contains(&GoodTag::Exposure);
             // Fresh stock stays whole. Only the older pile rots.
-            let fresh = row.fresh.max(0.0).min(row.quantity.max(0.0));
-            let aging = (row.quantity - fresh).max(0.0);
+            let fresh = row.fresh;
+            let aging = row.quantity - fresh;
+            debug_assert!(good.decay_rate.is_finite() && good.decay_rate >= 0.0);
             let mut lost = 0.0;
             if !exposure && good.decay_rate > 0.0 && aging > 0.0 {
                 lost = aging * good.decay_rate;
                 row.quantity -= lost;
                 for (&byproduct, &ratio) in &good.decay_result {
-                    if ratio != 0.0 && lost != 0.0 {
+                    debug_assert!(ratio.is_finite() && ratio >= 0.0);
+                    if ratio > 0.0 && lost > 0.0 {
                         *gains.entry(byproduct).or_insert(0.0) += lost * ratio;
                     }
                 }
@@ -241,6 +250,43 @@ impl Firm {
             .map(|row| row.quantity)
             .unwrap_or(0.0)
     }
+
+    /// # Produce
+    ///
+    /// Runs this firm's production.
+    ///
+    /// `factuals` supplies the world. The pass is not written yet.
+    pub fn produce(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+    }
+
+    /// # Market Day
+    ///
+    /// This firm's buys in `market`.
+    ///
+    /// `factuals` supplies the world. `offers` are the sell offers already
+    /// posted. The pass is not written yet.
+    pub fn market_day(&mut self, market: &Market, factuals: &Factuals, offers: &[SellOffer]) {
+        let _ = (self, market, factuals, offers);
+    }
+
+    /// # Record Keeping
+    ///
+    /// Rolls this firm's day into its records.
+    ///
+    /// `factuals` supplies the world. The pass is not written yet.
+    pub fn record_keeping(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+    }
+
+    /// # Planning
+    ///
+    /// Runs this firm's planning.
+    ///
+    /// `factuals` supplies the world. The pass is not written yet.
+    pub fn planning(&mut self, factuals: &Factuals) {
+        let _ = (self, factuals);
+    }
 }
 
 impl Owners {
@@ -296,13 +342,14 @@ impl FirmPRow {
     ///
     /// Fraction of `quantity` that is fresh.
     ///
-    /// `fresh` is clamped into `0..=quantity`, then divided by `quantity`.
-    /// Returns `0` when `quantity` is `0`.
+    /// `fresh` is a portion of `quantity`. Returns `0` when `quantity` is `0`.
     pub fn fresh_share(&self) -> f64 {
-        let quantity = self.quantity.max(0.0);
-        if quantity == 0.0 {
+        debug_assert!(self.quantity.is_finite() && self.quantity >= 0.0);
+        debug_assert!(self.fresh.is_finite() && self.fresh >= 0.0);
+        debug_assert!(self.fresh <= self.quantity);
+        if self.quantity == 0.0 {
             return 0.0;
         }
-        self.fresh.max(0.0).min(quantity) / quantity
+        self.fresh / self.quantity
     }
 }
