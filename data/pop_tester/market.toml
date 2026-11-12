@@ -1,0 +1,6 @@
+# Market for examples/pop_tester. Currency names are world good names.
+# Pops are ids from pops.toml. An omitted pop list is every loaded pop.
+
+id = 1
+currencies = ["grain"]
+pops = [1, 2]

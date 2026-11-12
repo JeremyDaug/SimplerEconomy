@@ -90,6 +90,33 @@ impl Process {
         self.complexity < 1.0
     }
 
+    /// # Is Labor
+    ///
+    /// Whether this process carries [`ProcessTag::Labor`].
+    ///
+    /// Returns that check.
+    pub fn is_labor(&self) -> bool {
+        self.process_tags
+            .iter()
+            .any(|tag| matches!(tag, ProcessTag::Labor))
+    }
+
+    /// # Required Time
+    ///
+    /// Required good [`TIME`] one iteration consumes.
+    ///
+    /// Optional time is left out. Returns the sum.
+    pub fn required_time(&self) -> f64 {
+        let time: f64 = self
+            .inputs
+            .iter()
+            .filter(|input| input.good == TIME && !input.is_optional())
+            .map(|input| input.amount)
+            .sum();
+        debug_assert!(time.is_finite() && time >= 0.0);
+        time
+    }
+
     /// # Variable Goods
     ///
     /// Variable outputs of this process, excluding time.

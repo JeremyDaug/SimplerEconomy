@@ -195,15 +195,37 @@ impl Actors {
             }
         });
     }
+
+    /// # Sentiments
+    ///
+    /// Runs sentiments for each pop.
+    ///
+    /// `markets` are the markets a pop may read. Each pop runs on its own
+    /// thread. A pop listed on a market prices its wealth against that
+    /// market. The mood is updated first, then stored satisfaction is dropped.
+    pub fn sentiments(&mut self, markets: &HashMap<usize, Market>) {
+        let homes = pop_markets(markets);
+        let pops = &mut self.pops;
+        std::thread::scope(|scope| {
+            for pop in pops.values_mut() {
+                let market = homes.get(&pop.id).and_then(|id| markets.get(id));
+                scope.spawn(move || {
+                    pop.update_sentiments(market);
+                    pop.calculate_sol();
+                });
+            }
+        });
+    }
 }
 
 /// # Pop Markets
 ///
 /// Maps each pop id to the market that lists it.
 ///
-/// `markets` is the set passed to [`Actors::start_day`] and
-/// [`Actors::planning`]. A pop listed in several markets maps to the lowest
-/// market id. A pop listed in none is absent.
+/// `markets` is the set passed to [`Actors::start_day`],
+/// [`Actors::planning`], and [`Actors::sentiments`]. A pop listed in
+/// several markets maps to the lowest market id. A pop listed in none is
+/// absent.
 fn pop_markets(markets: &HashMap<usize, Market>) -> HashMap<usize, usize> {
     let mut homes = HashMap::new();
     let mut ids: Vec<usize> = markets.keys().copied().collect();

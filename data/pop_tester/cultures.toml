@@ -1,0 +1,28 @@
+# Cultures for the pop tester. A desire names a platonic desire in
+# desires.toml. Tier 0 is basic, 1 is common, and 2 is luxury. Amount is
+# the satisfaction asked of one step of that desire's scalar.
+
+[[cultures]]
+id = 1
+name = "village"
+
+[[cultures.desires]]
+id = 1
+desire = "food"
+tier = 1
+priority = 0
+amount = 5
+
+[[cultures.desires]]
+id = 2
+desire = "clothing"
+tier = 1
+priority = 1
+amount = 5
+
+[[cultures.desires]]
+id = 3
+desire = "housing"
+tier = 1
+priority = 2
+amount = 5

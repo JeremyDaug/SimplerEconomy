@@ -12,13 +12,13 @@ Do not invent a milestone. Do not start work from the version list in `docs/Over
 
 ## This tree
 
-Rust 2024 library, crate `simpler_economy`. No binary. No Bevy in simulation code. Use `std` collections. `hexx` is the hex map. Bring Bevy back with a client.
+Rust 2024 library, crate `simpler_economy`. No library binary. No Bevy in simulation code. Use `std` collections. `hexx` is the hex map. Bring Bevy back with a client.
 
 World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Goods and processes are the live systems. Their loaders are `Good::load_from_toml` and `Process::load_from_toml`. `Factuals` loads a world folder from those, then config. The load note is `docs/handoff/loaders.md`.
 
 `Household` stays whole. Other game types keep their fields and stay method stubs. Do not fill a stub unless asked. `Unit` and `TechTree` stay empty.
 
-There is no example binary.
+The pop tester is `examples/pop_tester`. It runs one pop through the turn.
 
 Whole goods use `trunc` or `floor` at the call. `whole_units_up` rounds a wage basket away from zero.
 

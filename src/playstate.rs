@@ -109,7 +109,8 @@ impl PlayState {
     ///
     /// The update is [`Pop::apply_demographic_changes`]. Bonuses are
     /// dispensed later: pop change bonuses in growth, satisfaction and
-    /// sentiments in sentiments. Those bonuses are not written yet.
+    /// sentiments in [`Self::sentiments`]. Pop change bonuses are not
+    /// written yet.
     fn apply_player_demographic_changes(&mut self) {
         let factuals = &self.factuals;
         for pop in self.actors.pops.values_mut() {
@@ -241,9 +242,10 @@ impl PlayState {
     /// Runs pop sentiments. Satisfaction and sentiment bonuses are
     /// dispensed here.
     ///
-    /// Takes this play state. The pass is not written yet.
+    /// Hands the walk to [`Actors::sentiments`], with the markets a pop
+    /// reads for wealth.
     fn sentiments(&mut self) {
-        let _ = self;
+        self.actors.sentiments(&self.map_data.markets);
     }
 
     /// # Growth

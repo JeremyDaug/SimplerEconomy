@@ -1,0 +1,24 @@
+# Pops for examples/pop_tester. Species is a name from species.toml.
+# Process names are world names. A target of 0 does not run. An omitted
+# target runs as many iterations as the inputs allow. A job holds two lines.
+
+# Two pops, each with one craft. Bread and cabins are common goods, so
+# each pop has to buy the one it does not make.
+
+[[pops]]
+id = 1
+species = "human"
+culture = "village"
+
+[[pops.lines]]
+process = "make bread"
+target = 0
+
+[[pops]]
+id = 2
+species = "human"
+culture = "village"
+
+[[pops.lines]]
+process = "make cabins"
+target = 0

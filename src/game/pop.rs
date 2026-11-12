@@ -1,17 +1,18 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
+use crate::game::effects::DesireEffect;
 use crate::game::factuals::Factuals;
 use crate::game::good::{GoodTag, TIME};
 use crate::game::market::{Market, MarketHistory};
-use crate::game::process::{InputType, Process, ProcessResult, ProcessTag};
+use crate::game::process::{InputType, Process, ProcessResult};
 use crate::game::scalingfactor::ScalingFactor;
+use crate::game::sentiment::{Sentiment, SentimentKind, SentimentMod};
 use crate::game::{
     desire::{Desire, DesireTargetType},
     household::Household,
-    job::Job,
-    sentiment::Sentiment,
+    job::{Job, JobLine},
 };
 
 pub use crate::game::effects::PopEffect;
@@ -84,6 +85,11 @@ pub struct Pop {
 
     /// Mood shares. [`Self::growth_phase`] scales births per woman from these.
     pub sentiment: Sentiment,
+    /// Recent standards of living, oldest first.
+    ///
+    /// [`Self::update_sentiments`] appends today's reading and keeps
+    /// [`SOL_AVERAGE_DAYS`] of them.
+    sol_samples: VecDeque<f64>,
 
     /// Day-end records. The struct is a placeholder.
     pub records: PopRecords,
@@ -145,12 +151,28 @@ enum SatisfyProgress {
 /// 
 /// This may be replaced by a more flexible system later.
 #[derive(Debug, Clone, Copy)]
-enum SubsistenceType {
+pub enum SubsistenceType {
     // Default option, used for agrarian
     Basic,
     Nomadic,
     Tribal,
     Vagrant
+}
+
+impl SubsistenceType {
+    /// # Name
+    ///
+    /// The short name of this subsistence.
+    ///
+    /// Returns `basic`, `nomadic`, `tribal`, or `vagrant`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Nomadic => "nomadic",
+            Self::Tribal => "tribal",
+            Self::Vagrant => "vagrant",
+        }
+    }
 }
 
 impl MigrantGroup {
@@ -198,6 +220,7 @@ impl Pop {
             migration: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
+            sol_samples: VecDeque::new(),
             records: PopRecords::default(),
         }
     }
@@ -284,18 +307,15 @@ impl Pop {
     /// Adds the day's generated goods, each scaled by the scaling factor given.
     ///
     /// `new_goods` is pairs of good id and scaling factor. Each amount is this
-    /// pop's factor for that scaling, added to `quantity`. A missing row is
-    /// created. A positive amount is this morning's creation of that good.
-    /// The creation record is replaced by this call.
-    ///
-    /// Returns each good id and the amount added, in the same order.
+    /// pop's factor for that scaling. `quantity` and `produced` each gain
+    /// that amount. A missing row is created. Returns each good id and the
+    /// amount added, in the same order.
     pub fn start_day(&mut self, new_goods: &[(usize, ScalingFactor)]) -> Vec<(usize, f64)> {
         let mut added = Vec::with_capacity(new_goods.len());
         for (good_id, scaling) in new_goods {
             let amount = self.get_scaling_factor(*scaling);
-            let val = self.property
-                .entry(*good_id)
-                .or_insert(PopPRow::new(amount));
+            let val = self.property.entry(*good_id).or_default();
+            val.quantity += amount;
             val.produced += amount;
             added.push((*good_id, amount));
         }
@@ -730,6 +750,15 @@ impl Pop {
         cost
     }
 
+    /// # Savings
+    ///
+    /// Currency set aside, keyed by good id.
+    ///
+    /// Returns that map.
+    pub fn savings(&self) -> &HashMap<usize, f64> {
+        &self.savings
+    }
+
     /// # Savings Value
     ///
     /// Currency already saved, priced in `unit`.
@@ -773,6 +802,7 @@ impl Pop {
     /// Removes `amount` of `good` from property and stores it in savings.
     ///
     /// `amount` is positive and no greater than the unreserved quantity.
+    /// Aged units leave before fresh.
     fn move_to_savings(&mut self, good: usize, amount: f64) {
         debug_assert!(amount.is_finite() && amount > 0.0);
         debug_assert!(amount <= self.available(good));
@@ -780,6 +810,7 @@ impl Pop {
             .property
             .get_mut(&good)
             .expect("available property has a row");
+        row.spend_aged_first(amount);
         row.quantity -= amount;
         *self.savings.entry(good).or_insert(0.0) += amount;
     }
@@ -842,7 +873,9 @@ impl Pop {
     /// Runs this pop's job.
     ///
     /// `factuals` supplies the processes. The lines run in order. A missing
-    /// process is skipped. `Some(0)` does not run. Subsistence is not run.
+    /// process is skipped. `Some(0)` does not run. Each line records the
+    /// iterations it was asked for and the iterations it finished.
+    /// Subsistence is not run.
     pub fn produce(&mut self, factuals: &Factuals) {
         let lines: Vec<(usize, Option<f64>, Vec<usize>)> = self
             .job
@@ -850,14 +883,18 @@ impl Pop {
             .iter()
             .map(|line| (line.process, line.target, line.inputs.clone()))
             .collect();
-        for (process_id, target, optional) in lines {
+        for (index, (process_id, target, optional)) in lines.into_iter().enumerate() {
             let Some(process) = factuals.get_process(process_id) else {
+                self.record_run(index, 0.0, 0.0);
                 continue;
             };
+            // The ask is measured before the run spends inputs.
+            let attempted = self.planned_iterations(process, target);
             let run_target = match target {
                 Some(n) => {
                     debug_assert!(n.is_finite() && n >= 0.0);
                     if n == 0.0 {
+                        self.record_run(index, 0.0, 0.0);
                         continue;
                     }
                     Some(n)
@@ -867,7 +904,21 @@ impl Pop {
             let inputs = self.job_inputs(process, &optional);
             let result = process.do_process(&inputs, run_target, factuals);
             self.apply_job_result(&result);
+            self.record_run(index, attempted, result.iterations);
         }
+    }
+
+    /// # Record Run
+    ///
+    /// Stores one job line's ask and its finish.
+    ///
+    /// `index` selects the line. `attempted` is the iterations it was asked
+    /// for. `completed` is the iterations it finished.
+    fn record_run(&mut self, index: usize, attempted: f64, completed: f64) {
+        debug_assert!(attempted.is_finite() && attempted >= 0.0);
+        debug_assert!(completed.is_finite() && completed >= 0.0);
+        self.job.lines[index].attempted = attempted;
+        self.job.lines[index].completed = completed;
     }
 
     /// # Job Inputs
@@ -966,8 +1017,8 @@ impl Pop {
     /// A tier runs only when every desire in the tier before it covers its
     /// level. Luxury repeats one level at a time until a level cannot be
     /// finished. One level is the desire's amount. Satisfaction already
-    /// held covers the earlier levels of that desire first. Each desire
-    /// effect is then stored on this pop.
+    /// held covers the earlier levels of that desire first. Effects other
+    /// steps spend are then stored by [`Self::record_desire_effects`].
     pub fn consume(&mut self, factuals: &Factuals) {
         if self.consume_tier(factuals, 0, 1.0) && self.consume_tier(factuals, 1, 1.0) {
             let mut level = 1.0;
@@ -983,12 +1034,13 @@ impl Pop {
 
     /// # Record Desire Effects
     ///
-    /// Stores each desire effect on this pop.
+    /// Stores the desire effects growth, decay, and resource harvest spend.
     ///
     /// The tier index is the desire's tier. Levels met are
     /// [`Desire::tiers_satisfied`].
     /// [`crate::game::effects::DesireEffect::to_pop_effect`] decides the
-    /// stored magnitude. A desire with no effects is skipped.
+    /// stored magnitude. Satisfaction and sentiment stay on the desire.
+    /// A desire with no effects is skipped.
     fn record_desire_effects(&mut self) {
         let mut recorded = Vec::new();
         for (tier, desires) in self.desires.iter().enumerate() {
@@ -999,6 +1051,14 @@ impl Pop {
                 debug_assert!(desire.amount.is_finite() && desire.amount > 0.0);
                 let tiers = desire.tiers_satisfied();
                 for effect in &desire.effect {
+                    if matches!(
+                        effect,
+                        DesireEffect::Satisfaction(..)
+                            | DesireEffect::SentimentFlat(..)
+                            | DesireEffect::SentimentRelative(..)
+                    ) {
+                        continue;
+                    }
                     if let Some(effect) = effect.to_pop_effect(tier, tiers) {
                         recorded.push(effect);
                     }
@@ -1273,7 +1333,8 @@ impl Pop {
     /// The ratio is the current people divided by [`Self::pre_growth_population`].
     /// Each set plan target and each desire amount is multiplied by that ratio.
     /// An open plan stays open. Satisfaction and the goods in each bucket stay.
-    /// The stored population becomes the current one.
+    /// The stored population becomes the current one. [`Self::planning`] then
+    /// fits those targets to whole steps of the labor grant.
     pub fn rescale(&mut self) {
         let new_pop = self.demographics.total_population();
         let old_pop = self.pre_growth_population;
@@ -1408,17 +1469,560 @@ impl Pop {
         }
     }
 
+    /// # Update Sentiments
+    ///
+    /// Moves this pop's mood from today's satisfaction, wealth, and living.
+    ///
+    /// `market` prices wealth. A missing market prices every good at 1.
+    /// Desire sentiment arms are read from each desire. Stored sentiment
+    /// arms are applied and removed. Other stored effects stay.
+    /// [`Self::push_living_mods`] then adds the tier, wealth, and living
+    /// flats, and [`Self::push_contentment_pull`] moves each other emotion
+    /// toward contentment. The list is applied together through
+    /// [`Sentiment::apply_mods_simultaniously`]. An empty list leaves the
+    /// sentiment. Today's living is recorded after that.
+    pub fn update_sentiments(&mut self, market: Option<&Market>) {
+        let mut mods = Vec::new();
+        // Desire arms, from the satisfaction consume wrote.
+        for tier in &self.desires {
+            for desire in tier {
+                let sat = desire.tiers_satisfied();
+                if !sat.is_finite() {
+                    continue;
+                }
+                for effect in &desire.effect {
+                    match *effect {
+                        DesireEffect::SentimentFlat(kind, _, _) => {
+                            mods.push(SentimentMod::Flat {
+                                kind,
+                                delta: effect.signed_strength(sat),
+                            });
+                        }
+                        DesireEffect::SentimentRelative(kind, _, _) => {
+                            mods.push(SentimentMod::Relative {
+                                kind,
+                                relative: effect.signed_strength(sat),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Stored arms are spent here. Other same-day effects stay.
+        let mut kept = Vec::new();
+        for effect in self.stored_effects.drain(..) {
+            match effect {
+                PopEffect::SentimentFlat { kind, delta } => {
+                    mods.push(SentimentMod::Flat { kind, delta });
+                }
+                PopEffect::SentimentRelative { kind, relative } => {
+                    mods.push(SentimentMod::Relative { kind, relative });
+                }
+                other => kept.push(other),
+            }
+        }
+        self.stored_effects = kept;
+        self.push_living_mods(market, &mut mods);
+        self.push_contentment_pull(&mut mods);
+        if !mods.is_empty() {
+            self.sentiment.apply_mods_simultaniously(mods);
+        }
+        self.record_sol();
+    }
+
+    /// # Standard of Living
+    ///
+    /// The sum [`Self::calculate_sol`] records, without removing stored
+    /// satisfaction or writing the record.
+    ///
+    /// No desires returns `+inf`. Otherwise each desire adds its tiers
+    /// satisfied and its bonus satisfaction, then each stored
+    /// [`PopEffect::Satisfaction`] amount is added. Returns that sum.
+    pub(crate) fn standard_of_living(&self) -> f64 {
+        if self.desires.iter().all(|tier| tier.is_empty()) {
+            return f64::INFINITY;
+        }
+        let mut sum = 0.0;
+        for tier in &self.desires {
+            for desire in tier {
+                sum += desire.tiers_satisfied();
+                sum += desire.get_bonus_satisfaction();
+            }
+        }
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { amount, .. } = *effect {
+                sum += amount;
+            }
+        }
+        sum
+    }
+
+    /// # Recorded Living
+    ///
+    /// The latest standard of living [`Self::update_sentiments`] stored.
+    ///
+    /// No sample yet is `None`. Returns that reading.
+    pub fn recorded_living(&self) -> Option<f64> {
+        self.sol_samples.back().copied()
+    }
+
+    /// # Wealth per Household
+    ///
+    /// Holding value of what this pop still has, divided by its household count.
+    ///
+    /// `market` prices each unit through [`market_price`]. Time is the day's
+    /// labor and is left out. Property quantity and [`Self::savings`] both
+    /// count. A household count at or below 0, or a non-finite result,
+    /// returns 0.
+    pub(crate) fn wealth_per_household(&self, market: Option<&Market>) -> f64 {
+        let households = self.demographics.household.count;
+        if households <= 0.0 {
+            return 0.0;
+        }
+        let mut value = 0.0;
+        for (&good, row) in &self.property {
+            if good == TIME || row.quantity == 0.0 {
+                continue;
+            }
+            value += row.quantity * market_price(market, good);
+        }
+        for (&good, &qty) in &self.savings {
+            if good == TIME || qty == 0.0 {
+                continue;
+            }
+            value += qty * market_price(market, good);
+        }
+        let per = value / households;
+        if per.is_finite() { per } else { 0.0 }
+    }
+
+    /// # Tier Met
+    ///
+    /// Mean levels met on `tier`, plus stored satisfaction for that tier.
+    ///
+    /// Each desire adds its tiers satisfied and its bonus satisfaction.
+    /// A non-finite desire is skipped. Stored [`PopEffect::Satisfaction`]
+    /// on this tier is added once, after the mean. No desires and no stored
+    /// satisfaction returns 0.
+    fn tier_met(&self, tier: usize) -> f64 {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        if let Some(desires) = self.desires.get(tier) {
+            for desire in desires {
+                let levels = desire.tiers_satisfied();
+                let bonus = desire.get_bonus_satisfaction();
+                if !levels.is_finite() || !bonus.is_finite() {
+                    continue;
+                }
+                sum += levels + bonus;
+                count += 1.0;
+            }
+        }
+        let mut stored = 0.0;
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction {
+                tier: effect_tier,
+                amount,
+            } = *effect
+            {
+                if effect_tier == tier && amount.is_finite() {
+                    stored += amount;
+                }
+            }
+        }
+        let mean = if count > 0.0 { sum / count } else { 0.0 };
+        mean + stored
+    }
+
+    /// # Basic Unmet
+    ///
+    /// Mean shortfall of the basic desires, reduced by stored basic satisfaction.
+    ///
+    /// Each desire's shortfall is how far its levels plus bonus sit below one
+    /// full level, and not below 0. One desire met past one level does not
+    /// fill another desire's gap. The mean of those shortfalls is then
+    /// reduced by stored satisfaction on tier 0, and not below 0. No basic
+    /// desires returns 0.
+    fn basic_unmet(&self) -> f64 {
+        let Some(desires) = self.desires.get(0) else {
+            return 0.0;
+        };
+        let mut shortfall = 0.0;
+        let mut count = 0.0;
+        for desire in desires {
+            let levels = desire.tiers_satisfied();
+            let bonus = desire.get_bonus_satisfaction();
+            if !levels.is_finite() || !bonus.is_finite() {
+                continue;
+            }
+            shortfall += (1.0 - (levels + bonus)).max(0.0);
+            count += 1.0;
+        }
+        if count == 0.0 {
+            return 0.0;
+        }
+        let mut stored = 0.0;
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { tier, amount } = *effect {
+                if tier == 0 && amount.is_finite() {
+                    stored += amount;
+                }
+            }
+        }
+        (shortfall / count - stored).max(0.0)
+    }
+
+    /// # Push Living Mods
+    ///
+    /// Appends the tier, wealth, and living-shift flats to `mods`.
+    ///
+    /// Unmet basic needs move [`BASIC_UNMET_SENTIMENT`] per full share into
+    /// anger and the same share into fear. Common satisfaction moves
+    /// [`COMMON_SENTIMENT`] per full share into contentment, including a
+    /// share above one. Luxury levels move [`LUXURY_SENTIMENT`] per level
+    /// into hope and the same share into happiness, and further levels keep
+    /// counting. Wealth per household moves [`WEALTH_SENTIMENT`] per point
+    /// into hope when positive and fear when negative. A rise in living
+    /// since its recent average moves [`SOL_CHANGE_SENTIMENT`] per point
+    /// into hope and the same share into happiness. A fall moves that share
+    /// into anger and the same share into fear. A zero level adds nothing.
+    fn push_living_mods(&self, market: Option<&Market>, mods: &mut Vec<SentimentMod>) {
+        let basic = self.basic_unmet();
+        if basic > 0.0 {
+            let delta = basic * BASIC_UNMET_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta,
+            });
+        }
+        let common = self.tier_met(1);
+        if common > 0.0 {
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Contentment,
+                delta: common * COMMON_SENTIMENT,
+            });
+        }
+        let luxury = self.tier_met(2);
+        if luxury > 0.0 {
+            let delta = luxury * LUXURY_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta,
+            });
+        }
+        let wealth = self.wealth_per_household(market);
+        if wealth != 0.0 {
+            let delta = wealth * WEALTH_SENTIMENT;
+            if delta > 0.0 {
+                mods.push(SentimentMod::Flat {
+                    kind: SentimentKind::Hope,
+                    delta,
+                });
+            } else if delta < 0.0 {
+                mods.push(SentimentMod::Flat {
+                    kind: SentimentKind::Fear,
+                    delta: -delta,
+                });
+            }
+        }
+        let shift = self.sol_shift();
+        if shift > 0.0 {
+            let delta = shift * SOL_CHANGE_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Hope,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Happiness,
+                delta,
+            });
+        } else if shift < 0.0 {
+            let delta = -shift * SOL_CHANGE_SENTIMENT;
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta,
+            });
+            mods.push(SentimentMod::Flat {
+                kind: SentimentKind::Fear,
+                delta,
+            });
+        }
+    }
+
+    /// # Push Contentment Pull
+    ///
+    /// Appends a transfer into contentment for each other emotion.
+    ///
+    /// The amount is that emotion's current share times [`CONTENTMENT_PULL`].
+    /// A zero share adds nothing.
+    fn push_contentment_pull(&self, mods: &mut Vec<SentimentMod>) {
+        for kind in [
+            SentimentKind::Happiness,
+            SentimentKind::Anger,
+            SentimentKind::Fear,
+            SentimentKind::Hope,
+        ] {
+            let share = self.sentiment.get(kind);
+            if share > 0.0 {
+                mods.push(SentimentMod::Transfer {
+                    from: kind,
+                    to: SentimentKind::Contentment,
+                    amount: share * CONTENTMENT_PULL,
+                });
+            }
+        }
+    }
+
+    /// # Standard of Living Shift
+    ///
+    /// Today's living minus the mean of the recent samples.
+    ///
+    /// The samples are earlier days only. No samples, or a non-finite
+    /// living, returns 0.
+    fn sol_shift(&self) -> f64 {
+        let today = self.standard_of_living();
+        if !today.is_finite() || self.sol_samples.is_empty() {
+            return 0.0;
+        }
+        let average = self.sol_samples.iter().sum::<f64>() / self.sol_samples.len() as f64;
+        let shift = today - average;
+        if shift.is_finite() { shift } else { 0.0 }
+    }
+
+    /// # Record Standard of Living
+    ///
+    /// Appends today's living to the samples [`Self::sol_shift`] reads.
+    ///
+    /// A non-finite living is left out. The list keeps the most recent
+    /// [`SOL_AVERAGE_DAYS`] readings.
+    fn record_sol(&mut self) {
+        let today = self.standard_of_living();
+        if !today.is_finite() {
+            return;
+        }
+        if self.sol_samples.len() == SOL_AVERAGE_DAYS {
+            self.sol_samples.pop_front();
+        }
+        self.sol_samples.push_back(today);
+    }
+
+    /// # Calculate Standard of Living
+    ///
+    /// Records this pop's standard of living and drops stored satisfaction.
+    ///
+    /// No desires stores infinity on [`PopRecords::satisfaction`] and returns
+    /// it. Stored effects stay in that case. Otherwise the sum is
+    /// [`Self::standard_of_living`]. Stored satisfaction is then removed.
+    /// The sum is stored on the record and returned.
+    pub fn calculate_sol(&mut self) -> f64 {
+        if self.desires.iter().all(|tier| tier.is_empty()) {
+            self.records.satisfaction = f64::INFINITY;
+            return f64::INFINITY;
+        }
+        let sum = self.standard_of_living();
+        // Drop the stored satisfaction now that the sum includes it.
+        let _ = self.satisfaction_from_pop_effects();
+        self.records.satisfaction = sum;
+        sum
+    }
+
+    /// # Satisfaction from Pop Effects
+    ///
+    /// Sums stored satisfaction and removes those effects.
+    ///
+    /// The tier is not used. Other stored effects stay. Returns the sum.
+    fn satisfaction_from_pop_effects(&mut self) -> f64 {
+        let mut sum = 0.0;
+        let mut kept = Vec::new();
+        for effect in &self.stored_effects {
+            if let PopEffect::Satisfaction { amount, .. } = *effect {
+                sum += amount;
+            } else {
+                kept.push(*effect);
+            }
+        }
+        self.stored_effects = kept;
+        sum
+    }
+
     /// # Market Day
     ///
-    /// This pop's buys in `market`.
+    /// One pop does not buy here.
     ///
-    /// `factuals` supplies the world. `offers` are the sell offers already
-    /// posted. The pass is not written yet.
+    /// A purchase takes goods from another pop, so the pop phase is
+    /// [`buy_from_offers`]. `market` prices the goods. `factuals` supplies
+    /// them. `offers` are the sell offers. This method does not buy.
     pub fn market_day(&mut self, market: &Market, factuals: &Factuals, offers: &[SellOffer]) {
         let _ = (self, market, factuals, offers);
     }
 
+    /// # Plan Purchases
+    ///
+    /// The goods this pop buys from `offers` on this pass.
+    ///
+    /// `market` prices them. `factuals` says which goods can be bought.
+    /// `currency` is the tender that pays. Basic runs, then common, then
+    /// luxury one level at a time. A tier is shopped only when the tier
+    /// before it is covered. One desire takes held goods first, cheapest
+    /// satisfaction first, then buys the same way. A buy is whole units.
+    /// The pop does not buy its own offer, the tender, time, or a good that
+    /// cannot be bought. Loose tender pays before savings. Returns those
+    /// purchases.
+    fn plan_purchases(
+        &self, market: &Market, factuals: &Factuals, offers: &[SellOffer], currency: usize,
+    ) -> Vec<Purchase> {
+        let mut money = self.available(currency) + self.savings.get(&currency).copied().unwrap_or(0.0);
+        debug_assert!(money.is_finite() && money >= 0.0);
+        let mut claimed: HashMap<usize, f64> = HashMap::new();
+        let mut book: Vec<Listing> = offers
+            .iter()
+            .map(|offer| Listing { pop: offer.pop, good: offer.good, amount: offer.amount })
+            .collect();
+        let mut purchases = Vec::new();
+        // A later tier waits until the one before it is covered.
+        if !self.shop_tier(
+            market, factuals, 0, 1.0, currency, &mut money, &mut claimed, &mut book, &mut purchases,
+        ) {
+            return purchases;
+        }
+        if !self.shop_tier(
+            market, factuals, 1, 1.0, currency, &mut money, &mut claimed, &mut book, &mut purchases,
+        ) {
+            return purchases;
+        }
+        let mut level = 1.0;
+        while self.tier_len(2) > 0 {
+            if !self.shop_tier(
+                market, factuals, 2, level, currency, &mut money, &mut claimed, &mut book,
+                &mut purchases,
+            ) {
+                break;
+            }
+            level += 1.0;
+        }
+        purchases
+    }
+
+    /// # Shop Tier
+    ///
+    /// Buys toward one level of desire tier `tier`.
+    ///
+    /// `level` starts at 1. Every desire is shopped. `money` is the tender
+    /// still spendable. `claimed` is units already spoken for. `book` is
+    /// the offers still open. `purchases` collects the buys. Returns whether
+    /// every desire in the tier covers that level. An empty tier is covered.
+    fn shop_tier(
+        &self, market: &Market, factuals: &Factuals, tier: usize, level: f64, currency: usize,
+        money: &mut f64, claimed: &mut HashMap<usize, f64>, book: &mut [Listing],
+        purchases: &mut Vec<Purchase>,
+    ) -> bool {
+        let count = self.tier_len(tier);
+        let mut covered = true;
+        for index in 0..count {
+            if !self.shop_desire(
+                market, factuals, tier, index, level, currency, money, claimed, book, purchases,
+            ) {
+                covered = false;
+            }
+        }
+        covered
+    }
+
+    /// # Shop Desire
+    ///
+    /// Covers one level of one desire from holdings, then from `book`.
+    ///
+    /// `tier` and `index` pick the desire. `level` starts at 1. Holdings and
+    /// offers are taken lowest cost per satisfaction first, and a lower good
+    /// id breaks a tie. Returns whether the level is covered.
+    fn shop_desire(
+        &self, market: &Market, factuals: &Factuals, tier: usize, index: usize, level: f64,
+        currency: usize, money: &mut f64, claimed: &mut HashMap<usize, f64>, book: &mut [Listing],
+        purchases: &mut Vec<Purchase>,
+    ) -> bool {
+        let desire = &self.desires[tier][index];
+        debug_assert!(desire.amount.is_finite() && desire.amount > 0.0);
+        debug_assert!(desire.satisfaction.is_finite() && desire.satisfaction >= 0.0);
+        let mut remaining = desire.amount * level - desire.satisfaction;
+        if remaining < 0.0 {
+            remaining = 0.0;
+        }
+        let ranked = ranked_targets(market, desire);
+        for (good, efficiency, _) in &ranked {
+            if remaining <= 1e-9 {
+                break;
+            }
+            let held = self.property.get(good).map(|row| row.quantity).unwrap_or(0.0);
+            let spoken = claimed.get(good).copied().unwrap_or(0.0);
+            let free = (held - spoken).max(0.0);
+            let use_units = (remaining / efficiency).min(free);
+            if use_units > 0.0 {
+                *claimed.entry(*good).or_insert(0.0) += use_units;
+                remaining -= use_units * efficiency;
+            }
+        }
+        for (good, efficiency, _) in &ranked {
+            if remaining <= 1e-9 {
+                break;
+            }
+            // The tender cannot buy itself, and time is not a purchase.
+            if *good == currency || *good == TIME {
+                continue;
+            }
+            if !is_for_sale(factuals, *good) {
+                continue;
+            }
+            let price = market_price(Some(market), *good);
+            if !(price.is_finite() && price > 0.0) {
+                continue;
+            }
+            // Whole units. A fraction of a unit stays unmet.
+            let want = (remaining / efficiency).floor();
+            let afford = (*money / price).floor();
+            let mut take = want.min(afford);
+            if take < 1.0 {
+                continue;
+            }
+            for listing in book.iter_mut() {
+                if take < 1.0 {
+                    break;
+                }
+                if listing.good != *good || listing.pop == self.id {
+                    continue;
+                }
+                let whole = listing.amount.floor();
+                let bought = whole.min(take);
+                if bought < 1.0 {
+                    continue;
+                }
+                listing.amount -= bought;
+                take -= bought;
+                let cost = bought * price;
+                *money -= cost;
+                remaining -= bought * efficiency;
+                *claimed.entry(*good).or_insert(0.0) += bought;
+                purchases.push(Purchase {
+                    seller: listing.pop,
+                    good: *good,
+                    units: bought,
+                    cost,
+                });
+            }
+        }
+        remaining <= 1e-9
+    }
+
     /// # Planning
+
     ///
     /// Sets this pop's next subsistence rate and job targets.
     ///
@@ -1428,15 +2032,15 @@ impl Pop {
     /// of the grant. Haul time aims at [`Self::transport_spent`] minus
     /// [`Self::transport_purchased`], and not below 0, plus that same share.
     /// Each hold moves toward its aim by [`rise_or_step_down`]. The two holds
-    /// shrink to the grant when they ask for more than it. Job lines are
-    /// compared by [`line_value_per_time`] against [`subsistence_value_per_time`].
-    /// The line that leads and beats that bar steps up by one step. A tie for
-    /// that lead steps up too. Every other line steps down by one step. Downs
-    /// run first. Lines that still take more time than is left are scaled down
-    /// to fit, and an up then takes only the time those downs left free.
-    /// Subsistence takes the time left, and not more than `subsistence_anchor`
-    /// of the grant. A line with no process is `Some(0)`. A grant of 0 clears
-    /// the plan.
+    /// shrink to the grant when they ask for more than it. Each job line asks
+    /// [`plan_direction`] for one step. Its current time is rounded to a whole
+    /// number of steps of this grant first. A positive answer steps up one
+    /// step. A negative answer steps down one step. Zero holds that step.
+    /// Decreases run first. Lines that still
+    /// take more time than is left are scaled down to fit, and an increase
+    /// then takes only the time those decreases left free. Subsistence takes
+    /// the time left. A line with no process is `Some(0)`. A grant of 0
+    /// clears the plan.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
         // Morning time is the labor grant this plan spends.
         let budget = self.get_scaling_factor(ScalingFactor::Labor(
@@ -1477,23 +2081,20 @@ impl Pop {
             let Some(process) = factuals.get_process(line.process) else {
                 continue;
             };
-            let time_per = time_per_run(process);
+            let time_per = process.required_time();
+            let direction = plan_direction(self, process, line, market, factuals, bar);
+            // Whole steps of this grant, so a hold cannot drift off the increment.
+            let time = (line_time(line.target, time_per) / step).round() * step;
             planned.push(LinePlan {
                 index,
-                time: line_time(line.target, time_per),
+                time,
                 time_per,
-                value: line_value_per_time(process, market),
-                up: false,
+                direction,
             });
         }
-        let values: Vec<f64> = planned.iter().map(|line| line.value).collect();
+        // Decreases first, so an increase can use the time they free on this same day.
         for line in &mut planned {
-            // The lead that beats subsistence steps up. A tie for that lead does too.
-            line.up = line.value > bar && values.iter().all(|other| line.value >= *other);
-        }
-        // Downs first, so an up can use the time they free on this same day.
-        for line in &mut planned {
-            if !line.up {
+            if line.direction < 0 {
                 line.time = (line.time - step).max(0.0);
             }
         }
@@ -1506,7 +2107,7 @@ impl Pop {
             used = remaining;
         }
         for line in &mut planned {
-            if !line.up {
+            if line.direction <= 0 {
                 continue;
             }
             let room = (remaining - used).max(0.0);
@@ -1527,10 +2128,149 @@ impl Pop {
             };
             self.job.lines[line.index].target = Some(iterations);
         }
-        let cap = factuals.config.pop.subsistence_anchor * budget;
         let free = (remaining - used).max(0.0);
-        self.subsistence_rate = free.min(cap) / budget;
+        self.subsistence_rate = free / budget;
     }
+}
+
+/// One good this pop buys from one seller.
+struct Purchase {
+    seller: usize,
+    good: usize,
+    units: f64,
+    cost: f64,
+}
+
+/// One sell offer while a pop is choosing what to buy.
+struct Listing {
+    pop: usize,
+    good: usize,
+    amount: f64,
+}
+
+/// # Buy From Offers
+///
+/// Pops buy from `offers` for their desires.
+///
+/// `pops` are the market's pops. `market` prices the goods and supplies
+/// the tender. The first tender pays. `factuals` says which goods can be
+/// bought. The wealthiest household shops first. Equal wealth shops in id
+/// order. A desire takes the offered good with the lowest cost per
+/// satisfaction. The units are whole. Loose tender pays before savings.
+/// A pop does not buy its own offer. No tender buys nothing.
+pub(crate) fn buy_from_offers(
+    pops: &mut [Pop], market: &Market, factuals: &Factuals, offers: &mut [SellOffer],
+) {
+    let Some(&currency) = market.currencies.first() else {
+        return;
+    };
+    let mut order: Vec<usize> = (0..pops.len()).collect();
+    // The wealthiest household shops first. The same wealth shops in id order.
+    order.sort_by(|&left, &right| {
+        pops[right]
+            .wealth_per_household(Some(market))
+            .partial_cmp(&pops[left].wealth_per_household(Some(market)))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(pops[left].id.cmp(&pops[right].id))
+    });
+    for buyer_at in order {
+        let purchases = pops[buyer_at].plan_purchases(market, factuals, offers, currency);
+        for purchase in purchases {
+            apply_purchase(pops, buyer_at, currency, &purchase, offers);
+        }
+    }
+}
+
+/// # Apply Purchase
+///
+/// Moves `purchase` from the seller to the buyer and pays `currency`.
+///
+/// Loose tender on the buyer pays first. Savings pays the rest. Aged
+/// units leave before fresh. The seller's offer and the buyer's tender
+/// offer fall by what moved. Goods received and tender received are not
+/// marked fresh.
+fn apply_purchase(
+    pops: &mut [Pop], buyer_at: usize, currency: usize, purchase: &Purchase, offers: &mut [SellOffer],
+) {
+    let seller_at = pops
+        .iter()
+        .position(|pop| pop.id == purchase.seller)
+        .expect("seller is in the market");
+    debug_assert!(seller_at != buyer_at);
+    let buyer_id = pops[buyer_at].id;
+    let liquid = pops[buyer_at].available(currency).min(purchase.cost);
+    if liquid > 0.0 {
+        let row = pops[buyer_at]
+            .property
+            .get_mut(&currency)
+            .expect("loose tender has a row");
+        row.spend_aged_first(liquid);
+        row.quantity -= liquid;
+        reduce_offer(offers, buyer_id, currency, liquid);
+    }
+    let from_savings = purchase.cost - liquid;
+    if from_savings > 0.0 {
+        let saved = pops[buyer_at].savings.entry(currency).or_insert(0.0);
+        debug_assert!(*saved + 1e-9 >= from_savings);
+        *saved = (*saved - from_savings).max(0.0);
+    }
+    pops[seller_at].property.entry(currency).or_default().quantity += purchase.cost;
+    let row = pops[seller_at]
+        .property
+        .get_mut(&purchase.good)
+        .expect("offered good has a row");
+    row.spend_aged_first(purchase.units);
+    row.quantity -= purchase.units;
+    debug_assert!(row.quantity + 1e-9 >= row.reserved);
+    reduce_offer(offers, purchase.seller, purchase.good, purchase.units);
+    pops[buyer_at].property.entry(purchase.good).or_default().quantity += purchase.units;
+}
+
+/// # Reduce Offer
+///
+/// Lowers the offer of `good` from `pop` by `units`.
+///
+/// An offer that is not listed stays absent. The amount does not fall
+/// below 0.
+fn reduce_offer(offers: &mut [SellOffer], pop: usize, good: usize, units: f64) {
+    if let Some(offer) = offers.iter_mut().find(|offer| offer.pop == pop && offer.good == good) {
+        offer.amount = (offer.amount - units).max(0.0);
+    }
+}
+
+/// # Ranked Targets
+///
+/// `desire`'s goods, cheapest satisfaction first.
+///
+/// The cost is [`market_price`] divided by efficiency. A lower good id
+/// breaks a tie. Returns the good, its efficiency, and that cost.
+fn ranked_targets(market: &Market, desire: &Desire) -> Vec<(usize, f64, f64)> {
+    let mut rows: Vec<(usize, f64, f64)> = desire
+        .target
+        .iter()
+        .map(|target| {
+            debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
+            let price = market_price(Some(market), target.good);
+            (target.good, target.efficiency, price / target.efficiency)
+        })
+        .collect();
+    rows.sort_by(|left, right| {
+        left.2
+            .partial_cmp(&right.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.0.cmp(&right.0))
+    });
+    rows
+}
+
+/// # Is For Sale
+///
+/// Whether `good` can be bought.
+///
+/// A missing good cannot. [`Good::is_buyable`] decides a loaded good.
+/// Returns that check.
+fn is_for_sale(factuals: &Factuals, good: usize) -> bool {
+    factuals.get_good(good).is_some_and(|good| good.is_buyable())
 }
 
 /// One job line while its next target is chosen.
@@ -1538,8 +2278,142 @@ struct LinePlan {
     index: usize,
     time: f64,
     time_per: f64,
-    value: f64,
-    up: bool,
+    direction: i32,
+}
+
+/// Salability above this votes to expand.
+///
+/// A share from 0 to 1. Below [`PLAN_SALABILITY_NAY`] votes to contract.
+/// The band between them casts no vote.
+const PLAN_SALABILITY_YAY: f64 = 0.8;
+
+/// Salability below this votes to contract.
+const PLAN_SALABILITY_NAY: f64 = 0.4;
+
+/// Living change that casts one vote.
+///
+/// A rise of this size votes to expand. A drop of this size votes to contract.
+const PLAN_SOL_VOTE: f64 = 1.0;
+
+/// # Plan Direction
+///
+/// One planning step for a job line: expand, hold, or contract.
+///
+/// `pop` supplies the output's stock, consumption, rot, and living samples.
+/// `process` is the recipe. `line` supplies the iterations finished.
+/// `market` prices the goods and supplies salability. `factuals` supplies
+/// the default salability. `bar` is [`subsistence_value_per_time`]. The
+/// votes are profit, salability, luck, decay, price durability, and living.
+/// Each is +1, -1, or silent. A total above 1 returns 1. A total below -1
+/// returns -1. A total between them returns 0. An expansion that does not
+/// beat `bar` returns 0.
+fn plan_direction(
+    pop: &Pop, process: &Process, line: &JobLine, market: Option<&Market>,
+    factuals: &Factuals, bar: f64,
+) -> i32 {
+    debug_assert!(line.completed.is_finite() && line.completed >= 0.0);
+    debug_assert!(bar.is_finite());
+    let profit = line_value_per_time(process, market);
+    // The largest non-time output is the good these votes measure.
+    let mut output_good = None;
+    let mut output_amount = 0.0;
+    for row in &process.outputs {
+        if row.good == TIME {
+            continue;
+        }
+        if output_good.is_none() || row.amount > output_amount {
+            output_good = Some(row.good);
+            output_amount = row.amount;
+        }
+    }
+    // Units finished: the iterations times the recipe amount.
+    let output = line.completed * output_amount;
+    let price = output_good.map(|good| market_price(market, good)).unwrap_or(1.0);
+    // Destroyed and consumed inputs of those iterations, priced in the output good.
+    let mut input_value = 0.0;
+    for input in &process.inputs {
+        if input.good == TIME || input.is_optional() {
+            continue;
+        }
+        let counts = matches!(input.input_type, InputType::Destroyed | InputType::Consumed);
+        if !counts {
+            continue;
+        }
+        input_value += input.amount * line.completed * market_price(market, input.good);
+    }
+    let input_cost = if price > 0.0 { input_value / price } else { 0.0 };
+    let held = output_good.and_then(|good| pop.property.get(&good));
+    let consumed = held.map(|row| row.consumed).unwrap_or(0.0);
+    let decay_losses = held.map(|row| row.lost).unwrap_or(0.0);
+    let stock = held.map(|row| row.quantity).unwrap_or(0.0);
+    let salability = output_good
+        .and_then(|good| market.and_then(|market| market.goods.get(&good)))
+        .map(|good| good.salability)
+        .unwrap_or(factuals.config.market.salability_default);
+    // No sale is stored on the pop. Realized units are what this row consumed.
+    let sold = 0.0;
+    // No earlier price is stored, so a price move cannot change the tally yet.
+    let price_change = 0.0;
+    let sample_count = pop.sol_samples.len();
+    let sol_change = if sample_count >= 2 {
+        pop.sol_samples[sample_count - 1] - pop.sol_samples[sample_count - 2]
+    } else {
+        0.0
+    };
+
+    let mut tally = 0;
+    // Profit: the recipe earns more than it spends. A loss should not gain time.
+    if profit > 0.0 {
+        tally += 1;
+    } else if profit < 0.0 {
+        tally -= 1;
+    }
+    // Salability: the market is taking the good. A missing record stays in the quiet band.
+    if salability > PLAN_SALABILITY_YAY {
+        tally += 1;
+    } else if salability < PLAN_SALABILITY_NAY {
+        tally -= 1;
+    }
+    // Luck: this run was realized less often than the market sells. A lucky day adds no vote.
+    if output > 0.0 {
+        let luck = (sold + consumed) / output - salability;
+        if luck < 0.0 {
+            tally -= 1;
+        }
+    }
+    // Decay: use covered the inputs and the rot. Uncovered rot destroyed wealth.
+    let decay = sold + consumed - input_cost - decay_losses;
+    if decay > 0.0 {
+        tally += 1;
+    } else if decay < 0.0 {
+        tally -= 1;
+    }
+    // Durability: surviving output is still worth more than the stock lost to price.
+    let durability = price_change * stock + price * (output - decay_losses);
+    if durability > 0.0 {
+        tally += 1;
+    } else if durability < 0.0 {
+        tally -= 1;
+    }
+    // Living: the day moved standard of living by a whole point. A smaller swing is ordinary.
+    if sol_change >= PLAN_SOL_VOTE {
+        tally += 1;
+    } else if sol_change <= -PLAN_SOL_VOTE {
+        tally -= 1;
+    }
+    // One vote is not a reason to move. Two in the same direction are.
+    let mut direction = if tally > 1 {
+        1
+    } else if tally < -1 {
+        -1
+    } else {
+        0
+    };
+    // Expansion still has to beat subsistence per unit of time.
+    if direction > 0 && profit <= bar {
+        direction = 0;
+    }
+    direction
 }
 
 /// Share of the morning grant that one planning step moves.
@@ -1547,6 +2421,35 @@ struct LinePlan {
 /// A desire or haul hold keeps this much beyond yesterday's use.
 /// A craft or labor line moves by this much of the grant.
 const PLAN_STEP_SHARE: f64 = 0.05;
+
+/// Share of the pop moved into anger and into fear for each full share of
+/// basic needs left unmet.
+const BASIC_UNMET_SENTIMENT: f64 = 0.04;
+
+/// Share of the pop moved into contentment for each full share of common
+/// needs met. A share above one still counts.
+const COMMON_SENTIMENT: f64 = 0.02;
+
+/// Share of the pop moved into hope and into happiness for each luxury
+/// level met. Further levels still count.
+const LUXURY_SENTIMENT: f64 = 0.01;
+
+/// Share of the pop moved per point of wealth per household.
+///
+/// Positive wealth moves that share into hope. Negative wealth moves the
+/// absolute share into fear.
+const WEALTH_SENTIMENT: f64 = 0.01;
+
+/// Market days kept for the living average.
+const SOL_AVERAGE_DAYS: usize = 5;
+
+/// Share of the pop moved per point of living above or below its recent average.
+const SOL_CHANGE_SENTIMENT: f64 = 0.25;
+
+/// Fraction of each other emotion moved into contentment.
+///
+/// A larger share moves more. A content pop moves nothing.
+const CONTENTMENT_PULL: f64 = 0.15;
 
 /// # Rise Or Step Down
 ///
@@ -1606,13 +2509,14 @@ fn subsistence_value_per_time(
 /// Value of one job process per unit of required time.
 ///
 /// `market` prices the goods. Good [`TIME`] is left out of both sides.
-/// A process tagged [`ProcessTag::Labor`] returns its non-time output
-/// value divided by required time. Any other process subtracts the value
-/// of required inputs that are destroyed or consumed. Optional inputs,
-/// [`InputType::Factor`], and [`InputType::Capital`] are left out of that
-/// cost. No required time returns 0. Returns that value per unit of time.
+/// [`Process::required_time`] is the divisor. [`Process::is_labor`] returns
+/// the non-time output value divided by that time. Any other process
+/// subtracts the value of required inputs that are destroyed or consumed.
+/// Optional inputs, [`InputType::Factor`], and [`InputType::Capital`] are
+/// left out of that cost. No required time returns 0. Returns that value
+/// per unit of time.
 fn line_value_per_time(process: &Process, market: Option<&Market>) -> f64 {
-    let time = time_per_run(process);
+    let time = process.required_time();
     if time == 0.0 {
         return 0.0;
     }
@@ -1624,11 +2528,7 @@ fn line_value_per_time(process: &Process, market: Option<&Market>) -> f64 {
         output += row.amount * market_price(market, row.good);
     }
     debug_assert!(output.is_finite() && output >= 0.0);
-    let labor = process
-        .process_tags
-        .iter()
-        .any(|tag| matches!(tag, ProcessTag::Labor));
-    if labor {
+    if process.is_labor() {
         return output / time;
     }
     let mut cost = 0.0;
@@ -1664,22 +2564,6 @@ fn line_time(target: Option<f64>, time_per: f64) -> f64 {
     }
 }
 
-/// # Time Per Run
-///
-/// Required good [`TIME`] one iteration of `process` consumes.
-///
-/// Optional time is left out. Returns the sum.
-fn time_per_run(process: &Process) -> f64 {
-    let time: f64 = process
-        .inputs
-        .iter()
-        .filter(|input| input.good == TIME && !input.is_optional())
-        .map(|input| input.amount)
-        .sum();
-    debug_assert!(time.is_finite() && time >= 0.0);
-    time
-}
-
 /// # Market Price
 ///
 /// Currency units one unit of `good` costs on `market`.
@@ -1687,7 +2571,7 @@ fn time_per_run(process: &Process) -> f64 {
 /// The currency is the market's first tender. The stored rate is goods per
 /// currency unit, and the price is its inverse. A missing market, tender,
 /// or rate costs 1. The tender priced in itself costs 1. Returns that price.
-fn market_price(market: Option<&Market>, good: usize) -> f64 {
+pub fn market_price(market: Option<&Market>, good: usize) -> f64 {
     let Some(market) = market else {
         return 1.0;
     };
@@ -1786,6 +2670,28 @@ fn subsistence_batch(factuals: &Factuals, desire: &Desire, cover: f64) -> Vec<(u
         .into_iter()
         .map(|(good, efficiency)| (good, each / efficiency))
         .collect()
+}
+
+#[cfg(test)]
+mod start_day_should {
+    use super::Pop;
+    use crate::game::scalingfactor::ScalingFactor;
+
+    #[test]
+    fn each_morning_adds_to_quantity_and_produced() {
+        let mut pop = Pop::new(1);
+        let added = pop.start_day(&[(0, ScalingFactor::Fixed(4.0))]);
+        assert_eq!(added, vec![(0, 4.0)]);
+        let row = pop.property[&0];
+        assert_eq!(row.quantity, 4.0);
+        assert_eq!(row.produced, 4.0);
+        assert_eq!(row.fresh, 0.0);
+        pop.start_day(&[(0, ScalingFactor::Fixed(4.0))]);
+        let row = pop.property[&0];
+        assert_eq!(row.quantity, 8.0);
+        assert_eq!(row.produced, 8.0);
+        assert_eq!(row.fresh, 0.0);
+    }
 }
 
 #[cfg(test)]
@@ -2237,6 +3143,19 @@ mod split_goods_sale_reserve_should {
         near(saved(&pop, 9), 6.0);
         near(quantity(&pop, 9), 14.0);
         near(pop.effective_savings, 6.0);
+    }
+
+    #[test]
+    fn saving_fresh_coins_leaves_fresh_inside_what_remains() {
+        // Ten coins, eight of them fresh. Saving six takes the two aged coins and four fresh.
+        let mut pop = Pop::new(1);
+        stock(&mut pop, 1, 2.0);
+        pop.property.insert(9, PopPRow::new(10.0).with_fresh(8.0));
+        pop.desires[0].push(desire(2.0, vec![target(1, 1.0)]));
+        pop.split_goods_sale_reserve(&history(&[9]), &world(vec![]));
+        near(saved(&pop, 9), 6.0);
+        near(quantity(&pop, 9), 4.0);
+        near(pop.property[&9].fresh, 4.0);
     }
 
     #[test]
@@ -2855,13 +3774,7 @@ mod consume_should {
             .push(DesireEffect::Satisfaction(2.0, true));
         pop.property.insert(1, PopPRow::new(4.0));
         pop.consume(&world(vec![plain(1)]));
-        assert_eq!(
-            pop.stored_effects,
-            vec![
-                PopEffect::Development(5.0),
-                PopEffect::Satisfaction { tier: 0, amount: 2.0 },
-            ]
-        );
+        assert_eq!(pop.stored_effects, vec![PopEffect::Development(5.0)]);
     }
 
     #[test]
@@ -3476,6 +4389,193 @@ mod record_keeping_should {
 }
 
 #[cfg(test)]
+mod plan_direction_should {
+    use super::{plan_direction, Pop, PopPRow};
+    use crate::game::factuals::Factuals;
+    use crate::game::good::TIME;
+    use crate::game::job::JobLine;
+    use crate::game::market::{Market, MarketGood};
+    use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
+
+    /// # Craft
+    ///
+    /// One iteration takes 1 time and, when `input` is above 0, destroys that
+    /// much of good 2. It makes `output` of good 1. At a price of 1 the profit
+    /// per unit of time is `output - input`.
+    fn craft(output: f64, input: f64) -> Process {
+        let mut process = Process::new(1, "craft", 0)
+            .with_input(ProcessInput::new(TIME, 1.0, false, InputType::Destroyed, false));
+        if input > 0.0 {
+            process = process.with_input(ProcessInput::new(2, input, false, InputType::Destroyed, false));
+        }
+        process.with_output(ProcessOutput::new(1, output, false))
+    }
+
+    /// # Line
+    ///
+    /// A job line that finished `completed` iterations of process 1.
+    fn line(completed: f64) -> JobLine {
+        let mut line = JobLine::new(1, Some(0.0), vec![]);
+        line.completed = completed;
+        line
+    }
+
+    /// # Held
+    ///
+    /// A pop whose good 1 row has this stock, use, and rot.
+    ///
+    /// `living` is the previous standard of living and the latest one. The
+    /// change is the latest minus the previous. `None` leaves no samples.
+    fn held(stock: f64, consumed: f64, lost: f64, living: Option<(f64, f64)>) -> Pop {
+        let mut pop = Pop::new(1);
+        if stock != 0.0 || consumed != 0.0 || lost != 0.0 {
+            pop.property.insert(1, PopPRow::new(stock).with_consumed(consumed).with_lost(lost));
+        }
+        if let Some((earlier, later)) = living {
+            pop.sol_samples.push_back(earlier);
+            pop.sol_samples.push_back(later);
+        }
+        pop
+    }
+
+    /// # Market For
+    ///
+    /// A market where good 1 has this salability.
+    fn market_for(salability: f64) -> Market {
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_salability(salability));
+        market
+    }
+
+    /// # Ask
+    ///
+    /// The planning direction for this pop, recipe, and finished iterations.
+    ///
+    /// `market` prices the goods and supplies salability. `None` uses the
+    /// default salability. `bar` is the subsistence value an expansion has to
+    /// beat. Returns +1, 0, or -1.
+    fn ask(
+        pop: &Pop, process: &Process, completed: f64, market: Option<&Market>, bar: f64,
+    ) -> i32 {
+        plan_direction(pop, process, &line(completed), market, &Factuals::new(), bar)
+    }
+
+    #[test]
+    fn one_vote_holds() {
+        let quiet = Pop::new(1);
+        // Nothing has been made, so luck, rot, and price stay quiet. Paper profit is the only yay.
+        assert_eq!(ask(&quiet, &craft(4.0, 0.0), 0.0, None, 0.0), 0);
+        // A paper loss is the only nay.
+        assert_eq!(ask(&quiet, &craft(1.0, 2.0), 0.0, None, 0.0), 0);
+        // A rise under one point stays quiet, so paper profit is still the only vote.
+        let small = held(0.0, 0.0, 0.0, Some((0.0, 0.9)));
+        assert_eq!(ask(&small, &craft(4.0, 0.0), 0.0, None, 0.0), 0);
+        // A whole point either way is one vote on a break-even recipe, and one vote holds.
+        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        assert_eq!(ask(&rose, &craft(1.0, 1.0), 0.0, None, 0.0), 0);
+        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        assert_eq!(ask(&fell, &craft(1.0, 1.0), 0.0, None, 0.0), 0);
+    }
+
+    #[test]
+    fn two_votes_move() {
+        // Profit and a whole point of living are two yays, and the recipe beats the bar.
+        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        assert_eq!(ask(&rose, &craft(4.0, 0.0), 0.0, None, 0.0), 1);
+        // A paper loss and a whole point drop are two nays.
+        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        assert_eq!(ask(&fell, &craft(1.0, 2.0), 0.0, None, 0.0), -1);
+        // The market is taking the good. Nothing has been made, so luck and rot stay quiet.
+        let hot = market_for(0.81);
+        assert_eq!(ask(&Pop::new(1), &craft(4.0, 0.0), 0.0, Some(&hot), 0.0), 1);
+        // A cold market joins a paper loss.
+        let cold = market_for(0.39);
+        assert_eq!(ask(&Pop::new(1), &craft(1.0, 2.0), 0.0, Some(&cold), 0.0), -1);
+    }
+
+    #[test]
+    fn salability_outside_the_band_votes() {
+        let pop = Pop::new(1);
+        let even = craft(1.0, 1.0);
+        // The edges of the band are silent. A break-even line with no run holds.
+        let high_edge = market_for(0.8);
+        assert_eq!(ask(&pop, &even, 0.0, Some(&high_edge), 0.0), 0);
+        let low_edge = market_for(0.4);
+        assert_eq!(ask(&pop, &even, 0.0, Some(&low_edge), 0.0), 0);
+        // One step outside the band is a single vote, which still holds.
+        let hot = market_for(0.81);
+        assert_eq!(ask(&pop, &even, 0.0, Some(&hot), 0.0), 0);
+        let cold = market_for(0.39);
+        assert_eq!(ask(&pop, &even, 0.0, Some(&cold), 0.0), 0);
+        // No market record uses the default, and that default sits inside the band.
+        assert_eq!(ask(&pop, &craft(4.0, 0.0), 0.0, None, 0.0), 0);
+    }
+
+    #[test]
+    fn luck_votes_only_when_short_of_the_market() {
+        let idle = Pop::new(1);
+        // Nothing of the run was used, so luck nays. The output is still worth its price, so
+        // durability yays. Those two cancel profit, and the line holds.
+        assert_eq!(ask(&idle, &craft(10.0, 0.0), 1.0, None, 0.0), 0);
+        // The whole run was used, which beats the market, so luck adds no yay. Rot matches the
+        // run and that use covers it, so durability and decay stay quiet. Profit alone holds.
+        let lucky = held(0.0, 10.0, 10.0, None);
+        assert_eq!(ask(&lucky, &craft(10.0, 0.0), 1.0, None, 0.0), 0);
+        // No iterations finished, so luck is skipped. A pile is not a sale, and profit alone holds.
+        let piled = held(100.0, 0.0, 0.0, None);
+        assert_eq!(ask(&piled, &craft(10.0, 0.0), 0.0, None, 0.0), 0);
+    }
+
+    #[test]
+    fn decay_and_price_vote_on_sign() {
+        // The output good was used and nothing rotted. No iterations finished, so luck and
+        // durability stay quiet. That use yays beside profit, and the line expands.
+        let used = held(0.0, 5.0, 0.0, None);
+        assert_eq!(ask(&used, &craft(4.0, 0.0), 0.0, None, 0.0), 1);
+        // Break-even, rot equal to the run, and use equal to the market's share. Luck and
+        // durability are even. The input plus the rot still exceed that use, so decay is the
+        // only nay and the line holds.
+        let short = held(0.0, 5.0, 10.0, None);
+        assert_eq!(ask(&short, &craft(10.0, 10.0), 1.0, None, 0.0), 0);
+        // The same run, with use covering the input and the rot. Decay is the only yay and holds.
+        let covered = held(0.0, 21.0, 10.0, None);
+        assert_eq!(ask(&covered, &craft(10.0, 10.0), 1.0, None, 0.0), 0);
+        // The pile lost more than the run made. Luck, decay, and durability nay, and profit
+        // cannot hold them, so the line contracts.
+        let rotted = held(0.0, 0.0, 15.0, None);
+        assert_eq!(ask(&rotted, &craft(10.0, 0.0), 1.0, None, 0.0), -1);
+        // No earlier price is stored, so a price move is 0. A pile with no run and no rot,
+        // on a break-even recipe, does not vote.
+        let stock = held(100.0, 0.0, 0.0, None);
+        assert_eq!(ask(&stock, &craft(1.0, 1.0), 0.0, None, 0.0), 0);
+    }
+
+    #[test]
+    fn expansion_must_beat_subsistence() {
+        // Two yays would expand, but the recipe does not beat subsistence per unit of time.
+        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        assert_eq!(ask(&rose, &craft(4.0, 0.0), 0.0, None, 1000.0), 0);
+        // A contraction does not have to beat that bar.
+        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        assert_eq!(ask(&fell, &craft(1.0, 2.0), 0.0, None, 1000.0), -1);
+    }
+
+    #[test]
+    fn the_largest_output_is_measured() {
+        // Good 3 is listed first and time is largest, but good 1 is the largest non-time output.
+        // The use sits on good 1, so decay yays beside profit. Measuring either other good would
+        // leave decay quiet and the line would hold.
+        let process = Process::new(1, "craft", 0)
+            .with_input(ProcessInput::new(TIME, 1.0, false, InputType::Destroyed, false))
+            .with_output(ProcessOutput::new(3, 4.0, false))
+            .with_output(ProcessOutput::new(TIME, 99.0, false))
+            .with_output(ProcessOutput::new(1, 10.0, false));
+        let used = held(0.0, 5.0, 0.0, None);
+        assert_eq!(ask(&used, &process, 0.0, None, 0.0), 1);
+    }
+}
+
+#[cfg(test)]
 mod planning_should {
     use std::collections::HashMap;
 
@@ -3485,6 +4585,7 @@ mod planning_should {
     use crate::game::factuals::Factuals;
     use crate::game::good::{Good, TIME};
     use crate::game::job::JobLine;
+    use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessTag};
     use crate::game::scalingfactor::ScalingFactor;
 
@@ -3557,13 +4658,13 @@ mod planning_should {
     }
 
     #[test]
-    fn no_use_caps_subsistence_at_the_anchor() {
+    fn idle_time_goes_to_subsistence() {
         let mut pop = worker();
         pop.planning(&world(&[]), None);
-        // Each hold rises to the cushion. Free time is 9, and the cap is 6.
+        // Each hold rises to the cushion. The other 9 of the grant is subsistence.
         near(pop.held_desire_time, 0.5);
         near(pop.held_transport_time, 0.5);
-        near(pop.subsistence_rate, 0.6);
+        near(pop.subsistence_rate, 0.9);
         assert_eq!(pop.job.lines[0].target, Some(0.0));
         assert_eq!(pop.job.lines[1].target, Some(0.0));
     }
@@ -3607,21 +4708,64 @@ mod planning_should {
         pop.transport_purchased = 2.0;
         pop.planning(&world(&[]), None);
         near(pop.held_transport_time, 0.5);
-        near(pop.subsistence_rate, 0.6);
+        near(pop.subsistence_rate, 0.9);
     }
 
     #[test]
-    fn a_craft_that_beats_subsistence_steps_up() {
+    fn a_held_line_stays_on_the_step() {
+        let mut pop = worker();
+        pop.desires[0].push(desire(6.0, 1));
+        // 0.52 sits between no time and one step. A hold returns it to the step.
+        pop.job.lines[0] = JobLine::new(1, Some(0.52), vec![]);
+        let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
+        factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
+        pop.planning(&factuals, None);
+        near(pop.job.lines[0].target.unwrap(), 0.5);
+        near(pop.subsistence_rate, 0.85);
+    }
+
+    #[test]
+    fn a_profitable_craft_holds_on_one_vote() {
         let mut pop = worker();
         pop.desires[0].push(desire(6.0, 1));
         pop.job.lines[0] = JobLine::new(1, None, vec![9]);
         let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
         factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
         pop.planning(&factuals, None);
-        near(pop.job.lines[0].target.unwrap(), 0.5);
+        assert_eq!(pop.job.lines[0].target, Some(0.0));
         assert_eq!(pop.job.lines[0].inputs, vec![9]);
+    }
+
+    #[test]
+    fn living_and_profit_step_a_craft_up() {
+        let mut pop = worker();
+        pop.desires[0].push(desire(6.0, 1));
+        pop.job.lines[0] = JobLine::new(1, Some(0.0), vec![]);
+        pop.sol_samples.push_back(0.0);
+        pop.sol_samples.push_back(1.0);
+        let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
+        factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
         pop.planning(&factuals, None);
-        near(pop.job.lines[0].target.unwrap(), 1.0);
+        near(pop.job.lines[0].target.unwrap(), 0.5);
+    }
+
+    #[test]
+    fn a_negative_direction_steps_down() {
+        let mut pop = worker();
+        pop.desires[0].push(desire(6.0, 1));
+        pop.job.lines[0] = JobLine::new(1, Some(4.0), vec![]);
+        pop.job.lines[0].completed = 1.0;
+        pop.sol_samples.push_back(2.0);
+        pop.sol_samples.push_back(1.0);
+        let mut factuals = world(&[(TIME, 0.0), (1, 0.0), (2, 0.0)]);
+        factuals.processes.insert(
+            1,
+            process(1, vec![input(TIME, 1.0), input(2, 1.0)], 1, 4.0),
+        );
+        let mut market = Market::new(1);
+        market.goods.insert(1, MarketGood::new().with_salability(0.2));
+        pop.planning(&factuals, Some(&market));
+        near(pop.job.lines[0].target.unwrap(), 3.5);
     }
 
     #[test]
@@ -3636,7 +4780,7 @@ mod planning_should {
     }
 
     #[test]
-    fn a_weaker_line_steps_down_by_one_step() {
+    fn an_even_tally_holds_both_lines() {
         let mut pop = worker();
         pop.job.lines[0] = JobLine::new(1, Some(4.0), vec![]);
         pop.job.lines[1] = JobLine::new(2, Some(4.0), vec![]);
@@ -3646,8 +4790,8 @@ mod planning_should {
         labor.process_tags.push(ProcessTag::Labor);
         factuals.processes.insert(2, labor);
         pop.planning(&factuals, None);
-        near(pop.job.lines[0].target.unwrap(), 4.5);
-        near(pop.job.lines[1].target.unwrap(), 3.5);
+        near(pop.job.lines[0].target.unwrap(), 4.0);
+        near(pop.job.lines[1].target.unwrap(), 4.0);
         near(pop.subsistence_rate, 0.1);
     }
 
@@ -3666,5 +4810,897 @@ mod planning_should {
         assert_eq!(pop.job.lines[1].target, Some(0.0));
         assert_eq!(pop.held_desire_time, 0.0);
         assert_eq!(pop.held_transport_time, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod buy_should {
+    use std::collections::HashSet;
+
+    use super::{buy_from_offers, Pop, PopPRow, SellOffer};
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
+    use crate::game::factuals::Factuals;
+    use crate::game::good::{Good, GoodTag};
+    use crate::game::market::Market;
+    use crate::game::scalingfactor::ScalingFactor;
+
+    const GRAIN: usize = 1;
+    const BREAD: usize = 3;
+    const BEER: usize = 25;
+    const CABIN: usize = 8;
+
+    fn near(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+    }
+
+    fn plain(id: usize, untradeable: bool) -> Good {
+        let mut tags = HashSet::new();
+        if untradeable {
+            tags.insert(GoodTag::Untradeable);
+        }
+        Good {
+            id,
+            name: format!("g{id}"),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: Default::default(),
+            mass: 1.0,
+            volume: 0.0,
+            tags,
+            categories: vec![],
+        }
+    }
+
+    fn world(untradeable: &[usize]) -> Factuals {
+        let mut factuals = Factuals::new();
+        for id in [GRAIN, BREAD, BEER, CABIN, 7] {
+            factuals.goods.insert(id, plain(id, untradeable.contains(&id)));
+        }
+        factuals
+    }
+
+    fn market() -> Market {
+        let mut market = Market::new(1);
+        market.currencies.push(GRAIN);
+        market
+    }
+
+    fn desire(amount: f64, targets: Vec<(usize, f64)>) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: targets
+                .into_iter()
+                .map(|(good, efficiency)| DesireTarget::new(good, DesireTargetType::Consume, efficiency))
+                .collect(),
+            amount,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 1.0,
+        }
+    }
+
+    fn with_grain(id: usize, loose: f64) -> Pop {
+        let mut pop = Pop::new(id);
+        if loose > 0.0 {
+            pop.property.insert(GRAIN, PopPRow::new(loose));
+        }
+        pop
+    }
+
+    fn offer(pop: usize, good: usize, amount: f64) -> SellOffer {
+        SellOffer { pop, good, amount }
+    }
+
+    fn qty(pop: &Pop, good: usize) -> f64 {
+        pop.property.get(&good).map(|row| row.quantity).unwrap_or(0.0)
+    }
+
+    #[test]
+    fn buys_the_offered_good_and_pays_the_seller() {
+        // Four satisfaction at efficiency 1 is four loaves. The seller keeps the rest.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(4.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(6.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 6.0), offer(1, GRAIN, 10.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 4.0);
+        near(qty(&pops[0], GRAIN), 6.0);
+        near(qty(&pops[1], BREAD), 2.0);
+        near(qty(&pops[1], GRAIN), 4.0);
+        near(offers[0].amount, 2.0);
+        near(offers[1].amount, 6.0);
+    }
+
+    #[test]
+    fn does_not_buy_its_own_offer() {
+        // Four loaves on hand cover half the desire. The rest of the offer is this pop's own.
+        let factuals = world(&[]);
+        let market = market();
+        let mut pop = with_grain(1, 10.0);
+        pop.desires[0].push(desire(8.0, vec![(BREAD, 1.0)]));
+        pop.property.insert(BREAD, PopPRow::new(4.0));
+        let mut pops = [pop];
+        let mut offers = vec![offer(1, BREAD, 4.0), offer(1, GRAIN, 10.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 4.0);
+        near(qty(&pops[0], GRAIN), 10.0);
+        near(offers[0].amount, 4.0);
+    }
+
+    #[test]
+    fn holdings_cover_the_desire() {
+        // The loaves already in the house cover the desire, so the offer stays up.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(4.0, vec![(BREAD, 1.0)]));
+        buyer.property.insert(BREAD, PopPRow::new(4.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(4.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 4.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 4.0);
+        near(qty(&pops[1], BREAD), 4.0);
+        near(offers[0].amount, 4.0);
+    }
+
+    #[test]
+    fn cheapest_satisfaction_is_bought() {
+        // Beer satisfies twice what bread does, at the same price, so the pop buys beer.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(4.0, vec![(BREAD, 1.0), (BEER, 2.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(8.0));
+        seller.property.insert(BEER, PopPRow::new(8.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 8.0), offer(2, BEER, 8.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BEER), 2.0);
+        near(qty(&pops[0], BREAD), 0.0);
+        near(qty(&pops[1], GRAIN), 2.0);
+    }
+
+    #[test]
+    fn stops_at_money_and_whole_units() {
+        // 2.4 grain buys two whole loaves. An offer of 1.9 sells one.
+        let factuals = world(&[]);
+        let market = market();
+        let mut short = with_grain(1, 2.4);
+        short.desires[0].push(desire(5.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(10.0));
+        let mut pops = [short, seller];
+        let mut offers = vec![offer(2, BREAD, 10.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 2.0);
+        near(qty(&pops[0], GRAIN), 0.4);
+
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(5.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(1.9));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 1.9)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 1.0);
+        near(offers[0].amount, 0.9);
+    }
+
+    #[test]
+    fn pays_savings_after_loose_tender() {
+        // One loose coin and three saved. Three loaves take the loose coin and two saved.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = with_grain(1, 1.0);
+        buyer.savings.insert(GRAIN, 3.0);
+        buyer.desires[0].push(desire(3.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(3.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 3.0), offer(1, GRAIN, 1.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 3.0);
+        near(qty(&pops[0], GRAIN), 0.0);
+        near(pops[0].savings()[&GRAIN], 1.0);
+        near(qty(&pops[1], GRAIN), 3.0);
+        near(offers[1].amount, 0.0);
+    }
+
+    #[test]
+    fn reserved_tender_stays_put() {
+        // Four of the five coins are earmarked. Only the loose coin can pay.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = Pop::new(1);
+        buyer.property.insert(GRAIN, PopPRow::new(5.0).with_reserve(4.0));
+        buyer.desires[0].push(desire(3.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(3.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 3.0), offer(1, GRAIN, 1.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 1.0);
+        near(qty(&pops[0], GRAIN), 4.0);
+        near(pops[0].property[&GRAIN].reserved, 4.0);
+    }
+
+    #[test]
+    fn common_waits_until_basic_is_covered() {
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(5.0, vec![(BREAD, 1.0)]));
+        buyer.desires[1].push(desire(4.0, vec![(CABIN, 2.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(CABIN, PopPRow::new(4.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, CABIN, 4.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        // Basic bread is not on offer and not in hand, so the cabin stays unsold.
+        near(qty(&pops[0], CABIN), 0.0);
+        near(offers[0].amount, 4.0);
+
+        buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(5.0, vec![(BREAD, 1.0)]));
+        buyer.property.insert(BREAD, PopPRow::new(5.0));
+        buyer.desires[1].push(desire(4.0, vec![(CABIN, 2.0)]));
+        seller = Pop::new(2);
+        seller.property.insert(CABIN, PopPRow::new(4.0));
+        pops = [buyer, seller];
+        offers = vec![offer(2, CABIN, 4.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        // Basic is covered. Two cabins cover four satisfaction.
+        near(qty(&pops[0], CABIN), 2.0);
+        near(qty(&pops[1], GRAIN), 2.0);
+    }
+
+    #[test]
+    fn an_untradeable_good_is_skipped() {
+        // Wood would be the cheaper satisfaction, and it cannot be bought. Bread can.
+        let factuals = world(&[7]);
+        let market = market();
+        let mut buyer = with_grain(1, 10.0);
+        buyer.desires[0].push(desire(4.0, vec![(7, 10.0), (BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(7, PopPRow::new(4.0));
+        seller.property.insert(BREAD, PopPRow::new(4.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, 7, 4.0), offer(2, BREAD, 4.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[0], BREAD), 4.0);
+        near(qty(&pops[0], 7), 0.0);
+        near(offers[0].amount, 4.0);
+    }
+
+    #[test]
+    fn the_wealthier_pop_buys_first() {
+        // One loaf is offered. The pop holding jewelry is wealthier and takes it.
+        let factuals = world(&[]);
+        let market = market();
+        let mut poor = with_grain(1, 5.0);
+        poor.desires[0].push(desire(1.0, vec![(BREAD, 1.0)]));
+        let mut rich = with_grain(2, 1.0);
+        rich.property.insert(6, PopPRow::new(10.0));
+        rich.desires[0].push(desire(1.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(3);
+        seller.property.insert(BREAD, PopPRow::new(1.0));
+        let mut pops = [poor, rich, seller];
+        let mut offers = vec![offer(3, BREAD, 1.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[1], BREAD), 1.0);
+        near(qty(&pops[0], BREAD), 0.0);
+        near(offers[0].amount, 0.0);
+    }
+
+    #[test]
+    fn a_sale_keeps_fresh_inside_quantity() {
+        // The loaf pile has two aged units. Selling three takes one fresh unit with them.
+        // The coins that pay are mostly fresh, and the same rule applies. Receipts stay unfresh.
+        let factuals = world(&[]);
+        let market = market();
+        let mut buyer = Pop::new(1);
+        buyer.property.insert(GRAIN, PopPRow::new(5.0).with_fresh(4.0));
+        buyer.desires[0].push(desire(3.0, vec![(BREAD, 1.0)]));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(6.0).with_fresh(4.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, BREAD, 6.0)];
+        buy_from_offers(&mut pops, &market, &factuals, &mut offers);
+        near(qty(&pops[1], BREAD), 3.0);
+        near(pops[1].property[&BREAD].fresh, 3.0);
+        near(qty(&pops[0], GRAIN), 2.0);
+        near(pops[0].property[&GRAIN].fresh, 2.0);
+        near(pops[0].property[&BREAD].fresh, 0.0);
+        near(pops[1].property[&GRAIN].fresh, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod sentiments_should {
+    use std::collections::VecDeque;
+
+    use super::{Pop, PopEffect, PopPRow};
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::{Desire, DesireEffect, DesireTarget, DesireTargetType};
+    use crate::game::good::TIME;
+    use crate::game::market::Market;
+    use crate::game::scalingfactor::ScalingFactor;
+    use crate::game::sentiment::{Sentiment, SentimentKind};
+
+    fn near(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "{actual} != {expected}"
+        );
+    }
+
+    fn make_pop() -> Pop {
+        Pop::new(1)
+    }
+
+    fn desire(id: usize, targets: Vec<DesireTarget>, amount: f64) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: id,
+            priority: 0,
+            target: targets,
+            amount,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        }
+    }
+
+    #[test]
+    fn standard_of_living_sums_tiers_and_desire_satisfaction_effects() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 2.0;
+        basic.effect.push(DesireEffect::Satisfaction(6.0, true));
+        let mut common = desire(2, vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)], 4.0);
+        common.satisfaction = 4.0;
+        common.effect.push(DesireEffect::Satisfaction(2.0, false));
+        pop.desires[0].push(basic);
+        pop.desires[1].push(common);
+
+        let sol = pop.calculate_sol();
+
+        near(sol, 4.5);
+        near(pop.records.satisfaction, 4.5);
+    }
+
+    #[test]
+    fn standard_of_living_adds_pop_satisfaction_and_drops_that_effect() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+        pop.stored_effects.push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Birthrate(0.01));
+
+        let sol = pop.calculate_sol();
+
+        near(sol, 2.5);
+        assert_eq!(pop.stored_effects, vec![PopEffect::Birthrate(0.01)]);
+    }
+
+    #[test]
+    fn calculate_sol_records_infinity_when_there_are_no_desires() {
+        let mut pop = make_pop();
+        let sol = pop.calculate_sol();
+        assert!(sol.is_infinite());
+        assert!(pop.records.satisfaction.is_infinite());
+    }
+
+    #[test]
+    fn update_sentiments_shifts_happiness_from_a_met_desire() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        basic.effect.push(DesireEffect::SentimentFlat(SentimentKind::Happiness, 0.2, true));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.happiness(), 0.2 / 1.2);
+        near(pop.sentiment.contentment(), 1.0 / 1.2);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_applies_stored_hope_and_drops_it() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.effect.push(DesireEffect::SentimentFlat(SentimentKind::Anger, -0.2, false));
+        pop.desires[0].push(basic);
+        pop.stored_effects.push(PopEffect::SentimentFlat {
+            kind: SentimentKind::Hope,
+            delta: 0.2,
+        });
+        pop.stored_effects.push(PopEffect::Birthrate(0.01));
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.24 / 1.48);
+        near(pop.sentiment.fear(), 0.04 / 1.48);
+        near(pop.sentiment.hope(), 0.2 / 1.48);
+        near(pop.sentiment.contentment(), 1.0 / 1.48);
+        assert_eq!(pop.stored_effects, vec![PopEffect::Birthrate(0.01)]);
+    }
+
+    #[test]
+    fn update_sentiments_scales_one_emotion_from_its_current_share() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        basic.effect.push(DesireEffect::SentimentRelative(SentimentKind::Hope, 0.5, true));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.27 / 1.1);
+        near(pop.sentiment.happiness(), 0.17 / 1.1);
+        near(pop.sentiment.contentment(), 0.32 / 1.1);
+    }
+
+    #[test]
+    fn update_sentiments_moves_hope_from_wealth_per_household() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(10.0));
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.10 / 1.10);
+        near(pop.sentiment.contentment(), 1.0 / 1.10);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_prices_wealth_from_the_market() {
+        let mut pop = make_pop();
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut market = Market::new(1);
+        market.currencies = vec![9];
+        market.exchange_rates.entry(9).or_default().insert(1, 2.0);
+
+        pop.update_sentiments(Some(&market));
+
+        near(pop.sentiment.hope(), 0.05 / 1.05);
+        near(pop.sentiment.contentment(), 1.0 / 1.05);
+    }
+
+    #[test]
+    fn update_sentiments_splits_basic_shortfalls_across_desires() {
+        let mut pop = make_pop();
+        let mut met = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        met.satisfaction = 8.0;
+        let unmet = desire(2, vec![DesireTarget::new(2, DesireTargetType::Consume, 1.0)], 4.0);
+        pop.desires[0].push(met);
+        pop.desires[0].push(unmet);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.02 / 1.04);
+        near(pop.sentiment.fear(), 0.02 / 1.04);
+        near(pop.sentiment.contentment(), 1.0 / 1.04);
+    }
+
+    #[test]
+    fn update_sentiments_lets_common_satisfaction_pass_one_level() {
+        let mut pop = make_pop();
+        let mut common = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        common.satisfaction = 4.0;
+        common.effect.push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.contentment(), 1.03 / 1.03);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_counts_each_luxury_level() {
+        let mut pop = make_pop();
+        for id in [1, 2] {
+            let mut luxury = desire(id, vec![DesireTarget::new(id, DesireTargetType::Consume, 1.0)], 4.0);
+            luxury.satisfaction = 8.0;
+            pop.desires[2].push(luxury);
+        }
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.02 / 1.04);
+        near(pop.sentiment.happiness(), 0.02 / 1.04);
+        near(pop.sentiment.contentment(), 1.0 / 1.04);
+    }
+
+    #[test]
+    fn update_sentiments_adds_stored_satisfaction_on_its_tier() {
+        let mut pop = make_pop();
+        pop.desires[1].push(desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0));
+        pop.stored_effects.push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+        pop.stored_effects.push(PopEffect::Birthrate(0.01));
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.contentment(), 1.03 / 1.03);
+        assert_eq!(
+            pop.stored_effects,
+            vec![
+                PopEffect::Satisfaction { tier: 1, amount: 1.5 },
+                PopEffect::Birthrate(0.01),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_sentiments_records_living_before_it_can_shift() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples.len(), 1);
+        near(pop.sol_samples[0], 1.0);
+        assert_eq!(pop.recorded_living(), Some(1.0));
+    }
+
+    #[test]
+    fn update_sentiments_moves_hope_and_happiness_from_a_rising_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.25 / 1.50);
+        near(pop.sentiment.happiness(), 0.25 / 1.50);
+        near(pop.sentiment.contentment(), 1.0 / 1.50);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_moves_anger_and_fear_from_a_falling_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(2.0);
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.25 / 1.50);
+        near(pop.sentiment.fear(), 0.25 / 1.50);
+        near(pop.sentiment.contentment(), 1.0 / 1.50);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_lets_a_rising_living_outweigh_wealth() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        pop.property.insert(1, PopPRow::new(10.0));
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.35 / 1.60);
+        near(pop.sentiment.happiness(), 0.25 / 1.60);
+        near(pop.sentiment.contentment(), 1.0 / 1.60);
+    }
+
+    #[test]
+    fn update_sentiments_drops_the_oldest_living_sample() {
+        let mut pop = make_pop();
+        pop.sol_samples = VecDeque::from([0.0, 1.0, 1.0, 1.0, 1.0]);
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.05 / 1.10);
+        near(pop.sentiment.happiness(), 0.05 / 1.10);
+        near(pop.sentiment.contentment(), 1.0 / 1.10);
+        assert_eq!(pop.sol_samples.len(), 5);
+        assert!(pop.sol_samples.iter().all(|sample| (sample - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn update_sentiments_skips_an_infinite_living() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0]));
+    }
+
+    #[test]
+    fn update_sentiments_divides_wealth_by_households_and_skips_time() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 5.0;
+        pop.property.insert(TIME, PopPRow::new(100.0));
+        pop.property.insert(1, PopPRow::new(10.0));
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.02 / 1.02);
+        near(pop.sentiment.contentment(), 1.0 / 1.02);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_moves_fear_from_negative_wealth() {
+        let mut pop = make_pop();
+        pop.savings.insert(1, -10.0);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.fear(), 0.10 / 1.10);
+        near(pop.sentiment.contentment(), 1.0 / 1.10);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_skips_wealth_when_there_are_no_households() {
+        let mut pop = make_pop();
+        pop.demographics.household.count = 0.0;
+        pop.property.insert(1, PopPRow::new(10.0));
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_reduces_basic_unmet_by_stored_satisfaction() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0));
+        pop.stored_effects.push(PopEffect::Satisfaction { tier: 0, amount: 0.5 });
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.02 / 1.04);
+        near(pop.sentiment.fear(), 0.02 / 1.04);
+        near(pop.sentiment.contentment(), 1.0 / 1.04);
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 0, amount: 0.5 }]
+        );
+    }
+
+    #[test]
+    fn update_sentiments_lets_stored_basic_satisfaction_clear_the_gap() {
+        let mut pop = make_pop();
+        pop.desires[0].push(desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0));
+        pop.stored_effects.push(PopEffect::Satisfaction { tier: 0, amount: 1.5 });
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 0, amount: 1.5 }]
+        );
+    }
+
+    #[test]
+    fn update_sentiments_deepens_basic_unmet_with_a_satisfaction_malus() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.effect.push(DesireEffect::Satisfaction(0.5, false));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.06 / 1.12);
+        near(pop.sentiment.fear(), 0.06 / 1.12);
+        near(pop.sentiment.contentment(), 1.0 / 1.12);
+    }
+
+    #[test]
+    fn update_sentiments_leaves_a_met_basic_bonus_alone() {
+        let mut pop = make_pop();
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        basic.effect.push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_shows_common_satisfaction_above_one_level() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut common = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        common.satisfaction = 4.0;
+        common.effect.push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.contentment(), 0.35 / 1.03);
+        near(pop.sentiment.happiness(), 0.17 / 1.03);
+        near(pop.sentiment.hope(), 0.17 / 1.03);
+        near(pop.sentiment.anger(), 0.17 / 1.03);
+        near(pop.sentiment.fear(), 0.17 / 1.03);
+    }
+
+    #[test]
+    fn update_sentiments_adds_luxury_bonus_levels() {
+        let mut pop = make_pop();
+        let mut luxury = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        luxury.satisfaction = 8.0;
+        luxury.effect.push(DesireEffect::Satisfaction(0.5, true));
+        pop.desires[2].push(luxury);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.hope(), 0.03 / 1.06);
+        near(pop.sentiment.happiness(), 0.03 / 1.06);
+        near(pop.sentiment.contentment(), 1.0 / 1.06);
+    }
+
+    #[test]
+    fn update_sentiments_ignores_a_negative_common_level() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        let mut common = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        common.effect.push(DesireEffect::Satisfaction(0.5, false));
+        pop.desires[1].push(common);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.contentment(), 0.32);
+        near(pop.sentiment.happiness(), 0.17);
+        near(pop.sentiment.anger(), 0.17);
+        near(pop.sentiment.fear(), 0.17);
+        near(pop.sentiment.hope(), 0.17);
+    }
+
+    #[test]
+    fn update_sentiments_counts_stored_satisfaction_on_an_empty_tier() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::even();
+        pop.stored_effects.push(PopEffect::Satisfaction { tier: 1, amount: 1.5 });
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.contentment(), 0.35 / 1.03);
+        near(pop.sentiment.happiness(), 0.17 / 1.03);
+        near(pop.sentiment.hope(), 0.17 / 1.03);
+        assert!(pop.sol_samples.is_empty());
+        assert_eq!(
+            pop.stored_effects,
+            vec![PopEffect::Satisfaction { tier: 1, amount: 1.5 }]
+        );
+    }
+
+    #[test]
+    fn update_sentiments_adds_nothing_when_living_matches_the_average() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+
+        assert_eq!(pop.sentiment.contentment(), 1.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([1.0, 1.0]));
+    }
+
+    #[test]
+    fn update_sentiments_adds_the_living_shift_again_on_the_next_day() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(0.0);
+        let mut basic = desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0);
+        basic.satisfaction = 4.0;
+        pop.desires[0].push(basic);
+
+        pop.update_sentiments(None);
+        pop.update_sentiments(None);
+
+        let carried_hope = 0.25 / 1.50;
+        let carried_contentment = 1.0 / 1.50;
+        let hope = carried_hope * (1.0 - 0.15) + 0.125;
+        let contentment = carried_contentment + 0.15 * carried_hope * 2.0;
+        let mass = hope + hope + contentment;
+        near(pop.sentiment.hope(), hope / mass);
+        near(pop.sentiment.happiness(), hope / mass);
+        near(pop.sentiment.contentment(), contentment / mass);
+        assert_eq!(pop.sentiment.anger(), 0.0);
+        assert_eq!(pop.sol_samples, VecDeque::from([0.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn update_sentiments_lets_a_falling_living_outweigh_unmet_basic() {
+        let mut pop = make_pop();
+        pop.sol_samples.push_back(1.0);
+        pop.desires[0].push(desire(1, vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)], 4.0));
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.29 / 1.58);
+        near(pop.sentiment.fear(), 0.29 / 1.58);
+        near(pop.sentiment.contentment(), 1.0 / 1.58);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+    }
+
+    #[test]
+    fn update_sentiments_pulls_a_larger_share_harder_toward_contentment() {
+        let mut far = make_pop();
+        far.sentiment = Sentiment::from_parts(0.0, 0.2, 0.8, 0.0, 0.0);
+        let mut near_pop = make_pop();
+        near_pop.sentiment = Sentiment::from_parts(0.0, 0.8, 0.2, 0.0, 0.0);
+
+        far.update_sentiments(None);
+        near_pop.update_sentiments(None);
+
+        near(far.sentiment.anger(), 0.68);
+        near(far.sentiment.contentment(), 0.32);
+        near(near_pop.sentiment.anger(), 0.17);
+        near(near_pop.sentiment.contentment(), 0.83);
+    }
+
+    #[test]
+    fn update_sentiments_pulls_again_when_the_cause_is_gone() {
+        let mut pop = make_pop();
+        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 1.0, 0.0, 0.0);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.85);
+        near(pop.sentiment.contentment(), 0.15);
+        assert_eq!(pop.sentiment.hope(), 0.0);
+        assert_eq!(pop.sentiment.happiness(), 0.0);
+        assert_eq!(pop.sentiment.fear(), 0.0);
+
+        pop.update_sentiments(None);
+
+        near(pop.sentiment.anger(), 0.7225);
+        near(pop.sentiment.contentment(), 0.2775);
     }
 }

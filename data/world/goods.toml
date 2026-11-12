@@ -340,3 +340,11 @@ mass = 0.0
 volume = 0.0
 decay_rate = 0.05
 tags = ["skill", "untradeable"]
+
+# A lighter shelter than cabins. No process makes this yet.
+[[goods]]
+id = 44
+name = "huts"
+mass = 10.0
+volume = 0.03
+decay_rate = 0.03

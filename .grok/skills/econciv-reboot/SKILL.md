@@ -17,7 +17,7 @@ description: Working rules for JeremyDaug/SimplerEconomy. Trigger on simpler_eco
 
 ## What this crate is
 
-Rust 2024 lib crate `simpler_economy`. No binary. No Bevy in simulation code. No examples. `std` collections. `hexx` for the hex map. Bring Bevy back only with a client.
+Rust 2024 lib crate `simpler_economy`. No library binary. No Bevy in simulation code. The pop tester example is `examples/pop_tester`. `std` collections. `hexx` for the hex map. Bring Bevy back only with a client.
 
 World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Goods and processes are the live systems. Their loaders are `Good::load_from_toml` and `Process::load_from_toml`. `Factuals` loads a world folder from those, then config. Details are in `docs/handoff/loaders.md`.
 

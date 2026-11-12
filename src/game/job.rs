@@ -47,6 +47,14 @@ pub struct JobLine {
     /// `Some(0.0)` means do not run.
     /// `Some(n)` with `n > 0` means run up to `n` iterations.
     pub target: Option<f64>,
+    /// Iterations [`crate::game::pop::Pop::produce`] asked this line to run.
+    ///
+    /// Planning leaves this. The next production replaces it.
+    pub attempted: f64,
+    /// Iterations [`crate::game::pop::Pop::produce`] finished.
+    ///
+    /// Kept with [`Self::attempted`].
+    pub completed: f64,
     /// Optional inputs this line draws. Empty draws none.
     pub inputs: Vec<usize>,
 }
@@ -63,6 +71,8 @@ impl JobLine {
         Self {
             process,
             target,
+            attempted: 0.0,
+            completed: 0.0,
             inputs,
         }
     }

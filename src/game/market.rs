@@ -8,7 +8,7 @@ use crate::game::firm::Firm;
 use crate::game::institution::Institution;
 use crate::game::map::Map;
 use crate::game::players::Players;
-use crate::game::pop::{Pop, SellOffer};
+use crate::game::pop::{buy_from_offers, Pop, SellOffer};
 use crate::game::process::InputType;
 use crate::game::{config::MarketConfig, factuals::Factuals};
 
@@ -240,10 +240,11 @@ impl Market {
     ///
     /// `factuals` supplies the world. `history` is the snapshot the offer
     /// split reads. `pops` and `firms` are the members handed to this
-    /// market, walked in the order given. `institutions` is every
-    /// institution. This market calls the ones in `institution_ids`, in id
-    /// order. `players` buy first and again last. `rng` is this market's
-    /// draws. The offers, buys, and trade records are not written yet.
+    /// market. Firms walk in the order given. Pops shop through
+    /// [`buy_from_offers`], wealthiest household first. `institutions` is
+    /// every institution. This market calls the ones in `institution_ids`,
+    /// in id order. `players` buy first and again last. `rng` is this
+    /// market's draws. Trade records are not written yet.
     pub fn market_day(
         &mut self,
         factuals: &Factuals,
@@ -280,10 +281,8 @@ impl Market {
         for firm in firms.iter_mut() {
             firm.market_day(self, factuals, &offers);
         }
-        // Pops, in the order they were handed in.
-        for pop in pops.iter_mut() {
-            pop.market_day(self, factuals, &offers);
-        }
+        // Pops shop the offers. A buy takes another pop's goods.
+        buy_from_offers(pops, self, factuals, &mut offers);
         // Players who buy after the other actors.
         players.late_market_day(self, factuals, &offers);
         // Record the trades and consolidate property.

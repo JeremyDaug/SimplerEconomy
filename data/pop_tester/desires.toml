@@ -1,0 +1,97 @@
+# Platonic desires for the pop tester. Species and cultures derive a
+# demographic desire from one of these. Scalar and decay are copied onto
+# that demographic desire. An omitted scalar is all. Decay is the share of
+# satisfaction lost each night. A goods table is the bucket. Efficiency is
+# satisfaction from one unit. Type is consume or use.
+
+[[desires]]
+id = 1
+name = "sustenance"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "grain"
+efficiency = 1
+
+[[desires.goods]]
+good = "bread"
+efficiency = 2
+
+[[desires]]
+id = 2
+name = "hydration"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "water"
+efficiency = 1
+
+[[desires.goods]]
+good = "beer"
+efficiency = 0.5
+
+[[desires]]
+id = 3
+name = "heating"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "wood"
+efficiency = 1
+
+[[desires.goods]]
+good = "coal"
+efficiency = 2
+
+[[desires]]
+id = 4
+name = "food"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "bread"
+efficiency = 1
+
+[[desires.goods]]
+good = "beer"
+efficiency = 1.5
+
+[[desires]]
+id = 5
+name = "clothing"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "cotton"
+efficiency = 0.5
+
+[[desires.goods]]
+good = "thread"
+efficiency = 1.5
+
+[[desires.goods]]
+good = "fabric"
+efficiency = 3
+
+[[desires.goods]]
+good = "clothes"
+efficiency = 5
+
+[[desires]]
+id = 6
+name = "housing"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "cabins"
+efficiency = 2
+
+[[desires.goods]]
+good = "huts"
+efficiency = 1

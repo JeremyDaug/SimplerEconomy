@@ -1,0 +1,28 @@
+# Species for the pop tester. A desire names a platonic desire in
+# desires.toml. Tier 0 is basic, 1 is common, and 2 is luxury. Amount is
+# the satisfaction asked of one step of that desire's scalar.
+
+[[species]]
+id = 1
+name = "human"
+
+[[species.desires]]
+id = 1
+desire = "sustenance"
+tier = 0
+priority = 0
+amount = 5
+
+[[species.desires]]
+id = 2
+desire = "hydration"
+tier = 0
+priority = 1
+amount = 5
+
+[[species.desires]]
+id = 3
+desire = "heating"
+tier = 0
+priority = 2
+amount = 5

@@ -58,7 +58,8 @@ pub enum SentimentKind {
     Hope,
 }
 
-/// A single sentiment change, for batch application via [`Sentiment::apply_mods`].
+/// A single sentiment change, for batch application via
+/// [`Sentiment::apply_mods_simultaniously`].
 ///
 /// Focuses on the two common shapes used by desires / day effects:
 /// - **Flat**: absolute share of the whole pop (donors unspecified)
@@ -266,6 +267,73 @@ impl Sentiment {
             self.total()
         );
     }
+
+    /// # Apply Mods Simultaniously
+    ///
+    /// Applies `mods` to this sentiment in one step.
+    ///
+    /// Flat deltas add. A relative mod adds the current share times that
+    /// relative. A transfer subtracts from its source and adds to its
+    /// destination. Each share is then clamped at 0. An all-zero result
+    /// becomes [`Self::content`]. Any other result is renormalized.
+    /// Returns nothing.
+    pub fn apply_mods_simultaniously(&mut self, mods: impl IntoIterator<Item = SentimentMod>) {
+        debug_assert!(
+            self.is_valid(),
+            "apply_mods_simultaniously requires a valid Sentiment."
+        );
+
+        // Net every mod against the shares this call started from.
+        let mut net = [0.0_f64; 5];
+        for modifier in mods {
+            match modifier {
+                SentimentMod::Flat { kind, delta } => {
+                    net[Self::kind_index(kind)] += delta;
+                }
+                SentimentMod::Relative { kind, relative } => {
+                    let current = self.get(kind);
+                    net[Self::kind_index(kind)] += current * relative;
+                }
+                SentimentMod::Transfer { from, to, amount } => {
+                    net[Self::kind_index(from)] -= amount;
+                    net[Self::kind_index(to)] += amount;
+                }
+            }
+        }
+
+        // Add the net and drop any share that would go below 0.
+        self.happiness = (self.happiness + net[0]).max(0.0);
+        self.contentment = (self.contentment + net[1]).max(0.0);
+        self.anger = (self.anger + net[2]).max(0.0);
+        self.fear = (self.fear + net[3]).max(0.0);
+        self.hope = (self.hope + net[4]).max(0.0);
+
+        // A wiped partition is still published as fully content.
+        if self.total() <= f64::EPSILON {
+            *self = Self::content();
+        }
+        self.renormalize();
+        debug_assert!(
+            self.is_valid(),
+            "Sentiment shares must form a unit partition after apply_mods_simultaniously."
+        );
+    }
+
+    /// # Kind Index
+    ///
+    /// Index of `kind` in the five-share net.
+    ///
+    /// Happiness is 0, contentment 1, anger 2, fear 3, and hope 4.
+    /// Returns that index.
+    fn kind_index(kind: SentimentKind) -> usize {
+        match kind {
+            SentimentKind::Happiness => 0,
+            SentimentKind::Contentment => 1,
+            SentimentKind::Anger => 2,
+            SentimentKind::Fear => 3,
+            SentimentKind::Hope => 4,
+        }
+    }
 }
 
 impl SentimentKind {
@@ -327,5 +395,35 @@ mod sentiment_should {
     #[should_panic(expected = "must be finite")]
     fn from_parts_rejects_nan() {
         let _ = Sentiment::from_parts(f64::NAN, 1.0, 0.0, 0.0, 0.0);
+    }
+
+    #[test]
+    fn apply_mods_adds_flat_and_relative_together() {
+        let mut sentiment = Sentiment::even();
+        sentiment.apply_mods_simultaniously([
+            SentimentMod::Flat {
+                kind: SentimentKind::Anger,
+                delta: 0.1,
+            },
+            SentimentMod::Relative {
+                kind: SentimentKind::Hope,
+                relative: 0.5,
+            },
+        ]);
+        assert!((sentiment.hope() - 0.3 / 1.2).abs() < 1e-9);
+        assert!((sentiment.anger() - 0.3 / 1.2).abs() < 1e-9);
+        assert!((sentiment.happiness() - 0.2 / 1.2).abs() < 1e-9);
+        assert_unit(&sentiment);
+    }
+
+    #[test]
+    fn apply_mods_falls_back_to_content_when_the_mass_is_wiped() {
+        let mut sentiment = Sentiment::content();
+        sentiment.apply_mods_simultaniously([SentimentMod::Flat {
+            kind: SentimentKind::Contentment,
+            delta: -1.0,
+        }]);
+        assert_eq!(sentiment.contentment(), 1.0);
+        assert_unit(&sentiment);
     }
 }
