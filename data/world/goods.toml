@@ -1,15 +1,18 @@
 # World data: goods (factuals).
 # Human-editable. Starting prices, pops, and firms are initialization data, not here.
 #
-# Tags (optional): "fixed", "exposure", "untradeable", "skill", "industrial", or { transport = 1.0 }
+# Tags (optional): "restricted", "immobile", "exposure", "untradeable", "skill",
+# "industrial", or { transport = 1.0 }.
+# Restricted stays in its market. A trade on that tile can still move it.
+# Immobile keeps bulk and leaves that bulk out of a transaction's haul.
 #
 # Time is id 0 on purpose: it is foundational. Other goods start at 1.
 # 0 still means none for pops, owners, and most other ids.
 # Untradeable so pops cannot buy extra person-days; still transport 1.0.
 #
 # mass is kg per game unit; volume is m^3 per game unit.
-# Bulk = mass + 400 * volume. Live market.friction is 1, so bulk is the
-# extra transport-cover (Time) per unit moved, on top of TRANSACTION_COST.
+# Bulk = mass + 400 * volume. A haul charges a quarter of that bulk times
+# market.friction, on top of TRANSACTION_COST. An immobile good adds none.
 #
 # Decay: Time stays 1.0. Other rates were pulled back so a few days of
 # stock actually survive; food still rots faster than metal.
@@ -80,6 +83,7 @@ name = "cabins"
 mass = 20.0
 volume = 0.05
 decay_rate = 0.03
+tags = ["restricted", "immobile"]
 
 [[goods]]
 id = 9
@@ -341,10 +345,11 @@ volume = 0.0
 decay_rate = 0.05
 tags = ["skill", "untradeable"]
 
-# A lighter shelter than cabins. No process makes this yet.
+# A lighter shelter than cabins. make huts is process 44.
 [[goods]]
 id = 44
 name = "huts"
 mass = 10.0
 volume = 0.03
 decay_rate = 0.03
+tags = ["restricted", "immobile"]

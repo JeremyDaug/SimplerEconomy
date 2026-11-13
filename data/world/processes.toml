@@ -18,7 +18,7 @@
 # survival 28: subsistence and make time. farming 29: make grain.
 # watering 30: make water. baking 31: make bread.
 # goldsmithing 32: gold, gold token, jewelry.
-# woodworking 33: wood, cabins, wood tools, buckets, charcoal.
+# woodworking 33: wood, cabins, huts, wood tools, buckets, charcoal.
 # smithing 34: iron, iron tools, blades, iron token.
 # metalworking 35: copper, tin, bronze, and their tools, mirror, and tokens.
 # mining 36: coal. pottery 37: clay and pots. brewing 38: beer.
@@ -514,4 +514,18 @@ inputs = [
 outputs = [
     { good = 42, amount = 2.0 },
     { good = 43, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 44
+name = "make huts"
+inputs = [
+    { good = 0, amount = 3.0 },
+    { good = 7, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 44, amount = 1.0 },
+    { good = 33, amount = 0.01, fixed = true },
 ]

@@ -91,7 +91,9 @@ scalar = "household"
 [[desires.goods]]
 good = "cabins"
 efficiency = 2
+type = "use"
 
 [[desires.goods]]
 good = "huts"
 efficiency = 1
+type = "use"

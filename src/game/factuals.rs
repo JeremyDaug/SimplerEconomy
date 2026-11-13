@@ -238,6 +238,44 @@ impl Factuals {
         self.goods.get(&id)
     }
 
+    /// # Durability
+    ///
+    /// [`Good::durability`] for `good`.
+    ///
+    /// A missing good is 0. Returns that durability.
+    pub fn durability(&self, good: usize) -> f64 {
+        self.get_good(good).map(|good| good.durability()).unwrap_or(0.0)
+    }
+
+    /// # Is For Sale
+    ///
+    /// Whether `good` can be bought.
+    ///
+    /// A missing good cannot. [`Good::is_buyable`] decides a loaded good.
+    /// Returns that check.
+    pub fn is_for_sale(&self, good: usize) -> bool {
+        self.get_good(good).is_some_and(|good| good.is_buyable())
+    }
+
+    /// # May Leave Market
+    ///
+    /// Whether a shipment may carry `good` to another market.
+    ///
+    /// A missing good may not. A loaded good uses [`Good::may_leave_market`].
+    /// A trade on the good's own tile does not ask this. Returns that check.
+    pub fn may_leave_market(&self, good: usize) -> bool {
+        self.get_good(good).is_some_and(|good| good.may_leave_market())
+    }
+
+    /// # Has Transport
+    ///
+    /// Whether any stored good pays transport.
+    ///
+    /// [`Good::is_transport`] decides a good. Returns that check.
+    pub fn has_transport(&self) -> bool {
+        self.goods.values().any(|good| good.is_transport())
+    }
+
     /// # Get Process
     ///
     /// The process stored under `id`.
@@ -437,6 +475,17 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!((factuals.find_good(1).volume - 0.0015).abs() < 1e-12);
         assert!((factuals.find_good(1).bulk() - 1.6).abs() < 1e-12);
         assert!(factuals.find_good(0).bulk().abs() < 1e-12);
+        assert!(factuals.may_leave_market(1));
+        let cabin = factuals.find_good(8);
+        assert!(cabin.is_restricted());
+        assert!(cabin.is_immobile());
+        assert!(!cabin.may_leave_market());
+        assert!(!factuals.may_leave_market(8));
+        assert!((cabin.bulk() - 40.0).abs() < 1e-12);
+        let hut = factuals.find_good(44);
+        assert!(hut.is_restricted());
+        assert!(hut.is_immobile());
+        assert!((hut.bulk() - 22.0).abs() < 1e-12);
         assert_eq!(factuals.find_good(5).name, "gold_token");
         assert!((factuals.find_good(5).decay_rate - 0.005).abs() < 1e-12);
     }

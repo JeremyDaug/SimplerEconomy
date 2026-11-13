@@ -6,7 +6,7 @@ How world data enters the library. The files are `data/world/goods.toml`, `data/
 
 `Good::load_from_path` and `Good::load_from_toml` live in `src/game/good.rs`.
 
-The document's `goods` array is read. Other tables are ignored. Each row deserializes as a `Good`. A missing `decay_rate` is 1.0. Tags use the `GoodTag` names (`fixed`, `exposure`, `untradeable`, `skill`, `transport`).
+The document's `goods` array is read. Other tables are ignored. Each row deserializes as a `Good`. A missing `decay_rate` is 1.0. Tags use the `GoodTag` names (`restricted`, `immobile`, `exposure`, `untradeable`, `skill`, `industrial`, `transport`).
 
 The result is a `HashMap` keyed by id. A repeated id is `GoodLoadError::Duplicate`.
 

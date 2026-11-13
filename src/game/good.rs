@@ -146,6 +146,32 @@ impl Good {
         self.tags.contains(&GoodTag::Industrial)
     }
 
+    /// # Is Restricted
+    ///
+    /// True when this good is tagged [`GoodTag::Restricted`].
+    pub fn is_restricted(&self) -> bool {
+        self.tags.contains(&GoodTag::Restricted)
+    }
+
+    /// # Is Immobile
+    ///
+    /// True when this good is tagged [`GoodTag::Immobile`].
+    ///
+    /// [`Self::bulk`] still reports the mass and volume.
+    pub fn is_immobile(&self) -> bool {
+        self.tags.contains(&GoodTag::Immobile)
+    }
+
+    /// # May Leave Market
+    ///
+    /// Whether a shipment may carry this good to another market.
+    ///
+    /// A trade on this good's own tile does not ask this. A restricted
+    /// good stays in its market. Returns false when it is restricted.
+    pub fn may_leave_market(&self) -> bool {
+        !self.is_restricted()
+    }
+
     /// True if this good can pay intramarket transport / friction.
     pub fn is_transport(&self) -> bool {
         self.tags
@@ -196,8 +222,10 @@ impl Good {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoodTag {
-    /// Good cannot be transported between markets.
-    Fixed,
+    /// Stays in its market. A trade on that tile can still move it.
+    Restricted,
+    /// Bulk stays on the good. A transaction's haul leaves that bulk out.
+    Immobile,
     /// Good only decays when unowned.
     Exposure,
     /// The good cannot be bought or sold.
@@ -234,7 +262,8 @@ impl GoodTag {
 impl PartialEq for GoodTag {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Fixed, Self::Fixed)
+            (Self::Restricted, Self::Restricted)
+            | (Self::Immobile, Self::Immobile)
             | (Self::Exposure, Self::Exposure)
             | (Self::Untradeable, Self::Untradeable)
             | (Self::Skill, Self::Skill)

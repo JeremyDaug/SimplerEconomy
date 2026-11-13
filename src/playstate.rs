@@ -46,7 +46,7 @@ impl PlayState {
     /// 4. Apply player demographic changes and bonuses.
     /// 5. Actor reservations.
     /// 6. Intra-market day.
-    /// 7. Inter-market day.
+    /// 7. Inter-market day. Savings and reserves are released before production.
     /// 8. Production.
     /// 9. Consumption.
     /// 10. Sentiments.
@@ -140,7 +140,7 @@ impl PlayState {
                 .unwrap_or_else(|| panic!("market {id} is not in MapData"));
             let pops = take_listed(&mut self.actors.pops, &market.pops);
             let firms = take_listed(&mut self.actors.firms, &market.firms);
-            // The offer split reads the stored snapshot, not the live market.
+            // Passed through for the market day. The offer split does not read it.
             let history = self
                 .market_lookups
                 .histories
@@ -190,9 +190,12 @@ impl PlayState {
     /// Trade between markets. Sets up trade routes, creates shipping plans,
     /// and moves them between markets to buy and sell.
     ///
-    /// Takes this play state. The pass is not written yet.
+    /// Trade routes are not written. Savings and reserves are released
+    /// here, before production, so the coins are in property for decay.
     fn inter_market_day(&mut self) {
-        let _ = self;
+        for pop in self.actors.pops.values_mut() {
+            pop.release_holds();
+        }
     }
 
     /// # Production

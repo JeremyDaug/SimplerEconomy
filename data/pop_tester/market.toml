@@ -3,4 +3,6 @@
 
 id = 1
 currencies = ["grain"]
-pops = [1, 2]
+pops = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+# Scales bulk into transport cover. 1 matches the live goods note.
+friction = 1.0

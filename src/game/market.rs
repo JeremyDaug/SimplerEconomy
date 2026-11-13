@@ -5,21 +5,30 @@ use std::collections::{HashMap, HashSet};
 use rand::RngCore;
 
 use crate::game::firm::Firm;
+use crate::game::good::TIME;
 use crate::game::institution::Institution;
 use crate::game::map::Map;
 use crate::game::players::Players;
-use crate::game::pop::{buy_from_offers, Pop, SellOffer};
+use crate::game::pop::{buy_from_offers, Pop, SellOffer, ShopBook};
 use crate::game::process::InputType;
-use crate::game::{config::MarketConfig, factuals::Factuals};
+use crate::game::config::{IDLE_COST_MARGIN, IDLE_MOVE_SHARE, MIN_PRICE, MarketConfig};
+use crate::game::factuals::Factuals;
 
-/// How far a no-trade price sits above the dearest method's unit cost.
-const IDLE_COST_MARGIN: f64 = 0.10;
-
-/// Share of a traded move held by the currencies that did not trade, together.
+/// # Posted Offers
 ///
-/// A sole trader keeps `1 - IDLE_MOVE_SHARE`. With more currencies, each idle
-/// currency's floor is this divided by one less than the count.
-const IDLE_MOVE_SHARE: f64 = 0.05;
+/// Units of each good in `offers`.
+///
+/// Amounts of the same good add. A non-positive amount is left out.
+/// Returns those totals.
+fn posted_offers(offers: &[SellOffer]) -> HashMap<usize, f64> {
+    let mut totals = HashMap::new();
+    for offer in offers {
+        if offer.amount > 0.0 {
+            *totals.entry(offer.good).or_insert(0.0) += offer.amount;
+        }
+    }
+    totals
+}
 
 /// Why a pop was removed today.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,13 +247,14 @@ impl Market {
     /// player trade. Trade consolidation follows. Prices move in
     /// record keeping, after the rest of the day.
     ///
-    /// `factuals` supplies the world. `history` is the snapshot the offer
-    /// split reads. `pops` and `firms` are the members handed to this
-    /// market. Firms walk in the order given. Pops shop through
+    /// `factuals` supplies the world. `history` is not read by the offer
+    /// split. `pops` and `firms` are the members handed to this market.
+    /// Firms walk in the order given. Pops shop through
     /// [`buy_from_offers`], wealthiest household first. `institutions` is
     /// every institution. This market calls the ones in `institution_ids`,
-    /// in id order. `players` buy first and again last. `rng` is this
-    /// market's draws. Trade records are not written yet.
+    /// in id order. `players` buy first and again last. `rng` picks the
+    /// sellers. Offers, bids, and completed exchanges are written after
+    /// the pops shop.
     pub fn market_day(
         &mut self,
         factuals: &Factuals,
@@ -262,11 +272,11 @@ impl Market {
         // Each pop sorts its property into reserves and sell offers.
         let mut offers = Vec::new();
         for pop in pops.iter_mut() {
-            let pop_offers = pop.split_goods_sale_reserve(history, factuals);
+            let pop_offers = pop.split_goods_sale_reserve(factuals);
             offers.extend(pop_offers);
         }
-        // Buys run after every offer is in. Draws sit unused until a buy needs one.
-        let _ = rng;
+        // The offer split does not read the snapshot.
+        let _ = history;
         players.early_market_day(self, factuals, &offers);
         // Institutions listed on this market, lowest id first.
         let mut institution_ids: Vec<usize> = self.institution_ids.iter().copied().collect();
@@ -282,28 +292,72 @@ impl Market {
             firm.market_day(self, factuals, &offers);
         }
         // Pops shop the offers. A buy takes another pop's goods.
-        buy_from_offers(pops, self, factuals, &mut offers);
+        // The book is the offers as posted. Later takes reduce what is left.
+        let offered = posted_offers(&offers);
+        let book = buy_from_offers(pops, self, factuals, &mut offers, rng);
         // Players who buy after the other actors.
         players.late_market_day(self, factuals, &offers);
-        // Record the trades and consolidate property.
-        self.consolidate(factuals, pops, firms, &offers);
+        // Write the offers, the bids, and the completed exchanges.
+        self.consolidate(factuals, pops, firms, &offers, &offered, &book);
     }
 
     /// # Consolidate
     ///
-    /// Records the day's trades and consolidates property.
+    /// Writes today's offers, bids, and exchanges onto this market.
     ///
-    /// `factuals` supplies the world. `pops` and `firms` are the members
-    /// that traded. `offers` are the sell offers from the start of the day.
-    /// The records are not written yet.
+    /// `offered` is the units posted for sale, by good. `book` is the units
+    /// bid, the units exchanged, and the tender spent on each good.
+    /// Yesterday's offers, bids, volume, and currency counts are replaced.
+    /// A good with posted supply replaces its salability with the average of
+    /// that share and today's volume over the posted supply. A good with no
+    /// posted supply keeps its salability. `factuals`, `pops`, `firms`, and
+    /// `offers` are not read.
     fn consolidate(
         &mut self,
         factuals: &Factuals,
         pops: &mut [Pop],
         firms: &mut [Firm],
         offers: &[SellOffer],
+        offered: &HashMap<usize, f64>,
+        book: &ShopBook,
     ) {
-        let _ = (self, factuals, pops, firms, offers);
+        let _ = (factuals, pops, firms, offers);
+        for row in self.goods.values_mut() {
+            row.offered = 0.0;
+            row.sought = 0.0;
+            row.volume = 0.0;
+            row.currency_counts.clear();
+        }
+        for (&good, &amount) in offered {
+            if amount > 0.0 {
+                self.goods.entry(good).or_default().offered = amount;
+            }
+        }
+        for (&good, &amount) in &book.sought {
+            if amount > 0.0 {
+                self.goods.entry(good).or_default().sought = amount;
+            }
+        }
+        for (&good, &amount) in &book.volume {
+            if amount > 0.0 {
+                self.goods.entry(good).or_default().volume = amount;
+            }
+        }
+        for (&good, tenders) in &book.paid {
+            let row = self.goods.entry(good).or_default();
+            for (&tender, &amount) in tenders {
+                if amount > 0.0 {
+                    row.currency_counts.insert(tender, amount);
+                }
+            }
+        }
+        // Posted supply averages the stored share with today's sell-through.
+        for row in self.goods.values_mut() {
+            if row.offered > 0.0 {
+                row.salability = (row.salability + row.volume / row.offered) / 2.0;
+                debug_assert!(row.salability.is_finite());
+            }
+        }
     }
 
     /// # Record Keeping
@@ -370,10 +424,12 @@ impl Market {
     ///
     /// `factuals` supplies the processes and `market.price_gain` and
     /// `market.price_cap`. A good with volume above 0 is priced by
-    /// [`traded_price`]. A good with volume 0 takes [`dearest_unit_cost`]
-    /// times `1 + IDLE_COST_MARGIN`. The stored rate is the inverse of that
-    /// price. Rates are read before any of them are written. Counts are left
-    /// in place.
+    /// [`traded_price`]. A good with volume 0 and a stored rate keeps its
+    /// morning price unless [`raised_idle_price`] lifts it. A good with
+    /// posted supply or demand and no rate opens at [`opening_price`]. A
+    /// price this pass writes is at least [`MIN_PRICE`]. The stored rate is
+    /// the inverse of that price. Rates are read before any of them are
+    /// written. Counts are left in place.
     fn move_prices(&mut self, factuals: &Factuals) {
         let gain = factuals.config.market.price_gain;
         let cap = factuals.config.market.price_cap;
@@ -389,14 +445,22 @@ impl Market {
             debug_assert!(sought.is_finite() && sought >= 0.0);
             debug_assert!(offered.is_finite() && offered >= 0.0);
             debug_assert!(volume.is_finite() && volume >= 0.0);
-            let currencies = currencies_for_good(&self.currencies, &rates, &counts, good, volume);
+            let currencies = currencies_for_good(
+                &self.currencies, &rates, &counts, good, offered, sought, volume,
+            );
             let mut priced = Vec::new();
             if volume == 0.0 {
                 for &currency in &currencies {
-                    let Some(cost) = dearest_unit_cost(factuals, &rates, currency, good) else {
-                        continue;
+                    let cost = dearest_unit_cost(factuals, &rates, currency, good);
+                    // A stored price only rises. Supply or demand with no rate opens one.
+                    let price = match stored_price(&rates, currency, good) {
+                        Some(morning) => raised_idle_price(morning, cost),
+                        None if offered > 0.0 || sought > 0.0 => Some(opening_price(cost)),
+                        None => None,
                     };
-                    priced.push((currency, cost * (1.0 + IDLE_COST_MARGIN)));
+                    if let Some(price) = price {
+                        priced.push((currency, price));
+                    }
                 }
             } else {
                 let mut quotes = Vec::with_capacity(currencies.len());
@@ -419,7 +483,8 @@ impl Market {
                 }
             }
             for (currency, price) in priced {
-                debug_assert!(price.is_finite() && price > 0.0);
+                let price = price.max(MIN_PRICE);
+                debug_assert!(price.is_finite() && price >= MIN_PRICE);
                 self.exchange_rates
                     .entry(currency)
                     .or_default()
@@ -717,12 +782,12 @@ impl MarketLookups {
 /// Goods this pass reprices.
 ///
 /// A good already rated in some currency comes first. A good with a currency
-/// count, or with volume above 0, follows. A good is listed once. Returns
-/// that list.
+/// count, with volume above 0, or with posted supply or demand, follows.
+/// Time is left out. A good is listed once. Returns that list.
 fn goods_to_price(market: &Market) -> Vec<usize> {
     let mut goods = Vec::new();
     let mut push = |id: usize| {
-        if !goods.contains(&id) {
+        if id != TIME && !goods.contains(&id) {
             goods.push(id);
         }
     };
@@ -732,7 +797,11 @@ fn goods_to_price(market: &Market) -> Vec<usize> {
         }
     }
     for (&good, row) in &market.goods {
-        if !row.currency_counts.is_empty() || row.volume > 0.0 {
+        if !row.currency_counts.is_empty()
+            || row.volume > 0.0
+            || row.offered > 0.0
+            || row.sought > 0.0
+        {
             push(good);
         }
     }
@@ -743,14 +812,15 @@ fn goods_to_price(market: &Market) -> Vec<usize> {
 ///
 /// Tender ids that take a price for `good`.
 ///
-/// On a day that traded, the market's currency list comes first. A currency
-/// that already rates the good, or that has a count, follows. The good's own
-/// id is left out. A currency is listed once. Returns that list.
+/// On a day with trade, posted supply, or demand, the market's currency
+/// list comes first. A currency that already rates the good, or that has a
+/// count, follows. The good's own id is left out. A currency is listed
+/// once. Returns that list.
 fn currencies_for_good(
     market_currencies: &[usize],
     rates: &HashMap<usize, HashMap<usize, f64>>,
     counts: &HashMap<usize, f64>,
-    good: usize, volume: f64,
+    good: usize, offered: f64, sought: f64, volume: f64,
 ) -> Vec<usize> {
     let mut currencies = Vec::new();
     let mut push = |id: usize| {
@@ -758,7 +828,7 @@ fn currencies_for_good(
             currencies.push(id);
         }
     };
-    if volume > 0.0 {
+    if volume > 0.0 || offered > 0.0 || sought > 0.0 {
         for &id in market_currencies {
             push(id);
         }
@@ -877,6 +947,68 @@ fn dearest_unit_cost(
         dearest = Some(dearest.map_or(unit, |best: f64| best.max(unit)));
     }
     dearest
+}
+
+/// # Stored Price
+///
+/// Currency units one unit of `good` costs in `currency`, when a rate is stored.
+///
+/// `rates` are goods per currency unit from before this price pass. A missing
+/// rate is `None`. Returns that price.
+fn stored_price(
+    rates: &HashMap<usize, HashMap<usize, f64>>,
+    currency: usize,
+    good: usize,
+) -> Option<f64> {
+    let rate = rates.get(&currency).and_then(|row| row.get(&good)).copied()?;
+    debug_assert!(rate.is_finite() && rate > 0.0, "exchange rate must be > 0");
+    Some(1.0 / rate)
+}
+
+/// # Opening Price
+///
+/// The first price of a good that has supply or demand and no rate.
+///
+/// `cost` is [`dearest_unit_cost`], or `None` when no method charges for the
+/// good. A method opens at that cost times `1 + IDLE_COST_MARGIN`, and not
+/// under [`MIN_PRICE`]. No method opens at 1. Returns that price.
+fn opening_price(cost: Option<f64>) -> f64 {
+    match cost {
+        Some(cost) => {
+            debug_assert!(cost.is_finite() && cost > 0.0);
+            (cost * (1.0 + IDLE_COST_MARGIN)).max(MIN_PRICE)
+        }
+        None => 1.0,
+    }
+}
+
+/// # Raised Idle Price
+///
+/// The no-trade price when it is above `morning`.
+///
+/// `morning` is currency units per good before this pass. `cost` is
+/// [`dearest_unit_cost`], or `None` when no method charges for the good.
+/// The dearest cost times `1 + IDLE_COST_MARGIN` replaces `morning` only
+/// when it is higher. A `morning` under [`MIN_PRICE`] rises to that floor.
+/// Returns the raised price, or `None` when `morning` stays.
+fn raised_idle_price(morning: f64, cost: Option<f64>) -> Option<f64> {
+    debug_assert!(morning.is_finite() && morning > 0.0);
+    let mut next = morning;
+    if let Some(cost) = cost {
+        debug_assert!(cost.is_finite() && cost > 0.0);
+        let raised = cost * (1.0 + IDLE_COST_MARGIN);
+        if raised > next {
+            next = raised;
+        }
+    }
+    if next < MIN_PRICE {
+        next = MIN_PRICE;
+    }
+    if next > morning {
+        Some(next)
+    } else {
+        None
+    }
 }
 
 /// # Traded Price
@@ -1081,6 +1213,120 @@ mod growth_should {
         let mut pops = HashMap::from([(7, pop)]);
         market.internal_migration(&mut pops, &Map::new(1, 1), &Factuals::new());
         assert_eq!(pops[&7].migration, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod orders_should {
+    use std::collections::{HashMap, HashSet};
+
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    use super::{Market, MarketGood, MarketHistory};
+    use crate::game::config::MarketConfig;
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
+    use crate::game::factuals::Factuals;
+    use crate::game::firm::Firm;
+    use crate::game::good::Good;
+    use crate::game::institution::Institution;
+    use crate::game::players::Players;
+    use crate::game::pop::Pop;
+    use crate::game::pop_property::PopPRow;
+    use crate::game::scalingfactor::ScalingFactor;
+
+    const GRAIN: usize = 1;
+    const BREAD: usize = 3;
+
+    fn near(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+    }
+
+    fn plain(id: usize) -> Good {
+        Good {
+            id,
+            name: format!("g{id}"),
+            class: None,
+            decay_rate: 0.0,
+            decay_result: HashMap::new(),
+            mass: 1.0,
+            volume: 0.0,
+            tags: HashSet::new(),
+            categories: vec![],
+        }
+    }
+
+    fn bread_desire(amount: f64) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: vec![DesireTarget::new(BREAD, DesireTargetType::Consume, 1.0)],
+            amount,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 1.0,
+        }
+    }
+
+    #[test]
+    fn bids_offers_and_trades_replace_yesterday() {
+        // Four satisfaction rounds up by 2%, so the bid is five loaves.
+        // Six were posted. Yesterday's book, including its volume, is replaced
+        // by today's bid, the posted offer, and the five loaves paid in grain.
+        let mut factuals = Factuals::new();
+        factuals.goods.insert(GRAIN, plain(GRAIN));
+        factuals.goods.insert(BREAD, plain(BREAD));
+        let mut market = Market::new(1);
+        market.currencies.push(GRAIN);
+        market.goods.insert(
+            BREAD,
+            MarketGood {
+                volume: 2.0,
+                sought: 9.0,
+                offered: 9.0,
+                salability: 0.25,
+                ..MarketGood::new()
+            },
+        );
+        market.goods.insert(8, MarketGood::new().with_salability(0.7));
+        let mut buyer = Pop::new(1);
+        buyer.property.insert(GRAIN, PopPRow::new(10.0));
+        buyer.desires[0].push(bread_desire(4.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(BREAD, PopPRow::new(6.0));
+        let mut pops = [buyer, seller];
+        let mut firms: Vec<Firm> = Vec::new();
+        let history = MarketHistory::from_config(&MarketConfig::default());
+        let players = Players { players: HashMap::new() };
+        let institutions: HashMap<usize, Institution> = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(1);
+        market.market_day(
+            &factuals,
+            &history,
+            &mut pops,
+            &mut firms,
+            &institutions,
+            &players,
+            &mut rng,
+        );
+        near(market.goods[&BREAD].sought, 5.0);
+        near(market.goods[&BREAD].offered, 6.0);
+        near(market.goods[&BREAD].volume, 5.0);
+        near(market.goods[&BREAD].currency_counts[&GRAIN], 5.0);
+        // Six posted and five sold. The stored 0.25 averages with that sell-through.
+        near(market.goods[&BREAD].salability, (0.25 + 5.0 / 6.0) / 2.0);
+        near(market.goods[&GRAIN].offered, 10.0);
+        near(market.goods[&GRAIN].sought, 0.0);
+        near(market.goods[&GRAIN].volume, 0.0);
+        // Grain was posted and none sold. A new row starts at 1, then averages with 0.
+        near(market.goods[&GRAIN].salability, 0.5);
+        // Nobody posted good 8, so its salability stays.
+        near(market.goods[&8].offered, 0.0);
+        near(market.goods[&8].salability, 0.7);
     }
 }
 
@@ -1297,7 +1543,7 @@ mod move_prices_should {
     }
 
     #[test]
-    fn no_trade_takes_the_dearest_cost_plus_ten_percent() {
+    fn no_trade_raises_a_cheap_price_to_the_dearest_cost() {
         let mut market = Market::new(1);
         market.currencies = vec![9];
         market.exchange_rates.insert(9, HashMap::from([(1, 2.0), (8, 3.0), (9, 4.0)]));
@@ -1332,5 +1578,143 @@ mod move_prices_should {
         assert!(market.exchange_rates[&9].get(&6).is_none());
         assert!(market.exchange_rates[&9].get(&7).is_none());
         assert_eq!(market.goods[&2].currency_counts[&9], 0.0);
+    }
+
+    #[test]
+    fn no_trade_leaves_a_price_above_the_dearest_cost() {
+        let mut market = Market::new(1);
+        market.currencies = vec![9];
+        // Good 2 is 10 per unit. Good 4 is 0.4. Both methods cost 2.2 after the margin.
+        market.exchange_rates.insert(9, HashMap::from([(1, 2.0), (2, 0.1), (4, 2.5)]));
+        market.goods.insert(
+            2,
+            super::MarketGood {
+                currency_counts: HashMap::from([(9, 0.0)]),
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            4,
+            super::MarketGood {
+                currency_counts: HashMap::from([(9, 0.0)]),
+                ..super::MarketGood::new()
+            },
+        );
+        let mut factuals = Factuals::new();
+        factuals.processes.insert(1, method(1, vec![input(1, 4.0, false)], 2, 1.0));
+        factuals.processes.insert(2, method(2, vec![input(1, 4.0, false)], 4, 1.0));
+        market.move_prices(&factuals);
+
+        assert_eq!(market.exchange_rates[&9][&2], 0.1);
+        near(market.exchange_rates[&9][&4], 1.0 / 2.2);
+        assert_eq!(market.exchange_rates[&9][&1], 2.0);
+    }
+
+    #[test]
+    fn a_written_price_stays_at_least_a_thousandth() {
+        let mut market = Market::new(1);
+        market.currencies = vec![9];
+        // Good 2 sits under both its method and the floor. Good 5 has no method.
+        // Good 3 traded and the surplus step would cross under the floor.
+        market.exchange_rates.insert(
+            9,
+            HashMap::from([(2, 10_000.0), (3, 1_000.0), (5, 2_500.0)]),
+        );
+        market.goods.insert(
+            2,
+            super::MarketGood {
+                currency_counts: HashMap::from([(9, 0.0)]),
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            3,
+            super::MarketGood {
+                sought: 0.0,
+                offered: 10.0,
+                volume: 1.0,
+                currency_counts: HashMap::from([(9, 1.0)]),
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            5,
+            super::MarketGood {
+                currency_counts: HashMap::from([(9, 0.0)]),
+                ..super::MarketGood::new()
+            },
+        );
+        let mut factuals = Factuals::new();
+        // 0.0002 of the currency makes one unit. With the margin that is 0.00022.
+        factuals.processes.insert(1, method(1, vec![input(9, 0.0002, false)], 2, 1.0));
+        market.move_prices(&factuals);
+
+        near(1.0 / market.exchange_rates[&9][&2], 0.001);
+        near(1.0 / market.exchange_rates[&9][&3], 0.001);
+        near(1.0 / market.exchange_rates[&9][&5], 0.001);
+    }
+
+    #[test]
+    fn supply_or_demand_opens_a_price() {
+        let mut market = Market::new(1);
+        market.currencies = vec![9];
+        // Good 8 already costs 10. Good 2 is demanded with no rate. Good 6 is
+        // offered and costs less than 1. Good 7 is demanded and no method
+        // charges. Good 4 has neither. Time is demanded and stays unpriced.
+        market.exchange_rates.insert(9, HashMap::from([(8, 0.1)]));
+        market.goods.insert(
+            2,
+            super::MarketGood {
+                sought: 3.0,
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            6,
+            super::MarketGood {
+                offered: 2.0,
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            7,
+            super::MarketGood {
+                sought: 1.0,
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(4, super::MarketGood::new());
+        market.goods.insert(
+            0,
+            super::MarketGood {
+                sought: 5.0,
+                ..super::MarketGood::new()
+            },
+        );
+        market.goods.insert(
+            8,
+            super::MarketGood {
+                sought: 4.0,
+                ..super::MarketGood::new()
+            },
+        );
+        let mut factuals = Factuals::new();
+        // 4 of good 1 at the missing rate of 1 is a unit cost of 4.
+        factuals.processes.insert(1, method(1, vec![input(1, 4.0, false)], 2, 1.0));
+        // Half a unit of the currency is a unit cost of 0.5.
+        factuals.processes.insert(2, method(2, vec![input(9, 0.5, false)], 6, 1.0));
+        factuals.processes.insert(3, method(3, vec![input(1, 2.0, false)], 8, 1.0));
+        market.move_prices(&factuals);
+
+        near(market.exchange_rates[&9][&2], 1.0 / 4.4);
+        near(market.exchange_rates[&9][&6], 1.0 / 0.55);
+        near(market.exchange_rates[&9][&7], 1.0);
+        assert_eq!(market.exchange_rates[&9][&8], 0.1);
+        assert!(market.exchange_rates[&9].get(&4).is_none());
+        assert!(market.exchange_rates[&9].get(&0).is_none());
+
+        // The opened price stays once it is the dearest cost plus the margin.
+        market.move_prices(&factuals);
+        near(market.exchange_rates[&9][&6], 1.0 / 0.55);
     }
 }

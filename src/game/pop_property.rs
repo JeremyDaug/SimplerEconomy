@@ -175,11 +175,20 @@ impl PopPRow {
     /// On-hand units not earmarked.
     ///
     /// `quantity` and `reserved` are finite, and `quantity` is at least
-    /// `reserved`.
+    /// `reserved`. A deficit under `1e-6` is treated as nothing left.
     pub fn available(&self) -> f64 {
         debug_assert!(self.quantity.is_finite() && self.reserved.is_finite());
-        debug_assert!(self.quantity >= self.reserved);
-        self.quantity - self.reserved
+        let left = self.quantity - self.reserved;
+        if left < 0.0 {
+            debug_assert!(
+                left > -1e-6,
+                "quantity {} reserved {}",
+                self.quantity,
+                self.reserved
+            );
+            return 0.0;
+        }
+        left
     }
 
     /// # Spend Aged First
@@ -191,7 +200,9 @@ impl PopPRow {
     pub fn spend_aged_first(&mut self, units: f64) {
         debug_assert!(units.is_finite() && units >= 0.0);
         debug_assert!(self.quantity.is_finite() && self.quantity >= 0.0);
-        debug_assert!(self.fresh.is_finite() && self.fresh >= 0.0);
+        debug_assert!(self.fresh.is_finite());
+        self.keep_fresh_inside();
+        debug_assert!(self.fresh >= 0.0);
         debug_assert!(self.fresh <= self.quantity);
         debug_assert!(units <= self.quantity);
         if units == 0.0 {
@@ -200,6 +211,36 @@ impl PopPRow {
         let aged = self.quantity - self.fresh;
         let from_fresh = (units - aged).max(0.0);
         self.fresh -= from_fresh;
+        self.keep_fresh_inside();
+    }
+
+    /// # Keep Fresh Inside
+    ///
+    /// Pulls `fresh` back into `0..=quantity` when it sits a scrap outside.
+    ///
+    /// A spend can leave `fresh` just under 0, or just over `quantity` once
+    /// the units have left the pile. A gap of `1e-6` or more is left in
+    /// place. A smaller gap is stored on the bound it crossed.
+    pub fn keep_fresh_inside(&mut self) {
+        debug_assert!(self.quantity.is_finite() && self.quantity >= 0.0);
+        debug_assert!(self.fresh.is_finite());
+        if self.fresh < 0.0 {
+            debug_assert!(
+                self.fresh > -1e-6,
+                "fresh {} quantity {}",
+                self.fresh,
+                self.quantity
+            );
+            self.fresh = 0.0;
+        } else if self.fresh > self.quantity {
+            debug_assert!(
+                self.fresh - self.quantity < 1e-6,
+                "fresh {} quantity {}",
+                self.fresh,
+                self.quantity
+            );
+            self.fresh = self.quantity;
+        }
     }
 
     /// # Fresh Share

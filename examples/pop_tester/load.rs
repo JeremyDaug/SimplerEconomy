@@ -177,6 +177,8 @@ struct MarketFile {
     currencies: Vec<String>,
     #[serde(default)]
     pops: Option<Vec<usize>>,
+    #[serde(default)]
+    friction: Option<f64>,
 }
 
 /// # Load Scenario
@@ -516,7 +518,8 @@ fn copy_desires(pop: &mut Pop, source: DemographicSource, desires: &HashMap<usiz
 ///
 /// `goods` resolves currency names. `pops` are the loaded pops. An omitted
 /// pop list is every pop, lowest id first. A named pop that was not loaded
-/// is an error. Returns that market.
+/// is an error. An omitted friction leaves the market at 0. A friction
+/// below 0 is an error. Returns that market.
 fn load_market(path: &Path, goods: &HashMap<String, usize>, pops: &[Pop]) -> Result<Market, ScenarioError> {
     let file: MarketFile = read_toml(path)?;
     let members = match file.pops {
@@ -538,6 +541,15 @@ fn load_market(path: &Path, goods: &HashMap<String, usize>, pops: &[Pop]) -> Res
             return Err(ScenarioError::new(format!("{}: pop {id} is not in pops.toml", path.display())));
         }
         market.pops.insert(id);
+    }
+    if let Some(friction) = file.friction {
+        if !friction.is_finite() || friction < 0.0 {
+            return Err(ScenarioError::new(format!(
+                "{}: friction must be 0 or more",
+                path.display()
+            )));
+        }
+        market.friction = friction;
     }
     Ok(market)
 }

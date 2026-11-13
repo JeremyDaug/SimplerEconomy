@@ -13,7 +13,7 @@
 
 # [market]
 # amv_epsilon = 1e-9
-# salability_default = 0.5
+# salability_default = 1.0
 # price_gain = 0.10
 # price_cap = 0.20
 # migration_anger_weight = 0.5

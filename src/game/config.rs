@@ -98,6 +98,85 @@ pub const SUBSISTENCE_COMMON_SHARE: f64 = 0.5;
 /// Divisor for a desire's implicit minimum and cap.
 pub const DESIRE_SHARE_MINIMUM_DIVISOR: f64 = 2.0;
 
+/// A good on a market's tender list is bought, and every bill is paid, in thousandths.
+pub const CURRENCY_STEP: f64 = 0.001;
+
+/// Satisfaction buys round the unfilled gap up by this share.
+pub const BUY_OVERSHOOT: f64 = 0.02;
+
+/// Flat transport cover for one meeting with one seller.
+///
+/// One tenth of a time unit. Bulk is added on top, and the bill is not
+/// below this fee.
+pub const TRANSACTION_COST: f64 = 0.1;
+
+/// Share of bulk charged on a transaction.
+///
+/// The good keeps its full bulk. The haul adds this share of it, times
+/// the market's friction. An immobile good still adds none.
+pub const BULK_HAUL_SHARE: f64 = 0.25;
+
+/// Salability above this votes to expand a job line.
+///
+/// A share from 0 to 1. Below [`PLAN_SALABILITY_NAY`] votes to contract.
+/// The band between them casts no vote.
+pub const PLAN_SALABILITY_YAY: f64 = 0.8;
+
+/// Salability below this votes to contract a job line.
+pub const PLAN_SALABILITY_NAY: f64 = 0.4;
+
+/// Living change that casts one planning vote.
+///
+/// A rise of this size votes to expand. A drop of this size votes to contract.
+pub const PLAN_SOL_VOTE: f64 = 1.0;
+
+/// Share of the morning grant that one planning step moves.
+///
+/// A desire or haul hold keeps this much beyond yesterday's use.
+/// A craft or labor line moves by this much of the grant.
+pub const PLAN_STEP_SHARE: f64 = 0.05;
+
+/// Share of the pop moved into anger and into fear for each full share of
+/// basic needs left unmet.
+pub const BASIC_UNMET_SENTIMENT: f64 = 0.04;
+
+/// Share of the pop moved into contentment for each full share of common
+/// needs met. A share above one still counts.
+pub const COMMON_SENTIMENT: f64 = 0.02;
+
+/// Share of the pop moved into hope and into happiness for each luxury
+/// level met. Further levels still count.
+pub const LUXURY_SENTIMENT: f64 = 0.01;
+
+/// Share of the pop moved per point of wealth per household.
+///
+/// Positive wealth moves that share into hope. Negative wealth moves the
+/// absolute share into fear.
+pub const WEALTH_SENTIMENT: f64 = 0.01;
+
+/// Market days kept for the living average.
+pub const SOL_AVERAGE_DAYS: usize = 5;
+
+/// Share of the pop moved per point of living above or below its recent average.
+pub const SOL_CHANGE_SENTIMENT: f64 = 0.25;
+
+/// Fraction of each other emotion moved into contentment.
+///
+/// A larger share moves more. A content pop moves nothing.
+pub const CONTENTMENT_PULL: f64 = 0.15;
+
+/// How far a no-trade price sits above the dearest method's unit cost.
+pub const IDLE_COST_MARGIN: f64 = 0.10;
+
+/// Share of a traded move held by the currencies that did not trade, together.
+///
+/// A sole trader keeps `1 - IDLE_MOVE_SHARE`. With more currencies, each idle
+/// currency's floor is this divided by one less than the count.
+pub const IDLE_MOVE_SHARE: f64 = 0.05;
+
+/// Smallest currency-per-good price a pass writes.
+pub const MIN_PRICE: f64 = 0.001;
+
 /// Pop-day tunables.
 ///
 /// [`crate::game::household::Household::update`] reads the age lengths, the
@@ -251,7 +330,7 @@ pub struct MarketConfig {
 impl Default for MarketConfig {
     /// # Default
     ///
-    /// The AMV dead zone is `1e-9`. Salability starts at one half. Price
+    /// The AMV dead zone is `1e-9`. Salability starts at one. Price
     /// gain is 0.10 and the price cap is 0.20. Anger weighs half of fear.
     /// One tenth of a saturated push moves in a year.
     /// A founding moves 5 households out of a pop of at least 25. An open
@@ -260,7 +339,7 @@ impl Default for MarketConfig {
     fn default() -> Self {
         Self {
             amv_epsilon: 1e-9,
-            salability_default: 0.5,
+            salability_default: 1.0,
             price_gain: 0.10,
             price_cap: 0.20,
             migration_anger_weight: 0.5,
