@@ -1777,8 +1777,8 @@ impl Pop {
     /// of the grant. Haul time aims at [`Self::transport_spent`] minus
     /// [`Self::transport_purchased`], and not below 0, plus that same share.
     /// Each hold moves toward its aim by [`rise_or_step_down`]. The two holds
-    /// shrink to the grant when they ask for more than it. Each job line asks
-    /// [`plan_direction`] for one step. Its current time is rounded to a whole
+    /// shrink to the grant when they ask for more than it. Each job line takes
+    /// one step from [`plan_votes`]. Its current time is rounded to a whole
     /// number of steps of this grant first. A positive answer steps up one
     /// step. A negative answer steps down one step. Zero holds that step.
     /// Decreases run first. Lines that still
@@ -1827,7 +1827,7 @@ impl Pop {
                 continue;
             };
             let time_per = process.required_time();
-            let direction = plan_direction(self, process, line, market, factuals, bar);
+            let direction = plan_votes(self, process, line, market, factuals, bar).direction;
             // Whole steps of this grant, so a hold cannot drift off the increment.
             let time = (line_time(line.target, time_per) / step).round() * step;
             planned.push(LinePlan {
@@ -3439,18 +3439,8 @@ pub fn plan_votes(
     // Units finished: the iterations times the recipe amount.
     let output = line.completed * output_amount;
     let price = output_good.map(|good| market_price(market, good)).unwrap_or(1.0);
-    // Destroyed and consumed inputs of those iterations, priced in the output good.
-    let mut input_value = 0.0;
-    for input in &process.inputs {
-        if input.good == TIME || input.is_optional() {
-            continue;
-        }
-        let counts = matches!(input.input_type, InputType::Destroyed | InputType::Consumed);
-        if !counts {
-            continue;
-        }
-        input_value += input.amount * line.completed * market_price(market, input.good);
-    }
+    // Inputs spent by those iterations, priced in the output good.
+    let input_value = spent_input_value(process, market, line.completed);
     let input_cost = if price > 0.0 { input_value / price } else { 0.0 };
     let held = output_good.and_then(|good| pop.property.get(&good));
     let consumed = held.map(|row| row.consumed).unwrap_or(0.0);
@@ -3572,18 +3562,6 @@ pub fn plan_votes(
     }
 }
 
-/// # Plan Direction
-///
-/// One planning step for a job line: expand, hold, or contract.
-///
-/// The inputs are the ones [`plan_votes`] reads. Returns that step.
-fn plan_direction(
-    pop: &Pop, process: &Process, line: &JobLine, market: Option<&Market>,
-    factuals: &Factuals, bar: f64,
-) -> i32 {
-    plan_votes(pop, process, line, market, factuals, bar).direction
-}
-
 impl Pop {
     /// # Idle Shares
     ///
@@ -3675,11 +3653,10 @@ fn subsistence_value_per_time(
 /// Output value, input cost, and profit per time of one job process.
 ///
 /// [`line_value`] decides these. Good [`TIME`] is in none of them. `output`
-/// is one iteration's non-time outputs. `cost` is the required inputs that
-/// are destroyed or consumed. Optional inputs, [`InputType::Factor`], and
-/// [`InputType::Capital`] are not in `cost`, and a labor process counts
-/// none. `per_time` is output minus cost, divided by required time. No
-/// required time is 0. The profit vote reads `per_time`.
+/// is one iteration's non-time outputs. `cost` is [`spent_input_value`] of
+/// one iteration, and a labor process counts none. `per_time` is output
+/// minus cost, divided by required time. No required time is 0. The profit
+/// vote reads `per_time`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineValue {
     pub output: f64,
@@ -3717,24 +3694,35 @@ pub fn line_value(process: &Process, market: Option<&Market>) -> LineValue {
         output += row.amount * market_price(market, row.good);
     }
     debug_assert!(output.is_finite() && output >= 0.0);
-    let mut cost = 0.0;
-    if !process.is_labor() {
-        for input in &process.inputs {
-            if input.good == TIME || input.is_optional() {
-                continue;
-            }
-            let counts = matches!(input.input_type, InputType::Destroyed | InputType::Consumed);
-            if !counts {
-                continue;
-            }
-            cost += input.amount * market_price(market, input.good);
-        }
-    }
+    let cost = if process.is_labor() { 0.0 } else { spent_input_value(process, market, 1.0) };
     debug_assert!(cost.is_finite() && cost >= 0.0);
     let time = process.required_time();
     let per_time = if time == 0.0 { 0.0 } else { (output - cost) / time };
     debug_assert!(per_time.is_finite());
     LineValue { output, cost, per_time }
+}
+
+/// # Spent Input Value
+///
+/// Market value of the required inputs `iterations` runs of `process` spend.
+///
+/// `market` prices the goods. A missing market prices every good at 1. The
+/// inputs counted are the required [`InputType::Destroyed`] and
+/// [`InputType::Consumed`] rows. Good [`TIME`], optional inputs,
+/// [`InputType::Factor`], and [`InputType::Capital`] are left out. Each row
+/// is its amount times `iterations` times its price. Returns the sum.
+fn spent_input_value(process: &Process, market: Option<&Market>, iterations: f64) -> f64 {
+    let mut value = 0.0;
+    for input in &process.inputs {
+        if input.good == TIME || input.is_optional() {
+            continue;
+        }
+        if !matches!(input.input_type, InputType::Destroyed | InputType::Consumed) {
+            continue;
+        }
+        value += input.amount * iterations * market_price(market, input.good);
+    }
+    value
 }
 
 /// # Line Time
@@ -5646,8 +5634,8 @@ mod record_keeping_should {
 }
 
 #[cfg(test)]
-mod plan_direction_should {
-    use super::{line_value, plan_direction, plan_votes, Pop, PopPRow};
+mod plan_votes_should {
+    use super::{line_value, plan_votes, Pop, PopPRow};
     use crate::game::factuals::Factuals;
     use crate::game::good::TIME;
     use crate::game::job::JobLine;
@@ -5727,7 +5715,7 @@ mod plan_direction_should {
     fn ask(
         pop: &Pop, process: &Process, completed: f64, market: Option<&Market>, bar: f64,
     ) -> i32 {
-        plan_direction(pop, process, &line(completed), market, &Factuals::new(), bar)
+        plan_votes(pop, process, &line(completed), market, &Factuals::new(), bar).direction
     }
 
     #[test]
@@ -5874,14 +5862,14 @@ mod plan_direction_should {
         // Both shares are 0. The idle votes add three, and a full salability share joins
         // them, so a paper loss still expands. Subsistence does not take that expansion back.
         assert_eq!(
-            plan_direction(&Pop::new(1), &loss, &idle, Some(&hot), &Factuals::new(), 1000.0),
+            plan_votes(&Pop::new(1), &loss, &idle, Some(&hot), &Factuals::new(), 1000.0).direction,
             1,
         );
         // Salability inside the band is silent. The loss is one nay and both idle shares
         // add three, so the line expands.
         let band = market_for(0.5);
         assert_eq!(
-            plan_direction(&Pop::new(1), &loss, &idle, Some(&band), &Factuals::new(), 0.0),
+            plan_votes(&Pop::new(1), &loss, &idle, Some(&band), &Factuals::new(), 0.0).direction,
             1,
         );
         // Labor already has time, so the idle craft adds one vote. With a full share that holds.
@@ -5893,7 +5881,7 @@ mod plan_direction_should {
         factuals.processes.insert(2, labor);
         let mut pop = Pop::new(1);
         pop.job.lines[1] = JobLine::new(2, Some(1.0), vec![]);
-        assert_eq!(plan_direction(&pop, &loss, &idle, Some(&hot), &factuals, 0.0), 0);
+        assert_eq!(plan_votes(&pop, &loss, &idle, Some(&hot), &factuals, 0.0).direction, 0);
     }
 
     #[test]
