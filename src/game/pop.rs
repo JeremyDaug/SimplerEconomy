@@ -68,8 +68,6 @@ pub struct Pop {
 
     /// Desires grouped by tier: 0 basic, 1 common, 2 luxury.
     pub desires: Vec<Vec<Desire>>,
-    /// Where a pop is in satisfying it's desires.
-    desire_cursor: Option<SatisfyCursor>,
 
     /// Species and culture for this slice.
     pub demographics: DemoRow,
@@ -132,27 +130,16 @@ pub(crate) struct MigrantGroup {
     pub quantity: HashMap<usize, f64>,
 }
 
-/// Bookmark for one satisfaction walk.
+/// # Desire Fill
 ///
-/// `target_index` is into `desire.target` as stored, the target the walk
-/// stopped on. `target_start_satisfaction` is the desire's satisfaction
-/// when that target began receiving goods, so a resume does not spend its cap twice.
-#[derive(Debug, Clone, Copy)]
-struct SatisfyCursor {
-    tier: usize,
-    desire_index: usize,
-    target_index: usize,
-    target_start_satisfaction: Option<f64>,
-    iter_target: f64,
-}
-
-/// Result of reserving goods for one desire.
-enum SatisfyProgress {
-    Done,
-    Blocked {
-        target_index: usize,
-        target_start_satisfaction: f64,
-    },
+/// What a desire walk does with the goods it picks.
+///
+/// `Reserve` holds unreserved units back from sale.
+/// `Take` removes units through [`Pop::take_for_desire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesireFill {
+    Reserve,
+    Take,
 }
 
 /// # Subsistence Type
@@ -201,7 +188,7 @@ impl MigrantGroup {
 impl Pop {
     /// # New
     ///
-    /// Empty pop. Three desire tiers, no stock, no satisfaction bookmark.
+    /// Empty pop. Three desire tiers, no stock.
     pub fn new(id: usize) -> Self {
         let household = Household::new();
         let pre_growth_population = household.total_count();
@@ -220,7 +207,6 @@ impl Pop {
             savings: HashMap::new(),
             effective_savings: 0.0,
             desires: vec![vec![]; 3],
-            desire_cursor: None,
             demographics: DemoRow {
                 household,
                 species: 0,
@@ -401,9 +387,8 @@ impl Pop {
     /// units stay off the book. Anything unreserved is returned as a sell
     /// offer, one per good, in good-id order.
     ///
-    /// The walk is production, then basic, then common. A later tier runs
-    /// only when the tier before it is fully reserved. Luxury then repeats
-    /// until a level cannot be finished. Savings are not parked here.
+    /// Production inputs are reserved first, then the desire tiers through
+    /// [`Self::fill_tiers`]. Savings are not parked here.
     pub fn split_goods_sale_reserve(&mut self, factuals: &Factuals) -> Vec<SellOffer> {
         // This call is today's split. Earlier reserves do not carry in.
         for row in self.property.values_mut() {
@@ -411,18 +396,7 @@ impl Pop {
         }
         // Production: job inputs, up to each line's plan.
         self.reserve_production(factuals);
-        // Basic, then common. An unfinished tier offers the rest.
-        if !self.reserve_tier(factuals, 0, 1.0) || !self.reserve_tier(factuals, 1, 1.0) {
-            return self.sell_offers();
-        }
-        // Luxury, until a level cannot be finished.
-        let mut level = 1.0;
-        while self.tier_len(2) > 0 {
-            if !self.reserve_tier(factuals, 2, level) {
-                break;
-            }
-            level += 1.0;
-        }
+        self.fill_tiers(factuals, DesireFill::Reserve);
         self.sell_offers()
     }
 
@@ -531,54 +505,91 @@ impl Pop {
         cap.unwrap_or(0.0)
     }
 
-    /// # Reserve Tier
+    /// # Fill Tiers
     ///
-    /// Reserves goods toward one level of desire tier `tier`.
+    /// Walks the desire tiers with `fill`.
     ///
-    /// `factuals` supplies the desire shares. `level` starts at 1. Desires
-    /// are walked in stored order. Returns whether every desire in the tier
-    /// reached that level. An empty tier is reached.
-    fn reserve_tier(&mut self, factuals: &Factuals, tier: usize, level: f64) -> bool {
-        let count = self.tier_len(tier);
-        let mut gained = Vec::with_capacity(count);
-        for index in 0..count {
-            gained.push(self.reserve_desire(factuals, tier, index, level));
+    /// Basic runs, then common. A tier runs only when the tier before it
+    /// covers its level. Luxury then repeats one level at a time until a
+    /// level cannot be finished.
+    fn fill_tiers(&mut self, factuals: &Factuals, fill: DesireFill) {
+        if !self.fill_tier(factuals, fill, 0, 1.0) || !self.fill_tier(factuals, fill, 1, 1.0) {
+            return;
         }
-        self.tier_is_met(tier, level, &gained)
+        let mut level = 1.0;
+        while self.tier_len(2) > 0 {
+            if !self.fill_tier(factuals, fill, 2, level) {
+                break;
+            }
+            level += 1.0;
+        }
     }
 
-    /// # Reserve Desire
+    /// # Fill Tier
     ///
-    /// Reserves property toward one level of one desire.
+    /// Walks one level of desire tier `tier` with `fill`.
     ///
-    /// `tier` and `index` pick the desire. `level` starts at 1. Satisfaction
-    /// already held is spent on earlier levels first. Each good is first
+    /// `level` starts at 1. Desires are walked in stored order through
+    /// [`Self::fill_desire`]. `Reserve` leaves satisfaction alone and
+    /// checks [`Self::tier_is_met`] with the satisfaction reserved.
+    /// `Take` adds the satisfaction gained to each desire and checks
+    /// [`Self::is_level_met`]. Returns whether every desire in the tier
+    /// reached that level. An empty tier is reached.
+    fn fill_tier(&mut self, factuals: &Factuals, fill: DesireFill, tier: usize, level: f64) -> bool {
+        let count = self.tier_len(tier);
+        match fill {
+            DesireFill::Reserve => {
+                let mut gained = Vec::with_capacity(count);
+                for index in 0..count {
+                    gained.push(self.fill_desire(factuals, fill, tier, index, level));
+                }
+                self.tier_is_met(tier, level, &gained)
+            }
+            DesireFill::Take => {
+                for index in 0..count {
+                    let gained = self.fill_desire(factuals, fill, tier, index, level);
+                    self.desires[tier][index].satisfaction += gained;
+                }
+                self.is_level_met(tier, level)
+            }
+        }
+    }
+
+    /// # Fill Desire
+    ///
+    /// Reserves or takes property toward one level of one desire.
+    ///
+    /// `tier` and `index` pick the desire. `level` starts at 1, and one
+    /// level is the desire's amount. Satisfaction already held is spent on
+    /// earlier levels first. Each good is first
     /// brought toward [`Desire::minimum`], in bucket order. The rest is
     /// taken highest efficiency first, and a lower good id breaks a tie.
     /// A good stops at [`Desire::cap`]. Both read [`Factuals::config`].
-    /// Units reserved are the satisfaction taken divided by efficiency.
-    /// Returns the satisfaction reserved on this level.
-    fn reserve_desire(&mut self, factuals: &Factuals, tier: usize, index: usize, level: f64) -> f64 {
+    /// Returns the satisfaction filled on this level.
+    fn fill_desire(
+        &mut self, factuals: &Factuals, fill: DesireFill, tier: usize, index: usize, level: f64,
+    ) -> f64 {
         let goal = self.desires[tier][index].amount;
         debug_assert!(goal.is_finite() && goal > 0.0);
         if self.desires[tier][index].target.is_empty() {
             return 0.0;
         }
         let mut taken = vec![0.0; self.desires[tier][index].target.len()];
-        let mut order: Vec<(usize, usize, f64)> = self.desires[tier][index]
+        let mut order: Vec<(usize, usize, f64, DesireTargetType)> = self.desires[tier][index]
             .target
             .iter()
             .enumerate()
             .map(|(slot, target)| {
                 debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-                (slot, target.good, target.efficiency)
+                (slot, target.good, target.efficiency, target.desire_type)
             })
             .collect();
         // Each good gets a turn at its preferred minimum before efficiency.
-        for (slot, good, efficiency) in &order {
+        for (slot, good, efficiency, kind) in &order {
             let share = self.desires[tier][index].minimum(*slot, &factuals.config.pop);
-            self.reserve_toward(
-                tier, index, level, *slot, *good, *efficiency, goal * share, &mut taken,
+            self.fill_toward(
+                factuals, fill, tier, index, level, *slot, *good, *efficiency, *kind,
+                goal * share, &mut taken,
             );
         }
         order.sort_by(|left, right| {
@@ -588,25 +599,29 @@ impl Pop {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(left.1.cmp(&right.1))
         });
-        for (slot, good, efficiency) in &order {
+        for (slot, good, efficiency, kind) in &order {
             let share = self.desires[tier][index].cap(*slot, &factuals.config.pop);
-            self.reserve_toward(
-                tier, index, level, *slot, *good, *efficiency, goal * share, &mut taken,
+            self.fill_toward(
+                factuals, fill, tier, index, level, *slot, *good, *efficiency, *kind,
+                goal * share, &mut taken,
             );
         }
         taken.iter().sum()
     }
 
-    /// # Reserve Toward
+    /// # Fill Toward
     ///
-    /// Reserves `good` up to `ceiling` satisfaction on this level.
+    /// Reserves or takes `good` up to `ceiling` satisfaction on this level.
     ///
-    /// `taken` is the satisfaction already reserved on this level, one entry
+    /// `taken` is the satisfaction already filled on this level, one entry
     /// per bucket good. Stops at the satisfaction this level still needs.
-    /// Units reserved are that satisfaction divided by `efficiency`.
-    fn reserve_toward(
-        &mut self, tier: usize, index: usize, level: f64, slot: usize, good: usize,
-        efficiency: f64, ceiling: f64, taken: &mut [f64],
+    /// Units moved are that satisfaction divided by `efficiency`. `Reserve`
+    /// goes through [`Self::reserve_up_to`]. `Take` goes through
+    /// [`Self::take_for_desire`] with `kind`.
+    fn fill_toward(
+        &mut self, factuals: &Factuals, fill: DesireFill, tier: usize, index: usize, level: f64,
+        slot: usize, good: usize, efficiency: f64, kind: DesireTargetType, ceiling: f64,
+        taken: &mut [f64],
     ) {
         let remaining = self.desires[tier][index].amount
             - self.open_credit(tier, index, level)
@@ -619,7 +634,11 @@ impl Pop {
             return;
         }
         debug_assert!(efficiency.is_finite() && efficiency > 0.0);
-        let take = self.reserve_up_to(good, remaining.min(room) / efficiency);
+        let units = remaining.min(room) / efficiency;
+        let take = match fill {
+            DesireFill::Reserve => self.reserve_up_to(good, units),
+            DesireFill::Take => self.take_for_desire(factuals, good, units, kind),
+        };
         if take > 0.0 {
             taken[slot] += take * efficiency;
         }
@@ -913,22 +932,12 @@ impl Pop {
     ///
     /// Satisfies this pop's desires from goods on hand.
     ///
-    /// `factuals` supplies the goods. Basic runs, then common, then luxury.
-    /// A tier runs only when every desire in the tier before it covers its
-    /// level. Luxury repeats one level at a time until a level cannot be
-    /// finished. One level is the desire's amount. Satisfaction already
-    /// held covers the earlier levels of that desire first. Effects other
-    /// steps spend are then stored by [`Self::record_desire_effects`].
+    /// `factuals` supplies the goods. The tiers are walked by
+    /// [`Self::fill_tiers`], and each good taken goes through
+    /// [`Self::take_for_desire`]. Effects other steps spend are then stored
+    /// by [`Self::record_desire_effects`].
     pub fn consume(&mut self, factuals: &Factuals) {
-        if self.consume_tier(factuals, 0, 1.0) && self.consume_tier(factuals, 1, 1.0) {
-            let mut level = 1.0;
-            while self.tier_len(2) > 0 {
-                if !self.consume_tier(factuals, 2, level) {
-                    break;
-                }
-                level += 1.0;
-            }
-        }
+        self.fill_tiers(factuals, DesireFill::Take);
         self.record_desire_effects();
     }
 
@@ -968,23 +977,6 @@ impl Pop {
         self.stored_effects.extend(recorded);
     }
 
-    /// # Consume Tier
-    ///
-    /// Consumes goods toward one level of desire tier `tier`.
-    ///
-    /// `level` starts at 1. Desires are walked in stored order. The
-    /// satisfaction gained on this level is added to each desire. Returns
-    /// whether every desire in the tier reached that level. An empty tier
-    /// is reached.
-    fn consume_tier(&mut self, factuals: &Factuals, tier: usize, level: f64) -> bool {
-        let count = self.tier_len(tier);
-        for index in 0..count {
-            let gained = self.consume_desire(factuals, tier, index, level);
-            self.desires[tier][index].satisfaction += gained;
-        }
-        self.is_level_met(tier, level)
-    }
-
     /// # Is Level Met
     ///
     /// Whether every desire in `tier` covers this level.
@@ -1000,86 +992,6 @@ impl Pop {
             debug_assert!(desire.satisfaction.is_finite() && desire.satisfaction >= 0.0);
             desire.satisfaction >= desire.amount * level
         })
-    }
-
-    /// # Consume Desire
-    ///
-    /// Consumes property toward one level of one desire.
-    ///
-    /// `tier` and `index` pick the desire. `level` starts at 1. Each good
-    /// is first brought toward [`Desire::minimum`], in bucket order. The
-    /// rest is taken highest efficiency first, and a lower good id breaks
-    /// a tie. A good stops at [`Desire::cap`]. Both read
-    /// [`Factuals::config`]. Returns the satisfaction gained on this level.
-    fn consume_desire(
-        &mut self, factuals: &Factuals, tier: usize, index: usize, level: f64,
-    ) -> f64 {
-        let goal = self.desires[tier][index].amount;
-        debug_assert!(goal.is_finite() && goal > 0.0);
-        if self.desires[tier][index].target.is_empty() {
-            return 0.0;
-        }
-        let mut taken = vec![0.0; self.desires[tier][index].target.len()];
-        let mut order: Vec<(usize, usize, f64, DesireTargetType)> = self.desires[tier][index]
-            .target
-            .iter()
-            .enumerate()
-            .map(|(slot, target)| {
-                debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-                (slot, target.good, target.efficiency, target.desire_type)
-            })
-            .collect();
-        // Each good gets a turn at its preferred minimum before efficiency.
-        for (slot, good, efficiency, kind) in &order {
-            let share = self.desires[tier][index].minimum(*slot, &factuals.config.pop);
-            self.take_toward(
-                factuals, tier, index, level, *slot, *good, *efficiency, *kind,
-                goal * share, &mut taken,
-            );
-        }
-        order.sort_by(|left, right| {
-            right
-                .2
-                .partial_cmp(&left.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(left.1.cmp(&right.1))
-        });
-        for (slot, good, efficiency, kind) in &order {
-            let share = self.desires[tier][index].cap(*slot, &factuals.config.pop);
-            self.take_toward(
-                factuals, tier, index, level, *slot, *good, *efficiency, *kind,
-                goal * share, &mut taken,
-            );
-        }
-        taken.iter().sum()
-    }
-
-    /// # Take Toward
-    ///
-    /// Takes `good` up to `ceiling` satisfaction on this level.
-    ///
-    /// `taken` is the satisfaction already gained on this level, one entry
-    /// per bucket good. Stops at the satisfaction this level still needs.
-    /// Units taken are that satisfaction divided by `efficiency`.
-    fn take_toward(
-        &mut self, factuals: &Factuals, tier: usize, index: usize, level: f64, slot: usize,
-        good: usize, efficiency: f64, kind: DesireTargetType, ceiling: f64, taken: &mut [f64],
-    ) {
-        let remaining = self.desires[tier][index].amount
-            - self.open_credit(tier, index, level)
-            - taken.iter().sum::<f64>();
-        if remaining <= 0.0 {
-            return;
-        }
-        let room = ceiling - taken[slot];
-        if room <= 0.0 {
-            return;
-        }
-        debug_assert!(efficiency.is_finite() && efficiency > 0.0);
-        let take = self.take_for_desire(factuals, good, remaining.min(room) / efficiency, kind);
-        if take > 0.0 {
-            taken[slot] += take * efficiency;
-        }
     }
 
     /// # Take For Desire
