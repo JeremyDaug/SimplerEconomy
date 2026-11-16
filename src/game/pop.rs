@@ -6,7 +6,8 @@ use rand::RngCore;
 
 use crate::game::config::{
     BASIC_UNMET_SENTIMENT, BUY_OVERSHOOT, COMMON_SENTIMENT, CONTENTMENT_PULL, CURRENCY_STEP,
-    LUXURY_SENTIMENT, PLAN_SALABILITY_NAY, PLAN_SALABILITY_YAY, PLAN_SOL_VOTE, PLAN_STEP_SHARE,
+    LUXURY_SENTIMENT, PLAN_OFFER_DWARF, PLAN_SALABILITY_NAY, PLAN_SALABILITY_YAY, PLAN_SELL_NAY,
+    PLAN_SELL_YAY, PLAN_SOL_VOTE, PLAN_STEP_SHARE, PLAN_STOCK_COVER,
     BULK_HAUL_SHARE, SOL_AVERAGE_DAYS, SOL_CHANGE_SENTIMENT, TRANSACTION_COST, WEALTH_SENTIMENT,
 };
 use crate::game::effects::DesireEffect;
@@ -1178,7 +1179,7 @@ impl Pop {
     /// stores infinity. The time row's `consumed` is copied to
     /// [`Self::time_consumed`] before the counters clear. A day with no
     /// time row stores 0. `produced`, `consumed`, `spent`, `lost`,
-    /// `reserved`, and `fresh` return to 0. Quantity stays.
+    /// `reserved`, and `fresh` return to 0. `sold` stays. Quantity stays.
     pub fn record_keeping(&mut self) {
         let mut satisfaction = 0.0;
         let mut any = false;
@@ -1199,6 +1200,18 @@ impl Pop {
             row.lost = 0.0;
             row.reserved = 0.0;
             row.fresh = 0.0;
+        }
+    }
+
+    /// # Clear Sold
+    ///
+    /// Sets every property row's `sold` back to 0.
+    ///
+    /// The market day calls this before subsistence and shopping.
+    /// [`plan_votes`] has already read the previous day's sales.
+    pub(crate) fn clear_sold(&mut self) {
+        for row in self.property.values_mut() {
+            row.sold = 0.0;
         }
     }
 
@@ -3057,6 +3070,8 @@ fn pull_from_seller(
         .expect("offered good has a row");
     row.spend_aged_first(units);
     row.quantity -= units;
+    // Planning reads this after record keeping clears the other flows.
+    row.sold += units;
     debug_assert!(row.quantity + 1e-9 >= row.reserved);
     reduce_offer(offers, seller, good, units);
 }
@@ -3292,9 +3307,9 @@ pub struct PlanVotes {
     pub profit: i32,
     /// The market is taking the good.
     pub salability: i32,
-    /// Buyers wanted more of the output than traded.
+    /// The offer is short, or the posted supply dwarfs the sale.
     pub demand: i32,
-    /// Left out of the tally.
+    /// This pop's sales against the run and the stock.
     pub luck: i32,
     /// Use covered the inputs and the rot.
     pub decay: i32,
@@ -3322,11 +3337,12 @@ pub struct PlanVotes {
 /// prices the goods and supplies salability. `factuals` supplies the default
 /// salability and the other lines' processes. `bar` is
 /// [`subsistence_value_per_time`]. The votes are profit, salability, existing
-/// demand, decay, price durability, living, and idle job shares. Luck is
-/// left out. Each vote is +1, -1, or silent, except an idle share. A craft
-/// share at 0% and a labor share at 0%
-/// each add one expand vote on a line in that share. Both add two. A total
-/// above 1 expands. A total below -1 contracts. A total between them holds.
+/// demand, luck, decay, price durability, living, and idle job shares.
+/// Demand is [`offer_demand`]. Luck is [`sell_luck`]. Each vote is +1, -1,
+/// or silent, except an idle share. A craft share at 0% and a labor share
+/// at 0% each add one expand vote on a line in that share. Both add two.
+/// A total above 1 expands. A total below -1 contracts. A total between
+/// them holds.
 /// An expansion that does not beat `bar` holds. An expansion of a share that
 /// is still at 0% is kept. Returns those votes and that step.
 pub fn plan_votes(
@@ -3363,9 +3379,9 @@ pub fn plan_votes(
         .map(|good| good.salability)
         .unwrap_or(factuals.config.market.salability_default);
     let sought = row.map(|good| good.sought).unwrap_or(0.0);
+    let offered = row.map(|good| good.offered).unwrap_or(0.0);
     let traded = row.map(|good| good.volume).unwrap_or(0.0);
-    // No sale is stored on the pop. Realized units are what this row consumed.
-    let sold = 0.0;
+    let sold = held.map(|row| row.sold).unwrap_or(0.0);
     // No earlier price is stored, so a price move cannot change the tally yet.
     let price_change = 0.0;
     let sample_count = pop.sol_samples.len();
@@ -3391,25 +3407,10 @@ pub fn plan_votes(
     } else {
         0
     };
-    // Existing demand: buyers wanted more than traded. No bids stay quiet.
-    let demand_vote = if sought > traded {
-        1
-    } else if sought > 0.0 {
-        -1
-    } else {
-        0
-    };
-    // Luck is out of the tally. Use against salability nays once a run is made.
-    // let mut luck_vote = 0;
-    // if output > 0.0 {
-    //     let luck = (sold + consumed) / output - salability;
-    //     if luck < 0.0 {
-    //         luck_vote = -1;
-    //     }
-    // }
-    let luck_vote = 0;
+    let demand_vote = offer_demand(sought, offered, traded);
+    let luck_vote = sell_luck(output, sold, stock);
     // Decay: use covered the inputs and the rot. Uncovered rot destroyed wealth.
-    let decay = sold + consumed - input_cost - decay_losses;
+    let decay = consumed - input_cost - decay_losses;
     let decay_vote = if decay > 0.0 {
         1
     } else if decay < 0.0 {
@@ -3444,8 +3445,8 @@ pub fn plan_votes(
             idle_vote += 2;
         }
     }
-    let tally = profit_vote + salability_vote + demand_vote + decay_vote + durability_vote
-        + living_vote + idle_vote;
+    let tally = profit_vote + salability_vote + demand_vote + luck_vote + decay_vote
+        + durability_vote + living_vote + idle_vote;
     // One vote is not a reason to move. Two in the same direction are.
     let mut direction = if tally > 1 {
         1
@@ -3471,6 +3472,67 @@ pub fn plan_votes(
         tally,
         direction,
         barred,
+    }
+}
+
+/// # Offer Demand
+///
+/// Whether the book is short or glutted.
+///
+/// `sought` and `offered` are the good's posted bid and offer. `traded`
+/// is the units exchanged. An offer above [`PLAN_OFFER_DWARF`] times
+/// `traded` votes to contract, and so does a posted offer with no
+/// exchange. Otherwise a bid above `traded` votes to expand, and a bid
+/// the volume covered votes to contract. No offer and no bids stay quiet.
+/// Returns +1, -1, or 0.
+fn offer_demand(sought: f64, offered: f64, traded: f64) -> i32 {
+    debug_assert!(sought.is_finite() && sought >= 0.0);
+    debug_assert!(offered.is_finite() && offered >= 0.0);
+    debug_assert!(traded.is_finite() && traded >= 0.0);
+    // A posted pile many times the sale is a glut. An unfilled bid does not outvote it.
+    if offered > 0.0 && offered > traded * PLAN_OFFER_DWARF {
+        return -1;
+    }
+    if sought > traded {
+        1
+    } else if sought > 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// # Sell Luck
+///
+/// This pop's sales against the run and the stock.
+///
+/// `output` is the units the line finished. `sold` is the units of that
+/// good this pop sold. `stock` is what it still holds. No finished output
+/// stays quiet. Sales of at least [`PLAN_SELL_YAY`] of the run vote to
+/// expand when `stock` is at most [`PLAN_STOCK_COVER`] times those sales.
+/// Sales under [`PLAN_SELL_NAY`] of the run vote to contract. A stock past
+/// that cover votes to contract. No sales vote to contract when the stock
+/// is larger than the run, and stay quiet when it is not. Returns +1, -1,
+/// or 0.
+fn sell_luck(output: f64, sold: f64, stock: f64) -> i32 {
+    debug_assert!(output.is_finite() && output >= 0.0);
+    debug_assert!(sold.is_finite() && sold >= 0.0);
+    debug_assert!(stock.is_finite() && stock >= 0.0);
+    if output <= 0.0 {
+        return 0;
+    }
+    if sold <= 0.0 {
+        // One unsold run is not a warehouse. A pile older than that run is.
+        return if stock > output { -1 } else { 0 };
+    }
+    let rate = sold / output;
+    let heavy = stock > sold * PLAN_STOCK_COVER;
+    if heavy || rate < PLAN_SELL_NAY {
+        -1
+    } else if rate >= PLAN_SELL_YAY {
+        1
+    } else {
+        0
     }
 }
 
@@ -5538,6 +5600,17 @@ mod record_keeping_should {
     }
 
     #[test]
+    fn sold_survives_until_the_next_market_day() {
+        let mut pop = Pop::new(1);
+        pop.property.insert(1, PopPRow::new(4.0).with_sold(3.0).with_consumed(1.0));
+        pop.record_keeping();
+        assert_eq!(pop.property[&1].sold, 3.0);
+        assert_eq!(pop.property[&1].consumed, 0.0);
+        pop.clear_sold();
+        assert_eq!(pop.property[&1].sold, 0.0);
+    }
+
+    #[test]
     fn a_pop_with_no_desires_is_fully_satisfied() {
         let mut pop = Pop::new(1);
         pop.record_keeping();
@@ -5713,11 +5786,63 @@ mod plan_votes_should {
     }
 
     #[test]
+    fn a_glut_nays_even_when_bids_are_open() {
+        let pop = Pop::new(1);
+        let even = craft(1.0, 1.0);
+        // Buyers still want more than traded, and the offer is many times the sale.
+        let mut glut = book(0.5, 84.0, 11.0);
+        glut.goods.get_mut(&1).unwrap().offered = 762.0;
+        let votes = plan_votes(&pop, &even, &line(0.0), Some(&glut), &Factuals::new(), 0.0);
+        assert_eq!(votes.demand, -1);
+        // The offer sold through. The open bid is the only vote, so the line holds.
+        let mut short = book(0.5, 15.0, 10.0);
+        short.goods.get_mut(&1).unwrap().offered = 10.0;
+        let open = plan_votes(&pop, &even, &line(0.0), Some(&short), &Factuals::new(), 0.0);
+        assert_eq!(open.demand, 1);
+        assert_eq!(open.direction, 0);
+    }
+
+    #[test]
+    fn luck_follows_the_sellers_own_book() {
+        // Salability sits inside the band, so it casts no vote.
+        let band = market_for(0.5);
+        let process = craft(10.0, 0.0);
+        // Sold the whole run, and the stock is within a few of those sales.
+        let mut cleared = held(10.0, 0.0, 0.0, None);
+        cleared.property.get_mut(&1).unwrap().sold = 10.0;
+        let yay = plan_votes(&cleared, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(yay.luck, 1);
+        // The same sales against a warehouse.
+        let mut piled = held(100.0, 0.0, 0.0, None);
+        piled.property.get_mut(&1).unwrap().sold = 10.0;
+        let heavy = plan_votes(&piled, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(heavy.luck, -1);
+        // Sold a small slice of the run.
+        let mut slow = held(10.0, 0.0, 0.0, None);
+        slow.property.get_mut(&1).unwrap().sold = 1.0;
+        let thin = plan_votes(&slow, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(thin.luck, -1);
+        // Half the run sold, and the stock is not a warehouse. The band stays quiet.
+        let mut mid = held(5.0, 0.0, 0.0, None);
+        mid.property.get_mut(&1).unwrap().sold = 5.0;
+        let band_vote = plan_votes(&mid, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(band_vote.luck, 0);
+        // Nothing sold, and the stock is only this run.
+        let fresh = held(10.0, 0.0, 0.0, None);
+        let quiet = plan_votes(&fresh, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(quiet.luck, 0);
+        // Nothing sold, and the stock is older than this run.
+        let older = held(30.0, 0.0, 0.0, None);
+        let old = plan_votes(&older, &process, &line(1.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(old.luck, -1);
+    }
+
+    #[test]
     fn a_short_run_does_not_vote_on_luck() {
         let idle = Pop::new(1);
         // Salability of one half is the share these runs are measured against.
         let band = market_for(0.5);
-        // Luck is out of the tally. Nothing of the run was used, and the output is still worth
+        // Nothing sold, and the stock is empty, so luck stays quiet. The output is still worth
         // its price, so durability yays beside profit and the line expands.
         assert_eq!(ask(&idle, &craft(10.0, 0.0), 1.0, Some(&band), 0.0), 1);
         // The whole run was used and then rotted. Durability and decay stay quiet, so profit
@@ -6998,6 +7123,7 @@ mod buy_should {
         let book = shop_book(&mut pops, &market, &factuals, &mut offers);
         near(book.volume[&BREAD], 2.0);
         near(book.paid[&BREAD][&GRAIN], 2.0);
+        near(pops[1].property[&BREAD].sold, 2.0);
         near(qty(&pops[0], TIME), 0.0);
         near(pops[0].property[&TIME].spent, TRANSACTION_COST);
         near(pops[0].transport_spent, TRANSACTION_COST);

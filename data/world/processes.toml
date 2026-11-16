@@ -17,7 +17,7 @@
 # capital, one per run, with an output effect. Those amounts are test data.
 # survival 28: subsistence and make time. farming 29: make grain.
 # watering 30: make water. baking 31: make bread.
-# goldsmithing 32: gold, gold token, jewelry.
+# goldsmithing 32: gold, gold token, jewelry, gold coins.
 # woodworking 33: wood, cabins, huts, wood tools, buckets, charcoal.
 # smithing 34: iron, iron tools, blades, iron token.
 # metalworking 35: copper, tin, bronze, and their tools, mirror, and tokens.
@@ -528,4 +528,18 @@ inputs = [
 outputs = [
     { good = 44, amount = 1.0 },
     { good = 33, amount = 0.01, fixed = true },
+]
+
+# One coin takes 16 time, a full day of one labor unit.
+[[processes]]
+id = 45
+name = "make gold_coins"
+inputs = [
+    { good = 0, amount = 16.0 },
+    { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
+    { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 45, amount = 1.0 },
+    { good = 32, amount = 0.01, fixed = true },
 ]

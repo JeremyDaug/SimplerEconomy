@@ -21,11 +21,13 @@
 //!
 //! Under the pops, a craft table lists each craft line. Craft names the
 //! process, then its share of morning time and the same finished-over-asked
-//! fraction. Profit, salability, demand, decay, durability, living, and idle
-//! are that line's planning votes. A vote prints `+1`, `-1`, or `0`. Demand
-//! yays when buyers wanted more of the output than traded, and nays when
-//! they wanted some and got it. A day with no bids stays quiet. Luck is
-//! left out of the tally and prints `-`. Idle prints `+3` when craft and
+//! fraction. Profit, salability, demand, luck, decay, durability, living,
+//! and idle are that line's planning votes. A vote prints `+1`, `-1`, or
+//! `0`. Demand yays when buyers wanted more than traded, and nays when the
+//! offer is more than four times the sale or the bids were covered. No
+//! offer and no bids stay quiet. Luck yays when this pop sold most of the
+//! run and the stock is within four sales, and nays when the sale is thin
+//! or the stock is past that. Idle prints `+3` when craft and
 //! labor are both at 0%. Margin is the percentage gain or loss on the priced
 //! inputs, or `-` when those inputs have no cost. Per time is the profit
 //! that vote reads. Tally is the sum of the votes.
@@ -911,7 +913,7 @@ struct CraftRow {
 ///
 /// A blank line separates it from the pops. A pop with no craft is left
 /// out. The votes are the ones [`plan_votes`] would cast on the line as it
-/// stands. Luck prints a dash. Margin and per time come from [`line_value`].
+/// stands. Margin and per time come from [`line_value`].
 fn print_craft_table(state: &PlayState) {
     let rows = craft_rows(state);
     if rows.is_empty() {
@@ -1038,7 +1040,7 @@ fn craft_rows(state: &PlayState) -> Vec<CraftRow> {
                 per_time: qty_text(value.per_time),
                 salability: vote_text(votes.salability),
                 demand: vote_text(votes.demand),
-                luck: "-".to_string(),
+                luck: vote_text(votes.luck),
                 decay: vote_text(votes.decay),
                 durability: vote_text(votes.durability),
                 living: vote_text(votes.living),
