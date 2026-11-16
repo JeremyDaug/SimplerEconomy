@@ -30,6 +30,29 @@ fn posted_offers(offers: &[SellOffer]) -> HashMap<usize, f64> {
     totals
 }
 
+/// # Member Homes
+///
+/// Maps each member id to the lowest market id that lists it.
+///
+/// `markets` is every market, keyed by id. `members` reads one market's
+/// member set, such as [`Market::pops`] or [`Market::firms`]. A member listed
+/// on several markets maps to the lowest id. A member listed on none is
+/// absent. Returns that map.
+pub fn member_homes(
+    markets: &HashMap<usize, Market>,
+    members: impl Fn(&Market) -> &HashSet<usize>,
+) -> HashMap<usize, usize> {
+    let mut homes = HashMap::new();
+    let mut ids: Vec<usize> = markets.keys().copied().collect();
+    ids.sort_unstable();
+    for id in ids {
+        for &member in members(&markets[&id]) {
+            homes.entry(member).or_insert(id);
+        }
+    }
+    homes
+}
+
 /// Why a pop was removed today.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PopExit {
@@ -84,69 +107,6 @@ pub struct Market {
     founding_open: u32,
     /// Pops removed today. [`Self::reset_day`] clears them.
     pop_removals: Vec<PopRemoval>,
-}
-
-/// A saved price snapshot for one market.
-#[derive(Debug, Clone)]
-pub struct MarketHistory {
-    /// Last known AMV per good.
-    pub prices: HashMap<usize, f64>,
-    /// Last known salability per good.
-    pub salability: HashMap<usize, f64>,
-    /// Units the night plan still treats as wanted.
-    ///
-    /// [`Market::history`] fills this. Empty on a snapshot taken before exchange.
-    pub sought: HashMap<usize, f64>,
-    /// Units produced today, per good.
-    ///
-    /// Copied from [`MarketGood::production`]. Empty when nothing was made.
-    pub produced: HashMap<usize, f64>,
-    /// Whole units offered on today's mass book.
-    ///
-    /// [`Market::history`] copies [`MassClose::offered`]. Empty when the book
-    /// quoted no sell. [`Self::is_mass_supplied`] is what the night plan reads.
-    pub mass_offered: HashMap<usize, f64>,
-    /// Whole units exchanged on today's mass book.
-    ///
-    /// [`Market::history`] copies [`MassClose::exchanged`].
-    pub mass_exchanged: HashMap<usize, f64>,
-    /// Copied from [`Market::friction`].
-    pub friction: f64,
-    /// Used when a good has no recorded salability.
-    pub default_salability: f64,
-    /// Refused-ask fraction per good, copied from the market.
-    pub ask_walk: HashMap<usize, f64>,
-    /// Tender good ids, filled slots only, in slot order.
-    ///
-    /// [`Market::history`] copies them. Empty when the snapshot has no tender.
-    pub currencies: Vec<usize>,
-    /// Saved exchange rates. Each entry is one currency and one good.
-    pub exchange_rates: Vec<ExchangeRate>,
-    /// Goods a buyer asked that nobody could cover for one unit.
-    ///
-    /// [`Market::history`] copies the market's set. Empty when every ask
-    /// could buy, or when the snapshot was taken after the set was cleared.
-    pub unaffordable: HashSet<usize>,
-}
-
-/// One saved exchange rate.
-///
-/// `rate` is the units of `good` one unit of `currency` buys.
-#[derive(Debug, Clone, Copy)]
-pub struct ExchangeRate {
-    /// Tender good this rate is priced in.
-    pub currency: usize,
-    /// Good this rate buys.
-    pub good: usize,
-    /// Units of `good` bought by one unit of `currency`.
-    pub rate: f64,
-}
-
-/// Per-market price snapshots plus pop-id to market-id.
-#[derive(Debug, Clone, Default)]
-pub struct MarketLookups {
-    pub histories: HashMap<usize, MarketHistory>,
-    pub pop_to_market: HashMap<usize, usize>,
 }
 
 /// Stored price and quantity for one good in a market.
@@ -247,18 +207,16 @@ impl Market {
     /// player trade. Trade consolidation follows. Prices move in
     /// record keeping, after the rest of the day.
     ///
-    /// `factuals` supplies the world. `history` is not read by the offer
-    /// split. `pops` and `firms` are the members handed to this market.
-    /// Firms walk in the order given. Pops shop through
-    /// [`buy_from_offers`], wealthiest household first. `institutions` is
-    /// every institution. This market calls the ones in `institution_ids`,
-    /// in id order. `players` buy first and again last. `rng` picks the
+    /// `factuals` supplies the world. `pops` and `firms` are the members
+    /// handed to this market. Firms walk in the order given. Pops shop
+    /// through [`buy_from_offers`], wealthiest household first.
+    /// `institutions` is every institution. This market calls the ones in
+    /// `institution_ids`, in id order. `players` buy first and again last. `rng` picks the
     /// sellers. Offers, bids, and completed exchanges are written after
     /// the pops shop.
     pub fn market_day(
         &mut self,
         factuals: &Factuals,
-        history: &MarketHistory,
         pops: &mut [Pop],
         firms: &mut [Firm],
         institutions: &HashMap<usize, Institution>,
@@ -275,8 +233,6 @@ impl Market {
             let pop_offers = pop.split_goods_sale_reserve(factuals);
             offers.extend(pop_offers);
         }
-        // The offer split does not read the snapshot.
-        let _ = history;
         players.early_market_day(self, factuals, &offers);
         // Institutions listed on this market, lowest id first.
         let mut institution_ids: Vec<usize> = self.institution_ids.iter().copied().collect();
@@ -298,7 +254,7 @@ impl Market {
         // Players who buy after the other actors.
         players.late_market_day(self, factuals, &offers);
         // Write the offers, the bids, and the completed exchanges.
-        self.consolidate(factuals, pops, firms, &offers, &offered, &book);
+        self.consolidate(&offered, &book);
     }
 
     /// # Consolidate
@@ -310,18 +266,8 @@ impl Market {
     /// Yesterday's offers, bids, volume, and currency counts are replaced.
     /// A good with posted supply replaces its salability with the average of
     /// that share and today's volume over the posted supply. A good with no
-    /// posted supply keeps its salability. `factuals`, `pops`, `firms`, and
-    /// `offers` are not read.
-    fn consolidate(
-        &mut self,
-        factuals: &Factuals,
-        pops: &mut [Pop],
-        firms: &mut [Firm],
-        offers: &[SellOffer],
-        offered: &HashMap<usize, f64>,
-        book: &ShopBook,
-    ) {
-        let _ = (factuals, pops, firms, offers);
+    /// posted supply keeps its salability.
+    fn consolidate(&mut self, offered: &HashMap<usize, f64>, book: &ShopBook) {
         for row in self.goods.values_mut() {
             row.offered = 0.0;
             row.sought = 0.0;
@@ -639,141 +585,6 @@ impl Market {
             .entry(good_id)
             .or_insert(MarketGood::new());
         row.stock += amount;
-    }
-}
-
-impl MarketHistory {
-    /// # New
-    ///
-    /// An empty price snapshot using [`MarketConfig::default`].
-    pub fn new() -> Self {
-        Self::from_config(&MarketConfig::default())
-    }
-
-    /// # From Config
-    ///
-    /// An empty price snapshot.
-    ///
-    /// Salability falls back to `market.salability_default`. The quantity
-    /// maps start empty.
-    pub fn from_config(market: &MarketConfig) -> Self {
-        Self {
-            prices: HashMap::new(),
-            salability: HashMap::new(),
-            sought: HashMap::new(),
-            produced: HashMap::new(),
-            mass_offered: HashMap::new(),
-            mass_exchanged: HashMap::new(),
-            friction: 0.0,
-            default_salability: market.salability_default,
-            ask_walk: HashMap::new(),
-            currencies: Vec::new(),
-            exchange_rates: Vec::new(),
-            unaffordable: HashSet::new(),
-        }
-    }
-
-    /// # Is Unaffordable
-    ///
-    /// True when a buyer asked for `good_id` and nobody could cover one unit.
-    ///
-    /// A good missing from the set is false.
-    pub fn is_unaffordable(&self, good_id: usize) -> bool {
-        self.unaffordable.contains(&good_id)
-    }
-
-    /// # Currencies
-    ///
-    /// Tender good ids on this snapshot, in slot order.
-    pub fn currencies(&self) -> &[usize] {
-        &self.currencies
-    }
-
-    /// # Ask Walk
-    ///
-    /// How far `good_id`'s refused sell floor has walked toward the card.
-    ///
-    /// A good with no stored fraction returns 0.
-    pub fn ask_walk(&self, good_id: usize) -> f64 {
-        self.ask_walk.get(&good_id).copied().unwrap_or(0.0)
-    }
-
-    /// # Sought
-    ///
-    /// Units of `good_id` still sought on this snapshot, or 0.
-    pub fn sought(&self, good_id: usize) -> f64 {
-        self.sought.get(&good_id).copied().unwrap_or(0.0)
-    }
-
-    /// # Produced
-    ///
-    /// Units of `good_id` produced on this snapshot, or 0.
-    pub fn produced(&self, good_id: usize) -> f64 {
-        self.produced.get(&good_id).copied().unwrap_or(0.0)
-    }
-
-    /// # Mass Offered
-    ///
-    /// Whole units of `good_id` offered on this snapshot's mass book, or 0.
-    pub fn mass_offered(&self, good_id: usize) -> f64 {
-        self.mass_offered.get(&good_id).copied().unwrap_or(0.0)
-    }
-
-    /// # Mass Exchanged
-    ///
-    /// Whole units of `good_id` exchanged on this snapshot's mass book, or 0.
-    pub fn mass_exchanged(&self, good_id: usize) -> f64 {
-        self.mass_exchanged.get(&good_id).copied().unwrap_or(0.0)
-    }
-
-    /// # Is Mass Supplied
-    ///
-    /// True when the mass book offered or exchanged at least one unit of `good_id`.
-    ///
-    /// A good missing from both maps is false. A fraction under one is false.
-    pub fn is_mass_supplied(&self, good_id: usize) -> bool {
-        self.mass_offered.get(&good_id).copied().unwrap_or(0.0) >= 1.0
-            || self.mass_exchanged.get(&good_id).copied().unwrap_or(0.0) >= 1.0
-    }
-
-    /// # Price
-    ///
-    /// AMV for `good_id`, or 1.0 if this snapshot has none.
-    pub fn price(&self, good_id: usize) -> f64 {
-        self.prices.get(&good_id).copied().unwrap_or(1.0)
-    }
-
-    /// # Salability
-    ///
-    /// Salability for `good_id`, or this snapshot's default if missing.
-    pub fn salability(&self, good_id: usize) -> f64 {
-        self.salability
-            .get(&good_id)
-            .copied()
-            .unwrap_or(self.default_salability)
-    }
-}
-
-impl MarketLookups {
-    /// # New
-    ///
-    /// Empty histories and an empty pop-to-market map.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// # History For Pop
-    ///
-    /// History for `pop_id`'s market, or `empty` if the pop is in none.
-    pub fn history_for_pop<'a>(
-        &'a self,
-        pop_id: usize,
-        empty: &'a MarketHistory,
-    ) -> &'a MarketHistory {
-        self.pop_to_market
-            .get(&pop_id)
-            .and_then(|mid| self.histories.get(mid))
-            .unwrap_or(empty)
     }
 }
 
@@ -1223,8 +1034,7 @@ mod orders_should {
     use rand::rngs::StdRng;
     use rand::SeedableRng;
 
-    use super::{Market, MarketGood, MarketHistory};
-    use crate::game::config::MarketConfig;
+    use super::{Market, MarketGood};
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
     use crate::game::factuals::Factuals;
@@ -1300,13 +1110,11 @@ mod orders_should {
         seller.property.insert(BREAD, PopPRow::new(6.0));
         let mut pops = [buyer, seller];
         let mut firms: Vec<Firm> = Vec::new();
-        let history = MarketHistory::from_config(&MarketConfig::default());
         let players = Players { players: HashMap::new() };
         let institutions: HashMap<usize, Institution> = HashMap::new();
         let mut rng = StdRng::seed_from_u64(1);
         market.market_day(
             &factuals,
-            &history,
             &mut pops,
             &mut firms,
             &institutions,

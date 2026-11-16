@@ -62,7 +62,7 @@ use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::good::TIME;
 use simpler_economy::game::map::Map;
 use simpler_economy::game::mapdata::{EnvironmentData, MapData};
-use simpler_economy::game::market::{Market, MarketLookups};
+use simpler_economy::game::market::Market;
 use simpler_economy::game::players::Players;
 use simpler_economy::game::pop::{line_value, market_price, plan_votes, PlanVotes, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
@@ -239,7 +239,6 @@ fn stand_up() -> PlayState {
         players: Players { players: HashMap::new() },
         turn: 0,
         is_paused: false,
-        market_lookups: MarketLookups::new(),
     }
 }
 

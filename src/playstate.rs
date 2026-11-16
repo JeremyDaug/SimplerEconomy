@@ -7,7 +7,7 @@ use crate::game::actors::Actors;
 use crate::game::factuals::Factuals;
 use crate::game::firm::Firm;
 use crate::game::mapdata::MapData;
-use crate::game::market::{Market, MarketHistory, MarketLookups};
+use crate::game::market::{member_homes, Market};
 use crate::game::players::Players;
 use crate::game::pop::Pop;
 
@@ -26,9 +26,6 @@ pub struct PlayState {
     // Optional: turn metadata, game clock, etc.
     pub turn: u64,
     pub is_paused: bool,
-    /// Per-market AMV snapshots and pop-to-market ids for this turn.
-    /// Rebuild after prices change or pops move; borrow during pop phases.
-    pub market_lookups: MarketLookups,
     // ... any other global flags
 }
 
@@ -140,16 +137,8 @@ impl PlayState {
                 .unwrap_or_else(|| panic!("market {id} is not in MapData"));
             let pops = take_listed(&mut self.actors.pops, &market.pops);
             let firms = take_listed(&mut self.actors.firms, &market.firms);
-            // Passed through for the market day. The offer split does not read it.
-            let history = self
-                .market_lookups
-                .histories
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(MarketHistory::new);
             batches.push(MarketDayBatch {
                 market,
-                history,
                 pops,
                 firms,
             });
@@ -164,7 +153,6 @@ impl PlayState {
                     let mut rng = StdRng::seed_from_u64(turn ^ (batch.market.id as u64));
                     batch.market.market_day(
                         factuals,
-                        &batch.history,
                         &mut batch.pops,
                         &mut batch.firms,
                         institutions,
@@ -399,30 +387,8 @@ impl PlayState {
 /// One market and the pops and firms that trade in it today.
 struct MarketDayBatch {
     market: Market,
-    history: MarketHistory,
     pops: Vec<Pop>,
     firms: Vec<Firm>,
-}
-
-/// # Member Homes
-///
-/// Maps each member id to the lowest market id that lists it.
-///
-/// `members` reads one market's member set. A member listed on several
-/// markets maps to the lowest id. A member listed on none is absent.
-fn member_homes(
-    markets: &HashMap<usize, Market>,
-    members: impl Fn(&Market) -> &HashSet<usize>,
-) -> HashMap<usize, usize> {
-    let mut homes = HashMap::new();
-    let mut ids: Vec<usize> = markets.keys().copied().collect();
-    ids.sort_unstable();
-    for id in ids {
-        for &member in members(&markets[&id]) {
-            homes.entry(member).or_insert(id);
-        }
-    }
-    homes
 }
 
 /// # Take Listed
