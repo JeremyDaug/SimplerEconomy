@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, market::Market, pop::Pop, scalingfactor::ScalingFactor};
+use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, market::{member_homes, Market}, pop::Pop, scalingfactor::ScalingFactor};
 
 /// # Actors
 ///
@@ -103,7 +103,7 @@ impl Actors {
     /// A positive amount is recorded with [`Market::record_supply`]. A pop
     /// listed on no market still receives the goods.
     pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>, factuals: &Factuals) {
-        let homes = pop_markets(markets);
+        let homes = member_homes(markets, |market| &market.pops);
         let time_per_labor = factuals.config.labor.time_per_labor;
         let time_gen = [(0, ScalingFactor::Labor(time_per_labor))];
         for (pop_id, pop) in self.pops.iter_mut() {
@@ -178,7 +178,7 @@ impl Actors {
     /// plans against that market. Firm and institution planning are not
     /// written yet.
     pub fn planning(&mut self, factuals: &Factuals, markets: &HashMap<usize, Market>) {
-        let homes = pop_markets(markets);
+        let homes = member_homes(markets, |market| &market.pops);
         let pops = &mut self.pops;
         let firms = &mut self.firms;
         let institutions = &mut self.institutions;
@@ -204,7 +204,7 @@ impl Actors {
     /// thread. A pop listed on a market prices its wealth against that
     /// market. The mood is updated first, then stored satisfaction is dropped.
     pub fn sentiments(&mut self, markets: &HashMap<usize, Market>) {
-        let homes = pop_markets(markets);
+        let homes = member_homes(markets, |market| &market.pops);
         let pops = &mut self.pops;
         std::thread::scope(|scope| {
             for pop in pops.values_mut() {
@@ -216,24 +216,4 @@ impl Actors {
             }
         });
     }
-}
-
-/// # Pop Markets
-///
-/// Maps each pop id to the market that lists it.
-///
-/// `markets` is the set passed to [`Actors::start_day`],
-/// [`Actors::planning`], and [`Actors::sentiments`]. A pop listed in
-/// several markets maps to the lowest market id. A pop listed in none is
-/// absent.
-fn pop_markets(markets: &HashMap<usize, Market>) -> HashMap<usize, usize> {
-    let mut homes = HashMap::new();
-    let mut ids: Vec<usize> = markets.keys().copied().collect();
-    ids.sort_unstable();
-    for id in ids {
-        for &pop_id in &markets[&id].pops {
-            homes.entry(pop_id).or_insert(id);
-        }
-    }
-    homes
 }
