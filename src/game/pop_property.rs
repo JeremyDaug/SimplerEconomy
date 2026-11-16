@@ -45,6 +45,12 @@ pub struct PopPRow {
     // Process values
     /// Units a process put out today.
     pub produced: f64,
+    /// Units sold today.
+    ///
+    /// A completed sale adds to this. [`crate::game::pop::Pop::record_keeping`]
+    /// leaves it so planning can read the day. The next market day clears
+    /// it before the new sales.
+    pub sold: f64,
     /// Units a process destroyed today. Capital set aside is `used`, not this.
     ///
     /// [`crate::game::pop::Pop::record_keeping`] clears it.
@@ -151,6 +157,14 @@ impl PopPRow {
     /// Sets units produced and returns this row.
     pub fn with_produced(mut self, produced: f64) -> Self {
         self.produced = produced;
+        self
+    }
+
+    /// # With Sold
+    ///
+    /// Sets units sold and returns this row.
+    pub fn with_sold(mut self, sold: f64) -> Self {
+        self.sold = sold;
         self
     }
 

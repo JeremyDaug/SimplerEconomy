@@ -125,6 +125,32 @@ pub const PLAN_SALABILITY_YAY: f64 = 0.8;
 /// Salability below this votes to contract a job line.
 pub const PLAN_SALABILITY_NAY: f64 = 0.4;
 
+/// Posted offer at least this many times the day's sale.
+///
+/// Demand votes to contract when the offer is above this times the units
+/// exchanged. An unfilled bid does not vote to expand past that. No
+/// exchange with a posted offer is the same vote.
+pub const PLAN_OFFER_DWARF: f64 = 4.0;
+
+/// Share of a finished run that luck counts as a strong sale.
+///
+/// At or above this share, luck votes to expand when the stock is within
+/// [`PLAN_STOCK_COVER`] of those sales.
+pub const PLAN_SELL_YAY: f64 = 0.8;
+
+/// Share of a finished run below which luck votes to contract.
+///
+/// The band from here up to [`PLAN_SELL_YAY`] casts no vote, unless the
+/// stock is past [`PLAN_STOCK_COVER`].
+pub const PLAN_SELL_NAY: f64 = 0.4;
+
+/// Stock larger than this many times the day's sales.
+///
+/// Luck votes to contract when the pile is above this, including when the
+/// sell rate is high. No sales uses the finished run in place of the
+/// sales: a pile bigger than that run votes to contract.
+pub const PLAN_STOCK_COVER: f64 = 4.0;
+
 /// Living change that casts one planning vote.
 ///
 /// A rise of this size votes to expand. A drop of this size votes to contract.

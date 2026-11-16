@@ -202,10 +202,10 @@ impl Market {
     ///
     /// Runs this market's day.
     ///
-    /// Pops run subsistence, then sort property into reserves and sell
-    /// offers. Then early player, institutions, firms, pops, and late
-    /// player trade. Trade consolidation follows. Prices move in
-    /// record keeping, after the rest of the day.
+    /// Pops clear yesterday's sales, run subsistence, then sort property
+    /// into reserves and sell offers. Then early player, institutions,
+    /// firms, pops, and late player trade. Trade consolidation follows.
+    /// Prices move in record keeping, after the rest of the day.
     ///
     /// `factuals` supplies the world. `pops` and `firms` are the members
     /// handed to this market. Firms walk in the order given. Pops shop
@@ -223,8 +223,9 @@ impl Market {
         players: &Players,
         rng: &mut dyn RngCore,
     ) {
-        // Each pop runs subsistence before it sorts reserves and offers.
+        // Yesterday's sales have already been planned. Clear them before the new day.
         for pop in pops.iter_mut() {
+            pop.clear_sold();
             pop.run_subsistence(factuals);
         }
         // Each pop sorts its property into reserves and sell offers.

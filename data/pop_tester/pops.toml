@@ -2,10 +2,10 @@
 # Process names are world names. A target of 0 does not run. An omitted
 # target runs as many iterations as the inputs allow. A job holds two lines.
 
-# Eleven pops, each with one craft. Bread, cabins, beer, huts, and the clothing
+# Twelve pops, each with one craft. Bread, cabins, beer, huts, and the clothing
 # chain are common goods. Water and coal are gathered for sale, and one pop
-# farms grain. Cotton, thread, fabric, and clothes are one pop each. A pop
-# buys the goods its own craft does not make.
+# farms grain. Cotton, thread, fabric, and clothes are one pop each. One pop
+# mints gold coins. A pop buys the goods its own craft does not make.
 
 [[pops]]
 id = 1
@@ -104,4 +104,13 @@ culture = "village"
 
 [[pops.lines]]
 process = "make clothes"
+target = 0
+
+[[pops]]
+id = 12
+species = "human"
+culture = "village"
+
+[[pops.lines]]
+process = "make gold_coins"
 target = 0
