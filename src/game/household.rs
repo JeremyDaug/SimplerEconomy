@@ -649,14 +649,14 @@ impl DemographicRates {
     /// adults+elders = [`Self::DEFAULT_PARTNERSHIP`] (2.0 + 0.5).
     pub fn baseline() -> Self {
         let maternal_mortality = 0.01;
-        let birth_per_woman = 0.30;
+        let birth_per_woman = 0.25; // was 0.3, reduced for testing/speed purposes.
         Self {
             birth_per_woman,
-            infant_mortality: 0.10,
+            infant_mortality: 0.15,
             maternal_mortality,
-            child_mortality: (0.025, 0.0, 0.0),
-            adult_mortality: (0.013, maternal_mortality * birth_per_woman, 0.0),
-            elder_mortality: (0.09, 0.0, 0.0),
+            child_mortality: (0.03, 0.0, 0.0), // Was 0.025
+            adult_mortality: (0.016, maternal_mortality * birth_per_woman, 0.0), // was 0.013
+            elder_mortality: (0.12, 0.0, 0.0), // was 0.09
             partnership_rate: Self::DEFAULT_PARTNERSHIP,
         }
     }

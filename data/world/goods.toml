@@ -358,6 +358,16 @@ tags = ["restricted", "immobile"]
 [[goods]]
 id = 45
 name = "gold_coins"
-mass = 0.01
-volume = 0.000001
+mass = 1.0
+volume = 0.00001
 decay_rate = 0.001
+
+# A haul service. make cargo is process 46. One unit covers 4 time of transport.
+# Decay 1.0 clears whatever is still on hand at the end of the day.
+[[goods]]
+id = 46
+name = "cargo"
+mass = 0.0
+volume = 0.0
+decay_rate = 1.0
+tags = [{ transport = 4.0 }]

@@ -323,7 +323,7 @@ pub struct PlayerResourceConfig {}
 /// `salability_default` is the salability of a good with no record.
 /// `amv_epsilon` is the half-width of the stored-AMV dead zone.
 /// `price_gain` and `price_cap` scale the daily surplus and shortage step.
-/// The migration and founding knobs are loaded here. Those passes are not
+/// The migration and founding knobs are loaded here. Founding is not
 /// written yet.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]

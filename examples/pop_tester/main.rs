@@ -8,13 +8,14 @@
 //! The first argument is how many days to run before asking for more
 //! (default 1). After those days, enter runs one more, a number runs
 //! that many, and 0 quits. The table is one row per pop. The line above
-//! it is the turn those rows finished. A terminal keeps one screen and
-//! replaces that day and the tables. A pipe prints them once, when the
-//! batch ends. Subsistence and labor are shares of that pop's time.
+//! it is the turn those rows finished. A terminal prints each finished
+//! day below the last one, so the window can scroll. A pipe prints them
+//! once, when the batch ends. Subsistence and labor are shares of that pop's time.
 //! Labor shows the time share and one fraction, the iterations finished
 //! over the iterations asked, in whole units, from those lines'
 //! `completed` and `attempted`.
-//! Savings and stock are priced in the pop's first market currency.
+//! Savings and stock are priced per household, in the pop's first market currency.
+//! In and out are the households that arrived and the households that left.
 //! SOL is the standard of living recorded before decay. Hope, happy,
 //! fear, and anger are that pop's sentiment shares. Contentment is
 //! whatever those four leave. The last column is why that pop stopped buying.
@@ -49,7 +50,8 @@
 //! price column, headed by `in` and that currency's name. A price carries
 //! `+` when it rose since yesterday, `-` when it fell, and `=` when it
 //! held. A good with no stored price prints `-`. The currency priced in
-//! itself is 1. The first stored price has no mark. Time is left out.
+//! itself is 1. The first stored price has no mark. Time and skills are
+//! left out.
 //!
 //! Above the pops, an info table lists one household of each demographic.
 //! Subsistence is that household's value per unit of time. Day savings is
@@ -86,7 +88,7 @@ const SCENARIO_DIR: &str = "pop_tester";
 fn main() {
     let mut days = tester_args();
     let mut state = stand_up();
-    let live = LiveView::enter();
+    let live = io::stdout().is_terminal();
     print_banner(&state);
     let mut rows = Vec::new();
     // `latest` is the day just finished. `earlier` is the day before it,
@@ -96,8 +98,8 @@ fn main() {
     let mut latest = HashMap::new();
     loop {
         if days == 0 {
-            if !live.is_on() && !rows.is_empty() {
-                print_table(&state, &rows, false, &earlier);
+            if !live && !rows.is_empty() {
+                print_table(&state, &rows, &earlier);
             }
             days = more_days();
             if days == 0 {
@@ -107,88 +109,11 @@ fn main() {
         state.advance_turn();
         rows = pop_rows(&state);
         earlier = std::mem::replace(&mut latest, snapshot_prices(&state));
-        if live.is_on() {
-            print_table(&state, &rows, true, &earlier);
+        if live {
+            print_table(&state, &rows, &earlier);
         }
         days -= 1;
     }
-}
-
-/// One live screen for the tester.
-///
-/// A terminal switches to the alternate screen and comes back when this
-/// value drops. A pipe leaves the terminal alone.
-struct LiveView {
-    on: bool,
-}
-
-impl LiveView {
-    /// # Enter
-    ///
-    /// Opens the alternate screen when stdout is a terminal.
-    ///
-    /// A pipe does not. Interrupt and terminate restore that screen.
-    /// Returns the guard.
-    fn enter() -> Self {
-        let on = io::stdout().is_terminal();
-        if on {
-            print!("\x1b[?1049h");
-            let _ = io::stdout().flush();
-            install_restore();
-        }
-        Self { on }
-    }
-
-    /// # Is On
-    ///
-    /// Whether this run paints over one screen.
-    ///
-    /// Returns that check.
-    fn is_on(&self) -> bool {
-        self.on
-    }
-}
-
-impl Drop for LiveView {
-    fn drop(&mut self) {
-        if self.on {
-            restore_terminal();
-        }
-    }
-}
-
-/// # Install Restore
-///
-/// Restores the main screen if the run is interrupted or terminated.
-fn install_restore() {
-    unsafe {
-        signal(2, restore_and_exit);
-        signal(15, restore_and_exit);
-    }
-}
-
-/// # Restore Terminal
-///
-/// Leaves the alternate screen.
-fn restore_terminal() {
-    let mut out = io::stdout();
-    let _ = write!(out, "\x1b[?1049l");
-    let _ = out.flush();
-}
-
-/// Restores the main screen and exits.
-extern "C" fn restore_and_exit(_signal: i32) {
-    let bytes = b"\x1b[?1049l";
-    unsafe {
-        write_fd(1, bytes.as_ptr(), bytes.len());
-    }
-    std::process::exit(130);
-}
-
-unsafe extern "C" {
-    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
-    #[link_name = "write"]
-    fn write_fd(fd: i32, buf: *const u8, count: usize) -> isize;
 }
 
 /// # Tester Args
@@ -475,6 +400,8 @@ struct PopRow {
     subsistence: String,
     labor: String,
     size: String,
+    migration_in: String,
+    migration_out: String,
     savings: String,
     stock: String,
     sol: String,
@@ -498,17 +425,18 @@ fn pop_rows(state: &PlayState) -> Vec<PopRow> {
 
 /// # Pop Row
 ///
-/// `pop` as demographic, subsistence, labor, size, savings, stock, SOL,
-/// mood, and why buying stopped.
+/// `pop` as demographic, subsistence, labor, size, households that arrived,
+/// households that left, savings, stock, SOL, mood, and why buying stopped.
 ///
 /// Subsistence names its type and the share of this pop's morning time.
 /// Labor is the time and the fraction for labor lines. The plan is the
 /// one written at the end of the day. The fraction sums `completed` and
 /// `attempted` on those lines, with the fractional part dropped. A group
 /// with no lines shows a dash. Size is the number of people. Savings and
-/// stock come from [`holding_value`].
+/// stock come from [`holding_value`], divided by the household count.
 /// SOL is [`Pop::recorded_living`]. Hope, happy, fear, and anger are
-/// those sentiment shares. Stop is why this pop stopped buying.
+/// those sentiment shares. In and out are the household counts on
+/// [`Pop::records`]. Stop is why this pop stopped buying.
 /// Returns that row.
 fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
     let budget = pop.time_grant(&state.factuals);
@@ -529,6 +457,15 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
         labor_lines = true;
     }
     let (savings, stock) = holding_value(state, pop);
+    let households = pop.demographics.household.count;
+    // A large pop's pile is the household's pile, so the column stays readable.
+    let per_household = |total: f64| {
+        if households.is_finite() && households > 0.0 {
+            total / households
+        } else {
+            0.0
+        }
+    };
     PopRow {
         demographic: demographic(state, pop),
         subsistence: format!(
@@ -542,8 +479,10 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
             labor_lines.then_some((labor_completed, labor_attempted)),
         ),
         size: qty_text(pop.demographics.total_population()),
-        savings: qty_text(savings),
-        stock: qty_text(stock),
+        migration_in: qty_text(pop.records.migration_in),
+        migration_out: qty_text(pop.records.migration_out),
+        savings: qty_text(per_household(savings)),
+        stock: qty_text(per_household(stock)),
         sol: qty_text(pop.recorded_living().unwrap_or(0.0)),
         hope: percent_text(pop.sentiment.hope() * 100.0),
         happy: percent_text(pop.sentiment.happiness() * 100.0),
@@ -835,22 +774,19 @@ fn print_info(state: &PlayState) {
 ///
 /// The day is [`PlayState::turn`]. The info table is one household of each
 /// demographic. Pop columns are demographic, subsistence, labor, size,
-/// savings, stock, sol, hope, happy, fear, anger, and stop. The craft
+/// in, out, savings per household, stock per household, sol, hope, happy,
+/// fear, anger, and stop. In and out are households. Those two columns
+/// keep room for a fractional count, so a zero does not shift the columns
+/// after them. The craft
 /// table follows the pops, then the market tables, one blank line after
-/// each. `prior` is yesterday's prices for the markets. On a terminal
-/// the screen is cleared and this call draws the banner, the day, and the
-/// tables again. A pipe writes the lines in order.
+/// each. `prior` is yesterday's prices for the markets. Writes the day
+/// and the tables below what is already printed.
 fn print_table(
     state: &PlayState,
     rows: &[PopRow],
-    live: bool,
     prior: &HashMap<(usize, usize, usize), f64>,
 ) {
-    if live {
-        // One screen. The previous day, tables, and prompt are wiped.
-        print!("\x1b[H\x1b[2J\x1b[3J");
-        print_banner(state);
-    }
+    println!();
     println!("day: {}", state.turn);
     print_info(state);
     println!();
@@ -858,8 +794,11 @@ fn print_table(
     let sub_w = col_width("subsistence", rows.iter().map(|row| row.subsistence.len()));
     let labor_w = col_width("labor", rows.iter().map(|row| row.labor.len()));
     let size_w = col_width("size", rows.iter().map(|row| row.size.len()));
-    let savings_w = col_width("savings", rows.iter().map(|row| row.savings.len()));
-    let stock_w = col_width("stock", rows.iter().map(|row| row.stock.len()));
+    // A zero is narrower than `xx.xxxx`. The floor holds that width every day.
+    let in_w = col_width("in", rows.iter().map(|row| row.migration_in.len())).max(7);
+    let out_w = col_width("out", rows.iter().map(|row| row.migration_out.len())).max(7);
+    let savings_w = col_width("savings/hh", rows.iter().map(|row| row.savings.len()));
+    let stock_w = col_width("stock/hh", rows.iter().map(|row| row.stock.len()));
     let sol_w = col_width("sol", rows.iter().map(|row| row.sol.len()));
     let hope_w = col_width("hope", rows.iter().map(|row| row.hope.len()));
     let happy_w = col_width("happy", rows.iter().map(|row| row.happy.len()));
@@ -869,9 +808,9 @@ fn print_table(
     println!(
         "{}",
         table_line(
-            "demographic", "subsistence", "labor", "size", "savings", "stock",
-            "sol", "hope", "happy", "fear", "anger", "stop",
-            demo_w, sub_w, labor_w, size_w, savings_w, stock_w,
+            "demographic", "subsistence", "labor", "size", "in", "out",
+            "savings/hh", "stock/hh", "sol", "hope", "happy", "fear", "anger", "stop",
+            demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
             sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
         )
     );
@@ -880,9 +819,9 @@ fn print_table(
             "{}",
             table_line(
                 &row.demographic, &row.subsistence, &row.labor, &row.size,
-                &row.savings, &row.stock, &row.sol, &row.hope, &row.happy, &row.fear,
-                &row.anger, &row.stop,
-                demo_w, sub_w, labor_w, size_w, savings_w, stock_w,
+                &row.migration_in, &row.migration_out, &row.savings, &row.stock,
+                &row.sol, &row.hope, &row.happy, &row.fear, &row.anger, &row.stop,
+                demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
                 sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
             )
         );
@@ -1211,12 +1150,16 @@ fn market_line(cells: &[String], widths: &[usize]) -> String {
 ///
 /// A currency is always included. Any other good is included when members
 /// hold some, the market recorded supply, demand, trade, output, use,
-/// rot, or stock for it, or some currency has a rate for it. Time is
-/// left out. Returns those ids.
+/// rot, or stock for it, or some currency has a rate for it. Time and
+/// skills are left out. Returns those ids.
 fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
     let mut ids = Vec::new();
     let mut remember = |id: usize| {
-        if id != TIME && !ids.contains(&id) {
+        let skill = state
+            .factuals
+            .get_good(id)
+            .is_some_and(|good| good.is_skill());
+        if id != TIME && !skill && !ids.contains(&id) {
             ids.push(id);
         }
     };
@@ -1505,13 +1448,14 @@ fn col_width(header: &str, cells: impl Iterator<Item = usize>) -> usize {
 /// The widths are the columns. Demographic and subsistence sit on the
 /// left. The other columns sit on the right. Returns that line.
 fn table_line(
-    demographic: &str, subsistence: &str, labor: &str, size: &str, savings: &str, stock: &str,
-    sol: &str, hope: &str, happy: &str, fear: &str, anger: &str, stop: &str, demo_w: usize,
-    sub_w: usize, labor_w: usize, size_w: usize, savings_w: usize, stock_w: usize, sol_w: usize,
-    hope_w: usize, happy_w: usize, fear_w: usize, anger_w: usize, stop_w: usize,
+    demographic: &str, subsistence: &str, labor: &str, size: &str, arrived: &str, left: &str,
+    savings: &str, stock: &str, sol: &str, hope: &str, happy: &str, fear: &str, anger: &str,
+    stop: &str, demo_w: usize, sub_w: usize, labor_w: usize, size_w: usize, in_w: usize,
+    out_w: usize, savings_w: usize, stock_w: usize, sol_w: usize, hope_w: usize, happy_w: usize,
+    fear_w: usize, anger_w: usize, stop_w: usize,
 ) -> String {
     format!(
-        "{demographic:<demo_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {hope:>hope_w$}  {happy:>happy_w$}  {fear:>fear_w$}  {anger:>anger_w$}  {stop:>stop_w$}"
+        "{demographic:<demo_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {arrived:>in_w$}  {left:>out_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {hope:>hope_w$}  {happy:>happy_w$}  {fear:>fear_w$}  {anger:>anger_w$}  {stop:>stop_w$}"
     )
 }
 

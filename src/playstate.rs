@@ -245,15 +245,18 @@ impl PlayState {
     ///
     /// Each pop runs births and deaths on its own thread. Cap rebalance
     /// then uses the whole market. Prune removes pops too small to survive.
-    /// Migration inside a market is local, then regional. Interregional
-    /// people follow. Organized movers follow the people. Regional,
-    /// interregional, and organized movement are not written yet.
+    /// Migration inside a market is local, then regional. A pop that local
+    /// migration empties is dropped after that. Interregional people follow.
+    /// Organized movers follow the people. Regional, interregional, and
+    /// organized movement are not written yet.
     fn growth(&mut self) {
         self.births_and_deaths();
         self.rebalance_capped();
         self.prune_pops();
-        // Local, then regional inside each market. Regional is not written yet.
+        // Local pool, then regional. Regional is not written yet.
         self.migrate_inside_markets();
+        // Local migration can empty a pop after the prune.
+        self.drop_emptied_pops();
         // People move between markets one market after another. Not written yet.
         self.map_data
             .process_inter_market_migration(&mut self.actors, &self.factuals);
@@ -305,6 +308,33 @@ impl PlayState {
             market.prune_under_one(pops);
         }
         pops.retain(|_, pop| pop.demographics.household.count >= 1.0);
+    }
+
+    /// # Drop Emptied Pops
+    ///
+    /// Removes pops whose household count is under 1.
+    ///
+    /// Local migration can empty a pop after the prune. That market unlists
+    /// it and drops the actor. A market that still lists the id loses it
+    /// here, and any pop left under one household is dropped too, so decay
+    /// does not run them.
+    fn drop_emptied_pops(&mut self) {
+        let gone: Vec<usize> = self
+            .actors
+            .pops
+            .iter()
+            .filter(|(_, pop)| pop.demographics.household.count < 1.0)
+            .map(|(&id, _)| id)
+            .collect();
+        for market in self.map_data.markets.values_mut() {
+            for id in &gone {
+                market.pops.remove(id);
+            }
+            market.pops.retain(|id| self.actors.pops.contains_key(id));
+        }
+        self.actors
+            .pops
+            .retain(|_, pop| pop.demographics.household.count >= 1.0);
     }
 
     /// # Migrate Inside Markets

@@ -15,7 +15,7 @@
 # required. The return, the flat output, and an output effect are written
 # on the process. Some processes also take wood tools (good 9) as optional
 # capital, one per run, with an output effect. Those amounts are test data.
-# survival 28: subsistence and make time. farming 29: make grain.
+# survival 28: subsistence, make time, and make cargo. farming 29: make grain.
 # watering 30: make water. baking 31: make bread.
 # goldsmithing 32: gold, gold token, jewelry, gold coins.
 # woodworking 33: wood, cabins, huts, wood tools, buckets, charcoal.
@@ -27,6 +27,11 @@
 # input type: destroyed | consumed | capital | factor  (default destroyed)
 # optional = true to skip if the good is missing.
 # outputs scale with bonuses unless fixed = true.
+#
+# Luxury extracts the pop tester buys (iron, copper, tin, bronze, gold)
+# yield one unit per 5 time. A gold token takes 4 time and one gold.
+# Tools, blades, and the bronze mirror take 8 time and yield one.
+# Pots and buckets take 4 time and yield one. Clay yields two per 4 time.
 
 [[processes]]
 id = 1
@@ -76,12 +81,12 @@ outputs = [
 id = 4
 name = "make gold"
 inputs = [
-    { good = 0, amount = 10.0 },
+    { good = 0, amount = 5.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 4, amount = 3.0 },
+    { good = 4, amount = 1.0 },
     { good = 32, amount = 0.01, fixed = true },
 ]
 
@@ -89,12 +94,12 @@ outputs = [
 id = 5
 name = "make gold_token"
 inputs = [
-    { good = 0, amount = 1.0 },
+    { good = 0, amount = 4.0 },
     { good = 4, amount = 1.0 },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 5, amount = 3.0 },
+    { good = 5, amount = 1.0 },
     { good = 32, amount = 0.01, fixed = true },
 ]
 
@@ -143,7 +148,7 @@ outputs = [
 id = 9
 name = "make wood_tools"
 inputs = [
-    { good = 0, amount = 3.0 },
+    { good = 0, amount = 8.0 },
     { good = 7, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
@@ -157,7 +162,7 @@ outputs = [
 id = 10
 name = "make buckets"
 inputs = [
-    { good = 0, amount = 2.0 },
+    { good = 0, amount = 4.0 },
     { good = 7, amount = 1.0 },
     { good = 33, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 33, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -174,7 +179,7 @@ inputs = [
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 11, amount = 3.0 },
+    { good = 11, amount = 1.0 },
     { good = 34, amount = 0.01, fixed = true },
 ]
 
@@ -182,7 +187,7 @@ outputs = [
 id = 12
 name = "make iron_tools"
 inputs = [
-    { good = 0, amount = 4.0 },
+    { good = 0, amount = 8.0 },
     { good = 11, amount = 1.0 },
     { good = 7, amount = 1.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
@@ -200,7 +205,7 @@ inputs = [
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 13, amount = 2.0 },
+    { good = 13, amount = 1.0 },
     { good = 35, amount = 0.01, fixed = true },
 ]
 
@@ -212,7 +217,7 @@ inputs = [
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 14, amount = 2.0 },
+    { good = 14, amount = 1.0 },
     { good = 35, amount = 0.01, fixed = true },
 ]
 
@@ -224,7 +229,7 @@ inputs = [
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 15, amount = 3.0 },
+    { good = 15, amount = 1.0 },
     { good = 35, amount = 0.01, fixed = true },
 ]
 
@@ -232,7 +237,7 @@ outputs = [
 id = 16
 name = "make bronze_tools"
 inputs = [
-    { good = 0, amount = 4.0 },
+    { good = 0, amount = 8.0 },
     { good = 15, amount = 1.0 },
     { good = 7, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
@@ -246,7 +251,7 @@ outputs = [
 id = 17
 name = "make blades"
 inputs = [
-    { good = 0, amount = 3.0 },
+    { good = 0, amount = 8.0 },
     { good = 11, amount = 1.0 },
     { good = 34, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 34, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -259,7 +264,7 @@ outputs = [
 id = 18
 name = "make bronze_mirror"
 inputs = [
-    { good = 0, amount = 5.0 },
+    { good = 0, amount = 8.0 },
     { good = 15, amount = 1.0 },
     { good = 35, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 35, amount = 1.1 } }, { output = 0.5 }] },
 ]
@@ -364,11 +369,11 @@ outputs = [
 id = 26
 name = "make clay"
 inputs = [
-    { good = 0, amount = 3.0 },
+    { good = 0, amount = 4.0 },
     { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
-    { good = 26, amount = 3.0 },
+    { good = 26, amount = 2.0 },
     { good = 37, amount = 0.01, fixed = true },
 ]
 
@@ -376,7 +381,7 @@ outputs = [
 id = 27
 name = "make pots"
 inputs = [
-    { good = 0, amount = 3.0 },
+    { good = 0, amount = 4.0 },
     { good = 26, amount = 1.0 },
     { good = 23, amount = 1.0 },
     { good = 37, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 37, amount = 1.1 } }, { output = 0.5 }] },
@@ -530,16 +535,30 @@ outputs = [
     { good = 33, amount = 0.01, fixed = true },
 ]
 
-# One coin takes 16 time, a full day of one labor unit.
+# One coin takes 16 time and 1 gold. The time is a full day of one labor unit.
 [[processes]]
 id = 45
 name = "make gold_coins"
 inputs = [
     { good = 0, amount = 16.0 },
+    { good = 4, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },
 ]
 outputs = [
     { good = 45, amount = 1.0 },
     { good = 32, amount = 0.01, fixed = true },
+]
+
+# 4 time returns 2 cargo. At 4 cover per unit that is 8, against the 4 time spent.
+[[processes]]
+id = 46
+name = "make cargo"
+inputs = [
+    { good = 0, amount = 4.0 },
+    { good = 28, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 28, amount = 1.1 } }, { output = 0.5 }] },
+]
+outputs = [
+    { good = 46, amount = 2.0 },
+    { good = 28, amount = 0.01, fixed = true },
 ]

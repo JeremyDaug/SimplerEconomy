@@ -532,16 +532,19 @@ impl Market {
     ///
     /// `pops` are the world's pops. `map` is the hex grid. `factuals`
     /// supplies the world. Member [`Pop::migration`] values are cleared
-    /// first. Local migration is the same hex. Regional migration is
-    /// between hexes and runs after local.
+    /// first, with the arrived and left household counts. Local migration
+    /// runs, then regional. Regional is between hexes and is not written yet.
     pub fn internal_migration(
         &mut self, pops: &mut HashMap<usize, Pop>, map: &Map, factuals: &Factuals,
     ) {
         for &id in &self.pops {
-            let pop = pops
-                .get_mut(&id)
-                .unwrap_or_else(|| panic!("pop {id} is not in the migration set"));
+            // An earlier market may already have dropped this pop.
+            let Some(pop) = pops.get_mut(&id) else {
+                continue;
+            };
             pop.migration = 0.0;
+            pop.records.migration_in = 0.0;
+            pop.records.migration_out = 0.0;
         }
         self.local_migration(pops, map, factuals);
         // Between hexes of this market. Not written in this version.
@@ -550,18 +553,160 @@ impl Market {
 
     /// # Local Migration
     ///
-    /// Moves households between pops on the same hex.
+    /// Moves households between the pops of this market.
     ///
     /// `pops`, `map`, and `factuals` are the same inputs as
-    /// [`Self::internal_migration`]. The hexes are
-    /// [`Map::region_hexes`] for this market's id. The same-hex offer
-    /// is not written yet.
+    /// [`Self::internal_migration`]. Each member's offer is
+    /// [`Pop::migration_households`]. A different species is matched on
+    /// its own, so it does not move across species. Pops are not on a hex
+    /// yet, so [`Map::region_hexes`] is not a split. Every member is one pool.
     fn local_migration(
         &mut self, pops: &mut HashMap<usize, Pop>, map: &Map, factuals: &Factuals,
     ) {
-        // Same-hex offers use the partnered region's hexes.
+        // The partnered hexes stay on the map. A pop has no hex, so they
+        // do not group this pool.
         let _hexes = map.region_hexes(self.id);
-        let _ = (self, pops, factuals, _hexes);
+        // Households weight the mean. A large pop is more of the market's living.
+        let mean = weighted_migration_sol(pops, &self.pops);
+        let anger = factuals.config.market.migration_anger_weight;
+        let pace = factuals.config.market.migration_pace;
+        let mut ids: Vec<usize> = self.pops.iter().copied().collect();
+        ids.sort_unstable();
+        let mut pushers: HashMap<usize, Vec<MigrationSide>> = HashMap::new();
+        let mut pullers: HashMap<usize, Vec<MigrationSide>> = HashMap::new();
+        let mut counts = HashMap::new();
+        let mut rooms = HashMap::new();
+        for id in ids {
+            // Already dropped.
+            let Some(pop) = pops.get(&id) else {
+                continue;
+            };
+            let count = pop.demographics.household.count;
+            if count < 1.0 {
+                continue;
+            }
+            counts.insert(id, count);
+            let offer = pop.migration_households(mean, anger, pace);
+            let side = MigrationSide {
+                id,
+                culture: pop.demographics.culture,
+                households: offer.abs(),
+            };
+            // Negative offers leave. Positive offers have room. Zero stays.
+            if offer < 0.0 {
+                pushers.entry(pop.demographics.species).or_default().push(side);
+            } else if offer > 0.0 {
+                rooms.insert(id, offer);
+                pullers.entry(pop.demographics.species).or_default().push(side);
+            }
+        }
+        let mut species: Vec<usize> = pushers
+            .keys()
+            .copied()
+            .filter(|id| pullers.contains_key(id))
+            .collect();
+        species.sort_unstable();
+        let mut flows = Vec::new();
+        for species_id in species {
+            flows.extend(plan_species_flows(
+                &pushers[&species_id],
+                &pullers[&species_id],
+                factuals,
+            ));
+        }
+        let evacuate = keep_last_household(&counts, &rooms, &mut flows);
+        self.apply_migrant_flows(pops, &flows, &evacuate);
+    }
+
+    /// # Apply Migrant Flows
+    ///
+    /// Moves the planned households and the goods that go with them.
+    ///
+    /// `flows` are the households leaving each origin. `evacuate` is the
+    /// origins whose whole pop leaves. A partial move carries half of that
+    /// destination's share of property and savings. The other half stays
+    /// with the origin, so the move does not destroy goods. A whole pop
+    /// has nobody left to keep that half, so its goods are split by the
+    /// households each destination receives. The destination's age mix
+    /// absorbs the arrivals. Those households are recorded as arrivals on
+    /// the destination and departures on the origin. An emptied pop is
+    /// unlisted and dropped.
+    fn apply_migrant_flows(
+        &mut self,
+        pops: &mut HashMap<usize, Pop>,
+        flows: &[MigrantFlow],
+        evacuate: &HashSet<usize>,
+    ) {
+        let mut origins: Vec<usize> = flows.iter().map(|flow| flow.from).collect();
+        origins.sort_unstable();
+        origins.dedup();
+        for from in origins {
+            let leaving: Vec<MigrantFlow> = flows
+                .iter()
+                .copied()
+                .filter(|flow| flow.from == from && flow.households > 1e-12)
+                .collect();
+            if leaving.is_empty() {
+                continue;
+            }
+            let origin_count = pops
+                .get(&from)
+                .unwrap_or_else(|| panic!("pop {from} is not in the migration set"))
+                .demographics
+                .household
+                .count;
+            if origin_count <= 0.0 {
+                continue;
+            }
+            let snapshot = pops[&from].demographics.household;
+            let (stock, saved) = pops[&from].belonging_snapshot();
+            let sent: f64 = leaving.iter().map(|flow| flow.households).sum();
+            let empty = evacuate.contains(&from);
+            let mut origin = pops
+                .remove(&from)
+                .unwrap_or_else(|| panic!("pop {from} is not in the migration set"));
+            let mut went = Vec::new();
+            for flow in &leaving {
+                // A full departure splits every good. A partial one sends
+                // half of this destination's share and leaves the rest.
+                let fraction = if empty {
+                    flow.households / sent
+                } else {
+                    0.5 * flow.households / origin_count
+                };
+                let dest = pops.get_mut(&flow.to).unwrap_or_else(|| {
+                    panic!("pop {} is not in the migration set", flow.to)
+                });
+                origin.shift_belongings_to(dest, fraction, &stock, &saved);
+                dest.demographics.household.absorb(&snapshot, flow.households);
+                dest.migration += flow.households;
+                dest.records.migration_in += flow.households;
+                origin.demographics.household.count -= flow.households;
+                origin.migration -= flow.households;
+                origin.records.migration_out += flow.households;
+                went.push(flow.to);
+            }
+            if empty {
+                went.sort_unstable();
+                went.dedup();
+                self.pops.remove(&from);
+                self.pop_removals.push(PopRemoval {
+                    id: from,
+                    why: PopExit::UnderOneMove { to: went },
+                });
+            } else {
+                // The sweep keeps one household. Dust under that line would
+                // be pruned later and the people would vanish.
+                if origin.demographics.household.count < 1.0 {
+                    debug_assert!(
+                        origin.demographics.household.count > 1.0 - 1e-6,
+                        "migration left pop {from} under one household"
+                    );
+                    origin.demographics.household.count = 1.0;
+                }
+                pops.insert(from, origin);
+            }
+        }
     }
 
     /// # Regional Migration
@@ -587,6 +732,211 @@ impl Market {
             .or_insert(MarketGood::new());
         row.stock += amount;
     }
+}
+
+/// One side of a migration offer. `households` is a positive count.
+#[derive(Clone, Copy)]
+struct MigrationSide {
+    id: usize,
+    culture: usize,
+    households: f64,
+}
+
+/// Households leaving one pop for another.
+#[derive(Clone, Copy)]
+struct MigrantFlow {
+    from: usize,
+    to: usize,
+    households: f64,
+}
+
+/// # Weighted Migration Sol
+///
+/// The household-weighted standard of living of `members`.
+///
+/// `pops` are the world's pops. A pop under one household is skipped.
+/// A pop with no finite living is skipped, so an infinite reading cannot
+/// pull the mean. No remaining weight returns `None`.
+fn weighted_migration_sol(
+    pops: &HashMap<usize, Pop>,
+    members: &HashSet<usize>,
+) -> Option<f64> {
+    let mut weight = 0.0;
+    let mut sum = 0.0;
+    for &id in members {
+        // Already dropped.
+        let Some(pop) = pops.get(&id) else {
+            continue;
+        };
+        let households = pop.demographics.household.count;
+        if households < 1.0 {
+            continue;
+        }
+        let Some(living) = pop.migration_living() else {
+            continue;
+        };
+        sum += living * households;
+        weight += households;
+    }
+    if weight > 0.0 {
+        Some(sum / weight)
+    } else {
+        None
+    }
+}
+
+/// # Culture Entry Cap
+///
+/// The share of an origin's departure that may enter a destination.
+///
+/// The same culture is fully open. Assimilation is the ease of leaving a
+/// culture and of others entering it, and this move does not leave it.
+/// Two cultures use the average of their assimilation. Each stored value
+/// is clamped to `0..=1` here.
+fn culture_entry_cap(factuals: &Factuals, from: usize, to: usize) -> f64 {
+    if from == to {
+        return 1.0;
+    }
+    let leave = factuals.culture_assimilation(from).clamp(0.0, 1.0);
+    let enter = factuals.culture_assimilation(to).clamp(0.0, 1.0);
+    if !leave.is_finite() || !enter.is_finite() {
+        return 0.0;
+    }
+    (leave + enter) * 0.5
+}
+
+/// # Plan Species Flows
+///
+/// Households moving from `pushers` to `pullers` of one species.
+///
+/// A destination's weight is the origin's send times [`culture_entry_cap`].
+/// It accepts no more than its room, split by those weights. An origin
+/// whose destinations would take more than it offered is scaled back.
+/// Households the cap does not place stay home.
+fn plan_species_flows(
+    pushers: &[MigrationSide],
+    pullers: &[MigrationSide],
+    factuals: &Factuals,
+) -> Vec<MigrantFlow> {
+    let mut pushers = pushers.to_vec();
+    let mut pullers = pullers.to_vec();
+    pushers.sort_by_key(|side| side.id);
+    pullers.sort_by_key(|side| side.id);
+    let mut flow = vec![vec![0.0; pullers.len()]; pushers.len()];
+    for (j, pull) in pullers.iter().enumerate() {
+        let mut weights = Vec::with_capacity(pushers.len());
+        let mut sum_w = 0.0;
+        for push in &pushers {
+            let cap = culture_entry_cap(factuals, push.culture, pull.culture);
+            let weight = push.households * cap;
+            weights.push(weight);
+            sum_w += weight;
+        }
+        if sum_w <= 0.0 {
+            continue;
+        }
+        // The room stops a destination from taking more than it offered.
+        let accepted = pull.households.min(sum_w);
+        for (i, weight) in weights.iter().enumerate() {
+            flow[i][j] = accepted * weight / sum_w;
+        }
+    }
+    let mut planned = Vec::new();
+    for (i, push) in pushers.iter().enumerate() {
+        let total: f64 = flow[i].iter().sum();
+        if total > push.households && total > 0.0 {
+            let scale = push.households / total;
+            for cell in &mut flow[i] {
+                *cell *= scale;
+            }
+        }
+        for (j, &households) in flow[i].iter().enumerate() {
+            if households > 1e-12 {
+                planned.push(MigrantFlow {
+                    from: push.id,
+                    to: pullers[j].id,
+                    households,
+                });
+            }
+        }
+    }
+    planned
+}
+
+/// # Keep Last Household
+///
+/// Stops a departure from leaving a pop under one household.
+///
+/// `counts` are the household counts before the move. `rooms` are the
+/// positive offers. `flows` is updated. A departure that would leave fewer
+/// than one household tries to send the rest to the destinations already
+/// taking this pop, up to the room they have left. If that rest fits, the
+/// pop is emptied and its id is returned. If it does not, the departure
+/// shrinks until one household stays.
+fn keep_last_household(
+    counts: &HashMap<usize, f64>,
+    rooms: &HashMap<usize, f64>,
+    flows: &mut [MigrantFlow],
+) -> HashSet<usize> {
+    let mut evacuate = HashSet::new();
+    let mut origins: Vec<usize> = flows.iter().map(|flow| flow.from).collect();
+    origins.sort_unstable();
+    origins.dedup();
+    for from in origins {
+        let sent: f64 = flows
+            .iter()
+            .filter(|flow| flow.from == from)
+            .map(|flow| flow.households)
+            .sum();
+        if sent <= 0.0 {
+            continue;
+        }
+        let count = counts.get(&from).copied().unwrap_or(0.0);
+        let remaining = count - sent;
+        if remaining >= 1.0 {
+            continue;
+        }
+        // The planned move already takes everyone.
+        if remaining <= 1e-9 {
+            evacuate.insert(from);
+            continue;
+        }
+        let idxs: Vec<usize> = flows
+            .iter()
+            .enumerate()
+            .filter(|(_, flow)| flow.from == from)
+            .map(|(index, _)| index)
+            .collect();
+        let mut adds = vec![0.0; idxs.len()];
+        let mut left = remaining;
+        for (n, &index) in idxs.iter().enumerate() {
+            let to = flows[index].to;
+            let used: f64 = flows
+                .iter()
+                .filter(|flow| flow.to == to)
+                .map(|flow| flow.households)
+                .sum();
+            let room = (rooms.get(&to).copied().unwrap_or(0.0) - used).max(0.0);
+            let want = remaining * flows[index].households / sent;
+            let take = want.min(room);
+            adds[n] = take;
+            left -= take;
+        }
+        if left <= 1e-8 {
+            for (n, &index) in idxs.iter().enumerate() {
+                flows[index].households += adds[n];
+            }
+            evacuate.insert(from);
+        } else {
+            // No room for the last households. Shrink until one remains.
+            let keep = (count - 1.0).max(0.0);
+            let scale = keep / sent;
+            for &index in &idxs {
+                flows[index].households *= scale;
+            }
+        }
+    }
+    evacuate
 }
 
 /// # Goods To Price
@@ -943,10 +1293,16 @@ mod growth_should {
     use std::collections::HashMap;
 
     use super::{Market, PopExit};
+    use crate::game::culture::Culture;
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::Desire;
     use crate::game::factuals::Factuals;
     use crate::game::household::Household;
     use crate::game::map::Map;
     use crate::game::pop::Pop;
+    use crate::game::pop_property::PopPRow;
+    use crate::game::scalingfactor::ScalingFactor;
+    use crate::game::sentiment::Sentiment;
 
     fn member(id: usize, count: f64, cap: Option<f64>) -> Pop {
         let mut pop = Pop::new(id);
@@ -1022,9 +1378,199 @@ mod growth_should {
         market.pops.insert(7);
         let mut pop = Pop::new(7);
         pop.migration = 3.0;
+        pop.records.migration_in = 2.0;
+        pop.records.migration_out = 1.0;
         let mut pops = HashMap::from([(7, pop)]);
         market.internal_migration(&mut pops, &Map::new(1, 1), &Factuals::new());
         assert_eq!(pops[&7].migration, 0.0);
+        assert_eq!(pops[&7].records.migration_in, 0.0);
+        assert_eq!(pops[&7].records.migration_out, 0.0);
+    }
+
+    fn near(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "{actual} != {expected}"
+        );
+    }
+
+    fn living(sol: f64) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: 1,
+            priority: 0,
+            target: vec![],
+            amount: 1.0,
+            satisfaction: sol,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        }
+    }
+
+    fn settled(id: usize, count: f64, sol: f64) -> Pop {
+        let mut pop = member(id, count, None);
+        pop.desires[0].push(living(sol));
+        pop
+    }
+
+    fn run(market: &mut Market, pops: &mut HashMap<usize, Pop>, factuals: &Factuals) {
+        market.internal_migration(pops, &Map::new(1, 1), factuals);
+    }
+
+    #[test]
+    fn half_the_moving_share_stays_and_the_age_mix_blends() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut poor = settled(1, 10.0, 1.0);
+        let mut rich = settled(2, 10.0, 4.0);
+        poor.demographics.household.adult = 4.0;
+        rich.demographics.household.adult = 2.0;
+        poor.property.insert(1, PopPRow::new(100.0));
+        poor.property.get_mut(&1).unwrap().fresh = 20.0;
+        rich.property.insert(1, PopPRow::new(50.0));
+        let mut pops = HashMap::from([(1, poor), (2, rich)]);
+        run(&mut market, &mut pops, &Factuals::new());
+
+        let moved = -pops[&1].migration;
+        let full = 10.0 * 0.1 * 50.0_f64.log2();
+        near(moved, full);
+        near(pops[&2].migration, full);
+        near(pops[&1].records.migration_out, full);
+        assert_eq!(pops[&1].records.migration_in, 0.0);
+        near(pops[&2].records.migration_in, full);
+        assert_eq!(pops[&2].records.migration_out, 0.0);
+        near(pops[&1].demographics.household.count, 10.0 - full);
+        near(pops[&2].demographics.household.count, 10.0 + full);
+        // Half of the moving share travels. The rest, including the stayers' goods, stays.
+        let travel = 0.5 * full / 10.0;
+        near(pops[&2].property[&1].quantity, 50.0 + 100.0 * travel);
+        near(pops[&2].property[&1].fresh, 20.0 * travel);
+        near(pops[&1].property[&1].quantity, 100.0 * (1.0 - travel));
+        near(pops[&1].property[&1].fresh, 20.0 * (1.0 - travel));
+        near(pops[&1].property[&1].quantity + pops[&2].property[&1].quantity, 150.0);
+        near(pops[&2].demographics.household.adult, (20.0 + 4.0 * full) / (10.0 + full));
+        assert!((pops[&1].demographics.household.adult - 4.0).abs() < 1e-12);
+        assert!(market.pop_removals().is_empty());
+    }
+
+    #[test]
+    fn a_different_species_does_not_move() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut poor = settled(1, 10.0, 1.0);
+        let mut rich = settled(2, 10.0, 4.0);
+        poor.demographics.species = 1;
+        rich.demographics.species = 2;
+        poor.property.insert(1, PopPRow::new(100.0));
+        let mut pops = HashMap::from([(1, poor), (2, rich)]);
+        run(&mut market, &mut pops, &Factuals::new());
+        near(pops[&1].demographics.household.count, 10.0);
+        near(pops[&2].demographics.household.count, 10.0);
+        assert_eq!(pops[&1].migration, 0.0);
+        near(pops[&1].property[&1].quantity, 100.0);
+    }
+
+    #[test]
+    fn culture_assimilation_caps_the_share_that_may_enter() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut poor = settled(1, 10.0, 1.0);
+        let mut rich = settled(2, 10.0, 4.0);
+        poor.demographics.culture = 1;
+        rich.demographics.culture = 2;
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(1, "closed").with_assimilation(0.0))
+            .with_culture(Culture::new(2, "open").with_assimilation(1.0));
+        let mut pops = HashMap::from([(1, poor), (2, rich)]);
+        run(&mut market, &mut pops, &factuals);
+        let full = 10.0 * 0.1 * 50.0_f64.log2();
+        near(-pops[&1].migration, full * 0.5);
+    }
+
+    #[test]
+    fn the_same_culture_stays_open_when_it_is_insular() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut poor = settled(1, 10.0, 1.0);
+        let mut rich = settled(2, 10.0, 4.0);
+        poor.demographics.culture = 7;
+        rich.demographics.culture = 7;
+        let factuals = Factuals::new()
+            .with_culture(Culture::new(7, "closed").with_assimilation(0.0));
+        let mut pops = HashMap::from([(1, poor), (2, rich)]);
+        run(&mut market, &mut pops, &factuals);
+        let full = 10.0 * 0.1 * 50.0_f64.log2();
+        near(-pops[&1].migration, full);
+    }
+
+    #[test]
+    fn a_small_pop_does_not_take_the_whole_push() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let large = settled(1, 40.0, 1.0);
+        let small = settled(2, 4.0, 8.0);
+        let mut pops = HashMap::from([(1, large), (2, small)]);
+        run(&mut market, &mut pops, &Factuals::new());
+        let gained = pops[&2].migration;
+        assert!(gained > 1.0, "{gained}");
+        assert!(gained < 4.0, "{gained}");
+        near(pops[&1].migration, -gained);
+        near(pops[&2].demographics.household.count, 4.0 + gained);
+    }
+
+    #[test]
+    fn fear_without_a_pull_stays_home() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut afraid = settled(1, 10.0, 4.0);
+        afraid.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
+        let calm = settled(2, 10.0, 4.0);
+        let mut pops = HashMap::from([(1, afraid), (2, calm)]);
+        run(&mut market, &mut pops, &Factuals::new());
+        assert_eq!(pops[&1].migration, 0.0);
+        assert_eq!(pops[&2].migration, 0.0);
+    }
+
+    #[test]
+    fn a_gap_inside_the_band_does_not_move_the_market() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut pops = HashMap::from([(1, settled(1, 10.0, 2.5)), (2, settled(2, 10.0, 2.6))]);
+        run(&mut market, &mut pops, &Factuals::new());
+        assert_eq!(pops[&1].migration, 0.0);
+        near(pops[&1].demographics.household.count, 10.0);
+        near(pops[&2].demographics.household.count, 10.0);
+    }
+
+    #[test]
+    fn a_departure_that_would_leave_under_one_takes_everyone_and_the_goods() {
+        let mut market = Market::new(1);
+        market.pops.insert(1);
+        market.pops.insert(2);
+        let mut poor = settled(1, 300.0, 1.0);
+        let rich = settled(2, 300.0, 4.0);
+        poor.property.insert(1, PopPRow::new(80.0));
+        let mut pops = HashMap::from([(1, poor), (2, rich)]);
+        run(&mut market, &mut pops, &Factuals::new());
+        assert!(!pops.contains_key(&1));
+        assert!(!market.pops.contains(&1));
+        near(pops[&2].demographics.household.count, 600.0);
+        near(pops[&2].migration, 300.0);
+        near(pops[&2].records.migration_in, 300.0);
+        assert_eq!(pops[&2].records.migration_out, 0.0);
+        near(pops[&2].property[&1].quantity, 80.0);
+        assert_eq!(market.pop_removals().len(), 1);
+        assert_eq!(market.pop_removals()[0].id, 1);
+        assert_eq!(market.pop_removals()[0].why, PopExit::UnderOneMove { to: vec![2] });
     }
 }
 

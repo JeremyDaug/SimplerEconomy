@@ -1,4 +1,4 @@
-//! Property rows, the demographic row, and the pop's record placeholder.
+//! Property rows, the demographic row, and the pop's records.
 
 use crate::game::household::Household;
 
@@ -59,9 +59,11 @@ pub struct PopPRow {
     pub used: f64,
 }
 
-/// Day-end records for a pop.
+/// Records kept on a pop.
 ///
-/// The field stays on [`crate::game::pop::Pop`]. What it records is not chosen yet.
+/// `satisfaction` is the sum of desire satisfaction. `migration_in` and
+/// `migration_out` are the households that arrived and the households that
+/// left. The other pop is not stored.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PopRecords {
     /// The total satisfaction for the pop.
@@ -70,6 +72,17 @@ pub struct PopRecords {
     ///
     /// If it is +inf, then the pop has no desires and is always satisfied.
     pub satisfaction: f64,
+
+    /// Households that arrived this day.
+    ///
+    /// [`crate::game::market::Market::internal_migration`] clears this with
+    /// [`crate::game::pop::Pop::migration`].
+    pub migration_in: f64,
+
+    /// Households that left this day.
+    ///
+    /// Cleared with [`Self::migration_in`].
+    pub migration_out: f64,
 }
 
 impl DemoRow {

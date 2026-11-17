@@ -97,3 +97,85 @@ type = "use"
 good = "huts"
 efficiency = 1
 type = "use"
+
+# Luxury. Storage is kept. Trinkets and tools are used up.
+# Huts and cabins satisfy more of storage than pots and buckets.
+# Each trinket satisfies the same, and each tool satisfies the same.
+
+[[desires]]
+id = 7
+name = "storage"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "pots"
+efficiency = 1
+type = "use"
+
+[[desires.goods]]
+good = "buckets"
+efficiency = 1
+type = "use"
+
+[[desires.goods]]
+good = "huts"
+efficiency = 2
+type = "use"
+
+[[desires.goods]]
+good = "cabins"
+efficiency = 4
+type = "use"
+
+[[desires]]
+id = 8
+name = "trinkets"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "bronze"
+efficiency = 1
+
+[[desires.goods]]
+good = "iron"
+efficiency = 1
+
+[[desires.goods]]
+good = "copper"
+efficiency = 1
+
+[[desires.goods]]
+good = "tin"
+efficiency = 1
+
+[[desires.goods]]
+good = "gold_token"
+efficiency = 1
+
+[[desires]]
+id = 9
+name = "tools"
+decay = 1
+scalar = "household"
+
+[[desires.goods]]
+good = "wood_tools"
+efficiency = 1
+
+[[desires.goods]]
+good = "iron_tools"
+efficiency = 1
+
+[[desires.goods]]
+good = "bronze_tools"
+efficiency = 1
+
+[[desires.goods]]
+good = "blades"
+efficiency = 1
+
+[[desires.goods]]
+good = "bronze_mirror"
+efficiency = 1

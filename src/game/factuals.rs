@@ -333,6 +333,23 @@ impl Factuals {
             .unwrap_or_else(|| panic!("Culture {id} missing from factuals."))
     }
 
+    /// # Culture Assimilation
+    ///
+    /// Ease of leaving culture `id` and of others entering it.
+    ///
+    /// Id `0`, and a culture that is not stored, are open. The value is `1`.
+    /// There is no culture there to keep people in. A stored value is
+    /// returned as stored. The migration cap clamps it.
+    pub fn culture_assimilation(&self, id: usize) -> f64 {
+        if id == 0 {
+            return 1.0;
+        }
+        self.cultures
+            .get(&id)
+            .map(|culture| culture.assimilation)
+            .unwrap_or(1.0)
+    }
+
     /// # Source Demo Desire
     ///
     /// The demographic desire behind a pop `desire`, from its source and

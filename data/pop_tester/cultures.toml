@@ -26,3 +26,24 @@ desire = "housing"
 tier = 1
 priority = 2
 amount = 5
+
+[[cultures.desires]]
+id = 4
+desire = "storage"
+tier = 2
+priority = 0
+amount = 5
+
+[[cultures.desires]]
+id = 5
+desire = "trinkets"
+tier = 2
+priority = 1
+amount = 5
+
+[[cultures.desires]]
+id = 6
+desire = "tools"
+tier = 2
+priority = 2
+amount = 5
