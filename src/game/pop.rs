@@ -7,7 +7,8 @@ use rand::RngCore;
 use crate::game::config::{
     BASIC_UNMET_SENTIMENT, BUY_OVERSHOOT, COMMON_SENTIMENT, CONTENTMENT_PULL, CURRENCY_STEP,
     LUXURY_SENTIMENT, PLAN_OFFER_DWARF, PLAN_SALABILITY_NAY, PLAN_SALABILITY_YAY, PLAN_SELL_NAY,
-    PLAN_SELL_YAY, PLAN_SOL_VOTE, PLAN_STEP_SHARE, PLAN_STOCK_COVER,
+    PLAN_RUN_NEAR, PLAN_SELL_YAY, PLAN_SOL_NAY_CAP, PLAN_SOL_VOTE, PLAN_STEP_SHARE,
+    PLAN_STOCK_COVER,
     BULK_HAUL_SHARE, SOL_AVERAGE_DAYS, SOL_CHANGE_SENTIMENT, TRANSACTION_COST, WEALTH_SENTIMENT,
 };
 use crate::game::effects::DesireEffect;
@@ -100,8 +101,20 @@ pub struct Pop {
     /// [`SOL_AVERAGE_DAYS`] of them.
     sol_samples: VecDeque<f64>,
 
+    /// Consecutive days the recorded living was under full basic needs.
+    ///
+    /// [`Self::record_sol`] adds one while today is under that line and
+    /// clears the count when it is not.
+    days_below_basic: i32,
+
     /// Day-end records. The struct is a placeholder.
     pub records: PopRecords,
+
+    /// Votes [`Self::planning`] used for each job line.
+    ///
+    /// Index matches [`Job::lines`]. A line with no process is quiet.
+    /// These are the votes from before the targets were written.
+    pub line_votes: [PlanVotes; 2],
 }
 
 /// Units of one good a pop puts up for sale.
@@ -219,7 +232,9 @@ impl Pop {
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             sol_samples: VecDeque::new(),
+            days_below_basic: 0,
             records: PopRecords::default(),
+            line_votes: [PlanVotes::default(); 2],
         }
     }
 
@@ -1384,6 +1399,35 @@ impl Pop {
         sum
     }
 
+    /// # Basic Living Potential
+    ///
+    /// The standard of living full basic needs would add.
+    ///
+    /// Each basic desire adds one full level and the bonus satisfaction
+    /// [`Desire::get_bonus_satisfaction`] would add at that level. A desire
+    /// with no positive finite amount is skipped. Common and luxury desires
+    /// are not included. No basic desires returns 0. Returns that sum.
+    fn basic_living_potential(&self) -> f64 {
+        let Some(basic) = self.desires.first() else {
+            return 0.0;
+        };
+        let mut sum = 0.0;
+        for desire in basic {
+            if !(desire.amount.is_finite() && desire.amount > 0.0) {
+                continue;
+            }
+            // Satisfaction equal to the amount is one full level.
+            let mut full = desire.clone();
+            full.satisfaction = full.amount;
+            let levels = full.tiers_satisfied();
+            let bonus = full.get_bonus_satisfaction();
+            if levels.is_finite() && bonus.is_finite() {
+                sum += levels + bonus;
+            }
+        }
+        sum
+    }
+
     /// # Recorded Living
     ///
     /// The latest standard of living [`Self::update_sentiments`] stored.
@@ -1629,16 +1673,24 @@ impl Pop {
     /// Appends today's living to the samples [`Self::sol_shift`] reads.
     ///
     /// A non-finite living is left out. The list keeps the most recent
-    /// [`SOL_AVERAGE_DAYS`] readings.
+    /// [`SOL_AVERAGE_DAYS`] readings. A day under [`Self::basic_living_potential`]
+    /// adds one to [`Self::days_below_basic`]. Any other day clears that count.
     fn record_sol(&mut self) {
         let today = self.standard_of_living();
         if !today.is_finite() {
+            self.days_below_basic = 0;
             return;
         }
         if self.sol_samples.len() == SOL_AVERAGE_DAYS {
             self.sol_samples.pop_front();
         }
         self.sol_samples.push_back(today);
+        let basic = self.basic_living_potential();
+        if basic.is_finite() && today < basic {
+            self.days_below_basic = self.days_below_basic.saturating_add(1);
+        } else {
+            self.days_below_basic = 0;
+        }
     }
 
     /// # Calculate Standard of Living
@@ -1692,9 +1744,8 @@ impl Pop {
     }
 
     /// # Planning
-
     ///
-    /// Sets this pop's next subsistence rate and job targets.
+    /// Sets this pop's next subsistence rate, job targets, and [`Self::line_votes`].
     ///
     /// `factuals` supplies processes, goods, and the morning time grant.
     /// `market` prices goods. A missing market prices every good at 1.
@@ -1702,21 +1753,22 @@ impl Pop {
     /// of the grant. Haul time aims at [`Self::transport_spent`] minus
     /// [`Self::transport_purchased`], and not below 0, plus that same share.
     /// Each hold moves toward its aim by [`rise_or_step_down`]. The two holds
-    /// shrink to the grant when they ask for more than it. Each job line takes
+    /// shrink when they ask for more than the grant. Each job line takes
     /// one step from [`plan_votes`]. Its current time is rounded to a whole
     /// number of steps of this grant first. A positive answer steps up one
-    /// step. A negative answer steps down one step. Zero holds that step.
-    /// Decreases run first. Lines that still
-    /// take more time than is left are scaled down to fit, and an increase
-    /// then takes only the time those decreases left free. Subsistence takes
-    /// the time left. A line with no process is `Some(0)`. A grant of 0
-    /// clears the plan.
+    /// whole step when the grant still has one. A negative answer steps down
+    /// one whole step. Zero holds that step. A line never takes a fraction of
+    /// a step. Decreases run first. Holds shrink again when they and the lines
+    /// ask for more than the grant, and the lines stay on their steps.
+    /// Subsistence takes the time left. A line with no process is `Some(0)`.
+    /// A grant of 0 clears the plan.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
         // Morning time is the labor grant this plan spends.
         let budget = self.get_scaling_factor(ScalingFactor::Labor(
             factuals.config.labor.time_per_labor,
         ));
         debug_assert!(budget.is_finite() && budget >= 0.0);
+        self.line_votes = [PlanVotes::default(); 2];
         if budget == 0.0 {
             self.subsistence_rate = 0.0;
             self.held_desire_time = 0.0;
@@ -1743,8 +1795,9 @@ impl Pop {
             self.held_transport_time *= scale;
             spare = budget;
         }
-        let remaining = budget - spare;
         let bar = subsistence_value_per_time(self, factuals, market, budget);
+        // The grant is this many whole steps. An increase cannot pass it.
+        let cap = (1.0 / PLAN_STEP_SHARE).round() as i32;
         // Read each line's time before the targets are replaced.
         let mut planned = Vec::new();
         for (index, line) in self.job.lines.iter().enumerate() {
@@ -1752,53 +1805,62 @@ impl Pop {
                 continue;
             };
             let time_per = process.required_time();
-            let direction = plan_votes(self, process, line, market, factuals, bar).direction;
+            let votes = plan_votes(self, process, line, market, factuals, bar);
+            self.line_votes[index] = votes;
+            let direction = votes.direction;
             // Whole steps of this grant, so a hold cannot drift off the increment.
-            let time = (line_time(line.target, time_per) / step).round() * step;
+            let steps = time_steps(line_time(line.target, time_per), step);
             planned.push(LinePlan {
                 index,
-                time,
+                steps,
                 time_per,
                 direction,
             });
         }
-        // Decreases first, so an increase can use the time they free on this same day.
+        // Decreases first, one whole step, so an increase can use a freed step the same day.
         for line in &mut planned {
             if line.direction < 0 {
-                line.time = (line.time - step).max(0.0);
+                line.steps = (line.steps - 1).max(0);
             }
         }
-        let mut used: f64 = planned.iter().map(|line| line.time).sum();
-        if used > remaining && used > 0.0 {
-            let scale = remaining / used;
-            for line in &mut planned {
-                line.time *= scale;
-            }
-            used = remaining;
-        }
+        let mut used_steps: i32 = planned.iter().map(|line| line.steps).sum();
+        // An increase takes one whole step while the grant still has one.
         for line in &mut planned {
             if line.direction <= 0 {
                 continue;
             }
-            let room = (remaining - used).max(0.0);
-            let gain = step.min(room);
-            line.time += gain;
-            used += gain;
+            if used_steps >= cap {
+                break;
+            }
+            line.steps += 1;
+            used_steps += 1;
+        }
+        let craft_time = used_steps as f64 * step;
+        // Holds yield so the lines stay on their steps.
+        if spare + craft_time > budget {
+            let room = (budget - craft_time).max(0.0);
+            if spare > 0.0 {
+                let scale = room / spare;
+                self.held_desire_time *= scale;
+                self.held_transport_time *= scale;
+            }
+            spare = room;
         }
         // A missing process stays off. A planned line overwrites its target.
         for line in &mut self.job.lines {
             line.target = Some(0.0);
         }
         for line in &planned {
+            let time = line.steps as f64 * step;
             // Iterations are that line's time divided by the time one run consumes.
             let iterations = if line.time_per > 0.0 {
-                line.time / line.time_per
+                time / line.time_per
             } else {
-                line.time
+                time
             };
             self.job.lines[line.index].target = Some(iterations);
         }
-        let free = (remaining - used).max(0.0);
+        let free = (budget - spare - craft_time).max(0.0);
         self.subsistence_rate = free / budget;
     }
 
@@ -3291,7 +3353,8 @@ fn raise_offer(offers: &mut Vec<SellOffer>, pop: usize, good: usize, units: f64)
 /// One job line while its next target is chosen.
 struct LinePlan {
     index: usize,
-    time: f64,
+    /// Whole steps of the morning grant. Never a fraction of a step.
+    steps: i32,
     time_per: f64,
     direction: i32,
 }
@@ -3301,7 +3364,7 @@ struct LinePlan {
 /// A check is +1, -1, or 0 when it stays quiet. `tally` sums them.
 /// `direction` is +1 to expand, -1 to contract, and 0 to hold, after the
 /// subsistence bar. `barred` means that bar turned an expansion into a hold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PlanVotes {
     /// The recipe earns more than it spends, per unit of time.
     pub profit: i32,
@@ -3310,12 +3373,14 @@ pub struct PlanVotes {
     /// The offer is short, or the posted supply dwarfs the sale.
     pub demand: i32,
     /// This pop's sales against the run and the stock.
+    ///
+    /// A finish under [`PLAN_RUN_NEAR`] of the ask votes to contract.
     pub luck: i32,
     /// Use covered the inputs and the rot.
     pub decay: i32,
     /// Surviving output is still worth more than the stock lost to price.
     pub durability: i32,
-    /// The day moved standard of living by a whole point.
+    /// The trend, and one contract vote for each day basic needs are unmet.
     pub living: i32,
     /// A share at 0% wants time. Both shares at 0% add two more.
     pub idle: i32,
@@ -3333,12 +3398,15 @@ pub struct PlanVotes {
 ///
 /// `pop` supplies the output's stock, consumption, rot, living samples, and
 /// the craft and labor time already on the job. `process` is the recipe.
-/// `line` supplies the iterations finished and this line's target. `market`
-/// prices the goods and supplies salability. `factuals` supplies the default
+/// `line` supplies the iterations asked, the iterations finished, and this
+/// line's target. `market` prices the goods and supplies salability.
+/// `factuals` supplies the default
 /// salability and the other lines' processes. `bar` is
 /// [`subsistence_value_per_time`]. The votes are profit, salability, existing
 /// demand, luck, decay, price durability, living, and idle job shares.
-/// Demand is [`offer_demand`]. Luck is [`sell_luck`]. Each vote is +1, -1,
+/// Demand is [`offer_demand`]. Luck is [`sell_luck`], and a finish under
+/// [`PLAN_RUN_NEAR`] of the ask votes to contract. That line does not
+/// expand. Living is [`living_vote`]. Each vote is +1, -1,
 /// or silent, except an idle share. A craft share at 0% and a labor share
 /// at 0% each add one expand vote on a line in that share. Both add two.
 /// A total above 1 expands. A total below -1 contracts. A total between
@@ -3349,6 +3417,7 @@ pub fn plan_votes(
     pop: &Pop, process: &Process, line: &JobLine, market: Option<&Market>,
     factuals: &Factuals, bar: f64,
 ) -> PlanVotes {
+    debug_assert!(line.attempted.is_finite() && line.attempted >= 0.0);
     debug_assert!(line.completed.is_finite() && line.completed >= 0.0);
     debug_assert!(bar.is_finite());
     let profit = line_value(process, market).per_time;
@@ -3384,12 +3453,6 @@ pub fn plan_votes(
     let sold = held.map(|row| row.sold).unwrap_or(0.0);
     // No earlier price is stored, so a price move cannot change the tally yet.
     let price_change = 0.0;
-    let sample_count = pop.sol_samples.len();
-    let sol_change = if sample_count >= 2 {
-        pop.sol_samples[sample_count - 1] - pop.sol_samples[sample_count - 2]
-    } else {
-        0.0
-    };
 
     // Profit: the recipe earns more than it spends. A loss should not gain time.
     let profit_vote = if profit > 0.0 {
@@ -3408,7 +3471,12 @@ pub fn plan_votes(
         0
     };
     let demand_vote = offer_demand(sought, offered, traded);
-    let luck_vote = sell_luck(output, sold, stock);
+    // Under the share, luck nays. At the share the sales check stands.
+    let missed = line.attempted > 0.0 && line.completed < line.attempted * PLAN_RUN_NEAR;
+    let mut luck_vote = sell_luck(output, sold, stock);
+    if missed {
+        luck_vote = -1;
+    }
     // Decay: use covered the inputs and the rot. Uncovered rot destroyed wealth.
     let decay = consumed - input_cost - decay_losses;
     let decay_vote = if decay > 0.0 {
@@ -3427,14 +3495,7 @@ pub fn plan_votes(
     } else {
         0
     };
-    // Living: the day moved standard of living by a whole point. A smaller swing is ordinary.
-    let living_vote = if sol_change >= PLAN_SOL_VOTE {
-        1
-    } else if sol_change <= -PLAN_SOL_VOTE {
-        -1
-    } else {
-        0
-    };
+    let living_vote = living_vote(pop);
     // A share at 0% adds one expand vote on a line in that share. Both add two.
     let (craft_idle, labor_idle) = pop.idle_shares(factuals, line, process);
     let line_idle = if process.is_labor() { labor_idle } else { craft_idle };
@@ -3458,6 +3519,10 @@ pub fn plan_votes(
     // Expansion has to beat subsistence per unit of time. A share at 0% keeps its expansion.
     let barred = direction > 0 && profit <= bar && !line_idle;
     if barred {
+        direction = 0;
+    }
+    // A short finish does not take a larger target. A contraction still does.
+    if missed && direction > 0 {
         direction = 0;
     }
     PlanVotes {
@@ -3534,6 +3599,56 @@ fn sell_luck(output: f64, sold: f64, stock: f64) -> i32 {
     } else {
         0
     }
+}
+
+/// # Living Trend
+///
+/// Today against the mean of the earlier samples.
+///
+/// `samples` are the recent readings, oldest first, with today last.
+/// Fewer than two readings stays quiet. The mean is the readings before
+/// today. Today a full [`PLAN_SOL_VOTE`] point or more above that mean
+/// votes to expand, once. Each full point below that mean votes to
+/// contract, and the vote stops at [`PLAN_SOL_NAY_CAP`]. A smaller gap
+/// stays quiet. Returns that vote.
+fn living_trend(samples: &VecDeque<f64>) -> i32 {
+    if samples.len() < 2 {
+        return 0;
+    }
+    let today = samples[samples.len() - 1];
+    let earlier = samples.len() - 1;
+    let mean = samples.iter().take(earlier).sum::<f64>() / earlier as f64;
+    let gap = today - mean;
+    if !today.is_finite() || !mean.is_finite() || !gap.is_finite() {
+        return 0;
+    }
+    if gap >= PLAN_SOL_VOTE {
+        1
+    } else if gap <= -PLAN_SOL_VOTE {
+        let points = (gap / PLAN_SOL_VOTE).trunc() as i32;
+        points.max(-PLAN_SOL_NAY_CAP)
+    } else {
+        0
+    }
+}
+
+/// # Living Vote
+///
+/// The trend, and one contract vote for each day basic needs are unmet.
+///
+/// `pop` supplies the recent readings, [`Pop::basic_living_potential`],
+/// and [`Pop::days_below_basic`]. The trend is [`living_trend`]. Today at
+/// that potential or above, or a reading that is not finite, returns the
+/// trend. A finite reading below the potential drops an expand vote and
+/// subtracts one vote for each day in that count. Returns that vote.
+fn living_vote(pop: &Pop) -> i32 {
+    let trend = living_trend(&pop.sol_samples);
+    let today = pop.sol_samples.back().copied().unwrap_or(f64::NAN);
+    let basic = pop.basic_living_potential();
+    if !today.is_finite() || !basic.is_finite() || today >= basic {
+        return trend;
+    }
+    trend.min(0).saturating_sub(pop.days_below_basic)
 }
 
 impl Pop {
@@ -3697,6 +3812,29 @@ fn spent_input_value(process: &Process, market: Option<&Market>, iterations: f64
         value += input.amount * iterations * market_price(market, input.good);
     }
     value
+}
+
+/// # Time Steps
+///
+/// Whole planning steps in `time`.
+///
+/// `step` is one step of the morning grant. The count is `time / step`,
+/// rounded to the nearest whole step, and not below 0. A step of 0 is 0.
+/// Returns that count.
+fn time_steps(time: f64, step: f64) -> i32 {
+    debug_assert!(time.is_finite() && time >= 0.0);
+    debug_assert!(step.is_finite() && step >= 0.0);
+    if step == 0.0 {
+        return 0;
+    }
+    let steps = (time / step).round();
+    if steps <= 0.0 {
+        0
+    } else if steps >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        steps as i32
+    }
 }
 
 /// # Line Time
@@ -5621,11 +5759,15 @@ mod record_keeping_should {
 #[cfg(test)]
 mod plan_votes_should {
     use super::{line_value, plan_votes, Pop, PopPRow};
+    use crate::game::demographic_source::DemographicSource;
+    use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
+    use crate::game::effects::DesireEffect;
     use crate::game::factuals::Factuals;
     use crate::game::good::TIME;
     use crate::game::job::JobLine;
     use crate::game::market::{Market, MarketGood};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput, ProcessTag};
+    use crate::game::scalingfactor::ScalingFactor;
 
     /// # Craft
     ///
@@ -5713,12 +5855,12 @@ mod plan_votes_should {
         // A paper loss is the only nay.
         assert_eq!(ask(&quiet, &craft(1.0, 2.0), 0.0, Some(&band), 0.0), 0);
         // A rise under one point stays quiet, so paper profit is still the only vote.
-        let small = held(0.0, 0.0, 0.0, Some((0.0, 0.9)));
+        let small = held(0.0, 0.0, 0.0, Some((5.0, 5.9)));
         assert_eq!(ask(&small, &craft(4.0, 0.0), 0.0, Some(&band), 0.0), 0);
         // A whole point either way is one vote on a break-even recipe, and one vote holds.
-        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        let rose = held(0.0, 0.0, 0.0, Some((5.0, 6.0)));
         assert_eq!(ask(&rose, &craft(1.0, 1.0), 0.0, Some(&band), 0.0), 0);
-        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        let fell = held(0.0, 0.0, 0.0, Some((6.0, 5.0)));
         assert_eq!(ask(&fell, &craft(1.0, 1.0), 0.0, Some(&band), 0.0), 0);
     }
 
@@ -5727,10 +5869,10 @@ mod plan_votes_should {
         // Salability sits inside the band, so it casts no vote.
         let band = market_for(0.5);
         // Profit and a whole point of living are two yays, and the recipe beats the bar.
-        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        let rose = held(0.0, 0.0, 0.0, Some((5.0, 6.0)));
         assert_eq!(ask(&rose, &craft(4.0, 0.0), 0.0, Some(&band), 0.0), 1);
         // A paper loss and a whole point drop are two nays.
-        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        let fell = held(0.0, 0.0, 0.0, Some((6.0, 5.0)));
         assert_eq!(ask(&fell, &craft(1.0, 2.0), 0.0, Some(&band), 0.0), -1);
         // The market is taking the good. Nothing has been made, so rot stays quiet.
         let hot = market_for(0.81);
@@ -5738,6 +5880,151 @@ mod plan_votes_should {
         // A cold market joins a paper loss.
         let cold = market_for(0.39);
         assert_eq!(ask(&Pop::new(1), &craft(1.0, 2.0), 0.0, Some(&cold), 0.0), -1);
+    }
+
+    #[test]
+    fn living_follows_the_earlier_mean() {
+        // Salability sits inside the band, so it casts no vote.
+        let band = market_for(0.5);
+        let even = craft(1.0, 1.0);
+        // Each step is under a point. Today is still a point under the earlier mean.
+        let mut slow = Pop::new(1);
+        for sample in [6.0, 6.0, 5.5, 5.5, 4.6] {
+            slow.sol_samples.push_back(sample);
+        }
+        let grind = plan_votes(&slow, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(grind.living, -1);
+        // Two full points under the mean contracts a break-even line.
+        let mut drop = Pop::new(1);
+        for sample in [8.0, 8.0, 6.0] {
+            drop.sol_samples.push_back(sample);
+        }
+        let deep = plan_votes(&drop, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(deep.living, -2);
+        assert_eq!(deep.direction, -1);
+        // A deeper drop does not vote past two.
+        let mut crash = Pop::new(1);
+        for sample in [8.0, 8.0, 4.0] {
+            crash.sol_samples.push_back(sample);
+        }
+        let capped = plan_votes(&crash, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(capped.living, -2);
+        // Two points above the mean is still one yay, so the line holds.
+        let mut rise = Pop::new(1);
+        for sample in [2.0, 2.0, 4.0] {
+            rise.sol_samples.push_back(sample);
+        }
+        let up = plan_votes(&rise, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(up.living, 1);
+        assert_eq!(up.direction, 0);
+    }
+
+    /// # Level Desire
+    ///
+    /// A desire of amount 5 with no satisfaction effects.
+    fn level_desire(id: usize) -> Desire {
+        Desire {
+            source: DemographicSource::Species(0),
+            demo_desire_id: id,
+            priority: 0,
+            target: vec![DesireTarget::new(1, DesireTargetType::Consume, 1.0)],
+            amount: 5.0,
+            satisfaction: 0.0,
+            category: None,
+            effect: vec![],
+            scalar: ScalingFactor::Fixed(1.0),
+            decay: 0.0,
+        }
+    }
+
+    #[test]
+    fn living_under_basic_needs_adds_one_nay() {
+        // Salability sits inside the band, so it casts no vote.
+        let band = market_for(0.5);
+        let even = craft(1.0, 1.0);
+        // Two basic desires and one common. Full basic needs record 2.
+        let mut low = Pop::new(1);
+        low.desires[0].push(level_desire(1));
+        low.desires[0].push(level_desire(2));
+        low.desires[1].push(level_desire(3));
+        assert_eq!(low.basic_living_potential(), 2.0);
+        // Flat, and this is the first short day. The trend is quiet, so living is the one nay.
+        for sample in [1.0, 1.0, 1.0] {
+            low.sol_samples.push_back(sample);
+        }
+        low.days_below_basic = 1;
+        let flat = plan_votes(&low, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(flat.living, -1);
+        assert_eq!(flat.direction, 0);
+        // The same flat reading, three days short. The count is the nay.
+        low.days_below_basic = 3;
+        let longer = plan_votes(&low, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(longer.living, -3);
+        assert_eq!(longer.direction, -1);
+        // A rise that is still under full basic needs does not expand.
+        let mut climbing = Pop::new(1);
+        climbing.desires[0].push(level_desire(1));
+        climbing.desires[0].push(level_desire(2));
+        for sample in [0.5, 0.5, 1.5] {
+            climbing.sol_samples.push_back(sample);
+        }
+        climbing.days_below_basic = 1;
+        let rising = plan_votes(&climbing, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(rising.living, -1);
+        assert_eq!(rising.direction, 0);
+        // Today at full basic needs leaves the trend in charge. A stale count does not vote.
+        let mut steady = Pop::new(1);
+        steady.desires[0].push(level_desire(1));
+        steady.desires[0].push(level_desire(2));
+        for sample in [2.0, 2.0, 2.0] {
+            steady.sol_samples.push_back(sample);
+        }
+        steady.days_below_basic = 4;
+        let quiet = plan_votes(&steady, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(quiet.living, 0);
+        // The drop is past the trend cap, and this is the first short day.
+        let mut deep = Pop::new(1);
+        deep.desires[0].push(level_desire(1));
+        deep.desires[0].push(level_desire(2));
+        for sample in [4.0, 4.0, 1.0] {
+            deep.sol_samples.push_back(sample);
+        }
+        deep.days_below_basic = 1;
+        let stacked = plan_votes(&deep, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(stacked.living, -3);
+        assert_eq!(stacked.direction, -1);
+        // A satisfaction bonus raises the basic line. The common desire does not.
+        let mut bonus = level_desire(1);
+        bonus.effect.push(DesireEffect::Satisfaction(2.0, true));
+        let mut raised = Pop::new(1);
+        raised.desires[0].push(bonus);
+        raised.desires[1].push(level_desire(2));
+        assert_eq!(raised.basic_living_potential(), 3.0);
+        for sample in [2.0, 2.0, 2.0] {
+            raised.sol_samples.push_back(sample);
+        }
+        raised.days_below_basic = 1;
+        let short = plan_votes(&raised, &even, &line(0.0), Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(short.living, -1);
+    }
+
+    #[test]
+    fn basic_shortfall_grows_each_day_and_clears_when_met() {
+        let mut pop = Pop::new(1);
+        pop.desires[0].push(level_desire(1));
+        pop.desires[0].push(level_desire(2));
+        // Nothing is satisfied, so today is under full basic needs.
+        pop.record_sol();
+        assert_eq!(pop.days_below_basic, 1);
+        pop.record_sol();
+        assert_eq!(pop.days_below_basic, 2);
+        pop.record_sol();
+        assert_eq!(pop.days_below_basic, 3);
+        // Both basic desires are met. The count clears.
+        pop.desires[0][0].satisfaction = 5.0;
+        pop.desires[0][1].satisfaction = 5.0;
+        pop.record_sol();
+        assert_eq!(pop.days_below_basic, 0);
     }
 
     #[test]
@@ -5838,6 +6125,60 @@ mod plan_votes_should {
     }
 
     #[test]
+    fn a_short_finish_nays_even_when_the_run_sold() {
+        // Salability sits inside the band, so it casts no vote.
+        let band = market_for(0.5);
+        let process = craft(10.0, 0.0);
+        // Sold the one finished iteration. The ask was ten, so the line missed it.
+        let mut pop = held(10.0, 0.0, 0.0, None);
+        pop.property.get_mut(&1).unwrap().sold = 10.0;
+        let mut short = line(1.0);
+        short.attempted = 10.0;
+        let missed = plan_votes(&pop, &process, &short, Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(missed.luck, -1);
+        // The same sale, and the line finished the one iteration it was asked for.
+        let mut met = line(1.0);
+        met.attempted = 1.0;
+        let yay = plan_votes(&pop, &process, &met, Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(yay.luck, 1);
+        // Four fifths of the ask still leaves the sales check in charge.
+        let mut near_ask = held(80.0, 0.0, 0.0, None);
+        near_ask.property.get_mut(&1).unwrap().sold = 64.0;
+        let mut almost = line(8.0);
+        almost.attempted = 10.0;
+        let stood = plan_votes(&near_ask, &process, &almost, Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(stood.luck, 1);
+        // One iteration under that share nays, even though those units sold.
+        let mut under = held(70.0, 0.0, 0.0, None);
+        under.property.get_mut(&1).unwrap().sold = 70.0;
+        let mut shy = line(7.0);
+        shy.attempted = 10.0;
+        let nays = plan_votes(&under, &process, &shy, Some(&band), &Factuals::new(), 0.0);
+        assert_eq!(nays.luck, -1);
+        // The other yays would expand. A short finish keeps the target.
+        let mut rising = held(10.0, 0.0, 0.0, Some((5.0, 6.0)));
+        rising.property.get_mut(&1).unwrap().sold = 10.0;
+        let mut missed_run = line(1.0);
+        missed_run.attempted = 10.0;
+        let held_back = plan_votes(
+            &rising, &process, &missed_run, Some(&market_for(0.81)), &Factuals::new(), 0.0,
+        );
+        assert_eq!(held_back.luck, -1);
+        assert!(held_back.tally > 1);
+        assert_eq!(held_back.direction, 0);
+        // The same miss on a losing line still contracts.
+        let mut losing = held(1.0, 0.0, 0.0, Some((6.0, 5.0)));
+        losing.property.get_mut(&1).unwrap().sold = 1.0;
+        let mut lost = line(1.0);
+        lost.attempted = 10.0;
+        let down = plan_votes(
+            &losing, &craft(1.0, 2.0), &lost, Some(&market_for(0.39)), &Factuals::new(), 0.0,
+        );
+        assert_eq!(down.luck, -1);
+        assert_eq!(down.direction, -1);
+    }
+
+    #[test]
     fn a_short_run_does_not_vote_on_luck() {
         let idle = Pop::new(1);
         // Salability of one half is the share these runs are measured against.
@@ -5884,10 +6225,10 @@ mod plan_votes_should {
         // Salability sits inside the band, so it casts no vote.
         let band = market_for(0.5);
         // Two yays would expand, but the recipe does not beat subsistence per unit of time.
-        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        let rose = held(0.0, 0.0, 0.0, Some((5.0, 6.0)));
         assert_eq!(ask(&rose, &craft(4.0, 0.0), 0.0, Some(&band), 1000.0), 0);
         // A contraction does not have to beat that bar.
-        let fell = held(0.0, 0.0, 0.0, Some((1.0, 0.0)));
+        let fell = held(0.0, 0.0, 0.0, Some((6.0, 5.0)));
         assert_eq!(ask(&fell, &craft(1.0, 2.0), 0.0, Some(&band), 1000.0), -1);
     }
 
@@ -5940,7 +6281,7 @@ mod plan_votes_should {
         assert_eq!(votes.direction, 1);
         assert!(!votes.barred);
         // Two yays would expand, and the recipe does not beat the bar.
-        let rose = held(0.0, 0.0, 0.0, Some((0.0, 1.0)));
+        let rose = held(0.0, 0.0, 0.0, Some((5.0, 6.0)));
         let blocked = plan_votes(
             &rose, &craft(4.0, 0.0), &line(0.0), Some(&market_for(0.5)), &Factuals::new(), 1000.0,
         );
@@ -6184,13 +6525,14 @@ mod planning_should {
         let mut pop = worker();
         pop.desires[0].push(desire(6.0, 1));
         pop.job.lines[0] = JobLine::new(1, Some(0.0), vec![]);
-        pop.sol_samples.push_back(0.0);
-        pop.sol_samples.push_back(1.0);
+        pop.sol_samples.push_back(5.0);
+        pop.sol_samples.push_back(6.0);
         let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
         factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
         let market = band(&[1]);
         pop.planning(&factuals, Some(&market));
         near(pop.job.lines[0].target.unwrap(), 0.5);
+        assert_eq!(pop.line_votes[0].direction, 1);
     }
 
     #[test]
@@ -6201,8 +6543,8 @@ mod planning_should {
         pop.job.lines[0].completed = 1.0;
         // The finished run rotted, so decay nays with the cold market and the living drop.
         pop.property.insert(1, PopPRow::new(0.0).with_lost(4.0));
-        pop.sol_samples.push_back(2.0);
-        pop.sol_samples.push_back(1.0);
+        pop.sol_samples.push_back(6.0);
+        pop.sol_samples.push_back(5.0);
         let mut factuals = world(&[(TIME, 0.0), (1, 0.0), (2, 0.0)]);
         factuals.processes.insert(
             1,
@@ -6212,6 +6554,7 @@ mod planning_should {
         market.goods.insert(1, MarketGood::new().with_salability(0.2));
         pop.planning(&factuals, Some(&market));
         near(pop.job.lines[0].target.unwrap(), 3.5);
+        assert_eq!(pop.line_votes[0].direction, -1);
     }
 
     #[test]
@@ -6259,6 +6602,41 @@ mod planning_should {
         near(pop.job.lines[0].target.unwrap(), 4.0);
         near(pop.job.lines[1].target.unwrap(), 4.0);
         near(pop.subsistence_rate, 0.1);
+    }
+
+    #[test]
+    fn holds_yield_so_a_craft_stays_on_its_step() {
+        let mut pop = worker();
+        pop.time_consumed = 9.0;
+        pop.desires[0].push(desire(6.0, 1));
+        // Two steps, and profit is the only vote, so the line holds.
+        pop.job.lines[0] = JobLine::new(1, Some(1.0), vec![]);
+        let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
+        factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
+        let market = band(&[1]);
+        pop.planning(&factuals, Some(&market));
+        near(pop.job.lines[0].target.unwrap(), 1.0);
+        near(pop.held_desire_time + pop.held_transport_time, 9.0);
+        near(pop.subsistence_rate, 0.0);
+    }
+
+    #[test]
+    fn a_full_grant_does_not_take_a_partial_step() {
+        let mut pop = worker();
+        pop.desires[0].push(desire(6.0, 1));
+        // The line already has every step. Profit and a rise in living would take another.
+        pop.job.lines[0] = JobLine::new(1, Some(10.0), vec![]);
+        pop.sol_samples.push_back(5.0);
+        pop.sol_samples.push_back(6.0);
+        let mut factuals = world(&[(TIME, 0.0), (1, 0.0)]);
+        factuals.processes.insert(1, process(1, vec![input(TIME, 1.0)], 1, 4.0));
+        let market = band(&[1]);
+        pop.planning(&factuals, Some(&market));
+        near(pop.job.lines[0].target.unwrap(), 10.0);
+        assert_eq!(pop.line_votes[0].direction, 1);
+        near(pop.held_desire_time, 0.0);
+        near(pop.held_transport_time, 0.0);
+        near(pop.subsistence_rate, 0.0);
     }
 
     #[test]

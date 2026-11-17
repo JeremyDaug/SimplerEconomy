@@ -22,15 +22,21 @@
 //! Under the pops, a craft table lists each craft line. Craft names the
 //! process, then its share of morning time and the same finished-over-asked
 //! fraction. Profit, salability, demand, luck, decay, durability, living,
-//! and idle are that line's planning votes. A vote prints `+1`, `-1`, or
-//! `0`. Demand yays when buyers wanted more than traded, and nays when the
-//! offer is more than four times the sale or the bids were covered. No
+//! and idle are the votes that wrote that plan. A vote prints `+1`, `-1`,
+//! or `0`. Demand yays when buyers wanted more than traded, and nays when
+//! the offer is more than four times the sale or the bids were covered. No
 //! offer and no bids stay quiet. Luck yays when this pop sold most of the
-//! run and the stock is within four sales, and nays when the sale is thin
-//! or the stock is past that. Idle prints `+3` when craft and
-//! labor are both at 0%. Margin is the percentage gain or loss on the priced
-//! inputs, or `-` when those inputs have no cost. Per time is the profit
-//! that vote reads. Tally is the sum of the votes.
+//! run and the stock is within four sales, and nays when the sale is thin,
+//! the stock is past that, or the line finished under four fifths of its
+//! ask. A short finish does not expand. Living compares today with the
+//! mean of the earlier samples. A full point above is `+1`. Each full
+//! point below is a contract vote, and that vote stops at `-2`. Each consecutive day
+//! below full basic needs adds another contract vote. A day that meets
+//! that line clears the count, and the trend does not expand while basic
+//! needs are unmet. Idle prints `+3` when craft and
+//! labor were both at 0% before the step. Margin is the percentage gain or
+//! loss on the priced inputs, or `-` when those inputs have no cost. Per
+//! time is the profit that vote reads. Tally is the sum of the votes.
 //! Step is `expand`, `hold`, or `contract`. `bar` means the tally would
 //! expand and subsistence turned that into a hold.
 //!
@@ -66,7 +72,7 @@ use simpler_economy::game::map::Map;
 use simpler_economy::game::mapdata::{EnvironmentData, MapData};
 use simpler_economy::game::market::Market;
 use simpler_economy::game::players::Players;
-use simpler_economy::game::pop::{line_value, market_price, plan_votes, PlanVotes, Pop};
+use simpler_economy::game::pop::{line_value, market_price, PlanVotes, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::playstate::PlayState;
 
@@ -911,8 +917,8 @@ struct CraftRow {
 /// Draws one row for each craft line, lowest pop id first.
 ///
 /// A blank line separates it from the pops. A pop with no craft is left
-/// out. The votes are the ones [`plan_votes`] would cast on the line as it
-/// stands. Margin and per time come from [`line_value`].
+/// out. The votes are the ones planning stored on the pop. Margin and per
+/// time come from [`line_value`].
 fn print_craft_table(state: &PlayState) {
     let rows = craft_rows(state);
     if rows.is_empty() {
@@ -1013,18 +1019,17 @@ fn craft_rows(state: &PlayState) -> Vec<CraftRow> {
     for id in ids {
         let pop = state.actors.pop(id);
         let market = home_market(state, id);
-        let bar = pop.subsistence_per_time(&state.factuals, market);
         let budget = pop.get_scaling_factor(ScalingFactor::Labor(
             state.factuals.config.labor.time_per_labor,
         ));
-        for line in &pop.job.lines {
+        for (index, line) in pop.job.lines.iter().enumerate() {
             let Some(process) = state.factuals.get_process(line.process) else {
                 continue;
             };
             if process.is_labor() {
                 continue;
             }
-            let votes = plan_votes(pop, process, line, market, &state.factuals, bar);
+            let votes = pop.line_votes[index];
             let value = line_value(process, market);
             let time = planned_time(line.target, process.required_time());
             rows.push(CraftRow {

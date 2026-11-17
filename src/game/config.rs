@@ -151,10 +151,23 @@ pub const PLAN_SELL_NAY: f64 = 0.4;
 /// sales: a pile bigger than that run votes to contract.
 pub const PLAN_STOCK_COVER: f64 = 4.0;
 
-/// Living change that casts one planning vote.
+/// Share of the asked iterations that still counts as meeting the plan.
 ///
-/// A rise of this size votes to expand. A drop of this size votes to contract.
+/// Luck votes to contract when a line was asked to run and finished under
+/// this share. At this share the sales check stands.
+pub const PLAN_RUN_NEAR: f64 = 0.8;
+
+/// One point of living against the mean of the earlier samples.
+///
+/// A rise of this size is one expand vote. A drop of this size is one
+/// contract vote.
 pub const PLAN_SOL_VOTE: f64 = 1.0;
+
+/// Most contract votes a living drop can cast.
+///
+/// Each full [`PLAN_SOL_VOTE`] point under the earlier mean is one vote.
+/// A deeper drop stops here.
+pub const PLAN_SOL_NAY_CAP: i32 = 2;
 
 /// Share of the morning grant that one planning step moves.
 ///
