@@ -511,9 +511,7 @@ fn pop_rows(state: &PlayState) -> Vec<PopRow> {
 /// those sentiment shares. Stop is why this pop stopped buying.
 /// Returns that row.
 fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
-    let budget = pop.get_scaling_factor(ScalingFactor::Labor(
-        state.factuals.config.labor.time_per_labor,
-    ));
+    let budget = pop.time_grant(&state.factuals);
     let mut labor = 0.0;
     let mut labor_completed = 0.0;
     let mut labor_attempted = 0.0;
@@ -1019,9 +1017,7 @@ fn craft_rows(state: &PlayState) -> Vec<CraftRow> {
     for id in ids {
         let pop = state.actors.pop(id);
         let market = home_market(state, id);
-        let budget = pop.get_scaling_factor(ScalingFactor::Labor(
-            state.factuals.config.labor.time_per_labor,
-        ));
+        let budget = pop.time_grant(&state.factuals);
         for (index, line) in pop.job.lines.iter().enumerate() {
             let Some(process) = state.factuals.get_process(line.process) else {
                 continue;

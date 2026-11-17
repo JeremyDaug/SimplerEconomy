@@ -130,20 +130,6 @@ pub struct SellOffer {
     pub amount: f64,
 }
 
-/// # Migrant Group
-///
-/// Households and goods taken off one pop by [`Pop::take_migrants`].
-#[derive(Debug, Clone)]
-pub(crate) struct MigrantGroup {
-    /// Households in this slice.
-    pub households: f64,
-    /// Age, sex, labor, and partnership averages of the pop they left.
-    pub shape: Household,
-    /// Their portion of property taken. Just quantity. 
-    /// Splitting is decided early in the day so only this value should be needed.
-    pub quantity: HashMap<usize, f64>,
-}
-
 /// # Desire Fill
 ///
 /// What a desire walk does with the goods it picks.
@@ -182,19 +168,6 @@ impl SubsistenceType {
             Self::Nomadic => "nomadic",
             Self::Tribal => "tribal",
             Self::Vagrant => "vagrant",
-        }
-    }
-}
-
-impl MigrantGroup {
-    /// # Empty
-    ///
-    /// A group with no households and no goods.
-    fn empty() -> Self {
-        Self {
-            households: 0.0,
-            shape: Household::new(),
-            quantity: HashMap::new(),
         }
     }
 }
@@ -256,63 +229,18 @@ impl Pop {
         }
     }
 
-    /// # Household Count
+    /// # Time Grant
     ///
-    /// Households in this pop, and at least one.
+    /// The morning time this pop's labor receives.
     ///
-    /// A count above one is that count. A smaller count is one household.
-    pub(crate) fn household_count(&self) -> f64 {
-        let count = self.demographics.household.count;
-        debug_assert!(count.is_finite() && count >= 0.0);
-        if count > 1.0 {
-            count
-        } else {
-            1.0
-        }
-    }
-
-    /// # Has Desire For
-    ///
-    /// True when a desire target lists `good`.
-    pub(crate) fn has_desire_for(&self, good: usize) -> bool {
-        self.desires.iter().flatten().any(|desire| {
-            desire.target.iter().any(|target| {
-                debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-                target.good == good
-            })
-        })
-    }
-
-    /// # Makes Good
-    ///
-    /// True when a job line outputs `good`.
-    ///
-    /// `factuals` supplies the process. A missing process does not count.
-    pub(crate) fn makes_good(&self, factuals: &Factuals, good: usize) -> bool {
-        self.job.lines.iter().any(|line| {
-            factuals.get_process(line.process).is_some_and(|process| {
-                process.outputs.iter().any(|output| {
-                    debug_assert!(output.amount.is_finite() && output.amount > 0.0);
-                    output.good == good
-                })
-            })
-        })
-    }
-
-    /// # Takes Good
-    ///
-    /// True when a job line inputs `good`.
-    ///
-    /// `factuals` supplies the process. A missing process does not count.
-    pub(crate) fn takes_good(&self, factuals: &Factuals, good: usize) -> bool {
-        self.job.lines.iter().any(|line| {
-            factuals.get_process(line.process).is_some_and(|process| {
-                process.inputs.iter().any(|input| {
-                    debug_assert!(input.amount.is_finite() && input.amount > 0.0);
-                    input.good == good
-                })
-            })
-        })
+    /// `factuals` supplies `labor.time_per_labor`. Returns that rate scaled by
+    /// [`ScalingFactor::Labor`] for this pop.
+    pub fn time_grant(&self, factuals: &Factuals) -> f64 {
+        let grant = self.get_scaling_factor(ScalingFactor::Labor(
+            factuals.config.labor.time_per_labor,
+        ));
+        debug_assert!(grant.is_finite() && grant >= 0.0);
+        grant
     }
 
     /// # Start Day
@@ -1732,17 +1660,6 @@ impl Pop {
         sum
     }
 
-    /// # Market Day
-    ///
-    /// One pop does not buy here.
-    ///
-    /// A purchase takes goods from another pop, so the pop phase is
-    /// [`buy_from_offers`]. `market` prices the goods. `factuals` supplies
-    /// them. `offers` are the sell offers. This method does not buy.
-    pub fn market_day(&mut self, market: &Market, factuals: &Factuals, offers: &[SellOffer]) {
-        let _ = (self, market, factuals, offers);
-    }
-
     /// # Planning
     ///
     /// Sets this pop's next subsistence rate, job targets, and [`Self::line_votes`].
@@ -1763,11 +1680,7 @@ impl Pop {
     /// Subsistence takes the time left. A line with no process is `Some(0)`.
     /// A grant of 0 clears the plan.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
-        // Morning time is the labor grant this plan spends.
-        let budget = self.get_scaling_factor(ScalingFactor::Labor(
-            factuals.config.labor.time_per_labor,
-        ));
-        debug_assert!(budget.is_finite() && budget >= 0.0);
+        let budget = self.time_grant(factuals);
         self.line_votes = [PlanVotes::default(); 2];
         if budget == 0.0 {
             self.subsistence_rate = 0.0;
@@ -1795,7 +1708,7 @@ impl Pop {
             self.held_transport_time *= scale;
             spare = budget;
         }
-        let bar = subsistence_value_per_time(self, factuals, market, budget);
+        let bar = self.subsistence_per_time(factuals, market);
         // The grant is this many whole steps. An increase cannot pass it.
         let cap = (1.0 / PLAN_STEP_SHARE).round() as i32;
         // Read each line's time before the targets are replaced.
@@ -1868,30 +1781,69 @@ impl Pop {
     ///
     /// Value of one anchor pass of subsistence per unit of time.
     ///
-    /// `factuals` supplies the goods, the anchor, and the morning grant.
-    /// `market` prices the goods. A missing market prices every good at 1.
-    /// The grant is this pop's labor scaling of `labor.time_per_labor`. A
-    /// grant of 0 returns 0. Returns [`subsistence_value_per_time`] for that
-    /// grant.
+    /// `factuals` supplies the goods and the anchor. `market` prices the
+    /// goods. A missing market prices every good at 1. The pass uses
+    /// [`subsistence_cover`] with the rate set to the anchor, so the goods
+    /// are the ones [`Pop::run_subsistence`] would add at that rate. The
+    /// time charged is the anchor share of [`Self::time_grant`]. A grant of
+    /// 0 returns 0, and so do no priced goods. Returns value divided by that
+    /// time.
     pub fn subsistence_per_time(&self, factuals: &Factuals, market: Option<&Market>) -> f64 {
-        let budget = self.get_scaling_factor(ScalingFactor::Labor(
-            factuals.config.labor.time_per_labor,
-        ));
-        debug_assert!(budget.is_finite() && budget >= 0.0);
+        let budget = self.time_grant(factuals);
         if budget == 0.0 {
             return 0.0;
         }
-        subsistence_value_per_time(self, factuals, market, budget)
+        let anchor = factuals.config.pop.subsistence_anchor;
+        let common_share = factuals.config.pop.subsistence_common_share;
+        let time = anchor * budget;
+        debug_assert!(time.is_finite() && time > 0.0);
+        let mut value = 0.0;
+        for (tier, desires) in self.desires.iter().enumerate() {
+            let cover = subsistence_cover(tier, anchor, anchor, common_share);
+            if cover == 0.0 {
+                continue;
+            }
+            for desire in desires {
+                debug_assert!(desire.amount.is_finite() && desire.amount >= 0.0);
+                if desire.amount == 0.0 {
+                    continue;
+                }
+                for (good, amount) in subsistence_batch(factuals, desire, cover) {
+                    value += amount * market_price(market, good);
+                }
+            }
+        }
+        debug_assert!(value.is_finite() && value >= 0.0);
+        value / time
     }
 
     /// # Day Savings
     ///
-    /// What one day of this pop's basic desires costs.
+    /// What one day of this pop's basic desires costs in the market's first
+    /// currency.
     ///
-    /// `market` prices the goods in its first currency. Returns
-    /// [`even_split_day_cost`].
+    /// Each basic desire of amount A with n goods gives every good
+    /// satisfaction A/n. Units are that satisfaction divided by efficiency,
+    /// priced by [`market_price`]. The day is the sum. No basic desire costs
+    /// 0.
     pub fn day_savings(&self, market: &Market) -> f64 {
-        even_split_day_cost(self, market)
+        let Some(desires) = self.desires.first() else {
+            return 0.0;
+        };
+        let mut cost = 0.0;
+        for desire in desires {
+            let goods = desire.target.len();
+            if goods == 0 || desire.amount <= 0.0 {
+                continue;
+            }
+            debug_assert!(desire.amount.is_finite());
+            let share = desire.amount / goods as f64;
+            for target in &desire.target {
+                debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
+                cost += share / target.efficiency * market_price(Some(market), target.good);
+            }
+        }
+        cost
     }
 }
 
@@ -2426,7 +2378,7 @@ fn shop_desire(
 ///
 /// Tops savings up to `days` of basic desires, in total.
 ///
-/// One day is [`even_split_day_cost`]. Currency already saved counts.
+/// One day is [`Pop::day_savings`]. Currency already saved counts.
 /// A more durable tender is bought into savings first, paid with strictly
 /// less durable loose tender. Loose tender is then parked, least durable
 /// first. [`Pop::effective_savings`] becomes the value held in the market's
@@ -2439,7 +2391,7 @@ fn save_days(
     offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, days: f64,
 ) -> Walk {
     debug_assert!(days.is_finite() && days > 0.0);
-    let target = days * even_split_day_cost(&pops[buyer_at], market);
+    let target = days * pops[buyer_at].day_savings(market);
     if target <= 0.0 || savings_primary(&pops[buyer_at], market) + 1e-9 >= target {
         set_effective(pops, buyer_at, market);
         return Walk::Done;
@@ -2555,33 +2507,6 @@ fn savings_primary(pop: &Pop, market: &Market) -> f64 {
             amount * market_price(Some(market), good)
         })
         .sum()
-}
-
-/// # Even Split Day Cost
-///
-/// What one day of basic desires costs in the market's first currency.
-///
-/// Each basic desire of amount A with n goods gives every good satisfaction
-/// A/n. Units are that satisfaction divided by efficiency, priced by
-/// [`market_price`]. The day is the sum. No basic desire costs 0.
-fn even_split_day_cost(pop: &Pop, market: &Market) -> f64 {
-    let Some(desires) = pop.desires.first() else {
-        return 0.0;
-    };
-    let mut cost = 0.0;
-    for desire in desires {
-        let goods = desire.target.len();
-        if goods == 0 || desire.amount <= 0.0 {
-            continue;
-        }
-        debug_assert!(desire.amount.is_finite());
-        let share = desire.amount / goods as f64;
-        for target in &desire.target {
-            debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-            cost += share / target.efficiency * market_price(Some(market), target.good);
-        }
-    }
-    cost
 }
 
 /// # Note Sought
@@ -3402,7 +3327,7 @@ pub struct PlanVotes {
 /// line's target. `market` prices the goods and supplies salability.
 /// `factuals` supplies the default
 /// salability and the other lines' processes. `bar` is
-/// [`subsistence_value_per_time`]. The votes are profit, salability, existing
+/// [`Pop::subsistence_per_time`]. The votes are profit, salability, existing
 /// demand, luck, decay, price durability, living, and idle job shares.
 /// Demand is [`offer_demand`]. Luck is [`sell_luck`], and a finish under
 /// [`PLAN_RUN_NEAR`] of the ask votes to contract. That line does not
@@ -3697,46 +3622,6 @@ fn rise_or_step_down(held: f64, goal: f64, step: f64) -> f64 {
     debug_assert!(goal.is_finite() && goal >= 0.0);
     debug_assert!(step.is_finite() && step >= 0.0);
     if held < goal { goal } else { (held - step).max(goal) }
-}
-
-/// # Subsistence Value Per Time
-///
-/// Value of one anchor pass of subsistence per unit of time.
-///
-/// `pop` supplies the desires. `factuals` supplies the goods and the
-/// anchor. `market` prices them. `budget` is the morning grant. The pass
-/// uses [`subsistence_cover`] with the rate set to the anchor, so the
-/// goods are the ones [`Pop::run_subsistence`] would add at that rate.
-/// The time charged is the anchor share of `budget`. No priced goods
-/// returns 0. Returns value divided by that time.
-fn subsistence_value_per_time(
-    pop: &Pop,
-    factuals: &Factuals,
-    market: Option<&Market>,
-    budget: f64,
-) -> f64 {
-    let anchor = factuals.config.pop.subsistence_anchor;
-    let common_share = factuals.config.pop.subsistence_common_share;
-    let time = anchor * budget;
-    debug_assert!(time.is_finite() && time > 0.0);
-    let mut value = 0.0;
-    for (tier, desires) in pop.desires.iter().enumerate() {
-        let cover = subsistence_cover(tier, anchor, anchor, common_share);
-        if cover == 0.0 {
-            continue;
-        }
-        for desire in desires {
-            debug_assert!(desire.amount.is_finite() && desire.amount >= 0.0);
-            if desire.amount == 0.0 {
-                continue;
-            }
-            for (good, amount) in subsistence_batch(factuals, desire, cover) {
-                value += amount * market_price(market, good);
-            }
-        }
-    }
-    debug_assert!(value.is_finite() && value >= 0.0);
-    value / time
 }
 
 /// Output value, input cost, and profit per time of one job process.
