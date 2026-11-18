@@ -353,10 +353,11 @@ pub struct MarketConfig {
     pub founding_households: f64,
     /// Households a pop needs before a founding may leave. Must be `> 0`.
     pub founding_min_households: f64,
-    /// Chance added each open day that a pop founds when nobody clears the gate.
+    /// Chance added each open day that a founding is attempted.
     ///
-    /// Must be from 0 to 1. The first open day is one step. Each later open
-    /// day adds another. The chance stops at 1.
+    /// Must be from 0 to 1. The first day after the rest is one step. Each
+    /// later day that does not create a pop adds another. The chance stops
+    /// at 1. A join does not clear it.
     pub founding_drought_step: f64,
     /// Share of foundings that apply both an add and a drop. Must be from 0 to 1.
     pub founding_both_share: f64,
@@ -373,8 +374,9 @@ impl Default for MarketConfig {
     /// gain is 0.10 and the price cap is 0.20. Anger weighs half of fear.
     /// One tenth of a saturated push moves in a year.
     /// A founding moves 5 households out of a pop of at least 25. An open
-    /// day adds one hundredth to the drought chance. One fifth of foundings
-    /// both add and drop. A covered drop weighs half again its base.
+    /// day adds one hundredth to the chance a founding is attempted. One
+    /// fifth of foundings both add and drop. A covered drop weighs half
+    /// again its base.
     fn default() -> Self {
         Self {
             amv_epsilon: 1e-9,

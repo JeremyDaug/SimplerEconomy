@@ -42,7 +42,7 @@ impl PlayState {
     /// 3. Player action phase.
     /// 4. Apply player demographic changes and bonuses.
     /// 5. Actor reservations.
-    /// 6. Intra-market day.
+    /// 6. Intra-market day. Founding runs after the shops return.
     /// 7. Inter-market day. Savings and reserves are released before production.
     /// 8. Production.
     /// 9. Consumption.
@@ -124,7 +124,8 @@ impl PlayState {
     /// the lowest market id. Institutions and players stay put and are
     /// borrowed shared, because one of them can sit in more than one market.
     /// Each market receives its own rng, seeded from `turn` and the market
-    /// id. The buys themselves are not written yet.
+    /// id. After the shops return, each market may found. Savings are still
+    /// set aside. The founding rng is seeded from `turn` and the market id.
     fn intra_market_day(&mut self) {
         let mut ids: Vec<usize> = self.map_data.markets_mut().keys().copied().collect();
         ids.sort_unstable();
@@ -170,6 +171,32 @@ impl PlayState {
                 self.actors.firms.insert(firm.id, firm);
             }
             self.map_data.markets.insert(batch.market.id, batch.market);
+        }
+        self.found_pops();
+    }
+
+    /// # Found Pops
+    ///
+    /// Lets each market found, lowest market id first.
+    ///
+    /// Savings are still set aside. A new pop takes the next free id. The
+    /// draw is [`Market::found_pop`].
+    fn found_pops(&mut self) {
+        let turn = self.turn;
+        let factuals = &self.factuals;
+        let pops = &mut self.actors.pops;
+        let markets = &mut self.map_data.markets;
+        let mut ids: Vec<usize> = markets.keys().copied().collect();
+        ids.sort_unstable();
+        let mut next_id = pops.keys().copied().max().unwrap_or(0).saturating_add(1);
+        for id in ids {
+            let mut rng = StdRng::seed_from_u64(turn ^ (id as u64).wrapping_mul(0xF00D_1A77));
+            let market = markets
+                .get_mut(&id)
+                .unwrap_or_else(|| panic!("market {id} is not in MapData"));
+            if let Some(created) = market.found_pop(pops, factuals, &mut rng, next_id) {
+                next_id = created.saturating_add(1);
+            }
         }
     }
 

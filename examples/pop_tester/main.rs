@@ -6,7 +6,9 @@
 //! world. A species or culture desire is derived from a platonic desire.
 //!
 //! The first argument is how many days to run before asking for more
-//! (default 1). After those days, enter runs one more, a number runs
+//! (default 1). The second is how many times a pop's people its ceiling
+//! share is when that cap is set (default 1000). A pop with no cap receives
+//! that share before the turn. After those days, enter runs one more, a number runs
 //! that many, and 0 quits. The table is one row per pop. The line above
 //! it is the turn those rows finished. A terminal prints each finished
 //! day below the last one, so the window can scroll. A pipe prints them
@@ -20,7 +22,15 @@
 //! fear, and anger are that pop's sentiment shares. Contentment is
 //! whatever those four leave. The last column is why that pop stopped buying.
 //!
-//! Under the pops, a craft table lists each craft line. Craft names the
+//! Under the pops, a founding table lists the next attempt and the three
+//! splits most likely if that attempt hits. Chance is that attempt. Rest
+//! is the days before it. Pop is the parent and the craft they already
+//! do. Process is the work they would take. Split is that pair's share of
+//! a hit. Result is `new`, or `join` and the pop who already does that
+//! work. The line under the rows is what this day did, and the chance it
+//! used. A wait prints `today rest`.
+//!
+//! Under that, a craft table lists each craft line. Craft names the
 //! process, then its share of morning time and the same finished-over-asked
 //! fraction. Profit, salability, demand, luck, decay, durability, living,
 //! and idle are the votes that wrote that plan. A vote prints `+1`, `-1`,
@@ -60,6 +70,7 @@
 //! ```text
 //! cargo run --example pop_tester
 //! cargo run --example pop_tester -- 1
+//! cargo run --example pop_tester -- 30 10
 //! ```
 
 use std::collections::HashMap;
@@ -72,7 +83,7 @@ use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::good::TIME;
 use simpler_economy::game::map::Map;
 use simpler_economy::game::mapdata::{EnvironmentData, MapData};
-use simpler_economy::game::market::Market;
+use simpler_economy::game::market::{FoundingEvent, Market};
 use simpler_economy::game::players::Players;
 use simpler_economy::game::pop::{line_value, market_price, PlanVotes, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
@@ -84,12 +95,19 @@ use load::load_scenario;
 
 const WORLD_DIR: &str = "world";
 const SCENARIO_DIR: &str = "pop_tester";
+/// Parent and process pairs the founding table keeps.
+const FOUNDING_ROWS: usize = 3;
+/// A pop's ceiling share is this many times its people when the cap is set.
+const CAP_MULTIPLIER: f64 = 1000.0;
 
 fn main() {
-    let mut days = tester_args();
+    let args = tester_args();
+    let mut days = args.days;
     let mut state = stand_up();
+    // Starters are capped before the banner. A later pop is capped before its next turn.
+    assign_ceilings(&mut state, args.cap_multiplier);
     let live = io::stdout().is_terminal();
-    print_banner(&state);
+    print_banner(&state, args.cap_multiplier);
     let mut rows = Vec::new();
     // `latest` is the day just finished. `earlier` is the day before it,
     // which the price marks compare against. The pipe prints on the next
@@ -106,6 +124,7 @@ fn main() {
                 break;
             }
         }
+        assign_ceilings(&mut state, args.cap_multiplier);
         state.advance_turn();
         rows = pop_rows(&state);
         earlier = std::mem::replace(&mut latest, snapshot_prices(&state));
@@ -116,17 +135,68 @@ fn main() {
     }
 }
 
+/// Days to run, and how wide each pop's ceiling share is.
+struct TesterArgs {
+    days: u32,
+    cap_multiplier: f64,
+}
+
 /// # Tester Args
 ///
-/// Days to run before the prompt.
+/// Days to run before the prompt, and the ceiling multiplier.
 ///
-/// The first argument is that count. A missing argument or one that is
-/// not a whole number is 1. Returns that count.
-fn tester_args() -> u32 {
-    match std::env::args().nth(1) {
+/// The first argument is the day count. A missing argument or one that is
+/// not a whole number is 1. The second is how many times a pop's people its
+/// cap is. A missing argument, or one that is not a positive finite number,
+/// is [`CAP_MULTIPLIER`]. Returns those two.
+fn tester_args() -> TesterArgs {
+    let days = match std::env::args().nth(1) {
         Some(arg) => arg.parse::<u32>().unwrap_or(1),
         None => 1,
+    };
+    let cap_multiplier = match std::env::args().nth(2) {
+        Some(arg) => arg
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(CAP_MULTIPLIER),
+        None => CAP_MULTIPLIER,
+    };
+    TesterArgs { days, cap_multiplier }
+}
+
+/// # Assign Ceilings
+///
+/// Gives each uncapped pop its share of the market ceiling.
+///
+/// `multiplier` is how many times that pop's current people the share is.
+/// A pop that already has a cap keeps it, so a share does not grow with the
+/// pop. A pop created during the turn stays uncapped until the next call.
+/// [`Market::rebalance_capped`] reads these shares after growth.
+fn assign_ceilings(state: &mut PlayState, multiplier: f64) {
+    debug_assert!(multiplier.is_finite() && multiplier > 0.0);
+    for pop in state.actors.pops.values_mut() {
+        if pop.population_cap.is_some() {
+            continue;
+        }
+        let people = pop.demographics.total_population();
+        pop.population_cap = Some(people * multiplier);
     }
+}
+
+/// # Ceiling People
+///
+/// The market ceiling, in people.
+///
+/// The ceiling is the sum of each pop's [`Pop::population_cap`]. A pop
+/// with no cap adds nothing. Returns that sum.
+fn ceiling_people(state: &PlayState) -> f64 {
+    state
+        .actors
+        .pops
+        .values()
+        .filter_map(|pop| pop.population_cap)
+        .sum()
 }
 
 /// # Stand Up
@@ -180,10 +250,16 @@ fn stand_up() -> PlayState {
 /// The opening lines for this run.
 ///
 /// `state` is the loaded stand-up. Desires, the job, and currencies are
-/// read from that state. The turn is printed with the table.
-fn print_banner(state: &PlayState) {
+/// read from that state. `cap_multiplier` is the share width already
+/// applied to each uncapped pop. The turn is printed with the table.
+fn print_banner(state: &PlayState, cap_multiplier: f64) {
     println!("pop tester — data/{SCENARIO_DIR}");
     println!("world: data/{WORLD_DIR}");
+    println!(
+        "ceiling: {} people, {}× size when capped",
+        qty_text(ceiling_people(state)),
+        qty_text(cap_multiplier)
+    );
     let mut species_ids: Vec<usize> = state.factuals.species.keys().copied().collect();
     species_ids.sort_unstable();
     for id in &species_ids {
@@ -770,15 +846,15 @@ fn print_info(state: &PlayState) {
 
 /// # Print Table
 ///
-/// Draws an info table, then one row per pop in `rows`, then one table per market.
+/// Draws an info table, then one row per pop in `rows`, then founding, crafts, and one table per market.
 ///
 /// The day is [`PlayState::turn`]. The info table is one household of each
 /// demographic. Pop columns are demographic, subsistence, labor, size,
 /// in, out, savings per household, stock per household, sol, hope, happy,
 /// fear, anger, and stop. In and out are households. Those two columns
 /// keep room for a fractional count, so a zero does not shift the columns
-/// after them. The craft
-/// table follows the pops, then the market tables, one blank line after
+/// after them. The founding table follows the pops, then the craft
+/// table, then the market tables, one blank line after
 /// each. `prior` is yesterday's prices for the markets. Writes the day
 /// and the tables below what is already printed.
 fn print_table(
@@ -826,6 +902,7 @@ fn print_table(
             )
         );
     }
+    print_founding(state);
     print_craft_table(state);
     print_market_tables(state, prior);
     let _ = io::stdout().flush();
@@ -849,11 +926,199 @@ struct CraftRow {
     step: String,
 }
 
+/// One likely split on the founding table.
+struct FoundingRow {
+    chance: String,
+    rest: String,
+    pop: String,
+    process: String,
+    split: String,
+    result: String,
+}
+
+/// # Print Founding
+///
+/// Draws the founding table for each market, lowest id first.
+///
+/// A blank line separates it from the pops. Chance and rest are the next
+/// attempt. The rows are the most likely parent and process pairs. The
+/// line under them is the attempt this day already ran.
+fn print_founding(state: &PlayState) {
+    let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
+    ids.sort_unstable();
+    let only = ids.len() == 1;
+    for id in ids {
+        print_founding_market(state, id, only);
+    }
+}
+
+/// # Print Founding Market
+///
+/// Draws the founding table for market `id`.
+///
+/// `only` leaves the market id off the title when the run has one market.
+/// Chance is the next attempt. Rest is the days before it. Up to
+/// [`FOUNDING_ROWS`] pairs follow, highest split share first. An empty
+/// list still prints the chance and the rest. The last line is what this
+/// day did.
+fn print_founding_market(state: &PlayState, id: usize, only: bool) {
+    let market = state.map_data.market(id);
+    let outlook = market.founding_outlook(&state.actors.pops, &state.factuals);
+    let mut rows = Vec::new();
+    if outlook.prospects.is_empty() {
+        rows.push(FoundingRow {
+            chance: percent_text(outlook.chance * 100.0),
+            rest: outlook.rest.to_string(),
+            pop: "-".to_string(),
+            process: "-".to_string(),
+            split: "-".to_string(),
+            result: "-".to_string(),
+        });
+    }
+    for (index, prospect) in outlook.prospects.iter().take(FOUNDING_ROWS).enumerate() {
+        rows.push(FoundingRow {
+            chance: if index == 0 { percent_text(outlook.chance * 100.0) } else { String::new() },
+            rest: if index == 0 { outlook.rest.to_string() } else { String::new() },
+            pop: pop_label(state, prospect.parent),
+            process: process_name(state, prospect.process),
+            split: percent_text(prospect.chance * 100.0),
+            result: match prospect.joins {
+                Some(dest) => format!("join {}", pop_label(state, dest)),
+                None => "new".to_string(),
+            },
+        });
+    }
+    println!();
+    if only {
+        println!("founding");
+    } else {
+        println!("founding {id}");
+    }
+    let chance_w = col_width("chance", rows.iter().map(|row| row.chance.len()));
+    let rest_w = col_width("rest", rows.iter().map(|row| row.rest.len()));
+    let pop_w = col_width("pop", rows.iter().map(|row| row.pop.len()));
+    let process_w = col_width("process", rows.iter().map(|row| row.process.len()));
+    let split_w = col_width("split", rows.iter().map(|row| row.split.len()));
+    let result_w = col_width("result", rows.iter().map(|row| row.result.len()));
+    println!(
+        "{:>chance_w$}  {:>rest_w$}  {:<pop_w$}  {:<process_w$}  {:>split_w$}  {:<result_w$}",
+        "chance",
+        "rest",
+        "pop",
+        "process",
+        "split",
+        "result",
+        chance_w = chance_w,
+        rest_w = rest_w,
+        pop_w = pop_w,
+        process_w = process_w,
+        split_w = split_w,
+        result_w = result_w,
+    );
+    for row in &rows {
+        println!(
+            "{:>chance_w$}  {:>rest_w$}  {:<pop_w$}  {:<process_w$}  {:>split_w$}  {:<result_w$}",
+            row.chance,
+            row.rest,
+            row.pop,
+            row.process,
+            row.split,
+            row.result,
+            chance_w = chance_w,
+            rest_w = rest_w,
+            pop_w = pop_w,
+            process_w = process_w,
+            split_w = split_w,
+            result_w = result_w,
+        );
+    }
+    println!("{}", founding_today(state, market));
+}
+
+/// # Founding Today
+///
+/// What market `market` did on this day's founding attempt.
+///
+/// A wait names no chance. Any other result names the chance that attempt
+/// used. A new pop names its id, the parent, and the process. A join names
+/// the pop who received the households. Returns that line.
+fn founding_today(state: &PlayState, market: &Market) -> String {
+    let Some(day) = market.founding_day() else {
+        return "today -".to_string();
+    };
+    let chance = percent_text(day.chance * 100.0);
+    match day.event {
+        FoundingEvent::Rest => "today rest".to_string(),
+        FoundingEvent::Miss => format!("today miss {chance}"),
+        FoundingEvent::Nobody => format!("today nobody {chance}"),
+        FoundingEvent::New { parent, process, id } => format!(
+            "today {chance} new pop {id} from {} as {}",
+            pop_label(state, parent),
+            process_name(state, process),
+        ),
+        FoundingEvent::Join { parent, process, dest } => format!(
+            "today {chance} join {} from {} as {}",
+            pop_label(state, dest),
+            pop_label(state, parent),
+            process_name(state, process),
+        ),
+    }
+}
+
+/// # Pop Label
+///
+/// `id` and the craft that pop already runs.
+///
+/// A missing pop is the id. A pop with no loaded process is idle.
+/// Returns that label.
+fn pop_label(state: &PlayState, id: usize) -> String {
+    let Some(pop) = state.actors.pops.get(&id) else {
+        return id.to_string();
+    };
+    format!("{id} {}", craft_name(state, pop))
+}
+
+/// # Craft Name
+///
+/// The craft process on `pop`, or its labor process when it has no craft.
+///
+/// A line whose process is missing is left out. No loaded line is idle.
+/// Returns that name.
+fn craft_name(state: &PlayState, pop: &Pop) -> String {
+    let mut labor = None;
+    for line in &pop.job.lines {
+        let Some(process) = state.factuals.get_process(line.process) else {
+            continue;
+        };
+        if process.is_labor() {
+            if labor.is_none() {
+                labor = Some(process.name.clone());
+            }
+        } else {
+            return process.name.clone();
+        }
+    }
+    labor.unwrap_or_else(|| "idle".to_string())
+}
+
+/// # Process Name
+///
+/// The loaded name of process `id`.
+///
+/// A missing process is its id. Returns that name.
+fn process_name(state: &PlayState, id: usize) -> String {
+    state
+        .factuals
+        .get_process(id)
+        .map(|process| process.name.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
 /// # Print Craft Table
 ///
 /// Draws one row for each craft line, lowest pop id first.
 ///
-/// A blank line separates it from the pops. A pop with no craft is left
+/// A blank line separates it from the founding table. A pop with no craft is left
 /// out. The votes are the ones planning stored on the pop. Margin and per
 /// time come from [`line_value`].
 fn print_craft_table(state: &PlayState) {
