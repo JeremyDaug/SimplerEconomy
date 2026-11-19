@@ -581,6 +581,21 @@ impl Desire {
         self.satisfaction / self.amount
     }
 
+    /// # Levels Met
+    ///
+    /// [`Self::tiers_satisfied`] plus [`Self::get_bonus_satisfaction`].
+    ///
+    /// Returns `None` when either part is not finite.
+    pub(crate) fn levels_met(&self) -> Option<f64> {
+        let levels = self.tiers_satisfied();
+        let bonus = self.get_bonus_satisfaction();
+        if levels.is_finite() && bonus.is_finite() {
+            Some(levels + bonus)
+        } else {
+            None
+        }
+    }
+
     /// # Cmp Order
     ///
     /// Orders one desire relative to another within a tier.

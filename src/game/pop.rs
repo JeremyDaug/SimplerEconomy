@@ -1113,15 +1113,17 @@ impl Pop {
         // Plans and desire amounts still match this size.
         self.pre_growth_population = self.demographics.total_population();
         let mut rates = factuals.get_demographic_rates(self.demographics);
-        let mut kept = Vec::with_capacity(self.stored_effects.len());
-        for effect in self.stored_effects.drain(..) {
-            match effect {
-                PopEffect::Birthrate(rate) => rates.birth_per_woman += rate,
-                PopEffect::Mortality(target, rate) => rates.apply_mortality(target, rate),
-                other => kept.push(other),
+        self.stored_effects.retain(|effect| match *effect {
+            PopEffect::Birthrate(rate) => {
+                rates.birth_per_woman += rate;
+                false
             }
-        }
-        self.stored_effects = kept;
+            PopEffect::Mortality(target, rate) => {
+                rates.apply_mortality(target, rate);
+                false
+            }
+            _ => true,
+        });
         let mood = factuals.birth_sentiment(self.demographics);
         rates.birth_per_woman *= mood.multiplier(
             self.sentiment.hope(),
@@ -1260,17 +1262,14 @@ impl Pop {
         }
 
         // Bonus goods arrive after the rot, so this night does not take them.
-        let mut kept = Vec::with_capacity(self.stored_effects.len());
-        for effect in self.stored_effects.drain(..) {
-            match effect {
-                PopEffect::BonusGood { good, amount } => {
-                    debug_assert!(amount.is_finite() && amount >= 0.0);
-                    self.property.entry(good).or_default().quantity += amount;
-                }
-                other => kept.push(other),
+        self.stored_effects.retain(|effect| match *effect {
+            PopEffect::BonusGood { good, amount } => {
+                debug_assert!(amount.is_finite() && amount >= 0.0);
+                self.property.entry(good).or_default().quantity += amount;
+                false
             }
-        }
-        self.stored_effects = kept;
+            _ => true,
+        });
     }
 
     /// # Decay Desires
@@ -1330,19 +1329,17 @@ impl Pop {
             }
         }
         // Stored arms are spent here. Other same-day effects stay.
-        let mut kept = Vec::new();
-        for effect in self.stored_effects.drain(..) {
-            match effect {
-                PopEffect::SentimentFlat { kind, delta } => {
-                    mods.push(SentimentMod::Flat { kind, delta });
-                }
-                PopEffect::SentimentRelative { kind, relative } => {
-                    mods.push(SentimentMod::Relative { kind, relative });
-                }
-                other => kept.push(other),
+        self.stored_effects.retain(|effect| match *effect {
+            PopEffect::SentimentFlat { kind, delta } => {
+                mods.push(SentimentMod::Flat { kind, delta });
+                false
             }
-        }
-        self.stored_effects = kept;
+            PopEffect::SentimentRelative { kind, relative } => {
+                mods.push(SentimentMod::Relative { kind, relative });
+                false
+            }
+            _ => true,
+        });
         self.push_living_mods(market, &mut mods);
         self.push_contentment_pull(&mut mods);
         if !mods.is_empty() {
@@ -1398,10 +1395,8 @@ impl Pop {
             // Satisfaction equal to the amount is one full level.
             let mut full = desire.clone();
             full.satisfaction = full.amount;
-            let levels = full.tiers_satisfied();
-            let bonus = full.get_bonus_satisfaction();
-            if levels.is_finite() && bonus.is_finite() {
-                sum += levels + bonus;
+            if let Some(met) = full.levels_met() {
+                sum += met;
             }
         }
         sum
@@ -1627,24 +1622,55 @@ impl Pop {
     ///
     /// Mean levels met on `tier`, plus stored satisfaction for that tier.
     ///
-    /// Each desire adds its tiers satisfied and its bonus satisfaction.
-    /// A non-finite desire is skipped. Stored [`PopEffect::Satisfaction`]
-    /// on this tier is added once, after the mean. No desires and no stored
-    /// satisfaction returns 0.
+    /// Each desire adds its [`Desire::levels_met`]. A non-finite desire is
+    /// skipped. [`Self::stored_satisfaction`] on this tier is added once,
+    /// after the mean. No desires and no stored satisfaction returns 0.
     fn tier_met(&self, tier: usize) -> f64 {
         let mut sum = 0.0;
         let mut count = 0.0;
         if let Some(desires) = self.desires.get(tier) {
-            for desire in desires {
-                let levels = desire.tiers_satisfied();
-                let bonus = desire.get_bonus_satisfaction();
-                if !levels.is_finite() || !bonus.is_finite() {
-                    continue;
-                }
-                sum += levels + bonus;
+            for met in desires.iter().filter_map(Desire::levels_met) {
+                sum += met;
                 count += 1.0;
             }
         }
+        let mean = if count > 0.0 { sum / count } else { 0.0 };
+        mean + self.stored_satisfaction(tier)
+    }
+
+    /// # Basic Unmet
+    ///
+    /// Mean shortfall of the basic desires, reduced by stored basic satisfaction.
+    ///
+    /// Each desire's shortfall is how far its [`Desire::levels_met`] sits
+    /// below one full level, and not below 0. A non-finite desire is skipped.
+    /// One desire met past one level does not fill another desire's gap. The
+    /// mean of those shortfalls is then reduced by
+    /// [`Self::stored_satisfaction`] on tier 0, and not below 0. No basic
+    /// desires returns 0.
+    fn basic_unmet(&self) -> f64 {
+        let Some(desires) = self.desires.get(0) else {
+            return 0.0;
+        };
+        let mut shortfall = 0.0;
+        let mut count = 0.0;
+        for met in desires.iter().filter_map(Desire::levels_met) {
+            shortfall += (1.0 - met).max(0.0);
+            count += 1.0;
+        }
+        if count == 0.0 {
+            return 0.0;
+        }
+        (shortfall / count - self.stored_satisfaction(0)).max(0.0)
+    }
+
+    /// # Stored Satisfaction
+    ///
+    /// Stored [`PopEffect::Satisfaction`] on `tier`.
+    ///
+    /// A non-finite amount is skipped. The effects stay stored. Returns the
+    /// sum, or 0 with none.
+    fn stored_satisfaction(&self, tier: usize) -> f64 {
         let mut stored = 0.0;
         for effect in &self.stored_effects {
             if let PopEffect::Satisfaction {
@@ -1657,46 +1683,7 @@ impl Pop {
                 }
             }
         }
-        let mean = if count > 0.0 { sum / count } else { 0.0 };
-        mean + stored
-    }
-
-    /// # Basic Unmet
-    ///
-    /// Mean shortfall of the basic desires, reduced by stored basic satisfaction.
-    ///
-    /// Each desire's shortfall is how far its levels plus bonus sit below one
-    /// full level, and not below 0. One desire met past one level does not
-    /// fill another desire's gap. The mean of those shortfalls is then
-    /// reduced by stored satisfaction on tier 0, and not below 0. No basic
-    /// desires returns 0.
-    fn basic_unmet(&self) -> f64 {
-        let Some(desires) = self.desires.get(0) else {
-            return 0.0;
-        };
-        let mut shortfall = 0.0;
-        let mut count = 0.0;
-        for desire in desires {
-            let levels = desire.tiers_satisfied();
-            let bonus = desire.get_bonus_satisfaction();
-            if !levels.is_finite() || !bonus.is_finite() {
-                continue;
-            }
-            shortfall += (1.0 - (levels + bonus)).max(0.0);
-            count += 1.0;
-        }
-        if count == 0.0 {
-            return 0.0;
-        }
-        let mut stored = 0.0;
-        for effect in &self.stored_effects {
-            if let PopEffect::Satisfaction { tier, amount } = *effect {
-                if tier == 0 && amount.is_finite() {
-                    stored += amount;
-                }
-            }
-        }
-        (shortfall / count - stored).max(0.0)
+        stored
     }
 
     /// # Push Living Mods
@@ -1864,27 +1851,9 @@ impl Pop {
         }
         let sum = self.standard_of_living();
         // Drop the stored satisfaction now that the sum includes it.
-        let _ = self.satisfaction_from_pop_effects();
+        self.stored_effects
+            .retain(|effect| !matches!(effect, PopEffect::Satisfaction { .. }));
         self.records.satisfaction = sum;
-        sum
-    }
-
-    /// # Satisfaction from Pop Effects
-    ///
-    /// Sums stored satisfaction and removes those effects.
-    ///
-    /// The tier is not used. Other stored effects stay. Returns the sum.
-    fn satisfaction_from_pop_effects(&mut self) -> f64 {
-        let mut sum = 0.0;
-        let mut kept = Vec::new();
-        for effect in &self.stored_effects {
-            if let PopEffect::Satisfaction { amount, .. } = *effect {
-                sum += amount;
-            } else {
-                kept.push(*effect);
-            }
-        }
-        self.stored_effects = kept;
         sum
     }
 
@@ -4023,7 +3992,7 @@ fn living_trend(samples: &VecDeque<f64>) -> i32 {
 /// subtracts one vote for each day in that count. Returns that vote.
 fn living_vote(pop: &Pop) -> i32 {
     let trend = living_trend(&pop.sol_samples);
-    let today = pop.sol_samples.back().copied().unwrap_or(f64::NAN);
+    let today = pop.recorded_living().unwrap_or(f64::NAN);
     let basic = pop.basic_living_potential();
     if !today.is_finite() || !basic.is_finite() || today >= basic {
         return trend;
