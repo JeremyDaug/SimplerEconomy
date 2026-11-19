@@ -2181,19 +2181,22 @@ struct Take {
     walk: Walk,
 }
 
-/// Bids, completed exchanges, and the seller draws for one market day.
+/// The market, the open offers, the book, and the seller draws for one market day.
 struct ShopCtx<'a> {
-    /// Units bid, by good. The same good's bids add.
-    sought: &'a mut HashMap<usize, f64>,
-    /// Units exchanged, by good.
-    volume: &'a mut HashMap<usize, f64>,
-    /// Tender spent on each good. The outer key is the good bought.
-    paid: &'a mut HashMap<usize, HashMap<usize, f64>>,
+    /// Prices the goods and supplies the tender.
+    market: &'a Market,
+    /// Supplies processes and goods.
+    factuals: &'a Factuals,
+    /// Offers still open. Purchases lower them and coins paid raise them.
+    offers: &'a mut Vec<SellOffer>,
+    /// Bids and completed exchanges so far.
+    book: ShopBook,
     /// Draws for [`pick_seller`].
     rng: &'a mut dyn RngCore,
 }
 
 /// The bids and completed exchanges from one market's pop shop.
+#[derive(Default)]
 pub(crate) struct ShopBook {
     /// Units bid, by good.
     pub sought: HashMap<usize, f64>,
@@ -2201,6 +2204,36 @@ pub(crate) struct ShopBook {
     pub volume: HashMap<usize, f64>,
     /// Tender spent on each good. The outer key is the good bought.
     pub paid: HashMap<usize, HashMap<usize, f64>>,
+}
+
+impl ShopBook {
+    /// # Note Sought
+    ///
+    /// Adds `amount` to the bid for `good`.
+    ///
+    /// A non-positive amount is left out. The same good's bids add.
+    fn note_sought(&mut self, good: usize, amount: f64) {
+        if amount > 0.0 {
+            *self.sought.entry(good).or_insert(0.0) += amount;
+        }
+    }
+
+    /// # Note Exchange
+    ///
+    /// Adds one completed purchase.
+    ///
+    /// `units` of `good` add to the volume. Each coin adds to the tender spent
+    /// on that good. A non-positive amount is left out.
+    fn note_exchange(&mut self, good: usize, units: f64, coins: &[Coin]) {
+        if units > 0.0 {
+            *self.volume.entry(good).or_insert(0.0) += units;
+        }
+        for coin in coins {
+            if coin.units > 0.0 {
+                *self.paid.entry(good).or_default().entry(coin.currency).or_insert(0.0) += coin.units;
+            }
+        }
+    }
 }
 
 /// # Buy From Offers
@@ -2223,12 +2256,9 @@ pub(crate) fn buy_from_offers(
     pops: &mut [Pop], market: &Market, factuals: &Factuals, offers: &mut Vec<SellOffer>,
     rng: &mut dyn RngCore,
 ) -> ShopBook {
-    let mut sought = HashMap::new();
-    let mut volume = HashMap::new();
-    let mut paid = HashMap::new();
     // No unit of account, so nothing is priced and nothing is saved.
     if market.currencies.is_empty() {
-        return ShopBook { sought, volume, paid };
+        return ShopBook::default();
     }
     let mut order: Vec<usize> = (0..pops.len()).collect();
     let wealth: Vec<f64> = pops
@@ -2242,21 +2272,16 @@ pub(crate) fn buy_from_offers(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(pops[left].id.cmp(&pops[right].id))
     });
+    let mut ctx = ShopCtx { market, factuals, offers, book: ShopBook::default(), rng };
     for buyer_at in order {
-        let mut ctx = ShopCtx {
-            sought: &mut sought,
-            volume: &mut volume,
-            paid: &mut paid,
-            rng,
-        };
-        shop_one(pops, buyer_at, market, factuals, offers, &mut ctx);
+        shop_one(pops, buyer_at, &mut ctx);
     }
-    ShopBook { sought, volume, paid }
+    ctx.book
 }
 
 /// # Shop One
 ///
-/// One pop's purchases from `offers`.
+/// One pop's purchases from the open offers in `ctx`.
 ///
 /// Inputs run first. A desire tier runs only when the phase before it
 /// finished. Savings after a finished tier is a total in days of basic
@@ -2268,8 +2293,7 @@ pub(crate) fn buy_from_offers(
 /// still short. [`Pop::shop_stop`] records which of those it was.
 /// Bids and exchanges land in `ctx`.
 fn shop_one(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>,
 ) {
     // Yesterday's haul is replaced by the cover this walk spends.
     pops[buyer_at].transport_spent = 0.0;
@@ -2281,36 +2305,34 @@ fn shop_one(
             claimed.insert(good, row.reserved);
         }
     }
-    let inputs = shop_inputs(pops, buyer_at, market, factuals, offers, &mut claimed, ctx);
+    let inputs = shop_inputs(pops, buyer_at, &mut claimed, ctx);
     if inputs.is_broke() {
         note_broke(&mut pops[buyer_at], inputs);
         return;
     }
-    let basic = shop_tier(pops, buyer_at, market, factuals, offers, &mut claimed, ctx, 0, 1.0);
+    let basic = shop_tier(pops, buyer_at, &mut claimed, ctx, 0, 1.0);
     if !phase_done(&mut pops[buyer_at], basic, 0) {
         return;
     }
-    if !saved_through(pops, buyer_at, market, factuals, offers, ctx, 1.0) {
+    if !saved_through(pops, buyer_at, ctx, 1.0) {
         return;
     }
-    let common = shop_tier(pops, buyer_at, market, factuals, offers, &mut claimed, ctx, 1, 1.0);
+    let common = shop_tier(pops, buyer_at, &mut claimed, ctx, 1, 1.0);
     if !phase_done(&mut pops[buyer_at], common, 1) {
         return;
     }
-    if !saved_through(pops, buyer_at, market, factuals, offers, ctx, 3.0) {
+    if !saved_through(pops, buyer_at, ctx, 3.0) {
         return;
     }
     let mut level = 1.0;
     while pops[buyer_at].tier_len(2) > 0 {
-        let luxury = shop_tier(
-            pops, buyer_at, market, factuals, offers, &mut claimed, ctx, 2, level,
-        );
+        let luxury = shop_tier(pops, buyer_at, &mut claimed, ctx, 2, level);
         if !phase_done(&mut pops[buyer_at], luxury, 2) {
             return;
         }
         // Five days after the first finished level, then two more each level.
         let days = 5.0 + (level - 1.0) * 2.0;
-        if !saved_through(pops, buyer_at, market, factuals, offers, ctx, days) {
+        if !saved_through(pops, buyer_at, ctx, days) {
             return;
         }
         level += 1.0;
@@ -2348,10 +2370,9 @@ fn phase_done(pop: &mut Pop, walk: Walk, tier: u8) -> bool {
 /// [`ShopStop::Savings`]. A reached target lets the next phase start.
 /// Returns whether the target was reached.
 fn saved_through(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, days: f64,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, days: f64,
 ) -> bool {
-    match save_days(pops, buyer_at, market, factuals, offers, ctx, days) {
+    match save_days(pops, buyer_at, ctx, days) {
         Walk::Done => true,
         Walk::Short => {
             pops[buyer_at].shop_stop = ShopStop::Savings { days };
@@ -2389,9 +2410,9 @@ fn note_broke(pop: &mut Pop, walk: Walk) {
 /// Returns [`Walk::Broke`] when the purse or the haul cannot pay the next
 /// unit. Bids land in `ctx`.
 fn shop_inputs(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
+    pops: &mut [Pop], buyer_at: usize, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
 ) -> Walk {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     let lines: Vec<(usize, Option<f64>, Vec<usize>)> = pops[buyer_at]
         .job
         .lines
@@ -2415,9 +2436,7 @@ fn shop_inputs(
             } else {
                 iterations * input.amount
             };
-            let walk = buy_input(
-                pops, buyer_at, market, factuals, offers, claimed, ctx, input.good, need,
-            );
+            let walk = buy_input(pops, buyer_at, claimed, ctx, input.good, need);
             if walk.is_broke() {
                 return walk;
             }
@@ -2447,9 +2466,7 @@ fn shop_inputs(
             } else {
                 iterations * input.amount
             };
-            let walk = buy_input(
-                pops, buyer_at, market, factuals, offers, claimed, ctx, input.good, need,
-            );
+            let walk = buy_input(pops, buyer_at, claimed, ctx, input.good, need);
             if walk.is_broke() {
                 return walk;
             }
@@ -2468,19 +2485,16 @@ fn shop_inputs(
 /// purse or the haul cannot pay the next step. `want` is added to `ctx`
 /// before the take.
 fn buy_input(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
+    pops: &mut [Pop], buyer_at: usize, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
     good: usize, need: f64,
 ) -> Walk {
     let covered = claimed.get(&good).copied().unwrap_or(0.0);
-    let want = grid_down((need - covered).max(0.0), buy_step(market, good));
-    if want <= 0.0 || !factuals.is_for_sale(good) {
+    let want = grid_down((need - covered).max(0.0), buy_step(ctx.market, good));
+    if want <= 0.0 || !ctx.factuals.is_for_sale(good) {
         return Walk::Done;
     }
-    note_sought(ctx.sought, good, want);
-    let take = take_from_offers(
-        pops, buyer_at, market, factuals, offers, ctx, good, want, false, None,
-    );
+    ctx.book.note_sought(good, want);
+    let take = take_from_offers(pops, buyer_at, ctx, good, want, false, None);
     if take.units > 0.0 {
         *claimed.entry(good).or_insert(0.0) += take.units;
     }
@@ -2496,16 +2510,13 @@ fn buy_input(
 /// when money remains and a desire does not, and [`Walk::Broke`] when the
 /// purse or the haul cannot pay. An empty tier is done. Bids land in `ctx`.
 fn shop_tier(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
+    pops: &mut [Pop], buyer_at: usize, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
     tier: usize, level: f64,
 ) -> Walk {
     let count = pops[buyer_at].tier_len(tier);
     let mut short = false;
     for index in 0..count {
-        let walk = shop_desire(
-            pops, buyer_at, market, factuals, offers, claimed, ctx, tier, index, level,
-        );
+        let walk = shop_desire(pops, buyer_at, claimed, ctx, tier, index, level);
         if walk.is_broke() {
             return walk;
         }
@@ -2518,7 +2529,7 @@ fn shop_tier(
 
 /// # Shop Desire
 ///
-/// Covers one level of one desire from holdings, then from `offers`.
+/// Covers one level of one desire from holdings, then from the open offers.
 ///
 /// Goods are taken lowest cost per satisfaction first, and a lower good id
 /// breaks a tie. Satisfaction already on the desire, and the morning
@@ -2529,10 +2540,10 @@ fn shop_tier(
 /// cannot be bought are skipped. Returns whether the level was covered. A
 /// buy is added to `ctx` before the take.
 fn shop_desire(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
+    pops: &mut [Pop], buyer_at: usize, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
     tier: usize, index: usize, level: f64,
 ) -> Walk {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     let amount = pops[buyer_at].desires[tier][index].amount;
     debug_assert!(amount.is_finite() && amount > 0.0);
     if pops[buyer_at].desires[tier][index].target.is_empty() {
@@ -2579,13 +2590,11 @@ fn shop_desire(
             continue;
         }
         let needed = aim / efficiency;
-        let held = claim_on_hand(&mut pops[buyer_at], offers, claimed, good, needed);
+        let held = claim_on_hand(&mut pops[buyer_at], ctx.offers, claimed, good, needed);
         let buy = satisfaction_buy(needed, held, buy_step(market, good));
         let take = if buy > 0.0 {
-            note_sought(ctx.sought, good, buy);
-            take_from_offers(
-                pops, buyer_at, market, factuals, offers, ctx, good, buy, false, None,
-            )
+            ctx.book.note_sought(good, buy);
+            take_from_offers(pops, buyer_at, ctx, good, buy, false, None)
         } else {
             Take { units: 0.0, walk: Walk::Done }
         };
@@ -2629,17 +2638,17 @@ fn level_credit(pop: &Pop, tier: usize, index: usize, level: f64) -> f64 {
 /// not and the purse can still pay, and [`Walk::Broke`] when a purchase
 /// cannot be paid. Currency bids land in `ctx`.
 fn save_days(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, days: f64,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, days: f64,
 ) -> Walk {
+    let market = ctx.market;
     debug_assert!(days.is_finite() && days > 0.0);
     let target = days * pops[buyer_at].day_savings(market);
     if target <= 0.0 || savings_primary(&pops[buyer_at], market) + 1e-9 >= target {
         set_effective(pops, buyer_at, market);
         return Walk::Done;
     }
-    let walk = buy_durable(pops, buyer_at, market, factuals, offers, ctx, target);
-    park_loose(pops, buyer_at, market, factuals, offers, target);
+    let walk = buy_durable(pops, buyer_at, ctx, target);
+    park_loose(pops, buyer_at, ctx, target);
     set_effective(pops, buyer_at, market);
     if walk.is_broke() {
         return walk;
@@ -2663,9 +2672,9 @@ fn save_days(
 /// before the take. Returns that stop, or [`Walk::Done`] when every
 /// currency has been tried.
 fn buy_durable(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, target: f64,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, target: f64,
 ) -> Walk {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     let mut currencies = market.currencies.clone();
     currencies.sort_by(|&left, &right| {
         factuals.durability(right)
@@ -2689,10 +2698,8 @@ fn buy_durable(
         if want <= 0.0 {
             continue;
         }
-        note_sought(ctx.sought, currency, want);
-        let take = take_from_offers(
-            pops, buyer_at, market, factuals, offers, ctx, currency, want, true, Some(rank),
-        );
+        ctx.book.note_sought(currency, want);
+        let take = take_from_offers(pops, buyer_at, ctx, currency, want, true, Some(rank));
         if take.walk.is_broke() {
             return take.walk;
         }
@@ -2707,10 +2714,8 @@ fn buy_durable(
 /// Tender is parked least durable first. A lower good id breaks a tie.
 /// The amount is [`units_to_cover`]. The offer falls with the quantity.
 /// Aged units leave before fresh.
-fn park_loose(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, target: f64,
-) {
+fn park_loose(pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, target: f64) {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     for currency in tender_order(market, factuals) {
         let held = savings_primary(&pops[buyer_at], market);
         if held + 1e-9 >= target {
@@ -2727,7 +2732,7 @@ fn park_loose(
         }
         let buyer_id = pops[buyer_at].id;
         pops[buyer_at].move_to_savings(currency, take);
-        reduce_offer(offers, buyer_id, currency, take);
+        reduce_offer(ctx.offers, buyer_id, currency, take);
     }
 }
 
@@ -2749,17 +2754,6 @@ fn savings_primary(pop: &Pop, market: &Market) -> f64 {
             amount * market_price(Some(market), good)
         })
         .sum()
-}
-
-/// # Note Sought
-///
-/// Adds `amount` to the bid for `good` in `sought`.
-///
-/// A non-positive amount is left out. The same good's bids add.
-fn note_sought(sought: &mut HashMap<usize, f64>, good: usize, amount: f64) {
-    if amount > 0.0 {
-        *sought.entry(good).or_insert(0.0) += amount;
-    }
 }
 
 /// Tender the buyer hands over in one meeting.
@@ -2806,10 +2800,10 @@ enum Meeting {
 /// `ctx`. Returns the units moved. [`Walk::Broke`] means the next step
 /// could not be paid.
 fn take_from_offers(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, good: usize, want: f64,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, good: usize, want: f64,
     into_savings: bool, below: Option<f64>,
 ) -> Take {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     let step = buy_step(market, good);
     if want <= 0.0 || step <= 0.0 {
         return Take { units: 0.0, walk: Walk::Done };
@@ -2818,32 +2812,20 @@ fn take_from_offers(
     if !(price.is_finite() && price > 0.0) {
         return Take { units: 0.0, walk: Walk::Done };
     }
+    let transport = factuals.get_good(good).filter(|spec| spec.is_transport());
     let mut got = 0.0;
     while got + 1e-12 < want {
         let buyer_id = pops[buyer_at].id;
-        let Some((seller, room)) = pick_seller(offers, good, buyer_id, step, ctx.rng) else {
+        let Some((seller, room)) = pick_seller(ctx.offers, good, buyer_id, step, ctx.rng) else {
             return Take { units: got, walk: Walk::Done };
         };
-        let meeting = quote_meeting(
-            &pops[buyer_at], market, factuals, good, (want - got).min(room), price, step, good,
-            below,
-        );
-        let priced = match meeting {
+        let quote = Quote { pop: &pops[buyer_at], market, factuals, good, price, step, below };
+        let limit = (want - got).min(room);
+        let priced = match quote.meeting(limit) {
             Meeting::Stop => return Take { units: got, walk: Walk::Done },
             Meeting::Halt(Halt::Transport) => {
-                let gap = haul_gap(
-                    &pops[buyer_at], market, factuals, good, (want - got).min(room), price, step,
-                    good, below,
-                );
-                let buying_transport = factuals
-                    .get_good(good)
-                    .is_some_and(|spec| spec.is_transport());
-                if buying_transport
-                    || gap <= 1e-9
-                    || !buy_transport_cover(
-                        pops, buyer_at, market, factuals, offers, ctx, gap,
-                    )
-                {
+                let gap = if transport.is_some() { 0.0 } else { quote.haul_gap(limit) };
+                if gap <= 1e-9 || !buy_transport_cover(pops, buyer_at, ctx, gap) {
                     return Take {
                         units: got,
                         walk: Walk::Broke { good, halt: Halt::Transport },
@@ -2859,21 +2841,16 @@ fn take_from_offers(
         if priced.units + 1e-12 < step {
             return Take { units: got, walk: Walk::Done };
         }
-        pay_coins(pops, buyer_at, seller, offers, &priced.coins);
-        pull_from_seller(pops, seller, offers, good, priced.units);
-        let buying_transport = factuals.get_good(good).is_some_and(|spec| spec.is_transport());
-        if buying_transport {
-            let bought = factuals
-                .get_good(good)
-                .map(|spec| spec.transport_cover(priced.units))
-                .unwrap_or(0.0);
-            pops[buyer_at].transport_purchased += bought;
+        pay_coins(pops, buyer_at, seller, ctx.offers, &priced.coins);
+        pull_from_seller(pops, seller, ctx.offers, good, priced.units);
+        if let Some(spec) = transport {
+            pops[buyer_at].transport_purchased += spec.transport_cover(priced.units);
             let row = pops[buyer_at].property.entry(good).or_default();
             row.quantity += priced.units;
             // The order pays its own flat fee. The rest stays free to haul.
-            spend_named_transport(&mut pops[buyer_at], factuals, offers, good, priced.cover);
+            spend_named_transport(&mut pops[buyer_at], factuals, ctx.offers, good, priced.cover);
         } else {
-            spend_transport(&mut pops[buyer_at], factuals, offers, priced.cover);
+            spend_transport(&mut pops[buyer_at], factuals, ctx.offers, priced.cover);
             if into_savings {
                 *pops[buyer_at].savings.entry(good).or_insert(0.0) += priced.units;
             } else {
@@ -2882,7 +2859,7 @@ fn take_from_offers(
                 row.reserved += priced.units;
             }
         }
-        note_exchange(ctx, good, priced.units, &priced.coins);
+        ctx.book.note_exchange(good, priced.units, &priced.coins);
         got += priced.units;
     }
     Take { units: got, walk: Walk::Done }
@@ -2925,119 +2902,188 @@ fn pick_seller(
     None
 }
 
-/// # Quote Meeting
+/// One buyer's terms for meetings that buy `good`.
 ///
-/// The most of `good` one meeting can buy, up to `limit`.
-///
-/// `limit` is the bid still open and the seller's remaining offer, already
-/// on `step`. The purse caps that, least durable tender first. When the
-/// world has a transport good, the haul caps it further: one flat fee for
-/// the meeting plus bulk of the units and of the tender that pays for
-/// them. Buying transport itself costs only that flat fee, and the units
-/// being bought count toward it. A quantity whose goods bill truncates to
-/// 0 buys nothing. A next step the purse cannot pay is [`Halt::Purse`].
-/// A next step the haul cannot move is [`Halt::Transport`]. Returns that
-/// meeting.
-fn quote_meeting(
-    pop: &Pop, market: &Market, factuals: &Factuals, good: usize, limit: f64, price: f64,
-    step: f64, skip_good: usize, below: Option<f64>,
-) -> Meeting {
-    let room_cap = grid_down(limit, step);
-    if room_cap + 1e-12 < step {
-        return Meeting::Stop;
-    }
-    let purse = purse_value(pop, market, factuals, skip_good, below);
-    let afford = units_affordable(purse, price, step);
-    if afford + 1e-12 < step {
-        let bill = grid_down(step * price, CURRENCY_STEP);
-        if bill <= 0.0 {
-            return Meeting::Stop;
-        }
-        return Meeting::Halt(Halt::Purse);
-    }
-    let cap = grid_down(room_cap.min(afford), step);
-    if cap + 1e-12 < step {
-        return Meeting::Stop;
-    }
-    if let Some(priced) = price_meeting(pop, market, factuals, good, cap, price, skip_good, below) {
-        return Meeting::Take(priced);
-    }
-    // A world with no transport good does not shrink a bill the purse was quoted as covering.
-    if !factuals.has_transport() {
-        let bill = grid_down(cap * price, CURRENCY_STEP);
-        if bill <= 0.0 {
-            return Meeting::Stop;
-        }
-        return Meeting::Halt(Halt::Purse);
-    }
-    let one = grid_down(step, step);
-    if price_meeting(pop, market, factuals, good, one, price, skip_good, below).is_none() {
-        // A goods bill that truncates to nothing is not a failed purse.
-        if grid_down(one * price, CURRENCY_STEP) <= 0.0 {
-            return Meeting::Stop;
-        }
-        return Meeting::Halt(step_halt(pop, market, factuals, good, one, price, skip_good, below));
-    }
-    match largest_haul(pop, market, factuals, good, cap, price, step, skip_good, below) {
-        Some(priced) => Meeting::Take(priced),
-        None => Meeting::Halt(Halt::Transport),
-    }
+/// `price` and `step` are the good's market price and buy grid. `below`
+/// spends only tender strictly less durable than that. The good being
+/// bought is never spent as tender.
+struct Quote<'a> {
+    pop: &'a Pop,
+    market: &'a Market,
+    factuals: &'a Factuals,
+    good: usize,
+    price: f64,
+    step: f64,
+    below: Option<f64>,
 }
 
-/// # Step Halt
-///
-/// Why one `units` purchase cannot be paid.
-///
-/// The purse is checked first. A bill it can pay and the haul cannot move
-/// is [`Halt::Transport`]. Any other miss is [`Halt::Purse`]. Returns that
-/// halt.
-fn step_halt(
-    pop: &Pop, market: &Market, factuals: &Factuals, good: usize, units: f64, price: f64,
-    skip_good: usize, below: Option<f64>,
-) -> Halt {
-    let bill = grid_down(units * price, CURRENCY_STEP);
-    let Some(coins) = plan_payment(pop, market, factuals, bill, skip_good, below) else {
-        return Halt::Purse;
-    };
-    let cover = purchase_cover(factuals, market.friction, good, units, &coins);
-    let free = cover_on_hand(pop, factuals, good, units, &coins);
-    if cover > 0.0 && free + 1e-9 < cover {
-        Halt::Transport
-    } else {
-        Halt::Purse
-    }
-}
-
-/// # Largest Haul
-///
-/// The largest multiple of `step`, up to `cap`, whose purse and haul both fit.
-///
-/// The search treats a miss as every larger quantity missing too. One step
-/// is the smallest candidate. Returns that purchase, or nothing when none fit.
-fn largest_haul(
-    pop: &Pop, market: &Market, factuals: &Factuals, good: usize, cap: f64, price: f64, step: f64,
-    skip_good: usize, below: Option<f64>,
-) -> Option<Priced> {
-    let max_steps = grid_steps(cap, step);
-    if max_steps == 0 {
-        return None;
-    }
-    let mut best = None;
-    let mut lo = 1u64;
-    let mut hi = max_steps;
-    while lo <= hi {
-        let mid = lo + (hi - lo) / 2;
-        let units = grid_down((mid as f64) * step, step).min(cap);
-        if let Some(priced) = price_meeting(pop, market, factuals, good, units, price, skip_good, below) {
-            best = Some(priced);
-            lo = mid + 1;
-        } else if mid == 0 {
-            break;
-        } else {
-            hi = mid - 1;
+impl Quote<'_> {
+    /// # Meeting
+    ///
+    /// The most of the good one meeting can buy, up to `limit`.
+    ///
+    /// `limit` is the bid still open and the seller's remaining offer, already
+    /// on the step. The purse caps that, least durable tender first. When the
+    /// world has a transport good, the haul caps it further: one flat fee for
+    /// the meeting plus bulk of the units and of the tender that pays for
+    /// them. Buying transport itself costs only that flat fee, and the units
+    /// being bought count toward it. A quantity whose goods bill truncates to
+    /// 0 buys nothing. A next step the purse cannot pay is [`Halt::Purse`].
+    /// A next step the haul cannot move is [`Halt::Transport`]. Returns that
+    /// meeting.
+    fn meeting(&self, limit: f64) -> Meeting {
+        let step = self.step;
+        let room_cap = grid_down(limit, step);
+        if room_cap + 1e-12 < step {
+            return Meeting::Stop;
+        }
+        let afford = self.affordable();
+        if afford + 1e-12 < step {
+            let bill = grid_down(step * self.price, CURRENCY_STEP);
+            if bill <= 0.0 {
+                return Meeting::Stop;
+            }
+            return Meeting::Halt(Halt::Purse);
+        }
+        let cap = grid_down(room_cap.min(afford), step);
+        if cap + 1e-12 < step {
+            return Meeting::Stop;
+        }
+        if let Ok(priced) = self.priced(cap) {
+            return Meeting::Take(priced);
+        }
+        // A world with no transport good does not shrink a bill the purse was quoted as covering.
+        if !self.factuals.has_transport() {
+            let bill = grid_down(cap * self.price, CURRENCY_STEP);
+            if bill <= 0.0 {
+                return Meeting::Stop;
+            }
+            return Meeting::Halt(Halt::Purse);
+        }
+        let one = grid_down(step, step);
+        if let Err(halt) = self.priced(one) {
+            // A goods bill that truncates to nothing is not a failed purse.
+            if grid_down(one * self.price, CURRENCY_STEP) <= 0.0 {
+                return Meeting::Stop;
+            }
+            return Meeting::Halt(halt);
+        }
+        match self.largest_haul(cap) {
+            Some(priced) => Meeting::Take(priced),
+            None => Meeting::Halt(Halt::Transport),
         }
     }
-    best
+
+    /// # Affordable
+    ///
+    /// Units of the good the buyer's purse can pay, on the step.
+    ///
+    /// The purse is [`purse_value`] under these terms. Returns
+    /// [`units_affordable`] for it.
+    fn affordable(&self) -> f64 {
+        let purse = purse_value(self.pop, self.market, self.factuals, self.good, self.below);
+        units_affordable(purse, self.price, self.step)
+    }
+
+    /// # Largest Haul
+    ///
+    /// The largest multiple of the step, up to `cap`, whose purse and haul both fit.
+    ///
+    /// The search treats a miss as every larger quantity missing too. One step
+    /// is the smallest candidate. Returns that purchase, or nothing when none fit.
+    fn largest_haul(&self, cap: f64) -> Option<Priced> {
+        let max_steps = grid_steps(cap, self.step);
+        if max_steps == 0 {
+            return None;
+        }
+        let mut best = None;
+        let mut lo = 1u64;
+        let mut hi = max_steps;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let units = grid_down((mid as f64) * self.step, self.step).min(cap);
+            if let Ok(priced) = self.priced(units) {
+                best = Some(priced);
+                lo = mid + 1;
+            } else if mid == 0 {
+                break;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        best
+    }
+
+    /// # Priced
+    ///
+    /// The coins and haul for buying `units` of the good, when both fit.
+    ///
+    /// The coins are [`Self::coins_for`]. The haul is [`Self::haul`] for
+    /// those units and those coins. Cover still on hand has to meet it.
+    /// Returns that purchase. A non-positive quantity, a bill that truncates
+    /// to 0, or a purse that cannot cover it is [`Halt::Purse`]. A haul that
+    /// cannot move it is [`Halt::Transport`].
+    fn priced(&self, units: f64) -> Result<Priced, Halt> {
+        if !units.is_finite() || units <= 0.0 {
+            return Err(Halt::Purse);
+        }
+        let coins = self.coins_for(units).ok_or(Halt::Purse)?;
+        let (cover, free) = self.haul(units, &coins);
+        if cover > 0.0 && free + 1e-9 < cover {
+            return Err(Halt::Transport);
+        }
+        Ok(Priced { units, coins, cover })
+    }
+
+    /// # Haul Gap
+    ///
+    /// Cover still missing for one meeting.
+    ///
+    /// `limit` is the units still wanted and still offered. The purse caps
+    /// that, on the step. The haul is [`Self::haul`] for those units. Cover
+    /// already on hand is subtracted. Returns the positive gap, or 0 when the
+    /// meeting is not short of haul.
+    fn haul_gap(&self, limit: f64) -> f64 {
+        let room_cap = grid_down(limit, self.step);
+        if room_cap + 1e-12 < self.step {
+            return 0.0;
+        }
+        let cap = grid_down(room_cap.min(self.affordable()), self.step);
+        if cap + 1e-12 < self.step {
+            return 0.0;
+        }
+        let Some(coins) = self.coins_for(cap) else {
+            return 0.0;
+        };
+        let (cover, free) = self.haul(cap, &coins);
+        (cover - free).max(0.0)
+    }
+
+    /// # Coins For
+    ///
+    /// The loose tender that pays for `units` of the good.
+    ///
+    /// The goods bill is truncated to [`CURRENCY_STEP`] and planned through
+    /// [`plan_payment`]. Returns those coins, or nothing when the bill
+    /// truncates to 0 or the purse cannot cover it.
+    fn coins_for(&self, units: f64) -> Option<Vec<Coin>> {
+        let bill = grid_down(units * self.price, CURRENCY_STEP);
+        if bill <= 0.0 {
+            return None;
+        }
+        plan_payment(self.pop, self.market, self.factuals, bill, self.good, self.below)
+    }
+
+    /// # Haul
+    ///
+    /// The cover a meeting for `units` paid with `coins` spends, and the cover that can pay it.
+    ///
+    /// Returns [`purchase_cover`] and [`cover_on_hand`], in that order.
+    fn haul(&self, units: f64, coins: &[Coin]) -> (f64, f64) {
+        let cover = purchase_cover(self.factuals, self.market.friction, self.good, units, coins);
+        let free = cover_on_hand(self.pop, self.factuals, self.good, units, coins);
+        (cover, free)
+    }
 }
 
 /// # Grid Steps
@@ -3059,70 +3105,6 @@ fn grid_steps(amount: f64, step: f64) -> u64 {
     }
 }
 
-/// # Price Meeting
-///
-/// The coins and haul for buying `units` of `good`, when both fit.
-///
-/// The goods bill is planned from loose tender. The haul is
-/// [`purchase_cover`] for those units and those coins. Cover still on
-/// hand, after any of those coins that are themselves transport, has to
-/// meet it. Units of transport being bought count toward their own fee.
-/// A bill that truncates to 0, a purse that cannot cover it, or a haul
-/// that cannot move it buys nothing. Returns that purchase.
-fn price_meeting(
-    pop: &Pop, market: &Market, factuals: &Factuals, good: usize, units: f64, price: f64,
-    skip_good: usize, below: Option<f64>,
-) -> Option<Priced> {
-    if !units.is_finite() || units <= 0.0 {
-        return None;
-    }
-    let bill = grid_down(units * price, CURRENCY_STEP);
-    if bill <= 0.0 {
-        return None;
-    }
-    let coins = plan_payment(pop, market, factuals, bill, skip_good, below)?;
-    let cover = purchase_cover(factuals, market.friction, good, units, &coins);
-    let free = cover_on_hand(pop, factuals, good, units, &coins);
-    if cover > 0.0 && free + 1e-9 < cover {
-        return None;
-    }
-    Some(Priced { units, coins, cover })
-}
-
-/// # Haul Gap
-///
-/// Cover still missing for one meeting of `good`.
-///
-/// `limit` is the units still wanted and still offered. The purse caps
-/// that, on `step`. The haul is [`purchase_cover`] for those units.
-/// Cover already on hand is subtracted. Returns the positive gap, or 0
-/// when the meeting is not short of haul.
-fn haul_gap(
-    pop: &Pop, market: &Market, factuals: &Factuals, good: usize, limit: f64, price: f64,
-    step: f64, skip_good: usize, below: Option<f64>,
-) -> f64 {
-    let room_cap = grid_down(limit, step);
-    if room_cap + 1e-12 < step {
-        return 0.0;
-    }
-    let purse = purse_value(pop, market, factuals, skip_good, below);
-    let afford = units_affordable(purse, price, step);
-    let cap = grid_down(room_cap.min(afford), step);
-    if cap + 1e-12 < step {
-        return 0.0;
-    }
-    let bill = grid_down(cap * price, CURRENCY_STEP);
-    if bill <= 0.0 {
-        return 0.0;
-    }
-    let Some(coins) = plan_payment(pop, market, factuals, bill, skip_good, below) else {
-        return 0.0;
-    };
-    let cover = purchase_cover(factuals, market.friction, good, cap, &coins);
-    let free = cover_on_hand(pop, factuals, good, cap, &coins);
-    (cover - free).max(0.0)
-}
-
 /// # Buy Transport Cover
 ///
 /// Buys transport until `gap` cover is on hand, or no offer can add any.
@@ -3134,13 +3116,13 @@ fn haul_gap(
 /// goes through [`take_from_offers`]. A good the purse cannot start is
 /// skipped. Returns whether any cover was added.
 fn buy_transport_cover(
-    pops: &mut [Pop], buyer_at: usize, market: &Market, factuals: &Factuals,
-    offers: &mut Vec<SellOffer>, ctx: &mut ShopCtx<'_>, gap: f64,
+    pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, gap: f64,
 ) -> bool {
+    let (market, factuals) = (ctx.market, ctx.factuals);
     debug_assert!(gap.is_finite() && gap > 0.0);
     let mut left = gap;
     let mut gained = 0.0;
-    for good in transport_by_cover(offers, pops[buyer_at].id, market, factuals) {
+    for good in transport_by_cover(ctx.offers, pops[buyer_at].id, market, factuals) {
         if left <= 1e-9 {
             break;
         }
@@ -3166,10 +3148,8 @@ fn buy_transport_cover(
             continue;
         }
         let before = transport_cover_free(&pops[buyer_at], factuals, &[]);
-        note_sought(ctx.sought, good, need);
-        let take = take_from_offers(
-            pops, buyer_at, market, factuals, offers, ctx, good, need, false, None,
-        );
+        ctx.book.note_sought(good, need);
+        let take = take_from_offers(pops, buyer_at, ctx, good, need, false, None);
         let after = transport_cover_free(&pops[buyer_at], factuals, &[]);
         let added = (after - before).max(0.0);
         gained += added;
@@ -3423,8 +3403,8 @@ fn pay_coins(
 /// Spends `cover` of transport from the buyer's unreserved goods.
 ///
 /// The least durable transport good goes first. A lower good id breaks a
-/// tie. Aged units leave before fresh, and the units are marked spent.
-/// The seller does not receive them. `cover` is added to
+/// tie. Each good is spent through [`spend_transport_units`]. The seller
+/// does not receive them. `cover` is added to
 /// [`Pop::transport_spent`]. A cover of 0 spends nothing.
 fn spend_transport(pop: &mut Pop, factuals: &Factuals, offers: &mut [SellOffer], cover: f64) {
     debug_assert!(cover.is_finite() && cover >= 0.0);
@@ -3463,14 +3443,7 @@ fn spend_transport(pop: &mut Pop, factuals: &Factuals, offers: &mut [SellOffer],
         if units <= 0.0 {
             continue;
         }
-        {
-            let row = pop.property.get_mut(&good).expect("transport good has a row");
-            row.spend_aged_first(units);
-            row.quantity -= units;
-            row.spent += units;
-            debug_assert!(row.quantity + 1e-9 >= row.reserved);
-        }
-        reduce_offer(offers, pop.id, good, units);
+        spend_transport_units(pop, offers, good, units);
         left -= spec.transport_cover(units);
     }
     debug_assert!(left <= 1e-6, "transport cover was quoted from stock on hand");
@@ -3481,9 +3454,8 @@ fn spend_transport(pop: &mut Pop, factuals: &Factuals, offers: &mut [SellOffer],
 ///
 /// Spends `cover` from one transport `good` the buyer just received.
 ///
-/// Only that good is spent. Aged units leave before fresh. The units are
-/// marked spent, and the buyer's offer falls with them. The cover actually
-/// taken is added to [`Pop::transport_spent`]. A cover of 0 spends nothing.
+/// Only that good is spent, through [`spend_transport_units`]. The cover
+/// actually taken is added to [`Pop::transport_spent`]. A cover of 0 spends nothing.
 fn spend_named_transport(
     pop: &mut Pop, factuals: &Factuals, offers: &mut [SellOffer], good: usize, cover: f64,
 ) {
@@ -3503,32 +3475,23 @@ fn spend_named_transport(
     if units <= 0.0 {
         return;
     }
-    {
-        let row = pop.property.get_mut(&good).expect("bought transport has a row");
-        row.spend_aged_first(units);
-        row.quantity -= units;
-        row.spent += units;
-        debug_assert!(row.quantity + 1e-9 >= row.reserved);
-    }
-    reduce_offer(offers, pop.id, good, units);
+    spend_transport_units(pop, offers, good, units);
     pop.transport_spent += spec.transport_cover(units);
 }
 
-/// # Note Exchange
+/// # Spend Transport Units
 ///
-/// Adds one completed purchase to `ctx`.
+/// Spends `units` of transport `good` from `pop` to pay a haul.
 ///
-/// `units` of `good` add to the volume. Each coin adds to the tender spent
-/// on that good. A non-positive amount is left out.
-fn note_exchange(ctx: &mut ShopCtx<'_>, good: usize, units: f64, coins: &[Coin]) {
-    if units > 0.0 {
-        *ctx.volume.entry(good).or_insert(0.0) += units;
-    }
-    for coin in coins {
-        if coin.units > 0.0 {
-            *ctx.paid.entry(good).or_default().entry(coin.currency).or_insert(0.0) += coin.units;
-        }
-    }
+/// Aged units leave before fresh. The units are marked spent, and `pop`'s
+/// offer falls with them. The row must already be there.
+fn spend_transport_units(pop: &mut Pop, offers: &mut [SellOffer], good: usize, units: f64) {
+    let row = pop.property.get_mut(&good).expect("transport good has a row");
+    row.spend_aged_first(units);
+    row.quantity -= units;
+    row.spent += units;
+    debug_assert!(row.quantity + 1e-9 >= row.reserved);
+    reduce_offer(offers, pop.id, good, units);
 }
 
 /// # Pull From Seller
