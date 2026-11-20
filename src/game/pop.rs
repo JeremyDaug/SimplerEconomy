@@ -2032,7 +2032,7 @@ impl Pop {
     ///
     /// Each basic desire of amount A with n goods gives every good
     /// satisfaction A/n. Units are that satisfaction divided by efficiency,
-    /// priced by [`market_price`]. The day is the sum. No basic desire costs
+    /// priced by [`Market::price`]. The day is the sum. No basic desire costs
     /// 0.
     pub fn day_savings(&self, market: &Market) -> f64 {
         let Some(desires) = self.desires.first() else {
@@ -2048,7 +2048,7 @@ impl Pop {
             let share = desire.amount / goods as f64;
             for target in &desire.target {
                 debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-                cost += share / target.efficiency * market_price(Some(market), target.good);
+                cost += share / target.efficiency * market.price(target.good);
             }
         }
         cost
@@ -2575,7 +2575,7 @@ fn shop_desire(
         .enumerate()
         .map(|(slot, target)| {
             debug_assert!(target.efficiency.is_finite() && target.efficiency > 0.0);
-            let price = market_price(Some(market), target.good);
+            let price = market.price(target.good);
             (slot, target.good, target.efficiency, price / target.efficiency)
         })
         .collect();
@@ -2753,7 +2753,7 @@ fn buy_durable(
         }
         let rank = factuals.durability(currency);
         let purse = purse_value(&pops[buyer_at], market, factuals, currency, Some(rank));
-        let price = market_price(Some(market), currency);
+        let price = market.price(currency);
         if purse <= 0.0 || !(price.is_finite() && price > 0.0) {
             continue;
         }
@@ -2785,7 +2785,7 @@ fn park_loose(pops: &mut [Pop], buyer_at: usize, ctx: &mut ShopCtx<'_>, target: 
         if held + 1e-9 >= target {
             break;
         }
-        let price = market_price(Some(market), currency);
+        let price = market.price(currency);
         if !(price.is_finite() && price > 0.0) {
             continue;
         }
@@ -2815,7 +2815,7 @@ fn savings_primary(pop: &Pop, market: &Market) -> f64 {
         .iter()
         .map(|(&good, &amount)| {
             debug_assert!(amount.is_finite() && amount >= 0.0);
-            amount * market_price(Some(market), good)
+            amount * market.price(good)
         })
         .sum()
 }
@@ -2872,7 +2872,7 @@ fn take_from_offers(
     if want <= 0.0 || step <= 0.0 {
         return Take { units: 0.0, walk: Walk::Done };
     }
-    let price = market_price(Some(market), good);
+    let price = market.price(good);
     if !(price.is_finite() && price > 0.0) {
         return Take { units: 0.0, walk: Walk::Done };
     }
@@ -3197,7 +3197,7 @@ fn buy_transport_cover(
         if !(efficiency.is_finite() && efficiency > 0.0) {
             continue;
         }
-        let price = market_price(Some(market), good);
+        let price = market.price(good);
         if !(price.is_finite() && price > 0.0) {
             continue;
         }
@@ -3247,7 +3247,7 @@ fn transport_by_cover(
             continue;
         }
         let efficiency = spec.transport_efficiency();
-        let price = market_price(Some(market), offer.good);
+        let price = market.price(offer.good);
         if !(efficiency.is_finite() && efficiency > 0.0 && price.is_finite() && price > 0.0) {
             continue;
         }
@@ -3259,7 +3259,7 @@ fn transport_by_cover(
                 .get_good(good)
                 .map(|spec| spec.transport_efficiency())
                 .unwrap_or(0.0);
-            efficiency / market_price(Some(market), good)
+            efficiency / market.price(good)
         };
         score(right)
             .partial_cmp(&score(left))
@@ -3415,7 +3415,7 @@ fn plan_payment(
         if have <= 0.0 {
             continue;
         }
-        let price = market_price(Some(market), currency);
+        let price = market.price(currency);
         if !(price.is_finite() && price > 0.0) {
             continue;
         }
@@ -3631,7 +3631,7 @@ fn purse_value(
         if have <= 0.0 {
             continue;
         }
-        value += have * market_price(Some(market), currency);
+        value += have * market.price(currency);
     }
     value
 }
@@ -4263,31 +4263,10 @@ fn line_time(target: Option<f64>, time_per: f64) -> f64 {
 ///
 /// Currency units one unit of `good` costs on `market`.
 ///
-/// The currency is the market's first tender. The stored rate is goods per
-/// currency unit, and the price is its inverse. A missing market, tender,
-/// or rate costs 1. The tender priced in itself costs 1. Returns that price.
+/// The cost is [`Market::price`]. No market prices every good at 1.
+/// Returns that price.
 pub fn market_price(market: Option<&Market>, good: usize) -> f64 {
-    let Some(market) = market else {
-        return 1.0;
-    };
-    let Some(&currency) = market.currencies.first() else {
-        return 1.0;
-    };
-    if good == currency {
-        return 1.0;
-    }
-    match market
-        .exchange_rates
-        .get(&currency)
-        .and_then(|row| row.get(&good))
-        .copied()
-    {
-        Some(rate) => {
-            debug_assert!(rate.is_finite() && rate > 0.0, "exchange rate must be > 0");
-            1.0 / rate
-        }
-        None => 1.0,
-    }
+    market.map_or(1.0, |market| market.price(good))
 }
 
 /// # Optional Keeps Value
