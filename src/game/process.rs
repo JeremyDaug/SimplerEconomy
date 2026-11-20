@@ -841,7 +841,8 @@ impl ProcessOutput {
 /// 
 /// The tags available for a process. Not excluvise with each other, but
 /// not all should be mixed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProcessTag {
     /// Internal processes are 'helper' processes, which everyone has access to and can 
     /// be used for transformations that have some complexity to them, like Transportation use.
@@ -914,6 +915,9 @@ struct ProcessFile {
     /// Management overhead. Omitted world data is 1.0. Below 1.0 is subsistence.
     #[serde(default = "default_process_complexity")]
     complexity: f64,
+    /// [`ProcessTag`] names. An omitted list is empty.
+    #[serde(default)]
+    tags: Vec<ProcessTag>,
 }
 
 /// # Default Process Complexity
@@ -999,6 +1003,7 @@ impl Process {
     /// An empty `goods` map does not check good ids, so a process document can
     /// load before any goods. A non-empty map rejects a good id that is missing.
     /// Complexity and amounts must be finite and greater than 0.
+    /// `tags` are [`ProcessTag`] names. An omitted list is empty.
     ///
     /// Returns the processes keyed by id, or the first error.
     pub fn load_from_toml(
@@ -1040,6 +1045,7 @@ impl ProcessFile {
         for effect in self.effects {
             process = process.with_effect(effect.into());
         }
+        process.process_tags = self.tags;
         Ok(process)
     }
 }
@@ -1175,7 +1181,9 @@ mod processes {
     use crate::game::{
         factuals::Factuals,
         good::Good,
-        process::{InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessOutput},
+        process::{
+            InputEffect, InputType, Process, ProcessEffect, ProcessInput, ProcessOutput, ProcessTag,
+        },
     };
     use std::collections::HashMap;
     // --- Minimal helpers to keep tests readable ---
@@ -2401,5 +2409,42 @@ mod processes {
             assert_eq!(result.missing_goods.len(), 1);
             assert!(result.missing_goods.contains(&FIXED_GOOD));
         }
+    }
+
+    /// # Load From Toml Reads Labor And Industrial
+    ///
+    /// A labor tag marks the process labor. An industrial tag is stored.
+    /// An omitted list stays empty.
+    #[test]
+    fn load_from_toml_reads_labor_and_industrial() {
+        let loaded = Process::load_from_toml(
+            r#"
+[[processes]]
+id = 7
+name = "farmhand labor"
+tags = ["labor"]
+inputs = [{ good = 0, amount = 1.0 }]
+outputs = [{ good = 1, amount = 0.5 }]
+
+[[processes]]
+id = 8
+name = "agribusiness"
+tags = ["industrial"]
+outputs = [{ good = 1, amount = 1.0 }]
+
+[[processes]]
+id = 9
+name = "plain"
+outputs = [{ good = 1, amount = 1.0 }]
+"#,
+            &HashMap::new(),
+        )
+        .expect("tags");
+        assert!(loaded[&7].is_labor());
+        assert!(loaded[&8]
+            .process_tags
+            .iter()
+            .any(|tag| matches!(tag, ProcessTag::Industrial)));
+        assert!(loaded[&9].process_tags.is_empty());
     }
 }

@@ -18,7 +18,7 @@ The document's `processes` array is read. Other tables are ignored. The caller p
 
 An empty goods map does not check good ids, so a process document can load on its own. A non-empty map rejects a good id that is not in it.
 
-Complexity defaults to 1.0. Below 1.0 is subsistence (`Process::is_subsistence`). Complexity and every input and output amount must be finite and greater than 0. A process may name each good once as an input.
+Complexity defaults to 1.0. Below 1.0 is subsistence (`Process::is_subsistence`). Complexity and every input and output amount must be finite and greater than 0. A process may name each good once as an input. `tags` are `ProcessTag` names, such as `labor` and `industrial`. An omitted list is empty.
 
 Input `type` is `destroyed` (the default), `consumed`, `capital`, or `factor`. `optional = true`, or any `optional_effects` entry, makes the input optional. Those effects are `throughput`, `input`, `output`, `extra_output`, and `birth_rate`.
 

@@ -6,9 +6,11 @@
 //! world. A species or culture desire is derived from a platonic desire.
 //!
 //! The first argument is how many days to run before asking for more
-//! (default 1). The second is how many times a pop's people its ceiling
-//! share is when that cap is set (default 1000). A pop with no cap receives
-//! that share before the turn. After those days, enter runs one more, a number runs
+//! (default 1). A name that is not a day count loads `data/<name>` instead
+//! of `data/pop_tester`, and the day count follows it. The next number is
+//! how many times a pop's people its ceiling share is when that cap is set
+//! (default 1000). A pop with no cap receives that share before the turn.
+//! After those days, enter runs one more, a number runs
 //! that many, and 0 quits. The table is one row per pop. The line above
 //! it is the turn those rows finished. A terminal prints each finished
 //! day below the last one, so the window can scroll. A pipe prints them
@@ -71,6 +73,8 @@
 //! cargo run --example pop_tester
 //! cargo run --example pop_tester -- 1
 //! cargo run --example pop_tester -- 30 10
+//! cargo run --example pop_tester -- grain
+//! cargo run --example pop_tester -- grain 40
 //! ```
 
 use std::collections::HashMap;
@@ -103,11 +107,11 @@ const CAP_MULTIPLIER: f64 = 1000.0;
 fn main() {
     let args = tester_args();
     let mut days = args.days;
-    let mut state = stand_up();
+    let mut state = stand_up(&args.scenario);
     // Starters are capped before the banner. A later pop is capped before its next turn.
     assign_ceilings(&mut state, args.cap_multiplier);
     let live = io::stdout().is_terminal();
-    print_banner(&state, args.cap_multiplier);
+    print_banner(&state, &args.scenario, args.cap_multiplier);
     let mut rows = Vec::new();
     // `latest` is the day just finished. `earlier` is the day before it,
     // which the price marks compare against. The pipe prints on the next
@@ -135,26 +139,40 @@ fn main() {
     }
 }
 
-/// Days to run, and how wide each pop's ceiling share is.
+/// Which scenario folder to load, the days to run, and the ceiling width.
 struct TesterArgs {
+    scenario: String,
     days: u32,
     cap_multiplier: f64,
 }
 
 /// # Tester Args
 ///
-/// Days to run before the prompt, and the ceiling multiplier.
+/// Scenario folder, days to run before the prompt, and the ceiling multiplier.
 ///
-/// The first argument is the day count. A missing argument or one that is
-/// not a whole number is 1. The second is how many times a pop's people its
-/// cap is. A missing argument, or one that is not a positive finite number,
-/// is [`CAP_MULTIPLIER`]. Returns those two.
+/// Arguments come from the process. A missing day count is 1. A first
+/// argument that is not a whole number is the folder under `data/`, and the
+/// day count is the argument after it. Otherwise the folder is
+/// [`SCENARIO_DIR`]. The number after the day count is how many times a
+/// pop's people its cap is. A missing multiplier, or one that is not a
+/// positive finite number, is [`CAP_MULTIPLIER`]. Returns those three.
 fn tester_args() -> TesterArgs {
-    let days = match std::env::args().nth(1) {
-        Some(arg) => arg.parse::<u32>().unwrap_or(1),
-        None => 1,
+    let mut tokens = std::env::args().skip(1);
+    let first = tokens.next();
+    let (scenario, days, multiplier) = match first {
+        None => (SCENARIO_DIR.to_string(), 1, None),
+        Some(token) => match token.parse::<u32>() {
+            Ok(days) => (SCENARIO_DIR.to_string(), days, tokens.next()),
+            Err(_) => {
+                let days = match tokens.next() {
+                    Some(arg) => arg.parse::<u32>().unwrap_or(1),
+                    None => 1,
+                };
+                (token, days, tokens.next())
+            }
+        },
     };
-    let cap_multiplier = match std::env::args().nth(2) {
+    let cap_multiplier = match multiplier {
         Some(arg) => arg
             .parse::<f64>()
             .ok()
@@ -162,7 +180,7 @@ fn tester_args() -> TesterArgs {
             .unwrap_or(CAP_MULTIPLIER),
         None => CAP_MULTIPLIER,
     };
-    TesterArgs { days, cap_multiplier }
+    TesterArgs { scenario, days, cap_multiplier }
 }
 
 /// # Assign Ceilings
@@ -201,18 +219,18 @@ fn ceiling_people(state: &PlayState) -> f64 {
 
 /// # Stand Up
 ///
-/// The world folder and `data/pop_tester`, at turn 0.
+/// The world folder and `scenario` under `data/`, at turn 0.
 ///
-/// Species, cultures, pops, and markets come from [`load_scenario`]. The
-/// map is one hex. Returns that play state.
-fn stand_up() -> PlayState {
+/// `scenario` is the folder name. Species, cultures, pops, and markets come
+/// from [`load_scenario`]. The map is one hex. Returns that play state.
+fn stand_up(scenario: &str) -> PlayState {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
     let world = root.join(WORLD_DIR);
     let mut factuals = Factuals::load_from_path(&world).unwrap_or_else(|err| {
         eprintln!("load {}: {err}", world.display());
         std::process::exit(1);
     });
-    let scenario = root.join(SCENARIO_DIR);
+    let scenario = root.join(scenario);
     let loaded = load_scenario(&scenario, &factuals).unwrap_or_else(|err| {
         eprintln!("load {}: {err}", scenario.display());
         std::process::exit(1);
@@ -249,11 +267,12 @@ fn stand_up() -> PlayState {
 ///
 /// The opening lines for this run.
 ///
-/// `state` is the loaded stand-up. Desires, the job, and currencies are
-/// read from that state. `cap_multiplier` is the share width already
-/// applied to each uncapped pop. The turn is printed with the table.
-fn print_banner(state: &PlayState, cap_multiplier: f64) {
-    println!("pop tester — data/{SCENARIO_DIR}");
+/// `state` is the loaded stand-up. `scenario` is the folder under `data/`.
+/// Desires, the job, and currencies are read from that state.
+/// `cap_multiplier` is the share width already applied to each uncapped pop.
+/// The turn is printed with the table.
+fn print_banner(state: &PlayState, scenario: &str, cap_multiplier: f64) {
+    println!("pop tester — data/{scenario}");
     println!("world: data/{WORLD_DIR}");
     println!(
         "ceiling: {} people, {}× size when capped",

@@ -1,0 +1,11 @@
+# Goods added by the firm tester. World goods stay in data/world.
+#
+# Farmhand labor is a day's work. It is traded. Decay 1.0 clears whatever
+# is still on hand at the end of the day, the same as time and cargo.
+
+[[goods]]
+id = 47
+name = "farmhand_labor"
+mass = 0.0
+volume = 0.0
+decay_rate = 1.0

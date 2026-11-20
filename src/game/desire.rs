@@ -198,8 +198,8 @@ pub struct DesireTarget {
     /// Should be between 0.0 and 1.0 and should not go below 1 / number of goods, for
     /// the desire.
     pub cap: f64,
-    /// The minimum proportion of the wider desire that can be satisfied by this specific good.
-    pub min: f64,
+    /// Stored minimum share. `None` means this target does not name one.
+    pub min: Option<f64>,
     /// Whether this desire target is high priority and is always satisfied first.
     pub high_priority: bool,
 }
@@ -670,12 +670,17 @@ impl Desire {
     ///
     /// Share of this desire `slot` is brought toward first.
     ///
-    /// The higher of that target's stored minimum and [`Self::implicit_minimum`].
-    /// `config` supplies the divisor.
+    /// A stored minimum replaces [`Self::implicit_minimum`], and 0 brings
+    /// none. An omitted minimum is the implicit share. `config` supplies
+    /// the divisor.
     pub fn minimum(&self, slot: usize, config: &PopConfig) -> f64 {
-        let defined = self.target[slot].min;
-        debug_assert!(defined.is_finite() && defined >= 0.0);
-        defined.max(self.implicit_minimum(config))
+        match self.target[slot].min {
+            Some(defined) => {
+                debug_assert!(defined.is_finite() && defined >= 0.0);
+                defined
+            }
+            None => self.implicit_minimum(config),
+        }
     }
 
     /// # Cap
@@ -761,7 +766,7 @@ impl DesireTarget {
             desire_type,
             efficiency: eff,
             cap: 1.0,
-            min: 0.0,
+            min: None,
             high_priority: false,
         }
     }
@@ -776,9 +781,12 @@ impl DesireTarget {
 
     /// # With Min
     ///
-    /// Sets the minimum share of the desire this good may fill.
+    /// Sets the stored minimum share.
+    ///
+    /// `min` must be finite and at least 0.
     pub fn with_min(mut self, min: f64) -> Self {
-        self.min = min;
+        debug_assert!(min.is_finite() && min >= 0.0);
+        self.min = Some(min);
         self
     }
 
@@ -860,6 +868,19 @@ mod share_should {
         near(desire.cap(0, &config), 0.5);
         near(desire.minimum(1, &config), 0.25);
         near(desire.cap(1, &config), 0.75);
+    }
+
+    #[test]
+    fn a_stored_minimum_replaces_the_implicit_share() {
+        let desire = bucket(vec![
+            target(1).with_min(0.0),
+            target(2).with_min(0.1),
+            target(3),
+        ]);
+        let config = PopConfig::default();
+        near(desire.minimum(0, &config), 0.0);
+        near(desire.minimum(1, &config), 0.1);
+        near(desire.minimum(2, &config), desire.implicit_minimum(&config));
     }
 
     #[test]

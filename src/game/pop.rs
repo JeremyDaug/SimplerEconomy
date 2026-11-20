@@ -9,7 +9,8 @@ use crate::game::config::{
     LUXURY_SENTIMENT, PLAN_OFFER_DWARF, PLAN_SALABILITY_NAY, PLAN_SALABILITY_YAY, PLAN_SELL_NAY,
     PLAN_RUN_NEAR, PLAN_SELL_YAY, PLAN_SOL_NAY_CAP, PLAN_SOL_VOTE, PLAN_STEP_SHARE,
     PLAN_STOCK_COVER,
-    BULK_HAUL_SHARE, SOL_AVERAGE_DAYS, SOL_CHANGE_SENTIMENT, TRANSACTION_COST, WEALTH_SENTIMENT,
+    BULK_HAUL_SHARE, PopConfig, SOL_AVERAGE_DAYS, SOL_CHANGE_SENTIMENT, TRANSACTION_COST,
+    WEALTH_SENTIMENT,
 };
 use crate::game::effects::DesireEffect;
 use crate::game::factuals::Factuals;
@@ -517,7 +518,9 @@ impl Pop {
     /// level is the desire's amount. Satisfaction already held is spent on
     /// earlier levels first. Each good is first
     /// brought toward [`Desire::minimum`], in bucket order. The rest is
-    /// taken highest efficiency first, and a lower good id breaks a tie.
+    /// taken highest efficiency first. A good that kept the implicit floor
+    /// comes before one that named a lower minimum when efficiency ties,
+    /// and a lower good id breaks what remains.
     /// A good stops at [`Desire::cap`]. Both read [`Factuals::config`].
     /// Returns the satisfaction filled on this level.
     fn fill_desire(
@@ -546,11 +549,19 @@ impl Pop {
                 goal * share, &mut taken,
             );
         }
+        // A lower minimum waits behind a kept floor when efficiency ties.
         order.sort_by(|left, right| {
             right
                 .2
                 .partial_cmp(&left.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let config = &factuals.config.pop;
+                    let desire = &self.desires[tier][index];
+                    let left_kept = kept_implicit_floor(desire, left.0, config);
+                    let right_kept = kept_implicit_floor(desire, right.0, config);
+                    right_kept.cmp(&left_kept)
+                })
                 .then(left.1.cmp(&right.1))
         });
         for (slot, good, efficiency, kind) in &order {
@@ -2496,18 +2507,58 @@ fn shop_tier(
     if short { Walk::Short } else { Walk::Done }
 }
 
+/// # Kept Implicit Floor
+///
+/// Whether `slot`'s [`Desire::minimum`] is at least [`Desire::implicit_minimum`].
+///
+/// `config` supplies the divisor. Returns that check.
+fn kept_implicit_floor(desire: &Desire, slot: usize, config: &PopConfig) -> bool {
+    desire.minimum(slot, config) + 1e-12 >= desire.implicit_minimum(config)
+}
+
+/// # Later Floor Room
+///
+/// Cap room above the minimum on later goods that kept the implicit floor.
+///
+/// `ranked` is the cost order. `from` is the first index to count. `amount`
+/// is one level. Time and a good that cannot be bought are left out.
+/// Returns that room in satisfaction.
+fn later_floor_room(
+    desire: &Desire, factuals: &Factuals, ranked: &[(usize, usize, f64, f64)], from: usize,
+    amount: f64,
+) -> f64 {
+    let config = &factuals.config.pop;
+    let mut room = 0.0;
+    for (slot, good, _, _) in ranked.iter().skip(from) {
+        if *good == TIME || !factuals.is_for_sale(*good) {
+            continue;
+        }
+        if !kept_implicit_floor(desire, *slot, config) {
+            continue;
+        }
+        let cap = desire.cap(*slot, config);
+        let floor = desire.minimum(*slot, config);
+        room += (cap - floor).max(0.0) * amount;
+    }
+    room
+}
+
 /// # Shop Desire
 ///
 /// Covers one level of one desire from holdings, then from the open offers.
 ///
-/// Goods are taken lowest cost per satisfaction first, and a lower good id
-/// breaks a tie. Satisfaction already on the desire, and the morning
-/// reserve, count before a purchase. The best good aims at its cap, limited
-/// by the level still needed. A miss against that aim, not against the
-/// overshoot, is added to the next good's minimum. That next aim also stops
-/// at the good's cap and at the level still needed. Time and a good that
-/// cannot be bought are skipped. Returns whether the level was covered. A
-/// buy is added to `ctx` before the take.
+/// Goods are taken lowest cost per satisfaction first. A good that kept
+/// the implicit floor ranks ahead of one that named a lower minimum when
+/// that cost ties, and a lower good id breaks what remains. Satisfaction
+/// already on the desire, and the morning reserve, count before a purchase.
+/// The best good aims at its cap, limited by the level still needed. Each
+/// other good aims at its minimum. A miss against that aim, not against
+/// the overshoot, is added to the next good's minimum. A minimum under
+/// the implicit share is not aimed. Goods that kept the floor take that
+/// share, cheapest first, up to their caps. The lower minimum takes it
+/// only when those goods cannot. Time and a good that cannot be bought
+/// are skipped. Returns whether the level was covered. A buy is added to
+/// `ctx` before the take.
 fn shop_desire(
     pops: &mut [Pop], buyer_at: usize, claimed: &mut HashMap<usize, f64>, ctx: &mut ShopCtx<'_>,
     tier: usize, index: usize, level: f64,
@@ -2528,16 +2579,43 @@ fn shop_desire(
             (slot, target.good, target.efficiency, price / target.efficiency)
         })
         .collect();
+    let config = &factuals.config.pop;
+    // A lower minimum ranks after a kept floor when the cost ties.
     ranked.sort_by(|left, right| {
         left.3
             .partial_cmp(&right.3)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let desire = &pops[buyer_at].desires[tier][index];
+                let left_kept = kept_implicit_floor(desire, left.0, config);
+                let right_kept = kept_implicit_floor(desire, right.0, config);
+                right_kept.cmp(&left_kept)
+            })
             .then(left.1.cmp(&right.1))
     });
+    // The best good takes its cap, so only a later good can decline its floor.
+    let mut declined = 0.0;
+    let mut seen_best = false;
+    for (slot, good, _, _) in &ranked {
+        if *good == TIME || !factuals.is_for_sale(*good) {
+            continue;
+        }
+        if !seen_best {
+            seen_best = true;
+            continue;
+        }
+        let desire = &pops[buyer_at].desires[tier][index];
+        let implicit = desire.implicit_minimum(config);
+        let floor = desire.minimum(*slot, config);
+        if floor < implicit {
+            declined += (implicit - floor) * amount;
+        }
+    }
     let mut gained = 0.0;
     let mut carry = 0.0;
     let mut best = true;
-    for (slot, good, efficiency, _) in ranked {
+    for idx in 0..ranked.len() {
+        let (slot, good, efficiency, _) = ranked[idx];
         let credit = level_credit(&pops[buyer_at], tier, index, level);
         let remaining = amount - credit - gained;
         if remaining <= 1e-9 {
@@ -2546,16 +2624,33 @@ fn shop_desire(
         if good == TIME || !factuals.is_for_sale(good) {
             continue;
         }
-        let cap_sat = amount * pops[buyer_at].desires[tier][index].cap(slot, &factuals.config.pop);
-        let min_sat = amount * pops[buyer_at].desires[tier][index].minimum(slot, &factuals.config.pop);
-        let aim = if best {
-            cap_sat.min(remaining)
-        } else {
-            (min_sat + carry).min(cap_sat).min(remaining)
+        // A declined share goes to a kept floor, and to a lower minimum only when that room is gone.
+        let aim = {
+            let desire = &pops[buyer_at].desires[tier][index];
+            let cap_sat = amount * desire.cap(slot, config);
+            let min_sat = amount * desire.minimum(slot, config);
+            let base = if best {
+                cap_sat.min(remaining)
+            } else {
+                (min_sat + carry).min(cap_sat).min(remaining)
+            };
+            let room = (cap_sat - base).max(0.0).min((remaining - base).max(0.0));
+            let mut boost = 0.0;
+            if !best && declined > 1e-12 && room > 0.0 {
+                if kept_implicit_floor(desire, slot, config) {
+                    boost = declined.min(room);
+                } else {
+                    let later = later_floor_room(desire, factuals, &ranked, idx + 1, amount);
+                    if declined > later + 1e-12 {
+                        boost = (declined - later).min(room);
+                    }
+                }
+            }
+            declined = (declined - boost).max(0.0);
+            base + boost
         };
         best = false;
         if aim <= 1e-12 {
-            carry = 0.0;
             continue;
         }
         let needed = aim / efficiency;
@@ -5336,6 +5431,56 @@ mod consume_should {
     }
 
     #[test]
+    fn a_zero_minimum_waits_until_the_other_goods_cannot_cover() {
+        // Three goods, equal efficiency. Good 1 names no floor. The other two fill the level.
+        let mut pop = Pop::new(1);
+        pop.desires[0].push(desire(
+            6.0,
+            vec![target(1, 1.0).with_min(0.0), target(2, 1.0), target(3, 1.0)],
+        ));
+        pop.property.insert(1, PopPRow::new(10.0));
+        pop.property.insert(2, PopPRow::new(10.0));
+        pop.property.insert(3, PopPRow::new(10.0));
+        pop.consume(&world(vec![]));
+        near(row(&pop, 1).consumed, 0.0);
+        near(row(&pop, 2).consumed, 4.0);
+        near(row(&pop, 3).consumed, 2.0);
+        near(pop.desires[0][0].satisfaction, 6.0);
+    }
+
+    #[test]
+    fn a_more_efficient_zero_minimum_is_taken_first() {
+        // Good 1 names no floor and satisfies ten times the others, so it takes its cap.
+        let mut pop = Pop::new(1);
+        pop.desires[0].push(desire(
+            6.0,
+            vec![target(1, 10.0).with_min(0.0), target(2, 1.0), target(3, 1.0)],
+        ));
+        pop.property.insert(1, PopPRow::new(10.0));
+        pop.property.insert(2, PopPRow::new(10.0));
+        pop.property.insert(3, PopPRow::new(10.0));
+        pop.consume(&world(vec![]));
+        near(row(&pop, 1).consumed, 0.4);
+        near(row(&pop, 2).consumed, 1.0);
+        near(row(&pop, 3).consumed, 1.0);
+        near(pop.desires[0][0].satisfaction, 6.0);
+    }
+
+    #[test]
+    fn a_zero_minimum_is_taken_when_it_is_the_only_stock() {
+        // The other two goods are missing, so the no-floor good fills up to its cap.
+        let mut pop = Pop::new(1);
+        pop.desires[0].push(desire(
+            6.0,
+            vec![target(1, 1.0).with_min(0.0), target(2, 1.0), target(3, 1.0)],
+        ));
+        pop.property.insert(1, PopPRow::new(10.0));
+        pop.consume(&world(vec![]));
+        near(row(&pop, 1).consumed, 4.0);
+        near(pop.desires[0][0].satisfaction, 4.0);
+    }
+
+    #[test]
     fn one_good_stops_at_the_bucket_cap() {
         let mut pop = Pop::new(1);
         pop.desires[0].push(desire(8.0, vec![target(1, 1.0), target(2, 1.0)]));
@@ -7301,6 +7446,76 @@ mod buy_should {
         near(qty(&pops[0], BEER), 2.0);
         near(qty(&pops[0], BREAD), 0.0);
         near(qty(&pops[1], GRAIN), 2.0);
+    }
+
+    fn three_goods(min_on_last: f64) -> (Factuals, Desire) {
+        let mut factuals = world(&[]);
+        for id in [11, 12, 13] {
+            factuals.goods.insert(id, plain(id, false));
+        }
+        let mut row = desire(6.0, vec![(11, 1.0), (12, 1.0), (13, 1.0)]);
+        row.target[2] = DesireTarget::new(13, DesireTargetType::Consume, 1.0).with_min(min_on_last);
+        (factuals, row)
+    }
+
+    #[test]
+    fn a_zero_minimum_is_not_bought_when_another_good_can_cover() {
+        // Equal prices. Good 13 names no floor. Good 11 takes the cap and good 12 takes the rest.
+        let (factuals, row) = three_goods(0.0);
+        let market = market();
+        let mut buyer = with_grain(1, 20.0);
+        buyer.desires[0].push(row);
+        buyer.property.insert(11, PopPRow::new(4.0));
+        buyer.property.insert(12, PopPRow::new(2.0));
+        buyer.property.insert(13, PopPRow::new(5.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(13, PopPRow::new(5.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, 13, 5.0)];
+        shop(&mut pops, &market, &factuals, &mut offers);
+        near(pops[0].property[&11].reserved, 4.0);
+        near(pops[0].property[&12].reserved, 2.0);
+        near(pops[0].property[&13].reserved, 0.0);
+        near(qty(&pops[0], 13), 5.0);
+        near(offers[0].amount, 5.0);
+    }
+
+    #[test]
+    fn a_zero_minimum_is_bought_when_it_is_the_cheapest() {
+        // Good 13 is half the price of the others, so the no-floor good takes the cap.
+        let (factuals, row) = three_goods(0.0);
+        let mut market = market();
+        market.exchange_rates.entry(GRAIN).or_default().insert(13, 2.0);
+        let mut buyer = with_grain(1, 20.0);
+        buyer.desires[0].push(row);
+        buyer.property.insert(11, PopPRow::new(1.0));
+        buyer.property.insert(12, PopPRow::new(1.0));
+        buyer.property.insert(13, PopPRow::new(4.0));
+        let mut seller = Pop::new(2);
+        seller.property.insert(13, PopPRow::new(5.0));
+        let mut pops = [buyer, seller];
+        let mut offers = vec![offer(2, 13, 5.0)];
+        shop(&mut pops, &market, &factuals, &mut offers);
+        near(pops[0].property[&13].reserved, 4.0);
+        near(pops[0].property[&11].reserved, 1.0);
+        near(pops[0].property[&12].reserved, 1.0);
+        near(qty(&pops[0], 13), 4.0);
+        near(offers[0].amount, 5.0);
+    }
+
+    #[test]
+    fn a_zero_minimum_covers_what_the_other_goods_miss() {
+        // Goods 11 and 12 are not for sale and not on hand. Good 13 fills up to its cap.
+        let (factuals, row) = three_goods(0.0);
+        let market = market();
+        let mut buyer = with_grain(1, 20.0);
+        buyer.desires[0].push(row);
+        buyer.property.insert(13, PopPRow::new(10.0));
+        let mut pops = [buyer];
+        let mut offers = vec![];
+        shop(&mut pops, &market, &factuals, &mut offers);
+        near(pops[0].property[&13].reserved, 4.0);
+        near(qty(&pops[0], 13), 10.0);
     }
 
     #[test]

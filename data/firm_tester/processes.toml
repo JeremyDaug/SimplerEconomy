@@ -1,0 +1,35 @@
+# Processes added by the firm tester. World processes stay in data/world.
+#
+# Farmhand labor takes 1 time and yields 0.5 farmhand labor. Farming skill
+# is optional, 2 per run. Meeting it adds output 2.0 on top of the base 1,
+# which triples the labor. The run also returns that skill: 2.2 is the 2
+# fed plus a tenth, the same return the other skills use, and the flat
+# 0.01 is on top of that.
+#
+# Agribusiness is industrial. One farmhand labor and one wood tool, used
+# and returned, yield 400 grain. Make grain yields 40.
+
+[[processes]]
+id = 47
+name = "farmhand labor"
+tags = ["labor"]
+inputs = [
+    { good = 0, amount = 1.0 },
+    { good = 29, amount = 2.0, optional = true, optional_effects = [{ extra_output = { good = 29, amount = 2.2 } }, { output = 2.0 }] },
+]
+outputs = [
+    { good = 47, amount = 0.5 },
+    { good = 29, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 48
+name = "agribusiness"
+tags = ["industrial"]
+inputs = [
+    { good = 47, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital" },
+]
+outputs = [
+    { good = 1, amount = 400.0 },
+]
