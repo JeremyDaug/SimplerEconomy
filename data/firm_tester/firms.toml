@@ -1,0 +1,11 @@
+# Firms for examples/firm_tester. Process names are loaded names.
+# An omitted target runs as many iterations as the inputs allow.
+# This firm has no owner.
+
+[[firms]]
+id = 1
+name = "Agribusiness"
+market = 1
+
+[[firms.lines]]
+process = "agribusiness"

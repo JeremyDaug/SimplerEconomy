@@ -1,0 +1,11 @@
+# Market for examples/firm_tester. Currency names are world good names.
+# Pops are ids from pops.toml. An omitted pop list is every loaded pop.
+
+id = 1
+currencies = ["grain", "gold_coins"]
+pops = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+    23, 24, 25, 26, 27, 28, 29,
+]
+# Scales bulk into transport cover. 1 matches the live goods note.
+friction = 1.0

@@ -1,0 +1,13 @@
+# One grain pop, for watching founding.
+# Households start at the founding minimum, so a split does not wait on growth.
+# Desires match data/pop_tester. A target of 0 does not run on the first day.
+
+[[pops]]
+id = 1
+species = "human"
+culture = "village"
+households = 25
+
+[[pops.lines]]
+process = "make grain"
+target = 0

@@ -13,6 +13,7 @@ use simpler_economy::game::culture::Culture;
 use simpler_economy::game::demographic_source::DemographicSource;
 use simpler_economy::game::desire::{DemoDesire, DesireTarget, DesireTargetType, PlatonicDesire};
 use simpler_economy::game::factuals::Factuals;
+use simpler_economy::game::household::Household;
 use simpler_economy::game::job::{Job, JobLine};
 use simpler_economy::game::market::Market;
 use simpler_economy::game::pop::Pop;
@@ -104,6 +105,9 @@ struct GoodRow {
     efficiency: f64,
     #[serde(default, rename = "type")]
     kind: Option<String>,
+    /// Omitted leaves the implicit share. `0` is stored as a share of none.
+    #[serde(default)]
+    minimum: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -157,6 +161,9 @@ struct PopRow {
     species: String,
     #[serde(default)]
     culture: Option<String>,
+    /// Omitted keeps the one household from [`Pop::new`].
+    #[serde(default)]
+    households: Option<f64>,
     #[serde(default)]
     lines: Vec<LineRow>,
 }
@@ -274,7 +281,19 @@ fn build_platonic(path: &Path, row: PlatonicRow, goods: &HashMap<String, usize>)
                 path.display(), row.name, good.good
             )));
         }
-        desire = desire.with_good(DesireTarget::new(id, desire_kind(path, &row.name, &good.kind)?, good.efficiency));
+        let mut target = DesireTarget::new(id, desire_kind(path, &row.name, &good.kind)?, good.efficiency);
+        if let Some(minimum) = good.minimum {
+            if !minimum.is_finite() || minimum < 0.0 {
+                return Err(ScenarioError::new(format!(
+                    "{}: desire {} good {} minimum must be 0 or more",
+                    path.display(),
+                    row.name,
+                    good.good
+                )));
+            }
+            target = target.with_min(minimum);
+        }
+        desire = desire.with_good(target);
     }
     Ok(desire)
 }
@@ -433,7 +452,8 @@ fn desire_kind(path: &Path, desire: &str, kind: &Option<String>) -> Result<Desir
 ///
 /// `species` and `cultures` supply desires. `processes` and `goods` resolve
 /// the job. A repeated pop id is an error. More than two lines is an error.
-/// Returns those pops.
+/// An omitted household count stays at one. Desire amounts are copied after
+/// that count is set. Returns those pops.
 fn load_pops(
     path: &Path, species: &[Species], cultures: &[Culture], processes: &HashMap<String, usize>,
     goods: &HashMap<String, usize>,
@@ -458,6 +478,18 @@ fn load_pops(
             lines[slot] = build_line(path, line, processes, goods)?;
         }
         let mut pop = Pop::new(row.id);
+        // Desire amounts use the household count, so the count is set first.
+        if let Some(count) = row.households {
+            if !count.is_finite() || count <= 0.0 {
+                return Err(ScenarioError::new(format!(
+                    "{}: pop {} households must be above 0",
+                    path.display(),
+                    row.id
+                )));
+            }
+            pop.demographics.household = Household::with_count(count);
+            pop.pre_growth_population = pop.demographics.total_population();
+        }
         pop.demographics.species = kind.id;
         copy_desires(&mut pop, DemographicSource::Species(kind.id), &kind.desires);
         if let Some(name) = &row.culture {

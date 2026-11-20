@@ -150,9 +150,11 @@ efficiency = 1
 good = "tin"
 efficiency = 1
 
+# A minimum of 0 brings none of this good before the better buys.
 [[desires.goods]]
 good = "gold_token"
 efficiency = 1
+minimum = 0
 
 [[desires]]
 id = 9
