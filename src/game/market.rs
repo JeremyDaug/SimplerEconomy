@@ -198,6 +198,48 @@ impl Market {
         &self.currencies
     }
 
+    /// # Stored Rate
+    ///
+    /// Goods of `good` one unit of `currency` buys, when a rate is stored.
+    ///
+    /// A stored rate must be finite and above 0. Returns that rate, or
+    /// `None` when `currency` stores no rate for `good`.
+    pub fn stored_rate(&self, currency: usize, good: usize) -> Option<f64> {
+        let rate = self
+            .exchange_rates
+            .get(&currency)
+            .and_then(|row| row.get(&good))
+            .copied()?;
+        debug_assert!(rate.is_finite() && rate > 0.0, "exchange rate must be > 0");
+        Some(rate)
+    }
+
+    /// # Price In
+    ///
+    /// What one unit of `good` costs in `currency`.
+    ///
+    /// The currency itself costs 1. Any other good costs one over its
+    /// [`Self::stored_rate`]. A missing rate costs 1. Returns that cost.
+    pub fn price_in(&self, currency: usize, good: usize) -> f64 {
+        if good == currency {
+            return 1.0;
+        }
+        self.stored_rate(currency, good).map_or(1.0, |rate| 1.0 / rate)
+    }
+
+    /// # Price
+    ///
+    /// What one unit of `good` costs in this market's first tender.
+    ///
+    /// The cost is [`Self::price_in`] that tender. A market with no tender
+    /// prices every good at 1. Returns that cost.
+    pub fn price(&self, good: usize) -> f64 {
+        match self.currencies.first() {
+            Some(&currency) => self.price_in(currency, good),
+            None => 1.0,
+        }
+    }
+
     /// # Market Day
     ///
     /// Runs this market's day.
@@ -375,47 +417,43 @@ impl Market {
     /// morning price unless [`raised_idle_price`] lifts it. A good with
     /// posted supply or demand and no rate opens at [`opening_price`]. A
     /// price this pass writes is at least [`MIN_PRICE`]. The stored rate is
-    /// the inverse of that price. Rates are read before any of them are
-    /// written. Counts are left in place.
+    /// the inverse of that price. Every price is read before any rate is
+    /// written, so one good's new price does not feed the next. Counts are
+    /// left in place.
     fn move_prices(&mut self, factuals: &Factuals) {
         let gain = factuals.config.market.price_gain;
         let cap = factuals.config.market.price_cap;
         debug_assert!(gain.is_finite() && gain > 0.0);
         debug_assert!(cap.is_finite() && cap > 0.0 && cap <= 1.0);
-        // Input costs use these rates so one good's new price does not feed the next.
-        let rates = self.exchange_rates.clone();
-        let goods = goods_to_price(self);
-        for &good in &goods {
-            let Some((sought, offered, volume, counts)) = self.good_ledger(good) else {
+        let mut priced = Vec::new();
+        for good in self.goods_to_price() {
+            let Some(row) = self.goods.get(&good) else {
                 continue;
             };
-            debug_assert!(sought.is_finite() && sought >= 0.0);
-            debug_assert!(offered.is_finite() && offered >= 0.0);
-            debug_assert!(volume.is_finite() && volume >= 0.0);
-            let currencies = currencies_for_good(
-                &self.currencies, &rates, &counts, good, offered, sought, volume,
-            );
-            let mut priced = Vec::new();
-            if volume == 0.0 {
+            debug_assert!(row.sought.is_finite() && row.sought >= 0.0);
+            debug_assert!(row.offered.is_finite() && row.offered >= 0.0);
+            debug_assert!(row.volume.is_finite() && row.volume >= 0.0);
+            let currencies = self.currencies_for_good(good, row);
+            if row.volume == 0.0 {
                 for &currency in &currencies {
-                    let cost = dearest_unit_cost(factuals, &rates, currency, good);
+                    let cost = self.dearest_unit_cost(factuals, currency, good);
                     // A stored price only rises. Supply or demand with no rate opens one.
-                    let price = match stored_price(&rates, currency, good) {
-                        Some(morning) => raised_idle_price(morning, cost),
-                        None if offered > 0.0 || sought > 0.0 => Some(opening_price(cost)),
+                    let price = match self.stored_rate(currency, good) {
+                        Some(rate) => raised_idle_price(1.0 / rate, cost),
+                        None if row.is_active() => Some(opening_price(cost)),
                         None => None,
                     };
                     if let Some(price) = price {
-                        priced.push((currency, price));
+                        priced.push((currency, good, price));
                     }
                 }
             } else {
                 let mut quotes = Vec::with_capacity(currencies.len());
                 let mut total = 0.0;
                 for &currency in &currencies {
-                    let count = counts.get(&currency).copied().unwrap_or(0.0);
+                    let count = row.currency_counts.get(&currency).copied().unwrap_or(0.0);
                     debug_assert!(count.is_finite() && count >= 0.0);
-                    let rate = morning_rate(&rates, currency, good);
+                    let rate = self.stored_rate(currency, good).unwrap_or(1.0);
                     let weight = count * rate;
                     total += weight;
                     quotes.push((currency, 1.0 / rate, weight));
@@ -425,35 +463,117 @@ impl Market {
                     let share = currency_share(n, total, weight);
                     priced.push((
                         currency,
-                        traded_price(price, sought, offered, share, gain, cap),
+                        good,
+                        traded_price(price, row.sought, row.offered, share, gain, cap),
                     ));
                 }
             }
-            for (currency, price) in priced {
-                let price = price.max(MIN_PRICE);
-                debug_assert!(price.is_finite() && price >= MIN_PRICE);
-                self.exchange_rates
-                    .entry(currency)
-                    .or_default()
-                    .insert(good, 1.0 / price);
-            }
+        }
+        for (currency, good, price) in priced {
+            let price = price.max(MIN_PRICE);
+            debug_assert!(price.is_finite() && price >= MIN_PRICE);
+            self.exchange_rates
+                .entry(currency)
+                .or_default()
+                .insert(good, 1.0 / price);
         }
     }
 
-    /// # Good Ledger
+    /// # Goods To Price
     ///
-    /// Sought, offered, volume, and currency counts for `good`.
+    /// Goods [`Self::move_prices`] reprices.
     ///
-    /// Returns `None` when the market has no row for that good. Counts are
-    /// copied out so the rate write can follow.
-    fn good_ledger(&self, good: usize) -> Option<(f64, f64, f64, HashMap<usize, f64>)> {
-        let row = self.goods.get(&good)?;
-        Some((
-            row.sought,
-            row.offered,
-            row.volume,
-            row.currency_counts.clone(),
-        ))
+    /// A good already rated in some currency comes first. A good with a
+    /// currency count, or that [`MarketGood::is_active`], follows. Time is
+    /// left out. A good is listed once. Returns that list.
+    fn goods_to_price(&self) -> Vec<usize> {
+        let mut goods = Vec::new();
+        let mut push = |id: usize| {
+            if id != TIME && !goods.contains(&id) {
+                goods.push(id);
+            }
+        };
+        for rates in self.exchange_rates.values() {
+            for &good in rates.keys() {
+                push(good);
+            }
+        }
+        for (&good, row) in &self.goods {
+            if !row.currency_counts.is_empty() || row.is_active() {
+                push(good);
+            }
+        }
+        goods
+    }
+
+    /// # Currencies For Good
+    ///
+    /// Tender ids that take a price for `good`.
+    ///
+    /// `row` is that good's record. When it [`MarketGood::is_active`], the
+    /// market's currency list comes first. A currency that already rates the
+    /// good, or that has a count on `row`, follows. The good's own id is left
+    /// out. A currency is listed once. Returns that list.
+    fn currencies_for_good(&self, good: usize, row: &MarketGood) -> Vec<usize> {
+        let mut currencies = Vec::new();
+        let mut push = |id: usize| {
+            if id != good && !currencies.contains(&id) {
+                currencies.push(id);
+            }
+        };
+        if row.is_active() {
+            for &id in &self.currencies {
+                push(id);
+            }
+        }
+        for (&currency, rates) in &self.exchange_rates {
+            if rates.contains_key(&good) {
+                push(currency);
+            }
+        }
+        for &id in row.currency_counts.keys() {
+            push(id);
+        }
+        currencies
+    }
+
+    /// # Dearest Unit Cost
+    ///
+    /// The highest input cost of one unit of `good` in `currency`.
+    ///
+    /// Each process that outputs `good` costs the inputs that are not
+    /// optional and not factors, at [`Self::price_in`], divided by how much
+    /// of `good` one iteration makes. Other outputs are not credited. A
+    /// method with no such cost is left out. Returns that cost, or `None`
+    /// when every method is free or none make the good.
+    fn dearest_unit_cost(&self, factuals: &Factuals, currency: usize, good: usize) -> Option<f64> {
+        let mut dearest = None;
+        for process in factuals.each_process() {
+            let made: f64 = process
+                .outputs
+                .iter()
+                .filter(|row| row.good == good)
+                .map(|row| row.amount)
+                .sum();
+            if made <= 0.0 {
+                continue;
+            }
+            let mut cost = 0.0;
+            for input in &process.inputs {
+                if input.is_optional() || matches!(input.input_type, InputType::Factor) {
+                    continue;
+                }
+                debug_assert!(input.amount.is_finite() && input.amount > 0.0);
+                cost += input.amount * self.price_in(currency, input.good);
+            }
+            if cost <= 0.0 {
+                continue;
+            }
+            let unit = cost / made;
+            debug_assert!(unit.is_finite() && unit > 0.0);
+            dearest = Some(dearest.map_or(unit, |best: f64| best.max(unit)));
+        }
+        dearest
     }
 
     /// # Rebalance Capped
@@ -939,73 +1059,6 @@ fn keep_last_household(
     evacuate
 }
 
-/// # Goods To Price
-///
-/// Goods this pass reprices.
-///
-/// A good already rated in some currency comes first. A good with a currency
-/// count, with volume above 0, or with posted supply or demand, follows.
-/// Time is left out. A good is listed once. Returns that list.
-fn goods_to_price(market: &Market) -> Vec<usize> {
-    let mut goods = Vec::new();
-    let mut push = |id: usize| {
-        if id != TIME && !goods.contains(&id) {
-            goods.push(id);
-        }
-    };
-    for rates in market.exchange_rates.values() {
-        for &good in rates.keys() {
-            push(good);
-        }
-    }
-    for (&good, row) in &market.goods {
-        if !row.currency_counts.is_empty()
-            || row.volume > 0.0
-            || row.offered > 0.0
-            || row.sought > 0.0
-        {
-            push(good);
-        }
-    }
-    goods
-}
-
-/// # Currencies For Good
-///
-/// Tender ids that take a price for `good`.
-///
-/// On a day with trade, posted supply, or demand, the market's currency
-/// list comes first. A currency that already rates the good, or that has a
-/// count, follows. The good's own id is left out. A currency is listed
-/// once. Returns that list.
-fn currencies_for_good(
-    market_currencies: &[usize],
-    rates: &HashMap<usize, HashMap<usize, f64>>,
-    counts: &HashMap<usize, f64>,
-    good: usize, offered: f64, sought: f64, volume: f64,
-) -> Vec<usize> {
-    let mut currencies = Vec::new();
-    let mut push = |id: usize| {
-        if id != good && !currencies.contains(&id) {
-            currencies.push(id);
-        }
-    };
-    if volume > 0.0 || offered > 0.0 || sought > 0.0 {
-        for &id in market_currencies {
-            push(id);
-        }
-    }
-    for (&currency, row) in rates {
-        if row.contains_key(&good) {
-            push(currency);
-        }
-    }
-    for &id in counts.keys() {
-        push(id);
-    }
-    currencies
-}
-
 /// # Currency Share
 ///
 /// The fraction of this good's price move that one currency absorbs.
@@ -1030,108 +1083,11 @@ fn currency_share(n: usize, total: f64, mine: f64) -> f64 {
     share
 }
 
-/// # Morning Rate
-///
-/// Goods of `good` one unit of `currency` bought before this price pass.
-///
-/// `rates` are that snapshot. A missing rate is one good per currency unit.
-/// Returns that rate.
-fn morning_rate(
-    rates: &HashMap<usize, HashMap<usize, f64>>,
-    currency: usize, good: usize,
-) -> f64 {
-    match rates.get(&currency).and_then(|row| row.get(&good)).copied() {
-        Some(rate) => {
-            debug_assert!(rate.is_finite() && rate > 0.0, "exchange rate must be > 0");
-            rate
-        }
-        None => 1.0,
-    }
-}
-
-/// # Currency Price
-///
-/// What one unit of `good` costs in `currency`.
-///
-/// `rates` are goods per currency unit, from before this price pass. The
-/// currency itself costs 1. Any other good costs one over its [`morning_rate`].
-/// Returns that cost.
-fn currency_price(
-    rates: &HashMap<usize, HashMap<usize, f64>>,
-    currency: usize,
-    good: usize,
-) -> f64 {
-    if good == currency {
-        return 1.0;
-    }
-    1.0 / morning_rate(rates, currency, good)
-}
-
-/// # Dearest Unit Cost
-///
-/// The highest input cost of one unit of `good` in `currency`.
-///
-/// Each process that outputs `good` costs the inputs that are not optional
-/// and not factors, at [`currency_price`], divided by how much of `good` one
-/// iteration makes. Other outputs are not credited. A method with no such
-/// cost is left out. Returns that cost, or `None` when every method is free
-/// or none make the good.
-fn dearest_unit_cost(
-    factuals: &Factuals,
-    rates: &HashMap<usize, HashMap<usize, f64>>,
-    currency: usize,
-    good: usize,
-) -> Option<f64> {
-    let mut dearest = None;
-    for process in factuals.each_process() {
-        let made: f64 = process
-            .outputs
-            .iter()
-            .filter(|row| row.good == good)
-            .map(|row| row.amount)
-            .sum();
-        if made <= 0.0 {
-            continue;
-        }
-        let mut cost = 0.0;
-        for input in &process.inputs {
-            if input.is_optional() || matches!(input.input_type, InputType::Factor) {
-                continue;
-            }
-            debug_assert!(input.amount.is_finite() && input.amount > 0.0);
-            cost += input.amount * currency_price(rates, currency, input.good);
-        }
-        if cost <= 0.0 {
-            continue;
-        }
-        let unit = cost / made;
-        debug_assert!(unit.is_finite() && unit > 0.0);
-        dearest = Some(dearest.map_or(unit, |best: f64| best.max(unit)));
-    }
-    dearest
-}
-
-/// # Stored Price
-///
-/// Currency units one unit of `good` costs in `currency`, when a rate is stored.
-///
-/// `rates` are goods per currency unit from before this price pass. A missing
-/// rate is `None`. Returns that price.
-fn stored_price(
-    rates: &HashMap<usize, HashMap<usize, f64>>,
-    currency: usize,
-    good: usize,
-) -> Option<f64> {
-    let rate = rates.get(&currency).and_then(|row| row.get(&good)).copied()?;
-    debug_assert!(rate.is_finite() && rate > 0.0, "exchange rate must be > 0");
-    Some(1.0 / rate)
-}
-
 /// # Opening Price
 ///
 /// The first price of a good that has supply or demand and no rate.
 ///
-/// `cost` is [`dearest_unit_cost`], or `None` when no method charges for the
+/// `cost` is [`Market::dearest_unit_cost`], or `None` when no method charges for the
 /// good. A method opens at that cost times `1 + IDLE_COST_MARGIN`, and not
 /// under [`MIN_PRICE`]. No method opens at 1. Returns that price.
 fn opening_price(cost: Option<f64>) -> f64 {
@@ -1149,7 +1105,7 @@ fn opening_price(cost: Option<f64>) -> f64 {
 /// The no-trade price when it is above `morning`.
 ///
 /// `morning` is currency units per good before this pass. `cost` is
-/// [`dearest_unit_cost`], or `None` when no method charges for the good.
+/// [`Market::dearest_unit_cost`], or `None` when no method charges for the good.
 /// The dearest cost times `1 + IDLE_COST_MARGIN` replaces `morning` only
 /// when it is higher. A `morning` under [`MIN_PRICE`] rises to that floor.
 /// Returns the raised price, or `None` when `morning` stays.
@@ -1251,10 +1207,19 @@ impl MarketGood {
     
     /// # With Salability
     ///
-    /// [`Self::set_salability`] as a builder.
+    /// Stores `salability` on this good. Returns the good.
     pub fn with_salability(mut self, salability: f64) -> Self {
         self.salability = salability;
         self
+    }
+
+    /// # Is Active
+    ///
+    /// Whether this good traded, or had posted supply or demand, today.
+    ///
+    /// Returns whether volume, units offered, or units sought is above 0.
+    pub fn is_active(&self) -> bool {
+        self.volume > 0.0 || self.offered > 0.0 || self.sought > 0.0
     }
 
     /// # Set Production
