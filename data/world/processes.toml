@@ -540,7 +540,7 @@ outputs = [
 id = 45
 name = "make gold_coins"
 inputs = [
-    { good = 0, amount = 16.0 },
+    { good = 0, amount = 8.0 },
     { good = 4, amount = 1.0 },
     { good = 9, amount = 1.0, type = "capital", optional = true, optional_effects = [{ output = 0.5 }] },
     { good = 32, amount = 1.0, optional = true, optional_effects = [{ extra_output = { good = 32, amount = 1.1 } }, { output = 0.5 }] },

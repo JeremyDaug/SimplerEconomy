@@ -6,9 +6,15 @@ How world data enters the library. The files are `data/world/goods.toml`, `data/
 
 `Good::load_from_path` and `Good::load_from_toml` live in `src/game/good.rs`.
 
-The document's `goods` array is read. Other tables are ignored. Each row deserializes as a `Good`. A missing `decay_rate` is 1.0. Tags use the `GoodTag` names (`restricted`, `immobile`, `exposure`, `untradeable`, `skill`, `industrial`, `transport`).
+The document's `goods` array is read. Other tables are ignored. Each row deserializes as a `Good`. A missing `decay_rate` is 1.0. Tags use the `GoodTag` names (`restricted`, `immobile`, `exposure`, `untradeable`, `skill`, `industrial`, `money`, `transport`). A token names the good it stands for (`{ token = 1 }`). A credit names the actor who issues it (`{ credit = { institution = 2 } }`, and the same shape for `pop`, `firm`, and `nation`).
 
 The result is a `HashMap` keyed by id. A repeated id is `GoodLoadError::Duplicate`.
+
+## Actors
+
+`Actor::load_from_path` and `Actor::load_from_toml` live in `src/game/actor.rs`.
+
+The document is one actor. The key is `pop`, `firm`, `institution`, or `nation`, and the value is the id. It does not build a pop, firm, institution, or nation. A credit tag on a good uses that same table.
 
 ## Processes
 
@@ -40,4 +46,4 @@ Species and cultures are not read. Those maps stay empty. There is no stratum or
 
 `GameConfig::load_from_path` and `GameConfig::load_from_toml` live in `src/game/config.rs`.
 
-Missing keys keep `Default`. `pop` has `childhood_years`, `adulthood_years`, `child_sex_ratio`, `partnership_trend`, `turn_length` (default 1, at least 1), `subsistence_anchor` (default 0.6, must be above 0), `subsistence_common_share` (default 0.5, from 0 to 1), and `desire_share_minimum_divisor` (default 2, either 0 or at least 1). `market` has `amv_epsilon`, `salability_default`, `price_gain` (default 0.10, above 0), `price_cap` (default 0.20, above 0 and at most 1), `migration_anger_weight`, `migration_pace`, `founding_households`, `founding_min_households`, `founding_drought_step`, `founding_both_share`, and `founding_available_drop`. `labor` has `time_per_labor`, default 16, and it must be above 0. The other sections have no keys. `validate` checks those bounds. The world file leaves the keys commented, so a load keeps the defaults.
+Missing keys keep `Default`. `pop` has `childhood_years`, `adulthood_years`, `child_sex_ratio`, `partnership_trend`, `turn_length` (default 1, at least 1), `subsistence_anchor` (default 0.75, must be above 0), `subsistence_common_share` (default 0.5, from 0 to 1), and `desire_share_minimum_divisor` (default 2, either 0 or at least 1). `market` has `amv_epsilon`, `salability_default`, `price_gain` (default 0.10, above 0), `price_cap` (default 0.20, above 0 and at most 1), `migration_anger_weight`, `migration_pace`, `founding_households`, `founding_min_households`, `founding_drought_step`, `founding_both_share`, and `founding_available_drop`. `labor` has `time_per_labor`, default 16, and it must be above 0. The other sections have no keys. `validate` checks those bounds. The world file leaves the keys commented, so a load keeps the defaults.

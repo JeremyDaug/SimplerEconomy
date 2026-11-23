@@ -1,5 +1,10 @@
 //! The firm tester. `data/firm_tester` adds farmhand labor, agribusiness,
-//! one farmhand pop, and the Agribusiness firm, then runs the current turn.
+//! millhand labor, the cotton farm, the thread mill, the fabric mill, and
+//! the clothes mill. The grain pop and one other pop sell farmhand labor.
+//! The clothes pop and one other pop sell millhand labor. Pop 30 owns
+//! Agribusiness. Pop 32 owns the Clothes Mill. Pop 33 owns the Cotton Farm.
+//! Pop 34 owns the Thread Mill. Pop 35 owns the Fabric Mill. It runs the
+//! current turn.
 //!
 //! Loads `data/world`, then `goods.toml`, `processes.toml`, `desires.toml`,
 //! `species.toml`, `cultures.toml`, `pops.toml`, `market.toml`, and
@@ -10,21 +15,34 @@
 //! The first argument is how many days to run before asking for more
 //! (default 1). The second is how many times a pop's people its ceiling
 //! share is when that cap is set (default 1000). A pop with no cap receives
-//! that share before the turn. After those days, enter runs one more, a number runs
-//! that many, and 0 quits. The table is one row per pop. The line above
-//! it is the turn those rows finished. A terminal prints each finished
+//! that share before the turn. After those days, enter runs one more, a
+//! number runs that many, and 0 quits. `pops` shows or hides the pop table.
+//! A terminal prints that day again without advancing. The table is one row
+//! per pop. The line above it is the turn those rows finished. A terminal
+//! prints each finished
 //! day below the last one, so the window can scroll. A pipe prints them
-//! once, when the batch ends. Subsistence and labor are shares of that pop's time.
-//! Labor shows the time share and one fraction, the iterations finished
-//! over the iterations asked, in whole units, from those lines'
-//! `completed` and `attempted`.
-//! Savings and stock are priced per household, in the pop's first market currency.
-//! In and out are the households that arrived and the households that left.
-//! SOL is the standard of living recorded before decay. Hope, happy,
-//! fear, and anger are that pop's sentiment shares. Contentment is
-//! whatever those four leave. The last column is why that pop stopped buying.
+//! once, when the batch ends. Craft names the process, then its share of
+//! morning time and the iterations finished over the iterations asked, in
+//! whole units, from that line's `completed` and `attempted`. A pop with
+//! no craft prints `-` there. Margin is the percentage gain or loss on
+//! the priced inputs, or `-` when those inputs have no cost. Per time is
+//! the profit on that line. Subsistence and labor are shares of that pop's
+//! time. Labor shows the time share and the same finished-over-asked
+//! fraction. Savings and stock are priced per household, in the pop's
+//! first market currency. In and out are the households that arrived and
+//! the households that left. SOL is the standard of living recorded before
+//! decay. The last column is why that pop stopped buying.
 //!
-//! Under the pops, a founding table lists the next attempt and the three
+//! Under the pops, a firm table lists each production line. Process is
+//! the name. Target is the iterations sought, `open` when the line has no
+//! cap, and `off` at 0. Success is the iterations finished over the
+//! iterations asked, in whole units. Inputs, output, sold, wage, and
+//! dividend are that firm's day in abstract value. Inputs are the
+//! destroyed or consumed inputs. Output is what the runs put out. Sold is
+//! what sold, at the price then. Wage and dividend are what the owners
+//! were paid.
+//!
+//! Under the firms, a founding table lists the next attempt and the three
 //! splits most likely if that attempt hits. Chance is that attempt. Rest
 //! is the days before it. Pop is the parent and the craft they already
 //! do. Process is the work they would take. Split is that pair's share of
@@ -32,38 +50,16 @@
 //! work. The line under the rows is what this day did, and the chance it
 //! used. A wait prints `today rest`.
 //!
-//! Under that, a craft table lists each craft line. Craft names the
-//! process, then its share of morning time and the same finished-over-asked
-//! fraction. Profit, salability, demand, luck, decay, durability, living,
-//! and idle are the votes that wrote that plan. A vote prints `+1`, `-1`,
-//! or `0`. Demand yays when buyers wanted more than traded, and nays when
-//! the offer is more than four times the sale or the bids were covered. No
-//! offer and no bids stay quiet. Luck yays when this pop sold most of the
-//! run and the stock is within four sales, and nays when the sale is thin,
-//! the stock is past that, or the line finished under four fifths of its
-//! ask. A short finish does not expand. Living compares today with the
-//! mean of the earlier samples. A full point above is `+1`. Each full
-//! point below is a contract vote, and that vote stops at `-2`. Each consecutive day
-//! below full basic needs adds another contract vote. A day that meets
-//! that line clears the count, and the trend does not expand while basic
-//! needs are unmet. Idle prints `+3` when craft and
-//! labor were both at 0% before the step. Margin is the percentage gain or
-//! loss on the priced inputs, or `-` when those inputs have no cost. Per
-//! time is the profit that vote reads. Tally is the sum of the votes.
-//! Step is `expand`, `hold`, or `contract`. `bar` means the tally would
-//! expand and subsistence turned that into a hold.
-//!
-//! Under the crafts, each market lists its goods. Supply is the units
+//! Under that, each market lists its goods. Supply is the units
 //! offered at the start of the market day, in whole units. Demand is the
 //! units that market recorded as sought, in whole units. Exchange is the
 //! units of that good exchanged today. Consumption is the units consumed
 //! today, by processes and by desires. Salability is that good's share, or
-//! the config default when the market has no row. Each currency has its own
-//! price column, headed by `in` and that currency's name. A price carries
-//! `+` when it rose since yesterday, `-` when it fell, and `=` when it
-//! held. A good with no stored price prints `-`. The currency priced in
-//! itself is 1. The first stored price has no mark. Time and skills are
-//! left out.
+//! the config default when the market has no row. `amv` is the abstract
+//! market value of one unit. A value carries `+` when it rose since
+//! yesterday, `-` when it fell, and `=` when it held. A good with no stored
+//! value prints `-`. The first stored value has no mark. Time and skills
+//! are left out.
 //!
 //! Above the pops, an info table lists one household of each demographic.
 //! Subsistence is that household's value per unit of time. Day savings is
@@ -88,7 +84,7 @@ use simpler_economy::game::map::Map;
 use simpler_economy::game::mapdata::{EnvironmentData, MapData};
 use simpler_economy::game::market::{FoundingEvent, Market};
 use simpler_economy::game::players::Players;
-use simpler_economy::game::pop::{line_value, market_price, PlanVotes, Pop};
+use simpler_economy::game::pop::{line_value, market_price, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::playstate::PlayState;
 
@@ -112,19 +108,32 @@ fn main() {
     let live = io::stdout().is_terminal();
     print_banner(&state, args.cap_multiplier);
     let mut rows = Vec::new();
+    let mut show_pops = true;
     // `latest` is the day just finished. `earlier` is the day before it,
     // which the price marks compare against. The pipe prints on the next
     // pass, so `earlier` stays put until that print.
-    let mut earlier = HashMap::new();
-    let mut latest = HashMap::new();
+    let mut earlier = Prices::default();
+    let mut latest = Prices::default();
     loop {
         if days == 0 {
             if !live && !rows.is_empty() {
-                print_table(&state, &rows, &earlier);
+                print_table(&state, &rows, &earlier, show_pops);
             }
-            days = more_days();
-            if days == 0 {
-                break;
+            loop {
+                match read_prompt() {
+                    Prompt::Days(0) => return,
+                    Prompt::Days(next) => {
+                        days = next;
+                        break;
+                    }
+                    Prompt::TogglePops => {
+                        show_pops = !show_pops;
+                        println!("{}", if show_pops { "pop table on" } else { "pop table off" });
+                        if live && !rows.is_empty() {
+                            print_table(&state, &rows, &earlier, show_pops);
+                        }
+                    }
+                }
             }
         }
         assign_ceilings(&mut state, args.cap_multiplier);
@@ -132,7 +141,7 @@ fn main() {
         rows = pop_rows(&state);
         earlier = std::mem::replace(&mut latest, snapshot_prices(&state));
         if live {
-            print_table(&state, &rows, &earlier);
+            print_table(&state, &rows, &earlier, show_pops);
         }
         days -= 1;
     }
@@ -509,7 +518,10 @@ fn job_summary(factuals: &Factuals, pop: &Pop) -> String {
 
 /// One pop on the current day.
 struct PopRow {
-    demographic: String,
+    pop: String,
+    craft: String,
+    margin: String,
+    per_time: String,
     subsistence: String,
     labor: String,
     size: String,
@@ -518,10 +530,6 @@ struct PopRow {
     savings: String,
     stock: String,
     sol: String,
-    hope: String,
-    happy: String,
-    fear: String,
-    anger: String,
     stop: String,
 }
 
@@ -538,21 +546,28 @@ fn pop_rows(state: &PlayState) -> Vec<PopRow> {
 
 /// # Pop Row
 ///
-/// `pop` as demographic, subsistence, labor, size, households that arrived,
-/// households that left, savings, stock, SOL, mood, and why buying stopped.
+/// `pop` as its id, craft, margin, profit per time, subsistence, labor,
+/// size, households that arrived, households that left, savings, stock,
+/// SOL, and why buying stopped.
 ///
-/// Subsistence names its type and the share of this pop's morning time.
-/// Labor is the time and the fraction for labor lines. The plan is the
-/// one written at the end of the day. The fraction sums `completed` and
-/// `attempted` on those lines, with the fractional part dropped. A group
-/// with no lines shows a dash. Size is the number of people. Savings and
-/// stock come from [`holding_value`], divided by the household count.
-/// SOL is [`Pop::recorded_living`]. Hope, happy, fear, and anger are
-/// those sentiment shares. In and out are the household counts on
-/// [`Pop::records`]. Stop is why this pop stopped buying.
-/// Returns that row.
+/// Craft is the non-labor line: its name, its share of morning time, and
+/// the finished-over-asked fraction. A pop with no craft prints `-` for
+/// the craft, the margin, and the profit per time. Margin and per time
+/// come from [`line_value`]. Subsistence names its type and the share of
+/// this pop's morning time. Labor is the time and the fraction for labor
+/// lines. The plan is the one written at the end of the day. The fraction
+/// sums `completed` and `attempted` on those lines, with the fractional
+/// part dropped. A group with no lines shows a dash. Size is the number of
+/// people. Savings and stock come from [`holding_value`], divided by the
+/// household count. SOL is [`Pop::recorded_living`]. In and out are the
+/// household counts on [`Pop::records`]. Stop is why this pop stopped
+/// buying. Returns that row.
 fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
     let budget = pop.time_grant(&state.factuals);
+    let market = home_market(state, pop.id);
+    let mut craft = "-".to_string();
+    let mut margin = "-".to_string();
+    let mut per_time = "-".to_string();
     let mut labor = 0.0;
     let mut labor_completed = 0.0;
     let mut labor_attempted = 0.0;
@@ -561,13 +576,22 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
         let Some(process) = state.factuals.get_process(line.process) else {
             continue;
         };
-        if !process.is_labor() {
+        let time = planned_time(line.target, process.required_time());
+        if process.is_labor() {
+            labor += time;
+            labor_completed += line.completed;
+            labor_attempted += line.attempted;
+            labor_lines = true;
             continue;
         }
-        labor += planned_time(line.target, process.required_time());
-        labor_completed += line.completed;
-        labor_attempted += line.attempted;
-        labor_lines = true;
+        let value = line_value(process, market);
+        craft = plan_text(
+            Some(process.name.clone()),
+            time_share(time, budget),
+            Some((line.completed, line.attempted)),
+        );
+        margin = margin_text(value.margin_percent());
+        per_time = qty_text(value.per_time);
     }
     let (savings, stock) = holding_value(state, pop);
     let households = pop.demographics.household.count;
@@ -580,7 +604,10 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
         }
     };
     PopRow {
-        demographic: demographic(state, pop),
+        pop: pop.id.to_string(),
+        craft,
+        margin,
+        per_time,
         subsistence: format!(
             "{} {}",
             pop.subsistence_type.name(),
@@ -597,10 +624,6 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
         savings: qty_text(per_household(savings)),
         stock: qty_text(per_household(stock)),
         sol: qty_text(pop.recorded_living().unwrap_or(0.0)),
-        hope: percent_text(pop.sentiment.hope() * 100.0),
-        happy: percent_text(pop.sentiment.happiness() * 100.0),
-        fear: percent_text(pop.sentiment.fear() * 100.0),
-        anger: percent_text(pop.sentiment.anger() * 100.0),
         stop: stop_text(state, pop),
     }
 }
@@ -622,7 +645,7 @@ fn stop_text(state: &PlayState, pop: &Pop) -> String {
 
 /// # Holding Value
 ///
-/// Savings and stock for `pop`, in its market's first currency.
+/// Savings and stock for `pop`, in abstract value.
 ///
 /// The market is the lowest id that lists the pop. Savings sums every
 /// good on that market's currency list, from property and from
@@ -883,27 +906,44 @@ fn print_info(state: &PlayState) {
 
 /// # Print Table
 ///
-/// Draws an info table, then one row per pop in `rows`, then founding, crafts, and one table per market.
+/// Draws the day, the info table, the pop table when `show_pops` is set,
+/// then firms, founding, and one table per market.
 ///
-/// The day is [`PlayState::turn`]. The info table is one household of each
-/// demographic. Pop columns are demographic, subsistence, labor, size,
-/// in, out, savings per household, stock per household, sol, hope, happy,
-/// fear, anger, and stop. In and out are households. Those two columns
-/// keep room for a fractional count, so a zero does not shift the columns
-/// after them. The founding table follows the pops, then the craft
-/// table, then the market tables, one blank line after
-/// each. `prior` is yesterday's prices for the markets. Writes the day
-/// and the tables below what is already printed.
+/// The day is [`PlayState::turn`]. `show_pops` leaves the pop rows out
+/// when false. The firm table follows, then founding, then the market
+/// tables. `prior` is yesterday's prices for the markets. Writes those
+/// tables below what is already printed.
 fn print_table(
     state: &PlayState,
     rows: &[PopRow],
-    prior: &HashMap<(usize, usize, usize), f64>,
+    prior: &Prices,
+    show_pops: bool,
 ) {
     println!();
     println!("day: {}", state.turn);
     print_info(state);
+    if show_pops {
+        print_pop_table(rows);
+    }
+    print_firm_table(state);
+    print_founding(state);
+    print_market_tables(state, prior);
+    let _ = io::stdout().flush();
+}
+
+/// # Print Pop Table
+///
+/// Draws one row per pop in `rows`.
+///
+/// A blank line separates it from the info table. Columns are pop, craft,
+/// margin, per time, subsistence, labor, size, in, out, savings per
+/// household, stock per household, sol, and stop.
+fn print_pop_table(rows: &[PopRow]) {
     println!();
-    let demo_w = col_width("demographic", rows.iter().map(|row| row.demographic.len()));
+    let pop_w = col_width("pop", rows.iter().map(|row| row.pop.len()));
+    let craft_w = col_width("craft", rows.iter().map(|row| row.craft.len()));
+    let margin_w = col_width("margin", rows.iter().map(|row| row.margin.len()));
+    let per_time_w = col_width("per time", rows.iter().map(|row| row.per_time.len()));
     let sub_w = col_width("subsistence", rows.iter().map(|row| row.subsistence.len()));
     let labor_w = col_width("labor", rows.iter().map(|row| row.labor.len()));
     let size_w = col_width("size", rows.iter().map(|row| row.size.len()));
@@ -913,54 +953,41 @@ fn print_table(
     let savings_w = col_width("savings/hh", rows.iter().map(|row| row.savings.len()));
     let stock_w = col_width("stock/hh", rows.iter().map(|row| row.stock.len()));
     let sol_w = col_width("sol", rows.iter().map(|row| row.sol.len()));
-    let hope_w = col_width("hope", rows.iter().map(|row| row.hope.len()));
-    let happy_w = col_width("happy", rows.iter().map(|row| row.happy.len()));
-    let fear_w = col_width("fear", rows.iter().map(|row| row.fear.len()));
-    let anger_w = col_width("anger", rows.iter().map(|row| row.anger.len()));
     let stop_w = col_width("stop", rows.iter().map(|row| row.stop.len()));
     println!(
         "{}",
         table_line(
-            "demographic", "subsistence", "labor", "size", "in", "out",
-            "savings/hh", "stock/hh", "sol", "hope", "happy", "fear", "anger", "stop",
-            demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
-            sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
+            "pop", "craft", "margin", "per time", "subsistence", "labor", "size", "in", "out",
+            "savings/hh", "stock/hh", "sol", "stop",
+            pop_w, craft_w, margin_w, per_time_w, sub_w, labor_w, size_w, in_w, out_w,
+            savings_w, stock_w, sol_w, stop_w,
         )
     );
     for row in rows {
         println!(
             "{}",
             table_line(
-                &row.demographic, &row.subsistence, &row.labor, &row.size,
-                &row.migration_in, &row.migration_out, &row.savings, &row.stock,
-                &row.sol, &row.hope, &row.happy, &row.fear, &row.anger, &row.stop,
-                demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
-                sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
+                &row.pop, &row.craft, &row.margin, &row.per_time, &row.subsistence, &row.labor,
+                &row.size, &row.migration_in, &row.migration_out, &row.savings, &row.stock,
+                &row.sol, &row.stop,
+                pop_w, craft_w, margin_w, per_time_w, sub_w, labor_w, size_w, in_w, out_w,
+                savings_w, stock_w, sol_w, stop_w,
             )
         );
     }
-    print_founding(state);
-    print_craft_table(state);
-    print_market_tables(state, prior);
-    let _ = io::stdout().flush();
 }
 
-/// One craft line and the votes on its next step.
-struct CraftRow {
-    pop: String,
-    craft: String,
-    profit: String,
-    margin: String,
-    per_time: String,
-    salability: String,
-    demand: String,
-    luck: String,
-    decay: String,
-    durability: String,
-    living: String,
-    idle: String,
-    tally: String,
-    step: String,
+/// One production line on the firm table.
+struct FirmRow {
+    firm: String,
+    process: String,
+    target: String,
+    success: String,
+    inputs: String,
+    output: String,
+    sold: String,
+    wage: String,
+    dividend: String,
 }
 
 /// One likely split on the founding table.
@@ -977,7 +1004,7 @@ struct FoundingRow {
 ///
 /// Draws the founding table for each market, lowest id first.
 ///
-/// A blank line separates it from the pops. Chance and rest are the next
+/// A blank line separates it from the firms. Chance and rest are the next
 /// attempt. The rows are the most likely parent and process pairs. The
 /// line under them is the attempt this day already ran.
 fn print_founding(state: &PlayState) {
@@ -1000,7 +1027,7 @@ fn print_founding(state: &PlayState) {
 /// day did.
 fn print_founding_market(state: &PlayState, id: usize, only: bool) {
     let market = state.map_data.market(id);
-    let outlook = market.founding_outlook(&state.actors.pops, &state.factuals);
+    let outlook = market.founding_outlook(&state.actors.pops, &state.actors.firms, &state.factuals);
     let mut rows = Vec::new();
     if outlook.prospects.is_empty() {
         rows.push(FoundingRow {
@@ -1017,11 +1044,17 @@ fn print_founding_market(state: &PlayState, id: usize, only: bool) {
             chance: if index == 0 { percent_text(outlook.chance * 100.0) } else { String::new() },
             rest: if index == 0 { outlook.rest.to_string() } else { String::new() },
             pop: pop_label(state, prospect.parent),
-            process: process_name(state, prospect.process),
+            process: match prospect.firm {
+                Some(firm) => firm_name(state, firm),
+                None => process_name(state, prospect.process),
+            },
             split: percent_text(prospect.chance * 100.0),
-            result: match prospect.joins {
-                Some(dest) => format!("join {}", pop_label(state, dest)),
-                None => "new".to_string(),
+            result: match prospect.firm {
+                Some(firm) => format!("firm {firm}"),
+                None => match prospect.joins {
+                    Some(dest) => format!("join {}", pop_label(state, dest)),
+                    None => "new".to_string(),
+                },
             },
         });
     }
@@ -1078,7 +1111,8 @@ fn print_founding_market(state: &PlayState, id: usize, only: bool) {
 ///
 /// A wait names no chance. Any other result names the chance that attempt
 /// used. A new pop names its id, the parent, and the process. A join names
-/// the pop who received the households. Returns that line.
+/// the pop who received the households. A restarted firm names the firm,
+/// the owner, and the parent. Returns that line.
 fn founding_today(state: &PlayState, market: &Market) -> String {
     let Some(day) = market.founding_day() else {
         return "today -".to_string();
@@ -1099,7 +1133,21 @@ fn founding_today(state: &PlayState, market: &Market) -> String {
             pop_label(state, parent),
             process_name(state, process),
         ),
+        FoundingEvent::Firm { parent, id, firm } => format!(
+            "today {chance} firm {firm} owned by pop {} from {}",
+            pop_label(state, id),
+            pop_label(state, parent),
+        ),
     }
+}
+
+/// # Firm Name
+///
+/// The loaded name of firm `id`.
+///
+/// A missing firm panics. Returns that name.
+fn firm_name(state: &PlayState, id: usize) -> String {
+    state.actors.firm(id).name.clone()
 }
 
 /// # Pop Label
@@ -1151,147 +1199,147 @@ fn process_name(state: &PlayState, id: usize) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// # Print Craft Table
+/// # Print Firm Table
 ///
-/// Draws one row for each craft line, lowest pop id first.
+/// Draws one row for each firm production line, lowest firm id first.
 ///
-/// A blank line separates it from the founding table. A pop with no craft is left
-/// out. The votes are the ones planning stored on the pop. Margin and per
-/// time come from [`line_value`].
-fn print_craft_table(state: &PlayState) {
-    let rows = craft_rows(state);
-    if rows.is_empty() {
-        return;
-    }
+/// A blank line separates it from the pops. A firm with no lines still
+/// prints, so the day shows that firm. The money columns are that firm's day.
+fn print_firm_table(state: &PlayState) {
+    let rows = firm_rows(state);
     println!();
-    println!("crafts");
-    let pop_w = col_width("pop", rows.iter().map(|row| row.pop.len()));
-    let craft_w = col_width("craft", rows.iter().map(|row| row.craft.len()));
-    let profit_w = col_width("profit", rows.iter().map(|row| row.profit.len()));
-    let margin_w = col_width("margin", rows.iter().map(|row| row.margin.len()));
-    let per_time_w = col_width("per time", rows.iter().map(|row| row.per_time.len()));
-    let salability_w = col_width("salability", rows.iter().map(|row| row.salability.len()));
-    let demand_w = col_width("demand", rows.iter().map(|row| row.demand.len()));
-    let luck_w = col_width("luck", rows.iter().map(|row| row.luck.len()));
-    let decay_w = col_width("decay", rows.iter().map(|row| row.decay.len()));
-    let durability_w = col_width("durability", rows.iter().map(|row| row.durability.len()));
-    let living_w = col_width("living", rows.iter().map(|row| row.living.len()));
-    let idle_w = col_width("idle", rows.iter().map(|row| row.idle.len()));
-    let tally_w = col_width("tally", rows.iter().map(|row| row.tally.len()));
-    let step_w = col_width("step", rows.iter().map(|row| row.step.len()));
+    println!("firms");
+    let firm_w = col_width("firm", rows.iter().map(|row| row.firm.len()));
+    let process_w = col_width("process", rows.iter().map(|row| row.process.len()));
+    let target_w = col_width("target", rows.iter().map(|row| row.target.len()));
+    let success_w = col_width("success", rows.iter().map(|row| row.success.len()));
+    let inputs_w = col_width("inputs", rows.iter().map(|row| row.inputs.len()));
+    let output_w = col_width("output", rows.iter().map(|row| row.output.len()));
+    let sold_w = col_width("sold", rows.iter().map(|row| row.sold.len()));
+    let wage_w = col_width("wage", rows.iter().map(|row| row.wage.len()));
+    let dividend_w = col_width("dividend", rows.iter().map(|row| row.dividend.len()));
     println!(
-        "{:<pop_w$}  {:<craft_w$}  {:>profit_w$}  {:>margin_w$}  {:>per_time_w$}  {:>salability_w$}  {:>demand_w$}  {:>luck_w$}  {:>decay_w$}  {:>durability_w$}  {:>living_w$}  {:>idle_w$}  {:>tally_w$}  {:>step_w$}",
-        "pop",
-        "craft",
-        "profit",
-        "margin",
-        "per time",
-        "salability",
-        "demand",
-        "luck",
-        "decay",
-        "durability",
-        "living",
-        "idle",
-        "tally",
-        "step",
-        pop_w = pop_w,
-        craft_w = craft_w,
-        profit_w = profit_w,
-        margin_w = margin_w,
-        per_time_w = per_time_w,
-        salability_w = salability_w,
-        demand_w = demand_w,
-        luck_w = luck_w,
-        decay_w = decay_w,
-        durability_w = durability_w,
-        living_w = living_w,
-        idle_w = idle_w,
-        tally_w = tally_w,
-        step_w = step_w,
+        "{:<firm_w$}  {:<process_w$}  {:>target_w$}  {:>success_w$}  {:>inputs_w$}  {:>output_w$}  {:>sold_w$}  {:>wage_w$}  {:>dividend_w$}",
+        "firm",
+        "process",
+        "target",
+        "success",
+        "inputs",
+        "output",
+        "sold",
+        "wage",
+        "dividend",
+        firm_w = firm_w,
+        process_w = process_w,
+        target_w = target_w,
+        success_w = success_w,
+        inputs_w = inputs_w,
+        output_w = output_w,
+        sold_w = sold_w,
+        wage_w = wage_w,
+        dividend_w = dividend_w,
     );
     for row in &rows {
         println!(
-            "{:<pop_w$}  {:<craft_w$}  {:>profit_w$}  {:>margin_w$}  {:>per_time_w$}  {:>salability_w$}  {:>demand_w$}  {:>luck_w$}  {:>decay_w$}  {:>durability_w$}  {:>living_w$}  {:>idle_w$}  {:>tally_w$}  {:>step_w$}",
-            row.pop,
-            row.craft,
-            row.profit,
-            row.margin,
-            row.per_time,
-            row.salability,
-            row.demand,
-            row.luck,
-            row.decay,
-            row.durability,
-            row.living,
-            row.idle,
-            row.tally,
-            row.step,
-            pop_w = pop_w,
-            craft_w = craft_w,
-            profit_w = profit_w,
-            margin_w = margin_w,
-            per_time_w = per_time_w,
-            salability_w = salability_w,
-            demand_w = demand_w,
-            luck_w = luck_w,
-            decay_w = decay_w,
-            durability_w = durability_w,
-            living_w = living_w,
-            idle_w = idle_w,
-            tally_w = tally_w,
-            step_w = step_w,
+            "{:<firm_w$}  {:<process_w$}  {:>target_w$}  {:>success_w$}  {:>inputs_w$}  {:>output_w$}  {:>sold_w$}  {:>wage_w$}  {:>dividend_w$}",
+            row.firm,
+            row.process,
+            row.target,
+            row.success,
+            row.inputs,
+            row.output,
+            row.sold,
+            row.wage,
+            row.dividend,
+            firm_w = firm_w,
+            process_w = process_w,
+            target_w = target_w,
+            success_w = success_w,
+            inputs_w = inputs_w,
+            output_w = output_w,
+            sold_w = sold_w,
+            wage_w = wage_w,
+            dividend_w = dividend_w,
         );
     }
 }
 
-/// # Craft Rows
+/// # Firm Rows
 ///
-/// One row for each craft line in `state`, lowest pop id first.
+/// One row for each production line in `state`, lowest firm id first.
 ///
-/// A labor line is left out. A line whose process is missing is left out.
-/// Returns those rows.
-fn craft_rows(state: &PlayState) -> Vec<CraftRow> {
-    let mut ids: Vec<usize> = state.actors.pops.keys().copied().collect();
+/// A firm with no lines gets one row so it still appears. Target is the
+/// iterations sought. A dead firm prints `dead` there. Success is the
+/// iterations finished over the iterations asked, with the fractional part
+/// dropped. A firm with no lines prints `-` there. The money columns are
+/// that firm's day, repeated on each of its lines. Returns those rows.
+fn firm_rows(state: &PlayState) -> Vec<FirmRow> {
+    let mut ids: Vec<usize> = state.actors.firms.keys().copied().collect();
     ids.sort_unstable();
     let mut rows = Vec::new();
     for id in ids {
-        let pop = state.actors.pop(id);
-        let market = home_market(state, id);
-        let budget = pop.time_grant(&state.factuals);
-        for (index, line) in pop.job.lines.iter().enumerate() {
-            let Some(process) = state.factuals.get_process(line.process) else {
-                continue;
-            };
-            if process.is_labor() {
-                continue;
-            }
-            let votes = pop.line_votes[index];
-            let value = line_value(process, market);
-            let time = planned_time(line.target, process.required_time());
-            rows.push(CraftRow {
-                pop: id.to_string(),
-                craft: plan_text(
-                    Some(process.name.clone()),
-                    time_share(time, budget),
-                    Some((line.completed, line.attempted)),
+        let firm = state.actors.firm(id);
+        let inputs = qty_text(firm.budget.input_cost);
+        let output = qty_text(firm.budget.output_value);
+        let sold = qty_text(firm.budget.sold_value);
+        let wage = qty_text(firm.budget.wage);
+        let dividend = qty_text(firm.budget.dividend);
+        let dead = firm.is_dead();
+        if firm.production_line.is_empty() {
+            rows.push(FirmRow {
+                firm: firm.name.clone(),
+                process: "-".to_string(),
+                target: if dead {
+                    "dead".to_string()
+                } else {
+                    "-".to_string()
+                },
+                success: "-".to_string(),
+                inputs,
+                output,
+                sold,
+                wage,
+                dividend,
+            });
+            continue;
+        }
+        for line in &firm.production_line {
+            rows.push(FirmRow {
+                firm: firm.name.clone(),
+                process: process_name(state, line.process),
+                target: if dead {
+                    "dead".to_string()
+                } else {
+                    firm_target_text(line.target)
+                },
+                success: format!(
+                    "{}/{}",
+                    whole_text(line.completed),
+                    whole_text(line.attempted),
                 ),
-                profit: vote_text(votes.profit),
-                margin: margin_text(value.margin_percent()),
-                per_time: qty_text(value.per_time),
-                salability: vote_text(votes.salability),
-                demand: vote_text(votes.demand),
-                luck: vote_text(votes.luck),
-                decay: vote_text(votes.decay),
-                durability: vote_text(votes.durability),
-                living: vote_text(votes.living),
-                idle: vote_text(votes.idle),
-                tally: vote_text(votes.tally),
-                step: step_text(&votes),
+                inputs: inputs.clone(),
+                output: output.clone(),
+                sold: sold.clone(),
+                wage: wage.clone(),
+                dividend: dividend.clone(),
             });
         }
     }
     rows
+}
+
+/// # Firm Target Text
+///
+/// The iterations sought on a firm line.
+///
+/// No target is `open`. A target of 0 is `off`. Any other target is that
+/// number. Returns that text.
+fn firm_target_text(target: Option<f64>) -> String {
+    match target {
+        Some(target) if target == 0.0 => "off".to_string(),
+        Some(target) => qty_text(target),
+        None => "open".to_string(),
+    }
 }
 
 /// # Margin Text
@@ -1306,36 +1354,10 @@ fn margin_text(percent: Option<f64>) -> String {
     }
 }
 
-/// # Vote Text
-///
-/// `vote` with a sign on a positive mark.
-///
-/// Zero prints as `0`. Returns that text.
-fn vote_text(vote: i32) -> String {
-    if vote > 0 {
-        format!("+{vote}")
-    } else {
-        vote.to_string()
-    }
-}
-
-/// # Step Text
-///
-/// The planning step in `votes`.
-///
-/// An expansion the subsistence bar returned to a hold prints `bar`.
-/// Returns that word.
-fn step_text(votes: &PlanVotes) -> String {
-    if votes.barred {
-        "bar".to_string()
-    } else {
-        match votes.direction {
-            1 => "expand",
-            -1 => "contract",
-            _ => "hold",
-        }
-        .to_string()
-    }
+/// Yesterday's abstract values.
+#[derive(Default)]
+struct Prices {
+    amv: HashMap<(usize, usize), f64>,
 }
 
 /// One good on a market table.
@@ -1346,16 +1368,16 @@ struct MarketRow {
     exchange: String,
     consumption: String,
     salability: String,
-    prices: Vec<String>,
+    amv: String,
 }
 
 /// # Print Market Tables
 ///
 /// Draws one table for each market in `state`, lowest id first.
 ///
-/// A blank line separates a table from the crafts, and from the market
-/// before it. `prior` is yesterday's prices.
-fn print_market_tables(state: &PlayState, prior: &HashMap<(usize, usize, usize), f64>) {
+/// A blank line separates a table from the founding table, and from the
+/// market before it. `prior` is yesterday's prices.
+fn print_market_tables(state: &PlayState, prior: &Prices) {
     let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
     ids.sort_unstable();
     for id in ids {
@@ -1369,23 +1391,13 @@ fn print_market_tables(state: &PlayState, prior: &HashMap<(usize, usize, usize),
 /// Draws `market`'s goods.
 ///
 /// The first line is the market id. Columns are good, supply, demand,
-/// exchange, consumption, salability, then one price column per currency.
-/// A currency column is headed by `in` and that currency's name. The good
-/// column sits on the left. The other columns sit on the right. `prior` is
-/// yesterday's prices.
-fn print_market(
-    state: &PlayState,
-    market: &Market,
-    prior: &HashMap<(usize, usize, usize), f64>,
-) {
-    let currencies: Vec<usize> = market.currencies().to_vec();
-    let headers: Vec<String> = currencies
-        .iter()
-        .map(|&id| format!("in {}", good_name(&state.factuals, id)))
-        .collect();
+/// exchange, consumption, salability, and the abstract value. The good
+/// column sits on the left. The other columns sit on the right. `prior`
+/// is yesterday's values.
+fn print_market(state: &PlayState, market: &Market, prior: &Prices) {
     let rows: Vec<MarketRow> = listed_goods(state, market)
         .into_iter()
-        .map(|id| market_row(state, market, id, &currencies, prior))
+        .map(|id| market_row(state, market, id, prior))
         .collect();
     println!("market: {}", market.id);
     let good_w = col_width("good", rows.iter().map(|row| row.good.len()));
@@ -1394,33 +1406,30 @@ fn print_market(
     let exchange_w = col_width("exchange", rows.iter().map(|row| row.exchange.len()));
     let consumption_w = col_width("consumption", rows.iter().map(|row| row.consumption.len()));
     let salability_w = col_width("salability", rows.iter().map(|row| row.salability.len()));
-    let price_w: Vec<usize> = headers
-        .iter()
-        .enumerate()
-        .map(|(index, header)| col_width(header, rows.iter().map(|row| row.prices[index].len())))
-        .collect();
-    let mut head = vec![
+    let amv_w = col_width("amv", rows.iter().map(|row| row.amv.len()));
+    let head = vec![
         "good".to_string(),
         "supply".to_string(),
         "demand".to_string(),
         "exchange".to_string(),
         "consumption".to_string(),
         "salability".to_string(),
+        "amv".to_string(),
     ];
-    head.extend(headers.iter().cloned());
-    let mut widths = vec![good_w, supply_w, demand_w, exchange_w, consumption_w, salability_w];
-    widths.extend(price_w);
+    let widths = vec![
+        good_w, supply_w, demand_w, exchange_w, consumption_w, salability_w, amv_w,
+    ];
     println!("{}", market_line(&head, &widths));
     for row in &rows {
-        let mut cells = vec![
+        let cells = vec![
             row.good.clone(),
             row.supply.clone(),
             row.demand.clone(),
             row.exchange.clone(),
             row.consumption.clone(),
             row.salability.clone(),
+            row.amv.clone(),
         ];
-        cells.extend(row.prices.iter().cloned());
         println!("{}", market_line(&cells, &widths));
     }
 }
@@ -1452,7 +1461,7 @@ fn market_line(cells: &[String], widths: &[usize]) -> String {
 ///
 /// A currency is always included. Any other good is included when members
 /// hold some, the market recorded supply, demand, trade, output, use,
-/// rot, or stock for it, or some currency has a rate for it. Time and
+/// rot, or stock for it, or it has a stored abstract value. Time and
 /// skills are left out. Returns those ids.
 fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
     let mut ids = Vec::new();
@@ -1471,10 +1480,8 @@ fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
     for &id in market.goods.keys() {
         remember(id);
     }
-    for rates in market.exchange_rates.values() {
-        for &id in rates.keys() {
-            remember(id);
-        }
+    for id in market.priced_goods() {
+        remember(id);
     }
     for &pop_id in &market.pops {
         let pop = state.actors.pop(pop_id);
@@ -1501,10 +1508,10 @@ fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
 /// Whether `good` belongs on `market`'s table.
 ///
 /// A currency belongs. So does a good members hold, a good with a stored
-/// rate, and a good whose market row recorded sought, offered, volume,
+/// abstract value, and a good whose market row recorded sought, offered, volume,
 /// output, use, rot, or stock. Returns that check.
 fn on_the_market(state: &PlayState, market: &Market, good: usize) -> bool {
-    if market.currencies().contains(&good) || has_rate(market, good) {
+    if market.currencies().contains(&good) || market.stored_amv(good).is_some() {
         return true;
     }
     if held_units(state, market, good) != 0.0 {
@@ -1529,15 +1536,9 @@ fn on_the_market(state: &PlayState, market: &Market, good: usize) -> bool {
 /// Supply comes from [`offered_units`] and demand from [`sought_units`],
 /// both in whole units. Exchange comes from [`exchanged_units`].
 /// Consumption comes from [`consumed_units`]. Salability comes from
-/// [`salability_of`]. Each entry of `currencies` is priced by [`price_in`]
-/// and marked against `prior`. Returns that row.
-fn market_row(
-    state: &PlayState,
-    market: &Market,
-    good: usize,
-    currencies: &[usize],
-    prior: &HashMap<(usize, usize, usize), f64>,
-) -> MarketRow {
+/// [`salability_of`]. The abstract value is [`Market::stored_amv`], marked
+/// against `prior`. Returns that row.
+fn market_row(state: &PlayState, market: &Market, good: usize, prior: &Prices) -> MarketRow {
     MarketRow {
         good: good_name(&state.factuals, good),
         supply: whole_text(offered_units(market, good)),
@@ -1545,13 +1546,7 @@ fn market_row(
         exchange: qty_text(exchanged_units(market, good)),
         consumption: qty_text(consumed_units(market, good)),
         salability: percent_text(salability_of(state, market, good) * 100.0),
-        prices: currencies
-            .iter()
-            .map(|&currency| {
-                let price = price_in(market, currency, good);
-                price_text(price, prior.get(&(market.id, good, currency)).copied())
-            })
-            .collect(),
+        amv: price_text(market.stored_amv(good), prior.amv.get(&(market.id, good)).copied()),
     }
 }
 
@@ -1643,57 +1638,20 @@ fn salability_of(state: &PlayState, market: &Market, good: usize) -> f64 {
         .unwrap_or(state.factuals.config.market.salability_default)
 }
 
-/// # Has Rate
-///
-/// Whether some currency on `market` stores a rate for `good`.
-///
-/// Returns that check.
-fn has_rate(market: &Market, good: usize) -> bool {
-    market
-        .exchange_rates
-        .values()
-        .any(|row| row.contains_key(&good))
-}
-
-/// # Price In
-///
-/// What one unit of `good` costs in `currency` on `market`.
-///
-/// The currency itself costs 1. A stored rate is goods per currency unit,
-/// and the price is its inverse. A missing rate is `None`. Returns that
-/// price.
-fn price_in(market: &Market, currency: usize, good: usize) -> Option<f64> {
-    if good == currency {
-        return Some(1.0);
-    }
-    match market
-        .exchange_rates
-        .get(&currency)
-        .and_then(|row| row.get(&good))
-        .copied()
-    {
-        Some(rate) if rate.is_finite() && rate > 0.0 => Some(1.0 / rate),
-        _ => None,
-    }
-}
-
 /// # Snapshot Prices
 ///
-/// Today's price of each listed good in each market currency.
+/// Today's abstract value of each listed good.
 ///
-/// The key is market id, good id, and currency id. The value is
-/// [`price_in`]. Returns that map.
-fn snapshot_prices(state: &PlayState) -> HashMap<(usize, usize, usize), f64> {
-    let mut prices = HashMap::new();
+/// A value is keyed by market id and good id. Returns that map.
+fn snapshot_prices(state: &PlayState) -> Prices {
+    let mut prices = Prices::default();
     let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
     ids.sort_unstable();
     for id in ids {
         let market = state.map_data.market(id);
         for good in listed_goods(state, market) {
-            for &currency in market.currencies() {
-                if let Some(price) = price_in(market, currency, good) {
-                    prices.insert((id, good, currency), price);
-                }
+            if let Some(amv) = market.stored_amv(good) {
+                prices.amv.insert((id, good), amv);
             }
         }
     }
@@ -1747,40 +1705,54 @@ fn col_width(header: &str, cells: impl Iterator<Item = usize>) -> usize {
 ///
 /// One aligned line of the pop table.
 ///
-/// The widths are the columns. Demographic and subsistence sit on the
+/// The widths are the columns. Pop, craft, and subsistence sit on the
 /// left. The other columns sit on the right. Returns that line.
 fn table_line(
-    demographic: &str, subsistence: &str, labor: &str, size: &str, arrived: &str, left: &str,
-    savings: &str, stock: &str, sol: &str, hope: &str, happy: &str, fear: &str, anger: &str,
-    stop: &str, demo_w: usize, sub_w: usize, labor_w: usize, size_w: usize, in_w: usize,
-    out_w: usize, savings_w: usize, stock_w: usize, sol_w: usize, hope_w: usize, happy_w: usize,
-    fear_w: usize, anger_w: usize, stop_w: usize,
+    pop: &str, craft: &str, margin: &str, per_time: &str, subsistence: &str, labor: &str,
+    size: &str, arrived: &str, left: &str, savings: &str, stock: &str, sol: &str, stop: &str,
+    pop_w: usize, craft_w: usize, margin_w: usize, per_time_w: usize, sub_w: usize,
+    labor_w: usize, size_w: usize, in_w: usize, out_w: usize, savings_w: usize, stock_w: usize,
+    sol_w: usize, stop_w: usize,
 ) -> String {
     format!(
-        "{demographic:<demo_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {arrived:>in_w$}  {left:>out_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {hope:>hope_w$}  {happy:>happy_w$}  {fear:>fear_w$}  {anger:>anger_w$}  {stop:>stop_w$}"
+        "{pop:<pop_w$}  {craft:<craft_w$}  {margin:>margin_w$}  {per_time:>per_time_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {arrived:>in_w$}  {left:>out_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {stop:>stop_w$}"
     )
 }
 
-/// # More Days
+/// The next thing the prompt asked for.
+enum Prompt {
+    /// Run this many more days. Zero quits.
+    Days(u32),
+    /// Show the pop table, or hide it when it is already shown.
+    TogglePops,
+}
+
+/// # Read Prompt
 ///
-/// Reads how many more turns to run.
+/// Reads the next command.
 ///
 /// An empty line is one day. `0` quits. Any other whole number is that
-/// many days. A line that is not a whole number asks again. End of input
-/// quits. Returns that count.
-fn more_days() -> u32 {
+/// many days. `pops` shows or hides the pop table. A line that is neither
+/// asks again. End of input quits. Returns that command.
+fn read_prompt() -> Prompt {
     loop {
-        print!("run more days (enter = 1, 0 = quit): ");
+        print!("run more days (enter = 1, 0 = quit, pops = table): ");
         let _ = io::stdout().flush();
         let mut line = String::new();
         match io::stdin().read_line(&mut line) {
-            Ok(0) => return 0,
-            Ok(_) => match line.trim().parse::<u32>() {
-                Ok(days) => return days,
-                Err(_) if line.trim().is_empty() => return 1,
-                Err(_) => println!("enter a whole number, or press enter for one day"),
-            },
-            Err(_) => return 0,
+            Ok(0) => return Prompt::Days(0),
+            Ok(_) => {
+                let line = line.trim();
+                if line.eq_ignore_ascii_case("pops") {
+                    return Prompt::TogglePops;
+                }
+                match line.parse::<u32>() {
+                    Ok(days) => return Prompt::Days(days),
+                    Err(_) if line.is_empty() => return Prompt::Days(1),
+                    Err(_) => println!("enter a whole number, press enter for one day, or pops"),
+                }
+            }
+            Err(_) => return Prompt::Days(0),
         }
     }
 }

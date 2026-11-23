@@ -4,13 +4,20 @@
 
 # Twenty-eight pops, each with one craft. Bread, cabins, beer, huts, and the
 # clothing chain are common goods. Water and coal are gathered for sale, and
-# one pop farms grain. Cotton, thread, fabric, and clothes are one pop each.
+# one pop farms grain and sells farmhand labor. That labor line may draw
+# farming skill. Cotton, thread, and fabric are one pop each. One pop
+# makes clothes and sells millhand labor. That labor line may draw
+# clothworking skill.
 # One pop mints gold coins. Storage adds wood, clay, pots, and buckets.
 # Trinkets add iron, copper, tin, bronze, gold, and gold tokens. Tools add
 # wood tools, iron tools, bronze tools, blades, and bronze mirrors. Cabins
-# and huts already cover the rest of storage. One pop hauls cargo. One pop
-# sells farmhand labor and may draw farming skill. A pop buys the goods
-# its own craft does not make.
+# and huts already cover the rest of storage. One pop hauls cargo. One other
+# pop sells only farmhand labor and may draw farming skill. One pop sells
+# only millhand labor and may draw clothworking skill. One pop owns
+# Agribusiness and has no craft. One pop owns the Clothes Mill and has no
+# craft. One pop owns the Cotton Farm, one owns the Thread Mill, and one
+# owns the Fabric Mill. None of those owners has a craft. A pop buys the
+# goods its own craft does not make.
 
 [[pops]]
 id = 1
@@ -66,6 +73,11 @@ culture = "village"
 process = "make grain"
 target = 0
 
+[[pops.lines]]
+process = "farmhand labor"
+target = 0
+inputs = ["farming"]
+
 [[pops]]
 id = 7
 species = "human"
@@ -110,6 +122,11 @@ culture = "village"
 [[pops.lines]]
 process = "make clothes"
 target = 0
+
+[[pops.lines]]
+process = "millhand labor"
+target = 0
+inputs = ["clothworking"]
 
 [[pops]]
 id = 12
@@ -273,3 +290,38 @@ culture = "village"
 process = "farmhand labor"
 target = 0
 inputs = ["farming"]
+
+[[pops]]
+id = 30
+species = "human"
+culture = "village"
+
+[[pops]]
+id = 31
+species = "human"
+culture = "village"
+
+[[pops.lines]]
+process = "millhand labor"
+target = 0
+inputs = ["clothworking"]
+
+[[pops]]
+id = 32
+species = "human"
+culture = "village"
+
+[[pops]]
+id = 33
+species = "human"
+culture = "village"
+
+[[pops]]
+id = 34
+species = "human"
+culture = "village"
+
+[[pops]]
+id = 35
+species = "human"
+culture = "village"

@@ -2,7 +2,7 @@
 # Human-editable. Starting prices, pops, and firms are initialization data, not here.
 #
 # Tags (optional): "restricted", "immobile", "exposure", "untradeable", "skill",
-# "industrial", or { transport = 1.0 }.
+# "industrial", "money", or { transport = 1.0 }.
 # Restricted stays in its market. A trade on that tile can still move it.
 # Immobile keeps bulk and leaves that bulk out of a transaction's haul.
 #
@@ -34,6 +34,7 @@ name = "grain"
 mass = 1.0
 volume = 0.0015
 decay_rate = 0.05
+tags = ["money"]
 
 [[goods]]
 id = 2
@@ -62,6 +63,7 @@ name = "gold_token"
 mass = 0.01
 volume = 0.000001
 decay_rate = 0.005
+tags = ["money"]
 
 [[goods]]
 id = 6
@@ -161,6 +163,7 @@ name = "bronze_token"
 mass = 0.01
 volume = 0.000001
 decay_rate = 0.01
+tags = ["money"]
 
 [[goods]]
 id = 20
@@ -168,6 +171,7 @@ name = "iron_token"
 mass = 0.01
 volume = 0.000001
 decay_rate = 0.01
+tags = ["money"]
 
 [[goods]]
 id = 21
@@ -175,6 +179,7 @@ name = "copper_token"
 mass = 0.01
 volume = 0.000001
 decay_rate = 0.01
+tags = ["money"]
 
 [[goods]]
 id = 22
@@ -182,6 +187,7 @@ name = "tin_token"
 mass = 0.01
 volume = 0.000001
 decay_rate = 0.01
+tags = ["money"]
 
 [[goods]]
 id = 23
@@ -361,6 +367,7 @@ name = "gold_coins"
 mass = 1.0
 volume = 0.00001
 decay_rate = 0.001
+tags = ["money"]
 
 # A haul service. make cargo is process 46. One unit covers 4 time of transport.
 # Decay 1.0 clears whatever is still on hand at the end of the day.

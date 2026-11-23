@@ -180,11 +180,13 @@ impl PlayState {
     /// Lets each market found, lowest market id first.
     ///
     /// Savings are still set aside. A new pop takes the next free id. The
-    /// draw is [`Market::found_pop`].
+    /// draw is [`Market::found_pop`]. Firms are passed so a hit can restart
+    /// a dead one.
     fn found_pops(&mut self) {
         let turn = self.turn;
         let factuals = &self.factuals;
         let pops = &mut self.actors.pops;
+        let firms = &mut self.actors.firms;
         let markets = &mut self.map_data.markets;
         let mut ids: Vec<usize> = markets.keys().copied().collect();
         ids.sort_unstable();
@@ -194,7 +196,7 @@ impl PlayState {
             let market = markets
                 .get_mut(&id)
                 .unwrap_or_else(|| panic!("market {id} is not in MapData"));
-            if let Some(created) = market.found_pop(pops, factuals, &mut rng, next_id) {
+            if let Some(created) = market.found_pop(pops, firms, factuals, &mut rng, next_id) {
                 next_id = created.saturating_add(1);
             }
         }
@@ -219,10 +221,12 @@ impl PlayState {
     ///
     /// Each actor runs on its own thread. They share `factuals` and do not
     /// share their own goods. Special resource extraction can be here,
-    /// depending on what kind of special. A pop runs its job. Firm and
-    /// institution production are not written yet.
+    /// depending on what kind of special. A pop runs its job. A firm runs
+    /// its lines, and that run is priced from the firm's market.
+    /// Institution production is not written.
     fn production(&mut self) {
         let factuals = &self.factuals;
+        let map_data = &self.map_data;
         let pops = &mut self.actors.pops;
         let firms = &mut self.actors.firms;
         let institutions = &mut self.actors.institutions;
@@ -231,7 +235,8 @@ impl PlayState {
                 scope.spawn(|| pop.produce(factuals));
             }
             for firm in firms.values_mut() {
-                scope.spawn(|| firm.produce(factuals));
+                let market = map_data.market(firm.market);
+                scope.spawn(|| firm.produce(factuals, Some(market)));
             }
             for institution in institutions.values_mut() {
                 scope.spawn(|| institution.produce(factuals));
@@ -433,11 +438,11 @@ impl PlayState {
     ///
     /// Runs each actor's plan for the next day.
     ///
-    /// Hands the walk to [`Actors::planning`], with the markets a pop reads
-    /// for prices. Firm and institution planning are not written yet.
+    /// Hands the walk to [`Actors::planning`], with the markets a pop or firm
+    /// reads for prices. Institution planning is not written yet.
     fn planning(&mut self) {
         self.actors
-            .planning(&self.factuals, &self.map_data.markets);
+            .planning(&self.factuals, self.map_data.markets_mut());
     }
 }
 

@@ -15,10 +15,10 @@ use simpler_economy::game::culture::Culture;
 use simpler_economy::game::demographic_source::DemographicSource;
 use simpler_economy::game::desire::{DemoDesire, DesireTarget, DesireTargetType, PlatonicDesire};
 use simpler_economy::game::factuals::Factuals;
-use simpler_economy::game::firm::{Firm, ProductionLine};
+use simpler_economy::game::firm::{Firm, FirmPRow, ProductionLine};
 use simpler_economy::game::good::Good;
 use simpler_economy::game::job::{Job, JobLine};
-use simpler_economy::game::market::Market;
+use simpler_economy::game::market::{Market, OwnershipSubject};
 use simpler_economy::game::pop::Pop;
 use simpler_economy::game::process::Process;
 use simpler_economy::game::scalingfactor::ScalingFactor;
@@ -199,7 +199,17 @@ struct FirmRow {
     name: String,
     market: usize,
     #[serde(default)]
+    owners: Vec<usize>,
+    #[serde(default)]
     lines: Vec<FirmLineRow>,
+    #[serde(default)]
+    stock: Vec<StockRow>,
+}
+
+#[derive(Deserialize)]
+struct StockRow {
+    good: String,
+    amount: f64,
 }
 
 #[derive(Deserialize)]
@@ -662,8 +672,14 @@ fn load_market(path: &Path, goods: &HashMap<String, usize>, pops: &[Pop]) -> Res
 /// The firms in `path`, and their membership on `market`.
 ///
 /// `processes` and `goods` resolve each line. A repeated firm id is an
-/// error. A market id that is not `market` is an error. Each firm is added
-/// to `market`. Returns those firms.
+/// error. A market id that is not `market` is an error. `owners` names the
+/// pops that hold the firm. The market records those rights. One owner holds
+/// all of it. Several owners hold equal parts, and the last part is whatever
+/// is left so the total is 1.
+/// An empty owner list, pop 0, a repeated pop, or a pop that is not on
+/// `market` is an error. `stock` is opening property. A missing good, a
+/// repeated good, or an amount that is not above 0 is an error. Each firm
+/// is added to `market`. Returns those firms.
 fn load_firms(
     path: &Path, processes: &HashMap<String, usize>, goods: &HashMap<String, usize>, market: &mut Market,
 ) -> Result<Vec<Firm>, ScenarioError> {
@@ -679,12 +695,78 @@ fn load_firms(
                 path.display(), row.id, row.market
             )));
         }
+        if row.owners.is_empty() {
+            return Err(ScenarioError::new(format!("{}: firm {} has no owner", path.display(), row.id)));
+        }
+        let mut seen = Vec::new();
+        for pop in &row.owners {
+            if *pop == 0 {
+                return Err(ScenarioError::new(format!(
+                    "{}: firm {} owner 0 is not a pop",
+                    path.display(),
+                    row.id
+                )));
+            }
+            if seen.contains(pop) {
+                return Err(ScenarioError::new(format!(
+                    "{}: firm {} owner {pop} is repeated",
+                    path.display(),
+                    row.id
+                )));
+            }
+            seen.push(*pop);
+            if !market.pops.contains(pop) {
+                return Err(ScenarioError::new(format!(
+                    "{}: firm {} owner {pop} is not in pops.toml",
+                    path.display(),
+                    row.id
+                )));
+            }
+        }
         let mut production_line = Vec::new();
         for line in &row.lines {
             production_line.push(build_firm_line(path, line, processes, goods)?);
         }
         let mut firm = Firm::new(row.id, row.name, row.market, Hex::new(0, 0));
         firm.production_line = production_line;
+        let mut seen_goods = Vec::new();
+        for stock in &row.stock {
+            if !stock.amount.is_finite() || stock.amount <= 0.0 {
+                return Err(ScenarioError::new(format!(
+                    "{}: firm {} stock {} must be above 0",
+                    path.display(),
+                    row.id,
+                    stock.good
+                )));
+            }
+            let good = lookup(goods, &stock.good, "good").map_err(|err| {
+                ScenarioError::new(format!("{}: {err}", path.display()))
+            })?;
+            if seen_goods.contains(&good) {
+                return Err(ScenarioError::new(format!(
+                    "{}: firm {} stock {} is repeated",
+                    path.display(),
+                    row.id,
+                    stock.good
+                )));
+            }
+            seen_goods.push(good);
+            firm.property
+                .insert(good, FirmPRow::new().with_quantity(stock.amount));
+        }
+        // The last owner takes the remainder, so the parts add to 1.
+        let count = row.owners.len();
+        let mut given = 0.0;
+        for (index, pop) in row.owners.iter().enumerate() {
+            let fraction = if index + 1 == count {
+                1.0 - given
+            } else {
+                let part = 1.0 / count as f64;
+                given += part;
+                part
+            };
+            market.issue_ownership(OwnershipSubject::Firm(row.id), *pop, fraction);
+        }
         market.firms.insert(firm.id);
         firms.push(firm);
     }
@@ -710,7 +792,13 @@ fn build_firm_line(
             ScenarioError::new(format!("{}: {err}", path.display()))
         })?);
     }
-    Ok(ProductionLine { process, target: line.target, inputs })
+    Ok(ProductionLine {
+        process,
+        target: line.target,
+        inputs,
+        attempted: 0.0,
+        completed: 0.0,
+    })
 }
 
 /// # Name Index

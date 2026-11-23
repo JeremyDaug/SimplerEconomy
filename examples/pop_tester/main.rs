@@ -58,12 +58,11 @@
 //! units that market recorded as sought, in whole units. Exchange is the
 //! units of that good exchanged today. Consumption is the units consumed
 //! today, by processes and by desires. Salability is that good's share, or
-//! the config default when the market has no row. Each currency has its own
-//! price column, headed by `in` and that currency's name. A price carries
-//! `+` when it rose since yesterday, `-` when it fell, and `=` when it
-//! held. A good with no stored price prints `-`. The currency priced in
-//! itself is 1. The first stored price has no mark. Time and skills are
-//! left out.
+//! the config default when the market has no row. `amv` is the abstract
+//! market value of one unit. A value carries `+` when it rose since
+//! yesterday, `-` when it fell, and `=` when it held. A good with no stored
+//! value prints `-`. The first stored value has no mark. Time and skills
+//! are left out.
 //!
 //! Above the pops, an info table lists one household of each demographic.
 //! Subsistence is that household's value per unit of time. Day savings is
@@ -116,8 +115,8 @@ fn main() {
     // `latest` is the day just finished. `earlier` is the day before it,
     // which the price marks compare against. The pipe prints on the next
     // pass, so `earlier` stays put until that print.
-    let mut earlier = HashMap::new();
-    let mut latest = HashMap::new();
+    let mut earlier = Prices::default();
+    let mut latest = Prices::default();
     loop {
         if days == 0 {
             if !live && !rows.is_empty() {
@@ -604,7 +603,7 @@ fn stop_text(state: &PlayState, pop: &Pop) -> String {
 
 /// # Holding Value
 ///
-/// Savings and stock for `pop`, in its market's first currency.
+/// Savings and stock for `pop`, in abstract value.
 ///
 /// The market is the lowest id that lists the pop. Savings sums every
 /// good on that market's currency list, from property and from
@@ -876,11 +875,7 @@ fn print_info(state: &PlayState) {
 /// table, then the market tables, one blank line after
 /// each. `prior` is yesterday's prices for the markets. Writes the day
 /// and the tables below what is already printed.
-fn print_table(
-    state: &PlayState,
-    rows: &[PopRow],
-    prior: &HashMap<(usize, usize, usize), f64>,
-) {
+fn print_table(state: &PlayState, rows: &[PopRow], prior: &Prices) {
     println!();
     println!("day: {}", state.turn);
     print_info(state);
@@ -982,7 +977,7 @@ fn print_founding(state: &PlayState) {
 /// day did.
 fn print_founding_market(state: &PlayState, id: usize, only: bool) {
     let market = state.map_data.market(id);
-    let outlook = market.founding_outlook(&state.actors.pops, &state.factuals);
+    let outlook = market.founding_outlook(&state.actors.pops, &state.actors.firms, &state.factuals);
     let mut rows = Vec::new();
     if outlook.prospects.is_empty() {
         rows.push(FoundingRow {
@@ -999,11 +994,17 @@ fn print_founding_market(state: &PlayState, id: usize, only: bool) {
             chance: if index == 0 { percent_text(outlook.chance * 100.0) } else { String::new() },
             rest: if index == 0 { outlook.rest.to_string() } else { String::new() },
             pop: pop_label(state, prospect.parent),
-            process: process_name(state, prospect.process),
+            process: match prospect.firm {
+                Some(firm) => firm_name(state, firm),
+                None => process_name(state, prospect.process),
+            },
             split: percent_text(prospect.chance * 100.0),
-            result: match prospect.joins {
-                Some(dest) => format!("join {}", pop_label(state, dest)),
-                None => "new".to_string(),
+            result: match prospect.firm {
+                Some(firm) => format!("firm {firm}"),
+                None => match prospect.joins {
+                    Some(dest) => format!("join {}", pop_label(state, dest)),
+                    None => "new".to_string(),
+                },
             },
         });
     }
@@ -1060,7 +1061,8 @@ fn print_founding_market(state: &PlayState, id: usize, only: bool) {
 ///
 /// A wait names no chance. Any other result names the chance that attempt
 /// used. A new pop names its id, the parent, and the process. A join names
-/// the pop who received the households. Returns that line.
+/// the pop who received the households. A restarted firm names the firm,
+/// the owner, and the parent. Returns that line.
 fn founding_today(state: &PlayState, market: &Market) -> String {
     let Some(day) = market.founding_day() else {
         return "today -".to_string();
@@ -1081,7 +1083,21 @@ fn founding_today(state: &PlayState, market: &Market) -> String {
             pop_label(state, parent),
             process_name(state, process),
         ),
+        FoundingEvent::Firm { parent, id, firm } => format!(
+            "today {chance} firm {firm} owned by pop {} from {}",
+            pop_label(state, id),
+            pop_label(state, parent),
+        ),
     }
+}
+
+/// # Firm Name
+///
+/// The loaded name of firm `id`.
+///
+/// A missing firm panics. Returns that name.
+fn firm_name(state: &PlayState, id: usize) -> String {
+    state.actors.firm(id).name.clone()
 }
 
 /// # Pop Label
@@ -1320,6 +1336,12 @@ fn step_text(votes: &PlanVotes) -> String {
     }
 }
 
+/// Yesterday's abstract values.
+#[derive(Default)]
+struct Prices {
+    amv: HashMap<(usize, usize), f64>,
+}
+
 /// One good on a market table.
 struct MarketRow {
     good: String,
@@ -1328,7 +1350,7 @@ struct MarketRow {
     exchange: String,
     consumption: String,
     salability: String,
-    prices: Vec<String>,
+    amv: String,
 }
 
 /// # Print Market Tables
@@ -1337,7 +1359,7 @@ struct MarketRow {
 ///
 /// A blank line separates a table from the crafts, and from the market
 /// before it. `prior` is yesterday's prices.
-fn print_market_tables(state: &PlayState, prior: &HashMap<(usize, usize, usize), f64>) {
+fn print_market_tables(state: &PlayState, prior: &Prices) {
     let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
     ids.sort_unstable();
     for id in ids {
@@ -1351,23 +1373,13 @@ fn print_market_tables(state: &PlayState, prior: &HashMap<(usize, usize, usize),
 /// Draws `market`'s goods.
 ///
 /// The first line is the market id. Columns are good, supply, demand,
-/// exchange, consumption, salability, then one price column per currency.
-/// A currency column is headed by `in` and that currency's name. The good
-/// column sits on the left. The other columns sit on the right. `prior` is
-/// yesterday's prices.
-fn print_market(
-    state: &PlayState,
-    market: &Market,
-    prior: &HashMap<(usize, usize, usize), f64>,
-) {
-    let currencies: Vec<usize> = market.currencies().to_vec();
-    let headers: Vec<String> = currencies
-        .iter()
-        .map(|&id| format!("in {}", good_name(&state.factuals, id)))
-        .collect();
+/// exchange, consumption, salability, and the abstract value. The good
+/// column sits on the left. The other columns sit on the right. `prior`
+/// is yesterday's values.
+fn print_market(state: &PlayState, market: &Market, prior: &Prices) {
     let rows: Vec<MarketRow> = listed_goods(state, market)
         .into_iter()
-        .map(|id| market_row(state, market, id, &currencies, prior))
+        .map(|id| market_row(state, market, id, prior))
         .collect();
     println!("market: {}", market.id);
     let good_w = col_width("good", rows.iter().map(|row| row.good.len()));
@@ -1376,33 +1388,30 @@ fn print_market(
     let exchange_w = col_width("exchange", rows.iter().map(|row| row.exchange.len()));
     let consumption_w = col_width("consumption", rows.iter().map(|row| row.consumption.len()));
     let salability_w = col_width("salability", rows.iter().map(|row| row.salability.len()));
-    let price_w: Vec<usize> = headers
-        .iter()
-        .enumerate()
-        .map(|(index, header)| col_width(header, rows.iter().map(|row| row.prices[index].len())))
-        .collect();
-    let mut head = vec![
+    let amv_w = col_width("amv", rows.iter().map(|row| row.amv.len()));
+    let head = vec![
         "good".to_string(),
         "supply".to_string(),
         "demand".to_string(),
         "exchange".to_string(),
         "consumption".to_string(),
         "salability".to_string(),
+        "amv".to_string(),
     ];
-    head.extend(headers.iter().cloned());
-    let mut widths = vec![good_w, supply_w, demand_w, exchange_w, consumption_w, salability_w];
-    widths.extend(price_w);
+    let widths = vec![
+        good_w, supply_w, demand_w, exchange_w, consumption_w, salability_w, amv_w,
+    ];
     println!("{}", market_line(&head, &widths));
     for row in &rows {
-        let mut cells = vec![
+        let cells = vec![
             row.good.clone(),
             row.supply.clone(),
             row.demand.clone(),
             row.exchange.clone(),
             row.consumption.clone(),
             row.salability.clone(),
+            row.amv.clone(),
         ];
-        cells.extend(row.prices.iter().cloned());
         println!("{}", market_line(&cells, &widths));
     }
 }
@@ -1434,7 +1443,7 @@ fn market_line(cells: &[String], widths: &[usize]) -> String {
 ///
 /// A currency is always included. Any other good is included when members
 /// hold some, the market recorded supply, demand, trade, output, use,
-/// rot, or stock for it, or some currency has a rate for it. Time and
+/// rot, or stock for it, or it has a stored abstract value. Time and
 /// skills are left out. Returns those ids.
 fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
     let mut ids = Vec::new();
@@ -1453,10 +1462,8 @@ fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
     for &id in market.goods.keys() {
         remember(id);
     }
-    for rates in market.exchange_rates.values() {
-        for &id in rates.keys() {
-            remember(id);
-        }
+    for id in market.priced_goods() {
+        remember(id);
     }
     for &pop_id in &market.pops {
         let pop = state.actors.pop(pop_id);
@@ -1483,10 +1490,10 @@ fn listed_goods(state: &PlayState, market: &Market) -> Vec<usize> {
 /// Whether `good` belongs on `market`'s table.
 ///
 /// A currency belongs. So does a good members hold, a good with a stored
-/// rate, and a good whose market row recorded sought, offered, volume,
+/// abstract value, and a good whose market row recorded sought, offered, volume,
 /// output, use, rot, or stock. Returns that check.
 fn on_the_market(state: &PlayState, market: &Market, good: usize) -> bool {
-    if market.currencies().contains(&good) || has_rate(market, good) {
+    if market.currencies().contains(&good) || market.stored_amv(good).is_some() {
         return true;
     }
     if held_units(state, market, good) != 0.0 {
@@ -1511,15 +1518,9 @@ fn on_the_market(state: &PlayState, market: &Market, good: usize) -> bool {
 /// Supply comes from [`offered_units`] and demand from [`sought_units`],
 /// both in whole units. Exchange comes from [`exchanged_units`].
 /// Consumption comes from [`consumed_units`]. Salability comes from
-/// [`salability_of`]. Each entry of `currencies` is priced by [`price_in`]
-/// and marked against `prior`. Returns that row.
-fn market_row(
-    state: &PlayState,
-    market: &Market,
-    good: usize,
-    currencies: &[usize],
-    prior: &HashMap<(usize, usize, usize), f64>,
-) -> MarketRow {
+/// [`salability_of`]. The abstract value is [`Market::stored_amv`], marked
+/// against `prior`. Returns that row.
+fn market_row(state: &PlayState, market: &Market, good: usize, prior: &Prices) -> MarketRow {
     MarketRow {
         good: good_name(&state.factuals, good),
         supply: whole_text(offered_units(market, good)),
@@ -1527,13 +1528,7 @@ fn market_row(
         exchange: qty_text(exchanged_units(market, good)),
         consumption: qty_text(consumed_units(market, good)),
         salability: percent_text(salability_of(state, market, good) * 100.0),
-        prices: currencies
-            .iter()
-            .map(|&currency| {
-                let price = price_in(market, currency, good);
-                price_text(price, prior.get(&(market.id, good, currency)).copied())
-            })
-            .collect(),
+        amv: price_text(market.stored_amv(good), prior.amv.get(&(market.id, good)).copied()),
     }
 }
 
@@ -1625,57 +1620,20 @@ fn salability_of(state: &PlayState, market: &Market, good: usize) -> f64 {
         .unwrap_or(state.factuals.config.market.salability_default)
 }
 
-/// # Has Rate
-///
-/// Whether some currency on `market` stores a rate for `good`.
-///
-/// Returns that check.
-fn has_rate(market: &Market, good: usize) -> bool {
-    market
-        .exchange_rates
-        .values()
-        .any(|row| row.contains_key(&good))
-}
-
-/// # Price In
-///
-/// What one unit of `good` costs in `currency` on `market`.
-///
-/// The currency itself costs 1. A stored rate is goods per currency unit,
-/// and the price is its inverse. A missing rate is `None`. Returns that
-/// price.
-fn price_in(market: &Market, currency: usize, good: usize) -> Option<f64> {
-    if good == currency {
-        return Some(1.0);
-    }
-    match market
-        .exchange_rates
-        .get(&currency)
-        .and_then(|row| row.get(&good))
-        .copied()
-    {
-        Some(rate) if rate.is_finite() && rate > 0.0 => Some(1.0 / rate),
-        _ => None,
-    }
-}
-
 /// # Snapshot Prices
 ///
-/// Today's price of each listed good in each market currency.
+/// Today's abstract value of each listed good.
 ///
-/// The key is market id, good id, and currency id. The value is
-/// [`price_in`]. Returns that map.
-fn snapshot_prices(state: &PlayState) -> HashMap<(usize, usize, usize), f64> {
-    let mut prices = HashMap::new();
+/// A value is keyed by market id and good id. Returns that map.
+fn snapshot_prices(state: &PlayState) -> Prices {
+    let mut prices = Prices::default();
     let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
     ids.sort_unstable();
     for id in ids {
         let market = state.map_data.market(id);
         for good in listed_goods(state, market) {
-            for &currency in market.currencies() {
-                if let Some(price) = price_in(market, currency, good) {
-                    prices.insert((id, good, currency), price);
-                }
+            if let Some(amv) = market.stored_amv(good) {
+                prices.amv.insert((id, good), amv);
             }
         }
     }

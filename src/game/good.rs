@@ -6,6 +6,8 @@ use std::path::Path;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+use crate::game::actor::Actor;
+
 /// Foundational good id. Time is 0; other goods start at 1.
 /// Exception to "0 means none" for good ids.
 pub const TIME: usize = 0;
@@ -146,6 +148,31 @@ impl Good {
         self.tags.contains(&GoodTag::Industrial)
     }
 
+    /// # Is Money
+    ///
+    /// True when this good is tagged [`GoodTag::Money`].
+    pub fn is_money(&self) -> bool {
+        self.tags.contains(&GoodTag::Money)
+    }
+
+    /// # Token Good
+    ///
+    /// The good a [`GoodTag::Token`] on this good stands for.
+    ///
+    /// Returns that id, or `None` when this good has no token tag.
+    pub fn token_good(&self) -> Option<usize> {
+        self.tags.iter().find_map(|tag| tag.backed_good())
+    }
+
+    /// # Credit Issuer
+    ///
+    /// The actor who issues this good, when it is tagged [`GoodTag::Credit`].
+    ///
+    /// Returns that actor, or `None` when this good has no credit tag.
+    pub fn credit_issuer(&self) -> Option<Actor> {
+        self.tags.iter().find_map(|tag| tag.credit_issuer())
+    }
+
     /// # Is Restricted
     ///
     /// True when this good is tagged [`GoodTag::Restricted`].
@@ -228,12 +255,24 @@ pub enum GoodTag {
     Immobile,
     /// Good only decays when unowned.
     Exposure,
-    /// The good cannot be bought or sold.
+    /// The good cannot be bought or sold and has no direct pricing.
     Untradeable,
     /// A skill. Priced like any other good, and tradeable.
     Skill,
     /// An industrial good. Capital-intensive, and not made by subsistence.
     Industrial,
+    /// A good capable of being used as a money. Allows trade and division down to
+    /// 1 / 1000th of a unit.
+    Money,
+    /// A fiduciary good, without direct value or use, but its trade and movement
+    /// affect both its own value and the value of the good it represents. This
+    /// stands for that good. Generable by banks, durable, but quickly destroyed
+    /// or lost if the backing is lost. The value is the good id.
+    Token(usize),
+    /// A credit good, without direct value or use. It is an abstract form of credit,
+    /// not tied to any specific good, but tied to institutions or governments.
+    /// The actor is who issues it or is responsible for it.
+    Credit(Actor),
     /// Pays intramarket friction (time, cargo, shipping). The value is
     /// friction cover per unit (1.0 = time baseline). Barter spends it from
     /// the buyer. A mass fill spends it from both sides.
@@ -257,6 +296,30 @@ impl GoodTag {
             _ => None,
         }
     }
+
+    /// # Backed Good
+    ///
+    /// The good id if this is a [`Self::Token`].
+    ///
+    /// Returns that id, or `None` for any other tag.
+    pub fn backed_good(&self) -> Option<usize> {
+        match self {
+            Self::Token(good) => Some(*good),
+            _ => None,
+        }
+    }
+
+    /// # Credit Issuer
+    ///
+    /// The actor if this is a [`Self::Credit`].
+    ///
+    /// Returns that actor, or `None` for any other tag.
+    pub fn credit_issuer(&self) -> Option<Actor> {
+        match self {
+            Self::Credit(actor) => Some(*actor),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for GoodTag {
@@ -267,7 +330,10 @@ impl PartialEq for GoodTag {
             | (Self::Exposure, Self::Exposure)
             | (Self::Untradeable, Self::Untradeable)
             | (Self::Skill, Self::Skill)
-            | (Self::Industrial, Self::Industrial) => true,
+            | (Self::Industrial, Self::Industrial)
+            | (Self::Money, Self::Money) => true,
+            (Self::Token(a), Self::Token(b)) => a == b,
+            (Self::Credit(a), Self::Credit(b)) => a == b,
             (Self::Transport(a), Self::Transport(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }
@@ -279,8 +345,11 @@ impl Eq for GoodTag {}
 impl Hash for GoodTag {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
-        if let Self::Transport(efficiency) = self {
-            efficiency.to_bits().hash(state);
+        match self {
+            Self::Transport(efficiency) => efficiency.to_bits().hash(state),
+            Self::Token(good) => good.hash(state),
+            Self::Credit(actor) => actor.hash(state),
+            _ => {}
         }
     }
 }

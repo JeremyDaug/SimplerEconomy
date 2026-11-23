@@ -257,6 +257,16 @@ impl Factuals {
         self.get_good(good).is_some_and(|good| good.is_buyable())
     }
 
+    /// # Is Money
+    ///
+    /// Whether `good` is tagged money.
+    ///
+    /// A missing good is not. [`Good::is_money`] decides a loaded good.
+    /// Returns that check.
+    pub fn is_money(&self, good: usize) -> bool {
+        self.get_good(good).is_some_and(|good| good.is_money())
+    }
+
     /// # May Leave Market
     ///
     /// Whether a shipment may carry `good` to another market.
@@ -428,6 +438,7 @@ mod factuals_should {
     use super::*;
     use crate::game::config::GameConfig;
     use crate::game::effects::ProcessEffect;
+    use crate::game::actor::Actor;
     use crate::game::good::{GoodTag, TIME};
     use crate::game::process::InputType;
     use std::path::PathBuf;
@@ -480,6 +491,42 @@ tags = ["untradeable", { transport = 2.0 }]
     }
 
     #[test]
+    fn load_from_toml_reads_money_token_and_credit() {
+        let factuals = Factuals::load_from_toml(
+            r#"
+[[goods]]
+id = 4
+name = "coin"
+mass = 0.01
+volume = 0.0
+decay_rate = 0.0
+tags = ["money"]
+
+[[goods]]
+id = 5
+name = "grain token"
+mass = 0.0
+volume = 0.0
+tags = [{ token = 1 }]
+
+[[goods]]
+id = 6
+name = "bank credit"
+mass = 0.0
+volume = 0.0
+tags = [{ credit = { institution = 2 } }]
+"#,
+        )
+        .expect("toml");
+        assert!(factuals.find_good(4).is_money());
+        assert_eq!(factuals.find_good(5).token_good(), Some(1));
+        assert_eq!(
+            factuals.find_good(6).credit_issuer(),
+            Some(Actor::Institution(2))
+        );
+    }
+
+    #[test]
     fn load_from_path_reads_the_world_goods_file() {
         let factuals = Factuals::load_from_path(repo_goods_file()).expect("world goods");
         assert!(!factuals.goods.is_empty());
@@ -505,6 +552,12 @@ tags = ["untradeable", { transport = 2.0 }]
         assert!((hut.bulk() - 22.0).abs() < 1e-12);
         assert_eq!(factuals.find_good(5).name, "gold_token");
         assert!((factuals.find_good(5).decay_rate - 0.005).abs() < 1e-12);
+        assert!(factuals.find_good(1).is_money());
+        assert!(factuals.find_good(5).is_money());
+        assert!(factuals.find_good(45).is_money());
+        for id in [19, 20, 21, 22] {
+            assert!(factuals.find_good(id).is_money(), "good {id} is money");
+        }
     }
 
     #[test]

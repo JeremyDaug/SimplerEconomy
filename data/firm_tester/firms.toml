@@ -1,11 +1,128 @@
 # Firms for examples/firm_tester. Process names are loaded names.
 # An omitted target runs as many iterations as the inputs allow.
-# This firm has no owner.
+# owners are pop ids. The market records them. One owner holds the firm.
+# Several hold equal parts.
+# stock is opening property. Each firm notes the pile that covers its first
+# run. Labor decays at 1, so a larger pile would rot that night. The 100
+# gold coins are the starter purse. They pay the owner and buy later inputs.
 
 [[firms]]
 id = 1
 name = "Agribusiness"
 market = 1
+owners = [30]
 
 [[firms.lines]]
 process = "agribusiness"
+
+[[firms.stock]]
+good = "wood_tools"
+amount = 1
+
+[[firms.stock]]
+good = "farmhand_labor"
+amount = 1
+
+[[firms.stock]]
+good = "gold_coins"
+amount = 100
+
+[[firms]]
+id = 2
+name = "Clothes Mill"
+market = 1
+owners = [32]
+
+[[firms.lines]]
+process = "clothes mill"
+
+# One wood tool, one millhand labor, and 4 cotton cover one mill run.
+[[firms.stock]]
+good = "wood_tools"
+amount = 1
+
+[[firms.stock]]
+good = "millhand_labor"
+amount = 1
+
+[[firms.stock]]
+good = "cotton"
+amount = 4
+
+[[firms.stock]]
+good = "gold_coins"
+amount = 100
+
+[[firms]]
+id = 3
+name = "Cotton Farm"
+market = 1
+owners = [33]
+
+[[firms.lines]]
+process = "cotton farm"
+
+# One wood tool and one farmhand labor cover one cotton run.
+[[firms.stock]]
+good = "wood_tools"
+amount = 1
+
+[[firms.stock]]
+good = "farmhand_labor"
+amount = 1
+
+[[firms.stock]]
+good = "gold_coins"
+amount = 100
+
+[[firms]]
+id = 4
+name = "Thread Mill"
+market = 1
+owners = [34]
+
+[[firms.lines]]
+process = "thread mill"
+
+# One wood tool, one millhand labor, and 2 cotton cover one thread run.
+[[firms.stock]]
+good = "wood_tools"
+amount = 1
+
+[[firms.stock]]
+good = "millhand_labor"
+amount = 1
+
+[[firms.stock]]
+good = "cotton"
+amount = 2
+
+[[firms.stock]]
+good = "gold_coins"
+amount = 100
+
+[[firms]]
+id = 5
+name = "Fabric Mill"
+market = 1
+owners = [35]
+
+[[firms.lines]]
+process = "fabric mill"
+
+# One wood tool, one millhand labor, and 2 thread cover one fabric run.
+[[firms.stock]]
+good = "wood_tools"
+amount = 1
+
+[[firms.stock]]
+good = "millhand_labor"
+amount = 1
+
+[[firms.stock]]
+good = "thread"
+amount = 2
+
+[[firms.stock]]
+good = "gold_coins"
+amount = 100

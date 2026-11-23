@@ -173,12 +173,13 @@ impl Actors {
     ///
     /// Runs planning for each pop, firm, and institution.
     ///
-    /// `factuals` supplies the world. `markets` are the markets a pop may
-    /// read. Each actor runs on its own thread. A pop listed on a market
-    /// plans against that market. Firm and institution planning are not
-    /// written yet.
-    pub fn planning(&mut self, factuals: &Factuals, markets: &HashMap<usize, Market>) {
+    /// `factuals` supplies the world. `markets` are the markets an actor may
+    /// read. Each actor runs on its own thread. A pop or firm listed on a
+    /// market plans against that market. Institution planning is not written
+    /// yet. Then each market releases the owners of a dead firm.
+    pub fn planning(&mut self, factuals: &Factuals, markets: &mut HashMap<usize, Market>) {
         let homes = member_homes(markets, |market| &market.pops);
+        let firm_homes = member_homes(markets, |market| &market.firms);
         let pops = &mut self.pops;
         let firms = &mut self.firms;
         let institutions = &mut self.institutions;
@@ -188,12 +189,16 @@ impl Actors {
                 scope.spawn(move || pop.planning(factuals, market));
             }
             for firm in firms.values_mut() {
-                scope.spawn(|| firm.planning(factuals));
+                let market = firm_homes.get(&firm.id).and_then(|id| markets.get(id));
+                scope.spawn(move || firm.planning(factuals, market));
             }
             for institution in institutions.values_mut() {
                 scope.spawn(|| institution.planning(factuals));
             }
         });
+        for market in markets.values_mut() {
+            market.release_dead_firms(firms, pops);
+        }
     }
 
     /// # Sentiments

@@ -89,8 +89,8 @@ impl GameConfig {
     }
 }
 
-/// Subsistence rate that covers every basic desire.
-pub const SUBSISTENCE_ANCHOR: f64 = 0.6;
+/// Share of morning time that covers every basic desire.
+pub const SUBSISTENCE_ANCHOR: f64 = 0.75;
 
 /// Common desires are covered at this share of the basic cover.
 pub const SUBSISTENCE_COMMON_SHARE: f64 = 0.5;
@@ -175,6 +175,39 @@ pub const PLAN_SOL_NAY_CAP: i32 = 2;
 /// A craft or labor line moves by this much of the grant.
 pub const PLAN_STEP_SHARE: f64 = 0.05;
 
+/// Minimum gain on one iteration's input cost that a firm plan expands toward.
+///
+/// The gain is this share of the required destroyed or consumed inputs,
+/// whatever that spend is. The organization that will set this is not written.
+pub const FIRM_MIN_MARGIN: f64 = 0.05;
+
+/// Lowest target a firm plan writes.
+///
+/// A day with no marks steps down by one iteration and stops here.
+pub const FIRM_MIN_TARGET: f64 = 1.0;
+
+/// Share of the asked iterations a finished run may miss.
+pub const FIRM_FINISH_GRACE: f64 = 0.10;
+
+/// Share of output value a sale must reach when that bar is the higher one.
+///
+/// The selling mark takes the higher of the input cost and this share of
+/// the output value.
+pub const FIRM_SELL_SHARE: f64 = 0.80;
+
+/// Share added to a firm's uncovered input need before that buy rounds up.
+pub const FIRM_BUY_PAD: f64 = 0.01;
+
+/// Flat owner wage for one firm, in abstract value.
+///
+/// Owners split this by their fractions. It is paid before [`OWNER_DIVIDEND_RATE`].
+pub const OWNER_WAGE: f64 = 1.0;
+
+/// Share of a firm's property value paid to its owners.
+///
+/// Each owner is paid this share of that value times that owner's fraction.
+pub const OWNER_DIVIDEND_RATE: f64 = 0.01;
+
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet.
 pub const BASIC_UNMET_SENTIMENT: f64 = 0.04;
@@ -207,13 +240,7 @@ pub const CONTENTMENT_PULL: f64 = 0.15;
 /// How far a no-trade price sits above the dearest method's unit cost.
 pub const IDLE_COST_MARGIN: f64 = 0.10;
 
-/// Share of a traded move held by the currencies that did not trade, together.
-///
-/// A sole trader keeps `1 - IDLE_MOVE_SHARE`. With more currencies, each idle
-/// currency's floor is this divided by one less than the count.
-pub const IDLE_MOVE_SHARE: f64 = 0.05;
-
-/// Smallest currency-per-good price a pass writes.
+/// Smallest abstract market value a pass writes.
 pub const MIN_PRICE: f64 = 0.001;
 
 /// Pop-day tunables.
@@ -568,7 +595,7 @@ impl LaborConfig {
     }
 }
 
-/// Firm planning. Empty until firms plan again.
+/// Firm planning. Empty until an organization sets the margin.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct FirmConfig {}

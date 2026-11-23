@@ -8,6 +8,18 @@
 #
 # Agribusiness is industrial. One farmhand labor and one wood tool, used
 # and returned, yield 400 grain. Make grain yields 40.
+#
+# Millhand labor takes 1 time and yields 0.5 millhand labor. Clothworking
+# skill is optional, 2 per run, and triples the labor the same way farming
+# does. The cloth firms are industrial. Make cotton spends 3 time for 6
+# cotton. The Cotton Farm spends 1 farmhand labor and 1 wood tool, used and
+# returned, and yields 60 cotton. Make thread spends 2 cotton and 1 time
+# for 1 thread. The Thread Mill spends 2 cotton, 1 millhand labor, and 1
+# wood tool and yields 10 thread. Make fabric spends 2 thread and 1 time
+# for 2 fabric. The Fabric Mill spends 2 thread, 1 millhand labor, and 1
+# wood tool and yields 20 fabric. The cottage chain spends 4 cotton and 5
+# time to make 2 clothes. The Clothes Mill spends 4 cotton, 1 millhand
+# labor, and 1 wood tool and yields 20 clothes.
 
 [[processes]]
 id = 47
@@ -32,4 +44,68 @@ inputs = [
 ]
 outputs = [
     { good = 1, amount = 400.0 },
+]
+
+[[processes]]
+id = 49
+name = "millhand labor"
+tags = ["labor"]
+inputs = [
+    { good = 0, amount = 1.0 },
+    { good = 43, amount = 2.0, optional = true, optional_effects = [{ extra_output = { good = 43, amount = 2.2 } }, { output = 2.0 }] },
+]
+outputs = [
+    { good = 48, amount = 0.5 },
+    { good = 43, amount = 0.01, fixed = true },
+]
+
+[[processes]]
+id = 50
+name = "clothes mill"
+tags = ["industrial"]
+inputs = [
+    { good = 48, amount = 1.0 },
+    { good = 39, amount = 4.0 },
+    { good = 9, amount = 1.0, type = "capital" },
+]
+outputs = [
+    { good = 42, amount = 20.0 },
+]
+
+[[processes]]
+id = 51
+name = "cotton farm"
+tags = ["industrial"]
+inputs = [
+    { good = 47, amount = 1.0 },
+    { good = 9, amount = 1.0, type = "capital" },
+]
+outputs = [
+    { good = 39, amount = 60.0 },
+]
+
+[[processes]]
+id = 52
+name = "thread mill"
+tags = ["industrial"]
+inputs = [
+    { good = 48, amount = 1.0 },
+    { good = 39, amount = 2.0 },
+    { good = 9, amount = 1.0, type = "capital" },
+]
+outputs = [
+    { good = 40, amount = 10.0 },
+]
+
+[[processes]]
+id = 53
+name = "fabric mill"
+tags = ["industrial"]
+inputs = [
+    { good = 48, amount = 1.0 },
+    { good = 40, amount = 2.0 },
+    { good = 9, amount = 1.0, type = "capital" },
+]
+outputs = [
+    { good = 41, amount = 20.0 },
 ]
