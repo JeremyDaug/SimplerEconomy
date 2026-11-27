@@ -6,6 +6,8 @@ use std::path::Path;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+use crate::game::actor::Actor;
+
 /// Foundational good id. Time is 0; other goods start at 1.
 /// Exception to "0 means none" for good ids.
 pub const TIME: usize = 0;
@@ -189,14 +191,35 @@ impl Good {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoodTag {
+    /// A raw good is simple, often produced directly from natural resources, typically
+    /// needs to be refined, and does not decay.
+    Raw, 
     /// Good cannot be transported between markets.
     Fixed,
+    /// The good does not move, ignoring bulk costs in transactions.
+    Immobile, 
     /// Good only decays when unowned.
     Exposure,
     /// The good cannot be bought or sold.
     Untradeable,
     /// A skill. Priced like any other good, and tradeable.
     Skill,
+    /// Labor is a good that represents a specific form of work or effort. 
+    /// Labors are typically required by complex processes, particularly for complex products.
+    Labor,
+    /// A currency is a good that is allowed to be used as a medium of exchange.
+    /// It can be traded in units of 0.001.
+    Currency,
+    /// A credit is a currency that is produced by and backed by an actor.
+    /// It can be traded in units of 0.001. If the backer is destroyed, lost or 
+    /// otherwise unable to redeem it, the credit is worthless.
+    Credit(Actor),
+    /// A token is a good that can be used as a medium of exchange. It keys it's value off
+    /// of another good (the id attached), and can be traded in units of 0.001.
+    /// 
+    /// A token also effects the value of the underlying good, and if it's backer cannot
+    /// redeem it, the tie breaks, and the token becomes floating, and ultimately worthless.
+    Token(usize, Actor),
     /// Pays intramarket friction (time, cargo, shipping). The value is
     /// friction cover per unit (1.0 = time baseline). Barter spends it from
     /// the buyer. A mass fill spends it from both sides.
@@ -226,9 +249,15 @@ impl PartialEq for GoodTag {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Fixed, Self::Fixed)
+            | (Self::Immobile, Self::Immobile)
             | (Self::Exposure, Self::Exposure)
             | (Self::Untradeable, Self::Untradeable)
-            | (Self::Skill, Self::Skill) => true,
+            | (Self::Skill, Self::Skill)
+            | (Self::Currency, Self::Currency) => true,
+            (Self::Credit(a), Self::Credit(b)) => a == b,
+            (Self::Token(good_a, actor_a), Self::Token(good_b, actor_b)) => {
+                good_a == good_b && actor_a == actor_b
+            }
             (Self::Transport(a), Self::Transport(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }
@@ -240,8 +269,18 @@ impl Eq for GoodTag {}
 impl Hash for GoodTag {
     fn hash<H: Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
-        if let Self::Transport(efficiency) = self {
-            efficiency.to_bits().hash(state);
+        match self {
+            Self::Transport(efficiency) => {
+                efficiency.to_bits().hash(state);
+            }
+            Self::Credit(actor) => {
+                actor.hash(state);
+            }
+            Self::Token(good, actor) => {
+                good.hash(state);
+                actor.hash(state);
+            }
+            _ => {}
         }
     }
 }
@@ -301,5 +340,31 @@ impl Good {
             goods.insert(good.id, good);
         }
         Ok(goods)
+    }
+}
+
+#[cfg(test)]
+mod good_should {
+    use super::*;
+
+    /// # Load From Toml Reads Credit Actor
+    ///
+    /// A credit tag names its backing actor in snake case with that actor's id.
+    /// The loaded good contains that same [`GoodTag::Credit`].
+    #[test]
+    fn load_from_toml_reads_credit_actor() {
+        let goods = Good::load_from_toml(
+            r#"
+[[goods]]
+id = 7
+name = "bank note"
+mass = 0.0
+volume = 0.0
+tags = [{ credit = { pop = 4 } }]
+"#,
+        )
+        .expect("toml");
+        let note = goods.get(&7).expect("note");
+        assert!(note.tags.contains(&GoodTag::Credit(Actor::Pop(4))));
     }
 }
