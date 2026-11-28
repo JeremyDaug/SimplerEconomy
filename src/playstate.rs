@@ -464,7 +464,7 @@ mod coin_ledger_should {
 
     pub(super) const DUCKATS: usize = 1;
     pub(super) const BREAD: usize = 2;
-    const MINT: usize = 1;
+    pub(super) const MINT: usize = 1;
     pub(super) const BAKE: usize = 2;
 
     fn good(id: usize, decay_rate: f64, tags: HashSet<GoodTag>) -> Good {
@@ -640,8 +640,9 @@ mod coin_ledger_should {
 
 #[cfg(test)]
 mod closed_market_should {
-    use super::coin_ledger_should::{closed_market, BAKE, BREAD, DUCKATS};
+    use super::coin_ledger_should::{closed_market, BAKE, BREAD, DUCKATS, MINT};
     use super::PlayState;
+    use crate::game::firm::ProductionLine;
     use crate::game::job::{Job, JobLine};
 
     /// [`closed_market`] with no minting and no coin decay: pop 1 bakes
@@ -705,5 +706,61 @@ mod closed_market_should {
         }
         assert_eq!(first.market.price(BREAD), second.market.price(BREAD));
         assert_eq!(first.market.price(DUCKATS), second.market.price(DUCKATS));
+    }
+
+    #[test]
+    fn eat_the_bread_it_buys() {
+        // No pop bakes and subsistence makes next to nothing, so all bread
+        // comes from the firm. Bought bread is held for the bread desire and
+        // eaten: what left the firm, less what the pops still hold, is every
+        // pop's whole desire for every day.
+        let mut state = closed_market();
+        state.factuals.config.pop.subsistence_anchor = 1e12;
+        state.actors.firm_mut(1).production_line.push(ProductionLine {
+            process: BAKE,
+            target: Some(0.0),
+            inputs: Vec::new(),
+            attempted: 0.0,
+            completed: 0.0,
+        });
+        for id in [2, 3] {
+            state.actors.pop_mut(id).job = Job::new([
+                JobLine::new(MINT, None, Vec::new()),
+                JobLine::new(0, None, Vec::new()),
+            ]);
+        }
+        let bread = |state: &PlayState, id: usize| -> f64 {
+            state.actors.pop(id).property.get(&BREAD).map(|row| row.quantity).unwrap_or(0.0)
+        };
+        let firm_start = state.actors.firm(1).holding(BREAD);
+        let mut wanted = 0.0;
+        for _ in 0..15 {
+            // Growth rescales the desire after it is eaten, so read it first.
+            wanted += [1, 2, 3]
+                .iter()
+                .map(|&id| state.actors.pop(id).desires[0][0].amount)
+                .sum::<f64>();
+            state.advance_turn();
+        }
+        let bought = firm_start - state.actors.firm(1).holding(BREAD);
+        let held: f64 = [1, 2, 3].iter().map(|&id| bread(&state, id)).sum();
+        assert!(bought > 0.0 && bought < firm_start);
+        assert!((bought - held - wanted).abs() < 1e-6, "{bought} - {held} != {wanted}");
+    }
+
+    #[test]
+    fn grow_by_a_few_percent_in_a_thousand_days() {
+        // A day is one 365th of a year of births and deaths, so 30
+        // households grow to about 31, not millions.
+        let mut state = no_new_coin();
+        let households = |state: &PlayState| -> f64 {
+            state.actors.pops.values().map(|pop| pop.demographics.household.count).sum()
+        };
+        let start = households(&state);
+        for _ in 0..1000 {
+            state.advance_turn();
+        }
+        let end = households(&state);
+        assert!(end > start && end < start * 1.05, "{start} -> {end}");
     }
 }
