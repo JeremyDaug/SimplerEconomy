@@ -198,11 +198,11 @@ pub const FIRM_SELL_SHARE: f64 = 0.80;
 /// Share added to a firm's uncovered input need before that buy rounds up.
 pub const FIRM_BUY_PAD: f64 = 0.01;
 
-/// Days of one owner household's basic desires that one firm pays its owners as a wage.
-pub const OWNER_WAGE_BASIC_DAYS: f64 = 2.0;
+/// Days of the owner pop's basic desires that one firm pays its owners as a wage.
+pub const OWNER_WAGE_BASIC_DAYS: f64 = 5.0;
 
 /// Share of a firm's daily profit paid to its owners as a dividend.
-pub const OWNER_PROFIT_SHARE: f64 = 0.5;
+pub const OWNER_PROFIT_SHARE: f64 = 0.10;
 
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet.
@@ -524,7 +524,7 @@ impl LaborConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct FirmConfig {
-    /// Owner wage, in days of one owner household's basic desires. Must be `>= 0`.
+    /// Owner wage, in days of the owner pop's basic desires. Must be `>= 0`.
     ///
     /// The default is [`OWNER_WAGE_BASIC_DAYS`].
     pub owner_wage_basic_days: f64,
@@ -537,7 +537,7 @@ pub struct FirmConfig {
 impl Default for FirmConfig {
     /// # Default
     ///
-    /// [`OWNER_WAGE_BASIC_DAYS`] is 2 and [`OWNER_PROFIT_SHARE`] is 0.5.
+    /// [`OWNER_WAGE_BASIC_DAYS`] is 5 and [`OWNER_PROFIT_SHARE`] is 0.10.
     fn default() -> Self {
         Self {
             owner_wage_basic_days: OWNER_WAGE_BASIC_DAYS,

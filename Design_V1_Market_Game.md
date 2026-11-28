@@ -283,11 +283,12 @@ The player is one firm. It buys, produces, and sells. Its spending options are: 
 - Owner pops can **start new firms**. A pop with enough coin can found one.
 - **Firm founding is in V1, in a simple form.** It's needed to some extent for turnover and healthy long-term competition as new potential industries form.
 - **Owners are paid a wage, then a dividend.** Each owner gets its fraction of both, and the payment comes at the start of the market day, before the firm trades.
-  - **The wage** is a multiple of the owner's basic day needs: the cost of one day of one owner household's basic desires at market prices. The multiple is `firm.owner_wage_basic_days` in the config, default 2. That keeps owners well off without being extreme.
-  - **The dividend** is a share of the firm's profit from the day before. Profit is sales less input cost less the owner wage. The share is `firm.owner_profit_share` in the config, default 0.5. A firm that made no profit pays no dividend, so a failing firm keeps its coin through a downturn.
+  - **The wage** is a multiple of the owner pop's basic day needs: the cost of one day of its basic desires at market prices, for all of its households. A larger owner pop gets a larger wage. The multiple is `firm.owner_wage_basic_days` in the config, default 5.
+  - **The dividend** is a share of the firm's profit from the day before. Profit is sales less input cost less the owner wage. The share is `firm.owner_profit_share` in the config, default 0.10. A firm that made no profit pays no dividend, so a failing firm keeps its coin through a downturn.
+  - Both values are config defaults for now. Later they follow the firm's personality.
 
-> **Open question:** How does the player control their own owner pay, and do rivals vary it?
-> **Proposal:** Rivals set their profit share by personality, starting from `firm.owner_profit_share`. The player sets their own share as a slider. The player's owner pop buys its own goods automatically, and the player doesn't manage its desires.
+> **Open question:** How does the player control their own owner pay?
+> **Proposal:** The player sets their own wage multiple and profit share as sliders. The player's owner pop buys its own goods automatically, and the player doesn't manage its desires.
 
 > **Open question:** When does a pop with coin start a new firm instead of living off it?
 > **Proposal:** A pop with coin above a threshold has a daily chance to found a firm, weighted by its personality and by which goods are short in the market (high prices, unmet demand). Otherwise it spends down its savings on its own desires.

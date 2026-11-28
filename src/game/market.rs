@@ -342,9 +342,9 @@ impl Market {
     /// `factuals` orders tender by durability and supplies
     /// [`crate::game::config::FirmConfig`]. `pops` receive the payment.
     /// `firms` pay it. A holder's wage is that fraction of
-    /// `owner_wage_basic_days` times one household's basic day: the
-    /// holder's [`Pop::day_savings`] over its household count. A holder
-    /// with no households gets no wage. A holder's dividend is that fraction of
+    /// `owner_wage_basic_days` times the holder's basic day,
+    /// [`Pop::day_savings`]. That day covers every household in the holder,
+    /// so the wage grows with them. A holder's dividend is that fraction of
     /// `owner_profit_share` times the firm's profit. Profit is the budget
     /// the firm closed yesterday: sold value less input cost less the owner
     /// wage, and not below 0. A firm that did not profit pays no dividend.
@@ -397,12 +397,7 @@ impl Market {
                     continue;
                 };
                 // The wage is paid before any share of profit.
-                let households = pops[pop_at].demographics.household.count;
-                let wage_bill = if households > 0.0 {
-                    fraction * wage_days * pops[pop_at].day_savings(self) / households
-                } else {
-                    0.0
-                };
+                let wage_bill = fraction * wage_days * pops[pop_at].day_savings(self);
                 let wage = pay_tender(
                     &mut firms[firm_at],
                     &mut pops[pop_at],
@@ -1841,22 +1836,22 @@ mod pay_should {
     }
 
     #[test]
-    fn one_owner_is_paid_the_wage_and_half_the_profit() {
-        // Three grain a day at 1 is a basic day of 3, so the wage is 6.
+    fn one_owner_is_paid_the_wage_and_a_tenth_of_the_profit() {
+        // Three grain a day at 1 is a basic day of 3, so the wage is 15.
         // Yesterday sold 30, spent 10 on inputs, and paid a wage of 6, so
-        // the profit is 14 and the dividend 7. At 2 a coin that is 6.5 coins.
+        // the profit is 14 and the dividend 1.4. At 2 a coin that is 8.2 coins.
         let mut market = priced();
         market.issue_ownership(OwnershipSubject::Firm(1), 30, 1.0);
         let mut firms = [stocked(100.0, 10.0, 30.0, 10.0, 6.0)];
         let mut pops = [owner(30, GRAIN, 3.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(held(&firms[0], COIN), 93.5);
+        near(held(&firms[0], COIN), 91.8);
         near(held(&firms[0], TOOL), 10.0);
-        near(purse(&pops[0], COIN), 6.5);
-        near(firms[0].budget.wage, 6.0);
-        near(firms[0].budget.dividend, 7.0);
+        near(purse(&pops[0], COIN), 8.2);
+        near(firms[0].budget.wage, 15.0);
+        near(firms[0].budget.dividend, 1.4);
         near(firms[0].budget.sold_value, 0.0);
-        near(pops[0].records.owner_pay, 13.0);
+        near(pops[0].records.owner_pay, 16.4);
         let row = pops[0].property.get(&COIN).unwrap();
         near(row.produced, 0.0);
         near(row.fresh, 0.0);
@@ -1866,9 +1861,8 @@ mod pay_should {
     }
 
     #[test]
-    fn the_wage_is_for_one_household() {
-        // Two households need 6 grain a day, so one household's day is 3
-        // and the wage is 6.
+    fn the_wage_scales_with_households() {
+        // Two households need 6 grain a day, so the wage is 30.
         let mut market = priced();
         market.issue_ownership(OwnershipSubject::Firm(1), 30, 1.0);
         let mut firms = [stocked(100.0, 10.0, 0.0, 0.0, 0.0)];
@@ -1876,9 +1870,9 @@ mod pay_should {
         pop.demographics.household.count = 2.0;
         let mut pops = [pop];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(firms[0].budget.wage, 6.0);
+        near(firms[0].budget.wage, 30.0);
         near(firms[0].budget.dividend, 0.0);
-        near(purse(&pops[0], COIN), 3.0);
+        near(purse(&pops[0], COIN), 15.0);
     }
 
     #[test]
@@ -1889,24 +1883,24 @@ mod pay_should {
         let mut firms = [stocked(100.0, 10.0, 5.0, 10.0, 6.0)];
         let mut pops = [owner(30, GRAIN, 3.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(held(&firms[0], COIN), 97.0);
-        near(firms[0].budget.wage, 6.0);
+        near(held(&firms[0], COIN), 92.5);
+        near(firms[0].budget.wage, 15.0);
         near(firms[0].budget.dividend, 0.0);
     }
 
     #[test]
     fn two_owners_are_paid_their_fractions() {
-        // Each needs 4 a day, so the wages are 2 and 6. The profit of 14
-        // pays dividends of 1.75 and 5.25.
+        // Each needs 4 a day, so the wages are 5 and 15. The profit of 14
+        // pays dividends of 0.35 and 1.05.
         let mut market = priced();
         market.issue_ownership(OwnershipSubject::Firm(1), 4, 0.25);
         market.issue_ownership(OwnershipSubject::Firm(1), 30, 0.75);
         let mut firms = [stocked(100.0, 10.0, 30.0, 10.0, 6.0)];
         let mut pops = [owner(4, GRAIN, 4.0), owner(30, GRAIN, 4.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(purse(&pops[0], COIN), 1.875);
-        near(purse(&pops[1], COIN), 5.625);
-        near(held(&firms[0], COIN), 92.5);
+        near(purse(&pops[0], COIN), 2.675);
+        near(purse(&pops[1], COIN), 8.025);
+        near(held(&firms[0], COIN), 89.3);
         near(held(&firms[0], TOOL), 10.0);
     }
 
@@ -1951,7 +1945,7 @@ mod pay_should {
 
     #[test]
     fn the_least_durable_tender_is_spent_first() {
-        // Grain decays faster, so the wage of 2 spends it before the coins.
+        // Grain decays faster, so the wage of 5 spends it before the coins.
         let mut factuals = Factuals::new();
         factuals.goods.insert(GRAIN, good(GRAIN, 0.05));
         factuals.goods.insert(COIN, good(COIN, 0.001));
@@ -1970,9 +1964,9 @@ mod pay_should {
         let mut pops = [owner(30, GRAIN, 1.0)];
         market.pay_owners(&factuals, &mut pops, &mut firms);
         near(held(&firms[0], GRAIN), 0.0);
-        near(held(&firms[0], COIN), 99.25);
+        near(held(&firms[0], COIN), 97.75);
         near(purse(&pops[0], GRAIN), 0.5);
-        near(purse(&pops[0], COIN), 0.75);
+        near(purse(&pops[0], COIN), 2.25);
     }
 
     #[test]
