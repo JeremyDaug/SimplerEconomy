@@ -468,11 +468,11 @@ impl Market {
     /// Writes today's offers, bids, and exchanges onto this market.
     ///
     /// `offered` is the units posted for sale, by good. `book` is the units
-    /// bid and the units exchanged. Yesterday's offers, bids, and volume
-    /// are replaced.
-    /// A good with posted supply replaces its salability with the average of
-    /// that share and today's volume over the posted supply. A good with no
-    /// posted supply keeps its salability.
+    /// bid, the units exchanged, and the units listed after the morning
+    /// post. Yesterday's offers, bids, and volume are replaced.
+    /// A good offered today replaces its salability with the average of
+    /// that share and today's volume over the units offered, posted plus
+    /// listed later. A good not offered today keeps its salability.
     fn consolidate(&mut self, offered: &HashMap<usize, f64>, book: &ShopBook) {
         for row in self.goods.values_mut() {
             row.offered = 0.0;
@@ -494,11 +494,12 @@ impl Market {
                 self.goods.entry(good).or_default().volume = amount;
             }
         }
-        // Posted supply averages the stored share with today's sell-through.
-        for row in self.goods.values_mut() {
-            if row.offered > 0.0 {
-                row.salability = (row.salability + row.volume / row.offered) / 2.0;
-                debug_assert!(row.salability.is_finite());
+        // Supply offered today averages the stored share with today's sell-through.
+        for (good, row) in self.goods.iter_mut() {
+            let listed = row.offered + book.raised.get(good).copied().unwrap_or(0.0);
+            if listed > 0.0 {
+                row.salability = (row.salability + row.volume / listed) / 2.0;
+                debug_assert!(row.salability.is_finite() && row.salability <= 1.0 + 1e-9);
             }
         }
     }
@@ -1043,7 +1044,7 @@ mod orders_should {
     use crate::game::factuals::Factuals;
     use crate::game::firm::{Firm, FirmPRow, ProductionLine};
     use crate::game::good::Good;
-    use crate::game::pop::Pop;
+    use crate::game::pop::{Pop, ShopBook};
     use crate::game::pop_property::PopPRow;
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
     use crate::game::scalingfactor::ScalingFactor;
@@ -1132,6 +1133,22 @@ mod orders_should {
         // Nobody posted good 8, so its salability stays.
         near(market.goods[&8].offered, 0.0);
         near(market.goods[&8].salability, 0.7);
+    }
+
+    #[test]
+    fn salability_counts_coins_listed_after_the_post() {
+        // Ten grain were posted. Coins paid in listed six more on the sellers,
+        // and twelve were bought. The share is 12 over the 16 offered.
+        let mut market = Market::new(1);
+        market.goods.insert(GRAIN, MarketGood::new().with_salability(0.5));
+        let offered = HashMap::from([(GRAIN, 10.0)]);
+        let mut book = ShopBook::default();
+        book.volume.insert(GRAIN, 12.0);
+        book.raised.insert(GRAIN, 6.0);
+        market.consolidate(&offered, &book);
+        near(market.goods[&GRAIN].offered, 10.0);
+        near(market.goods[&GRAIN].volume, 12.0);
+        near(market.goods[&GRAIN].salability, (0.5 + 12.0 / 16.0) / 2.0);
     }
 
     #[test]
