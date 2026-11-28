@@ -100,6 +100,10 @@ pub struct FirmPRow {
     pub sold: f64,
     /// Units produced today, including decay byproducts when a run records them.
     pub produced: f64,
+    /// Units produced on the last day.
+    ///
+    /// [`Firm::record_keeping`] copies `produced` here before clearing it.
+    pub made: f64,
 }
 
 impl Firm {
@@ -283,11 +287,15 @@ impl Firm {
     ///
     /// Reserves this firm's inputs and lists the outputs it will sell.
     ///
-    /// `factuals` supplies the processes. Earlier reserves do not carry in.
-    /// Required inputs are reserved first, then listed optionals that keep
-    /// the iteration's margin. Prices in that check are 1. An output with
-    /// anything left unreserved becomes one offer. Other goods stay off the
-    /// book. A dead firm lists nothing. Returns those offers, in good-id order.
+    /// `factuals` supplies the processes and `firm.stock_offer_share`.
+    /// Earlier reserves do not carry in. Required inputs are reserved
+    /// first, then listed optionals that keep the iteration's margin.
+    /// Prices in that check are 1. An output with anything left unreserved
+    /// becomes one offer: the units made on the last day, up to what is
+    /// unreserved, plus `stock_offer_share` of the unreserved units left
+    /// over. The rest is held stock and stays off the book, as do other
+    /// goods. A dead firm lists nothing. Returns those offers, in good-id
+    /// order.
     pub fn post_sale_offers(&mut self, factuals: &Factuals) -> Vec<SellOffer> {
         if self.is_dead() {
             return Vec::new();
@@ -297,12 +305,15 @@ impl Firm {
         }
         self.reserve_inputs(factuals);
         let outputs = self.produced_goods(factuals);
+        let share = factuals.config.firm.stock_offer_share;
         let mut offers = Vec::new();
         for (&good, row) in &self.property {
             if !outputs.contains(&good) {
                 continue;
             }
-            let amount = row.available();
+            let available = row.available();
+            let made = row.made.min(available);
+            let amount = made + share * (available - made);
             if amount > 0.0 {
                 offers.push(SellOffer {
                     seller: Actor::Firm(self.id),
@@ -409,12 +420,14 @@ impl Firm {
     ///
     /// Clears this firm's day counters.
     ///
-    /// `factuals` supplies the world and is not read. `produced`,
-    /// `consumed`, `spent`, `lost`, `reserve`, and `fresh` return to 0.
-    /// `sold` stays. Quantity stays. The budget stays.
+    /// `factuals` supplies the world and is not read. `produced` is copied
+    /// to `made`. Then `produced`, `consumed`, `spent`, `lost`, `reserve`,
+    /// and `fresh` return to 0. `sold` stays. Quantity stays. The budget
+    /// stays.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
         let _ = factuals;
         for row in self.property.values_mut() {
+            row.made = row.produced;
             row.produced = 0.0;
             row.consumed = 0.0;
             row.spent = 0.0;
@@ -1110,13 +1123,63 @@ mod day_should {
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].seller, crate::game::actor::Actor::Firm(1));
         assert_eq!(offers[0].good, OUTPUT);
-        near(offers[0].amount, 5.0);
+        // Nothing was made yesterday, so a tenth of the 5 held is offered.
+        near(offers[0].amount, 0.5);
         near(firm.property[&INPUT].reserve, 2.0);
         near(firm.property[&OUTPUT].reserve, 0.0);
         near(firm.property[&COIN].reserve, 0.0);
 
         firm.dead = true;
         assert!(firm.post_sale_offers(&factuals).is_empty());
+    }
+
+    #[test]
+    fn offers_the_last_output_and_a_share_of_held_stock() {
+        // Three made yesterday are offered, and a tenth of the other two.
+        let mut factuals = Factuals::new();
+        factuals.goods.insert(INPUT, good(INPUT, 0.0));
+        factuals.goods.insert(OUTPUT, good(OUTPUT, 0.0));
+        factuals.processes.insert(1, mill(3.0));
+        let mut firm = Firm::new(1, "mill".into());
+        firm.property.insert(
+            OUTPUT,
+            FirmPRow {
+                quantity: 5.0,
+                made: 3.0,
+                ..FirmPRow::default()
+            },
+        );
+        firm.production_line.push(ProductionLine {
+            process: 1,
+            target: Some(0.0),
+            inputs: vec![],
+            attempted: 0.0,
+            completed: 0.0,
+        });
+        let offers = firm.post_sale_offers(&factuals);
+        assert_eq!(offers.len(), 1);
+        near(offers[0].amount, 3.2);
+
+        // More made than is on hand offers only what is on hand.
+        firm.property.get_mut(&OUTPUT).unwrap().made = 9.0;
+        near(firm.post_sale_offers(&factuals)[0].amount, 5.0);
+    }
+
+    #[test]
+    fn record_keeping_keeps_the_days_output_as_made() {
+        let mut firm = Firm::new(1, "mill".into());
+        firm.property.insert(
+            OUTPUT,
+            FirmPRow {
+                quantity: 5.0,
+                produced: 3.0,
+                made: 1.0,
+                ..FirmPRow::default()
+            },
+        );
+        firm.record_keeping(&Factuals::new());
+        near(firm.property[&OUTPUT].made, 3.0);
+        near(firm.property[&OUTPUT].produced, 0.0);
     }
 
     #[test]

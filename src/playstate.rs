@@ -727,9 +727,10 @@ mod closed_market_should {
         // No pop bakes and subsistence makes next to nothing, so all bread
         // comes from the firm. Bought bread is held for the bread desire and
         // eaten: what left the firm, less what the pops still hold, is every
-        // pop's whole desire for every day.
+        // pop's whole desire for every day. The firm offers all its stock.
         let mut state = closed_market();
         state.factuals.config.pop.subsistence_anchor = 1e12;
+        state.factuals.config.firm.stock_offer_share = 1.0;
         state.actors.firm_mut(1).production_line.push(ProductionLine {
             process: BAKE,
             target: Some(0.0),
