@@ -2076,7 +2076,7 @@ struct ShopCtx<'a> {
     factuals: &'a Factuals,
     /// Offers still open. Purchases lower them and coins paid raise them.
     offers: &'a mut Vec<SellOffer>,
-    /// Bids and completed exchanges so far.
+    /// Bids, completed exchanges, and later listings so far.
     book: ShopBook,
     /// Draws for [`pick_seller`].
     rng: &'a mut dyn RngCore,
@@ -2096,6 +2096,8 @@ pub(crate) struct ShopBook {
     pub sought: HashMap<usize, f64>,
     /// Units exchanged, by good.
     pub volume: HashMap<usize, f64>,
+    /// Units listed after the morning post, by good.
+    pub raised: HashMap<usize, f64>,
 }
 
 impl ShopBook {
@@ -2121,9 +2123,20 @@ impl ShopBook {
         }
     }
 
+    /// # Note Raised
+    ///
+    /// Adds `units` of `good` listed after the morning post.
+    ///
+    /// A non-positive amount is left out. The same good's listings add.
+    fn note_raised(&mut self, good: usize, units: f64) {
+        if units > 0.0 {
+            *self.raised.entry(good).or_insert(0.0) += units;
+        }
+    }
+
     /// # Absorb
     ///
-    /// Adds `other`'s bids and exchanges onto this book.
+    /// Adds `other`'s bids, exchanges, and later listings onto this book.
     ///
     /// Amounts of the same good add. A non-positive amount is left out.
     /// The call takes `other`.
@@ -2135,6 +2148,9 @@ impl ShopBook {
             if amount > 0.0 {
                 *self.volume.entry(good).or_insert(0.0) += amount;
             }
+        }
+        for (good, amount) in other.raised {
+            self.note_raised(good, amount);
         }
     }
 }
@@ -2635,6 +2651,7 @@ fn pay_from_firm(
         reduce_offer(ctx.offers, buyer, coin.currency, coin.units);
         credit_good(pops, ctx, seller, coin.currency, coin.units, false);
         raise_offer(ctx.offers, seller, coin.currency, coin.units);
+        ctx.book.note_raised(coin.currency, coin.units);
     }
 }
 
@@ -3980,6 +3997,7 @@ fn pay_coins(
         reduce_offer(ctx.offers, buyer, coin.currency, coin.units);
         credit_good(pops, ctx, seller, coin.currency, coin.units, false);
         raise_offer(ctx.offers, seller, coin.currency, coin.units);
+        ctx.book.note_raised(coin.currency, coin.units);
     }
 }
 
