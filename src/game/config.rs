@@ -242,6 +242,9 @@ pub const IDLE_COST_MARGIN: f64 = 0.10;
 /// Smallest abstract market value a pass writes.
 pub const MIN_PRICE: f64 = 0.001;
 
+/// Turns in one year. One V1 turn is one day.
+pub const TURNS_PER_YEAR: f64 = 365.0;
+
 /// Pop-day tunables.
 ///
 /// [`crate::game::household::Household::update`] reads the age lengths, the
@@ -265,7 +268,7 @@ pub struct PopConfig {
     /// Turns in one year. Must be `>= 1`.
     ///
     /// [`crate::game::household::Household::update`] divides the annual
-    /// stock rates by this. The default is one turn per year.
+    /// stock rates by this. The default is [`TURNS_PER_YEAR`].
     pub turn_length: f64,
     /// Subsistence rate that covers basic desires. Must be `> 0`.
     ///
@@ -287,7 +290,7 @@ impl Default for PopConfig {
     ///
     /// Childhood is 20 years, adulthood is 40, births are half female, and
     /// the partnership step closes 0.13 of the gap in one year. One turn is
-    /// one year. The
+    /// one day, so a year is [`TURNS_PER_YEAR`] turns. The
     /// subsistence anchor is [`SUBSISTENCE_ANCHOR`] and the common share is
     /// [`SUBSISTENCE_COMMON_SHARE`]. The desire share minimum divisor is
     /// [`DESIRE_SHARE_MINIMUM_DIVISOR`].
@@ -297,7 +300,7 @@ impl Default for PopConfig {
             adulthood_years: 40.0,
             child_sex_ratio: 0.5,
             partnership_trend: 0.13,
-            turn_length: 1.0,
+            turn_length: TURNS_PER_YEAR,
             subsistence_anchor: SUBSISTENCE_ANCHOR,
             subsistence_common_share: SUBSISTENCE_COMMON_SHARE,
             desire_share_minimum_divisor: DESIRE_SHARE_MINIMUM_DIVISOR,

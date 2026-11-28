@@ -747,4 +747,20 @@ mod closed_market_should {
         assert!(bought > 0.0 && bought < firm_start);
         assert!((bought - held - wanted).abs() < 1e-6, "{bought} - {held} != {wanted}");
     }
+
+    #[test]
+    fn grow_by_a_few_percent_in_a_thousand_days() {
+        // A day is one 365th of a year of births and deaths, so 30
+        // households grow to about 31, not millions.
+        let mut state = no_new_coin();
+        let households = |state: &PlayState| -> f64 {
+            state.actors.pops.values().map(|pop| pop.demographics.household.count).sum()
+        };
+        let start = households(&state);
+        for _ in 0..1000 {
+            state.advance_turn();
+        }
+        let end = households(&state);
+        assert!(end > start && end < start * 1.05, "{start} -> {end}");
+    }
 }
