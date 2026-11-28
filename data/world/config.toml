@@ -31,3 +31,7 @@
 # stock_offer_share = 0.10
 # subsistence_cover_share = 0.5
 # short_days_to_compete = 5
+# demand_window_days = 3.0
+# demand_headroom = 0.10
+# min_line_target = 1.0
+# wage_reserve_share = 0.20

@@ -51,6 +51,12 @@ pub struct Firm {
     /// [`Self::planning`] writes it. A dead firm does not plan, shop,
     /// produce, or pay its owners.
     pub dead: bool,
+    /// Value set aside from sales to pay the owner wage.
+    ///
+    /// [`Market::pay_owners`] adds `firm.wage_reserve_share` of the last
+    /// day's sold value, then pays the wage from it. It is a cap on the
+    /// wage, not coin held apart.
+    pub wage_reserve: f64,
 }
 
 /// One process the firm can run, plus the day's quota.
@@ -104,6 +110,10 @@ pub struct FirmPRow {
     ///
     /// [`Firm::record_keeping`] copies `produced` here before clearing it.
     pub made: f64,
+    /// Average units sold a day, recent days weighted most.
+    ///
+    /// `None` until [`Firm::record_keeping`] records the first day.
+    pub sold_avg: Option<f64>,
 }
 
 impl Firm {
@@ -111,8 +121,8 @@ impl Firm {
     ///
     /// A firm with this id and name.
     ///
-    /// An empty budget, and no property or production lines. It is not
-    /// dead.
+    /// An empty budget, an empty wage reserve, and no property or
+    /// production lines. It is not dead.
     pub fn new(id: usize, name: String) -> Self {
         Self {
             id,
@@ -121,6 +131,7 @@ impl Firm {
             production_line: vec![],
             budget: FirmBudget::default(),
             dead: false,
+            wage_reserve: 0.0,
         }
     }
 
@@ -420,13 +431,18 @@ impl Firm {
     ///
     /// Clears this firm's day counters.
     ///
-    /// `factuals` supplies the world and is not read. `produced` is copied
-    /// to `made`. Then `produced`, `consumed`, `spent`, `lost`, `reserve`,
-    /// and `fresh` return to 0. `sold` stays. Quantity stays. The budget
-    /// stays.
+    /// `factuals` supplies `firm.demand_window_days`. Today's `sold` moves
+    /// `sold_avg` one window's share of the way toward it. The first day
+    /// sets it to `sold`. `produced` is copied to `made`. Then `produced`,
+    /// `consumed`, `spent`, `lost`, `reserve`, and `fresh` return to 0.
+    /// `sold` stays. Quantity stays. The budget stays.
     pub fn record_keeping(&mut self, factuals: &Factuals) {
-        let _ = factuals;
+        let window = factuals.config.firm.demand_window_days;
         for row in self.property.values_mut() {
+            row.sold_avg = Some(match row.sold_avg {
+                Some(avg) => avg + (row.sold - avg) / window,
+                None => row.sold,
+            });
             row.made = row.produced;
             row.produced = 0.0;
             row.consumed = 0.0;
@@ -702,24 +718,29 @@ impl Firm {
 
     /// # Planning
     ///
-    /// Sets the next target on this firm's first production line.
+    /// Sets the next target on each of this firm's production lines.
     ///
-    /// `factuals` supplies the process. `market` prices a run the firm
-    /// still has to buy. No market cannot buy a missing input. Only the
-    /// first line is planned. A later line keeps its target. A missing
-    /// process is left as it is. A dead firm stays dead. A firm that cannot
-    /// fund one run of that line becomes dead and keeps its target.
+    /// `factuals` supplies the processes and the `firm.*` keys. `market`
+    /// prices a run the firm still has to buy. No market cannot buy a
+    /// missing input. A dead firm stays dead. A firm with no first line, or
+    /// whose first process is missing, is left as it is. A firm that
+    /// cannot fund one run of its first line becomes dead and keeps its
+    /// targets.
     ///
-    /// An open line plans from the iterations it was asked to run. The line
+    /// The first line plans from the iterations it was asked to run. It
     /// rises by one when the day was profitable, the run finished, and the
     /// firm sold. It holds when one or two of those are true. It falls by
     /// one when none are, and it stops at [`FIRM_MIN_TARGET`]. Profitable
     /// means [`FirmBudget::output_value`] cleared [`FIRM_MIN_MARGIN`] on
-    /// [`FirmBudget::input_cost`].
+    /// [`FirmBudget::input_cost`]. A later line starts from its own target.
     ///
-    /// Then any line, the first included, whose process puts out a good
-    /// that would compete with subsistence on `market`, see
-    /// [`Market::competes_with_subsistence`], is set to `Some(0)`.
+    /// Each line is then held to demand, see [`Self::demand_target`]. A
+    /// line with no target takes the demand target. Next, any line whose
+    /// process puts out a good that would compete with subsistence on
+    /// `market`, see [`Market::competes_with_subsistence`], is set to
+    /// `Some(0)`. Last, when every other line is under
+    /// `firm.min_line_target`, the first of them is raised to it, so the
+    /// firm keeps working. A firm whose every line competes stays idle.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
         if self.is_dead() {
             return;
@@ -751,21 +772,56 @@ impl Firm {
             current
         };
         self.production_line[0].target = Some(next);
-        let Some(market) = market else {
-            return;
-        };
-        for line in &mut self.production_line {
-            let Some(process) = factuals.get_process(line.process) else {
+        let headroom = factuals.config.firm.demand_headroom;
+        // Lines free to run: their process is there and does not compete.
+        let mut open = Vec::new();
+        for at in 0..self.production_line.len() {
+            let Some(process) = factuals.get_process(self.production_line[at].process) else {
                 continue;
             };
-            let competes = process
-                .outputs
-                .iter()
-                .any(|output| market.competes_with_subsistence(factuals, output.good));
+            let demand = self.demand_target(process, headroom);
+            let line = &mut self.production_line[at];
+            line.target = match (line.target, demand) {
+                (Some(target), Some(demand)) => Some(target.min(demand)),
+                (None, demand) => demand,
+                (target, None) => target,
+            };
+            let competes = market.is_some_and(|market| {
+                process
+                    .outputs
+                    .iter()
+                    .any(|output| market.competes_with_subsistence(factuals, output.good))
+            });
             if competes {
                 line.target = Some(0.0);
+            } else {
+                open.push(at);
             }
         }
+        let floor = factuals.config.firm.min_line_target;
+        let working = open.iter().any(|&at| {
+            self.production_line[at]
+                .target
+                .is_none_or(|target| target + 1e-9 >= floor)
+        });
+        if let (false, Some(&first)) = (working, open.first()) {
+            self.production_line[first].target = Some(floor);
+        }
+    }
+
+    /// # Demand Target
+    ///
+    /// Iterations of `process` that would cover recent sales.
+    ///
+    /// The process's first output is the good it is planned for. Its
+    /// [`FirmPRow::sold_avg`], raised by `headroom` so the line can grow
+    /// into new demand, is divided by that output's amount per iteration.
+    /// Returns `None` when the process has no output or the good has no
+    /// sales record yet.
+    fn demand_target(&self, process: &Process, headroom: f64) -> Option<f64> {
+        let output = process.outputs.first()?;
+        let sold = self.property.get(&output.good)?.sold_avg?;
+        Some(sold * (1.0 + headroom) / output.amount)
     }
 
     /// # Day Marks
@@ -1268,6 +1324,7 @@ mod plan_should {
 
     const INPUT: usize = 2;
     const OUTPUT: usize = 3;
+    const OTHER: usize = 4;
 
     fn near(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
@@ -1329,6 +1386,59 @@ mod plan_should {
         ran(&mut firm, 4.0, 4.0, 10.0, 10.4, 10.0);
         firm.planning(&factuals, None);
         near(firm.production_line[0].target.unwrap(), 4.0);
+    }
+
+    #[test]
+    fn hold_each_line_to_recent_sales() {
+        // Three marks would make 5, but sales average 4 a day. With a tenth
+        // of headroom that is 4.4 units, 2.2 runs of 2.
+        let (mut firm, factuals) = workshop(2.0, 1.0, Some(4.0));
+        firm.property.insert(OUTPUT, FirmPRow { sold_avg: Some(4.0), ..FirmPRow::new() });
+        ran(&mut firm, 4.0, 4.0, 10.0, 10.5, 10.0);
+        firm.planning(&factuals, None);
+        near(firm.production_line[0].target.unwrap(), 2.2);
+
+        // A line with no target takes the demand target.
+        let (mut firm, factuals) = workshop(2.0, 1.0, None);
+        firm.property.insert(OUTPUT, FirmPRow { sold_avg: Some(4.0), ..FirmPRow::new() });
+        firm.production_line.push(line(None));
+        firm.planning(&factuals, None);
+        near(firm.production_line[1].target.unwrap(), 2.2);
+    }
+
+    #[test]
+    fn keep_one_line_running_when_nothing_sells() {
+        let (mut firm, factuals) = workshop(2.0, 1.0, Some(4.0));
+        firm.property.insert(OUTPUT, FirmPRow { sold_avg: Some(0.0), ..FirmPRow::new() });
+        ran(&mut firm, 4.0, 4.0, 10.0, 10.5, 10.0);
+        firm.planning(&factuals, None);
+        near(firm.production_line[0].target.unwrap(), 1.0);
+
+        // Another line still working lets the first one idle.
+        let (mut firm, mut factuals) = workshop(2.0, 1.0, Some(4.0));
+        factuals.processes.insert(
+            2,
+            Process::new(2, "kiln", 0).with_output(ProcessOutput::new(OTHER, 1.0, false)),
+        );
+        firm.property.insert(OUTPUT, FirmPRow { sold_avg: Some(0.0), ..FirmPRow::new() });
+        firm.production_line.push(ProductionLine { process: 2, ..line(Some(3.0)) });
+        ran(&mut firm, 4.0, 4.0, 10.0, 10.5, 10.0);
+        firm.planning(&factuals, None);
+        near(firm.production_line[0].target.unwrap(), 0.0);
+        near(firm.production_line[1].target.unwrap(), 3.0);
+    }
+
+    #[test]
+    fn average_sales_over_the_window() {
+        let factuals = Factuals::new();
+        let mut firm = Firm::new(1, "mill".into());
+        firm.property.insert(OUTPUT, FirmPRow { sold: 6.0, ..FirmPRow::new() });
+        firm.record_keeping(&factuals);
+        near(firm.property[&OUTPUT].sold_avg.unwrap(), 6.0);
+        firm.property.get_mut(&OUTPUT).unwrap().sold = 0.0;
+        firm.record_keeping(&factuals);
+        // One third of the way from 6 to 0.
+        near(firm.property[&OUTPUT].sold_avg.unwrap(), 4.0);
     }
 
     #[test]
