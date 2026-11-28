@@ -185,6 +185,24 @@ impl Market {
         self.add_right(subject, to, fraction);
     }
 
+    /// # Pass Ownership
+    ///
+    /// Moves every share pop `from` holds to pop `to`.
+    ///
+    /// Each subject moves in full through [`Self::transfer_ownership`].
+    /// A pop with no shares moves nothing.
+    pub fn pass_ownership(&mut self, from: usize, to: usize) {
+        let held: Vec<(OwnershipSubject, f64)> = self
+            .ownership
+            .iter()
+            .filter(|row| row.holder == Actor::Pop(from) && row.fraction > 0.0)
+            .map(|row| (row.subject, row.fraction))
+            .collect();
+        for (subject, fraction) in held {
+            self.transfer_ownership(subject, from, to, fraction);
+        }
+    }
+
     /// # Is Owned
     ///
     /// Whether at least one pop holds `subject`.

@@ -744,6 +744,25 @@ impl Pop {
         row + self.savings.get(&good).copied().unwrap_or(0.0)
     }
 
+    /// # Absorb Property
+    ///
+    /// Moves every good `other` holds onto this pop.
+    ///
+    /// Each of `other`'s rows is added onto this pop's row for that good
+    /// with [`PopPRow::absorb`]. Its currency savings and their value add
+    /// to this pop's. `other` is left holding nothing.
+    pub fn absorb_property(&mut self, other: &mut Pop) {
+        debug_assert!(self.id != other.id);
+        for (good, row) in std::mem::take(&mut other.property) {
+            self.property.entry(good).or_default().absorb(&row);
+        }
+        for (good, amount) in std::mem::take(&mut other.savings) {
+            *self.savings.entry(good).or_insert(0.0) += amount;
+        }
+        self.effective_savings += other.effective_savings;
+        other.effective_savings = 0.0;
+    }
+
     /// # Store Desire Hold
     ///
     /// Records the satisfaction `gained` for one level of tier `tier`.

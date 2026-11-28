@@ -7,6 +7,7 @@ use crate::game::actors::Actors;
 use crate::game::factuals::Factuals;
 use crate::game::ledger::{CoinFlows, CoinLedger, LedgerDay};
 use crate::game::market::Market;
+use crate::game::pop::Pop;
 
 /// # Play State
 ///
@@ -261,8 +262,9 @@ impl PlayState {
     /// Births and deaths, rebalance if capped, and pruning.
     ///
     /// Each pop runs births and deaths on its own thread. Cap rebalance
-    /// then uses the whole market. Prune removes pops too small to survive,
-    /// and writes their coin onto `day`.
+    /// then uses the whole market. Prune merges pops too small to survive
+    /// into another pop, and writes onto `day` any coin that has nowhere
+    /// to go.
     fn growth(&mut self, day: &mut LedgerDay) {
         self.births_and_deaths();
         self.market.rebalance_capped(&mut self.actors.pops);
@@ -287,25 +289,51 @@ impl PlayState {
 
     /// # Prune Pops
     ///
-    /// Removes pops whose household count is under 1.
+    /// Merges each pop whose household count is under 1 into another pop,
+    /// then removes it.
     ///
-    /// The market records [`Market::prune_under_one`] for its members, then
-    /// the actor is dropped. For each currency, a dropped pop listed on the
+    /// A dying pop's target is [`merge_target`]. The target takes all of
+    /// its goods, coin included, through [`Pop::absorb_property`], and all
+    /// of its firm shares through [`Market::pass_ownership`]. Today's
+    /// records move with the goods, so the market still sees them and the
+    /// ledger books no sink. A dying pop with no target keeps its goods and
+    /// is dropped with them. For each currency, such a pop listed on the
     /// market adds its holding to `day`'s pruned. Its coin made today adds
     /// to minted, and its coin spent or consumed today adds to destroyed,
-    /// since the market's records will not see it.
+    /// since the market's records will not see it. The market then records
+    /// [`Market::prune_under_one`] for its members, and the actors are
+    /// dropped.
     fn prune_pops(&mut self, day: &mut LedgerDay) {
         let pops = &mut self.actors.pops;
-        for pop in pops.values() {
-            if pop.demographics.household.count >= 1.0 || !self.market.pops.contains(&pop.id) {
-                continue;
-            }
-            for &coin in &self.market.currencies {
-                let flows = day.coins.entry(coin).or_default();
-                flows.pruned += pop.holding(coin);
-                if let Some(row) = pop.property.get(&coin) {
-                    flows.minted += row.produced;
-                    flows.destroyed += row.consumed + row.spent;
+        let mut dying: Vec<usize> = pops
+            .values()
+            .filter(|pop| pop.demographics.household.count < 1.0)
+            .map(|pop| pop.id)
+            .collect();
+        dying.sort_unstable();
+        for id in dying {
+            match merge_target(pops, &self.market, id) {
+                Some(target) => {
+                    let mut gone = pops.remove(&id).expect("dying pop is present");
+                    pops.get_mut(&target)
+                        .expect("merge target is present")
+                        .absorb_property(&mut gone);
+                    pops.insert(id, gone);
+                    self.market.pass_ownership(id, target);
+                }
+                None => {
+                    if !self.market.pops.contains(&id) {
+                        continue;
+                    }
+                    let pop = &pops[&id];
+                    for &coin in &self.market.currencies {
+                        let flows = day.coins.entry(coin).or_default();
+                        flows.pruned += pop.holding(coin);
+                        if let Some(row) = pop.property.get(&coin) {
+                            flows.minted += row.produced;
+                            flows.destroyed += row.consumed + row.spent;
+                        }
+                    }
                 }
             }
         }
@@ -361,6 +389,41 @@ impl PlayState {
     }
 }
 
+/// # Merge Target
+///
+/// The pop that takes in dying pop `id`.
+///
+/// Candidates are the other pops in `pops` with at least one household,
+/// listed on `market` exactly when `id` is. The most similar wins: same
+/// species and culture, then same species, then same culture, then any.
+/// A lower id breaks a tie. Returns that pop's id, or `None` when there is
+/// no candidate.
+fn merge_target(pops: &HashMap<usize, Pop>, market: &Market, id: usize) -> Option<usize> {
+    let dying = &pops[&id];
+    let listed = market.pops.contains(&id);
+    let species = dying.demographics.species;
+    let culture = dying.demographics.culture;
+    pops.values()
+        .filter(|pop| {
+            pop.id != id
+                && pop.demographics.household.count >= 1.0
+                && market.pops.contains(&pop.id) == listed
+        })
+        .map(|pop| {
+            let same_species = pop.demographics.species == species;
+            let same_culture = pop.demographics.culture == culture;
+            let rank = match (same_species, same_culture) {
+                (true, true) => 3,
+                (true, false) => 2,
+                (false, true) => 1,
+                (false, false) => 0,
+            };
+            (rank, std::cmp::Reverse(pop.id))
+        })
+        .max()
+        .map(|(_, std::cmp::Reverse(target))| target)
+}
+
 /// # Take Listed
 ///
 /// Removes each id in `listed` from `all` and returns those values.
@@ -383,6 +446,7 @@ mod coin_ledger_should {
     use std::collections::{HashMap, HashSet};
 
     use super::PlayState;
+    use crate::game::actor::Actor;
     use crate::game::actors::Actors;
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
@@ -521,14 +585,55 @@ mod coin_ledger_should {
     }
 
     #[test]
-    fn book_a_pruned_pops_coin_as_a_sink() {
-        // Pop 3 falls under one household, so growth drops it and its coin.
+    fn merge_a_dying_pop_into_the_most_similar_pop() {
+        // Pops 2 and 3 share species 1. Pop 1 is species 0, so pop 2 is the
+        // target even though pop 1 has the lower id.
+        let mut state = closed_market();
+        state.actors.pop_mut(2).demographics.species = 1;
+        let dying = state.actors.pop_mut(3);
+        dying.demographics.species = 1;
+        dying.demographics.household = Household::with_count(0.5);
+        dying.property.insert(BREAD, PopPRow::new(5.0));
+        state.market.transfer_ownership(OwnershipSubject::Firm(1), 1, 3, 0.5);
+        let before = state.coin_holdings()[&DUCKATS];
+        let mut day = state.open_ledger_day();
+        state.prune_pops(&mut day);
+        assert!(!state.actors.pops.contains_key(&3));
+        assert!(!state.market.pops.contains(&3));
+        let target = state.actors.pop(2);
+        assert!((target.holding(DUCKATS) - 40.0).abs() < 1e-9);
+        assert!((target.holding(BREAD) - 5.0).abs() < 1e-9);
+        assert!((state.actors.pop(1).holding(DUCKATS) - 50.0).abs() < 1e-9);
+        let share = state.market.ownership_of(OwnershipSubject::Firm(1), Actor::Pop(2));
+        assert!((share - 0.5).abs() < 1e-9);
+        assert!((state.coin_holdings()[&DUCKATS] - before).abs() < 1e-9);
+        assert_eq!(day.coins[&DUCKATS].pruned, 0.0);
+    }
+
+    #[test]
+    fn balance_a_day_with_a_merged_pop_and_book_no_sink() {
         let mut state = closed_market();
         state.actors.pop_mut(3).demographics.household = Household::with_count(0.5);
         state.advance_turn();
         let flows = state.ledger.days[0].coins[&DUCKATS];
         assert!(!state.actors.pops.contains_key(&3));
-        assert!(flows.pruned > 0.0);
+        assert_eq!(flows.pruned, 0.0);
         assert!(flows.balances(), "off by {}: {flows:?}", flows.imbalance());
+    }
+
+    #[test]
+    fn book_the_last_pops_coin_as_a_sink() {
+        // With no other pop to take it, the last pop leaves with its coin.
+        let mut state = closed_market();
+        for id in [2, 3] {
+            state.actors.pops.remove(&id);
+            state.market.pops.remove(&id);
+        }
+        state.actors.pop_mut(1).demographics.household = Household::with_count(0.5);
+        let held = state.actors.pop(1).holding(DUCKATS);
+        let mut day = state.open_ledger_day();
+        state.prune_pops(&mut day);
+        assert!(state.actors.pops.is_empty());
+        assert!((day.coins[&DUCKATS].pruned - held).abs() < 1e-9);
     }
 }

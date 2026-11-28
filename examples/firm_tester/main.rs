@@ -738,6 +738,22 @@ fn whole_text(qty: f64) -> String {
     }
 }
 
+/// # Run Text
+///
+/// `qty` iterations with up to two decimals and no trailing zeros.
+///
+/// A partial run of 0.6561 prints `0.66`. A whole run prints as an
+/// integer. Returns that text.
+fn run_text(qty: f64) -> String {
+    if !qty.is_finite() {
+        return format!("{qty}");
+    }
+    format!("{qty:.2}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
 /// # Time Share
 ///
 /// `part` as a percent of `budget`.
@@ -1035,8 +1051,8 @@ fn print_firm_table(state: &PlayState) {
 ///
 /// A firm with no lines gets one row so it still appears. Target is the
 /// iterations sought. A dead firm prints `dead` there. Success is the
-/// iterations finished over the iterations asked, with the fractional part
-/// dropped. A firm with no lines prints `-` there. The money columns are
+/// iterations finished over the iterations asked, each in [`run_text`].
+/// A firm with no lines prints `-` there. The money columns are
 /// that firm's day, repeated on each of its lines. Returns those rows.
 fn firm_rows(state: &PlayState) -> Vec<FirmRow> {
     let mut ids: Vec<usize> = state.actors.firms.keys().copied().collect();
@@ -1079,8 +1095,8 @@ fn firm_rows(state: &PlayState) -> Vec<FirmRow> {
                 },
                 success: format!(
                     "{}/{}",
-                    whole_text(line.completed),
-                    whole_text(line.attempted),
+                    run_text(line.completed),
+                    run_text(line.attempted),
                 ),
                 inputs: inputs.clone(),
                 output: output.clone(),

@@ -128,6 +128,24 @@ impl PopPRow {
         self.quantity + self.used
     }
 
+    /// # Absorb
+    ///
+    /// Adds every field of `other` onto this row.
+    ///
+    /// Stock, earmarks, fresh units, capital in use, and today's records
+    /// all add, so the day's flows stay on the books.
+    pub fn absorb(&mut self, other: &PopPRow) {
+        self.quantity += other.quantity;
+        self.reserved += other.reserved;
+        self.fresh += other.fresh;
+        self.lost += other.lost;
+        self.consumed += other.consumed;
+        self.produced += other.produced;
+        self.sold += other.sold;
+        self.spent += other.spent;
+        self.used += other.used;
+    }
+
     /// # With Reserve
     ///
     /// Sets units earmarked and returns this row.
