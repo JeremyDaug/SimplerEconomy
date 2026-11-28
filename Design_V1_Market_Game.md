@@ -106,6 +106,7 @@ Because of this, coin crosses the market's border in more ways than just paying 
 
 1. **Imports.** Buying goods from the External Market sends coin out of the market. So does any coin paid to a foreign actor (a foreign crew's wages, a foreign trader's profit carried home, the government's interest and debt repayments to its foreign holders).
 2. **Decay (optional).** A tiny daily loss on every coin. The default is 0.001 per day, set as the Duckat's decay rate. It's **optional, with a tunable rate**, which becomes a player option later. It can be turned up, but it should never be a major factor, and it can be removed entirely.
+3. **The last pop dying.** A dying pop with no other pop in the market to merge into is removed with its coin (see Pop deaths under Transfers).
 
 ## Later Sources and Sinks (Not V1)
 
@@ -128,6 +129,7 @@ Everything else just moves coin from one actor to another inside the market:
 - **Taxes and tariffs.** Firms (and possibly pops) pay the government. Tariffs paid by local traders are a transfer too.
 - **Firm-to-firm deals.** Tech sales, collusion payments.
 - **Lobbying, bribes and corruption.** Coin paid to the government's coffers or to the government's pops.
+- **Pop deaths.** A pop that falls under one household merges into the most similar other pop in the market and takes all its goods, coin and firm shares with it. Most similar is same species and culture, then same species, then same culture, then any pop. A lower pop id breaks a tie.
 
 Pops get money with which they can buy goods from **wages, ownership, philanthropy and government welfare**. That's what makes them not magic boxes: if nobody pays them, they can't buy.
 
@@ -192,6 +194,7 @@ total_coin(end of day) = total_coin(start of day)
                        + coin_minted
                        + coin_printed
                        - coin_decayed
+                       - coin_pruned      (coin of a dying pop with no other pop to merge into)
 ```
 
 total_coin is the sum of coin held by every pop, firm, local trader and the government, counting only positive holdings. The government's debt is tracked separately, and a second check holds alongside the first. debt_repaid is the part of border_out that pays down the debt's principal:
@@ -211,9 +214,6 @@ Foreign traders, foreign crews and the government's foreign debt holders are out
 - Keep it as a debug check every tick in debug builds too, so any new feature that creates or deletes coin by accident gets caught immediately.
 
 Ledger: each flow is recorded per day so the player (and we) can see them. That ledger also feeds market research and the government's view of the economy.
-
-> **Open question:** Where does a pop's coin go when the pop is removed for falling under one household?
-> **Proposal:** For now the coin leaves with the pop, and the ledger books it as a sink (pruned). Later it passes to the pop's heirs, for example another pop of the same species and culture, so it stays a transfer.
 
 > **Open question:** Do non-coin goods follow the same conservation rule?
 > **Proposal:** No. Goods are made by production and destroyed by consumption and decay, same as V3. Conservation is about coin only. Goods only matter here in that importing and exporting them moves coin.
@@ -671,31 +671,30 @@ The V4 draft and its review (`Design_V4.md` on `EconCiv-v4-for-realsies`) stay a
 6. Can pops also earn coin by selling goods they make themselves? In V3 pops run subsistence and post sell offers.
 7. How are GDP, the interest rate and the crash consequences worked out?
 8. Does the government ever pay down the principal?
-9. Where does a pop's coin go when the pop is removed for falling under one household?
-10. Do non-coin goods follow the same conservation rule?
-11. What exactly does market research reveal, and how long does it last?
-12. Is the random sample free and automatic, or an action the player takes?
-13. How are wages set?
-14. How does the abstract migration work?
-15. How much does a firm pay its owners, and how does the player control it?
-16. When does a pop with coin start a new firm instead of living off it?
-17. What are the personality traits?
-18. How is the buyout price set without a Stock Market?
-19. What happens to the failed firm's workers, stock and facilities?
-20. Is favor one number for the government overall, or one number per firm?
-21. What gets taxed besides trade?
-22. How is the capture-versus-nationalization contest tracked?
-23. What triggers revolution and breakup, and how much warning does the player get?
-24. What drives a regime change, and which government types are in V1?
-25. What makes the government outlaw reverse engineering under Patent law?
-26. How are these behaviors detected and measured?
-27. How exactly are they earned and spent, and do they decay?
-28. How does tech spread naturally?
-29. What does "research at a discount" mean exactly?
-30. What do techs unlock in V1?
-31. Which is the default for the bankruptcy setting, and is it tied to difficulty?
-32. What are the thresholds for each soft ending, and what happens when you hit one?
-33. How many difficulty levels, and are the knobs exposed as a custom game?
-34. Are wages paid before or after the market day? Paying before means pops can spend today's wages today.
-35. What is the UI for V1: terminal, or a graphics front end?
-36. Is the roadmap order right? In particular, should Ownership (pop classes, Stock Market) come before Money?
+9. Do non-coin goods follow the same conservation rule?
+10. What exactly does market research reveal, and how long does it last?
+11. Is the random sample free and automatic, or an action the player takes?
+12. How are wages set?
+13. How does the abstract migration work?
+14. How much does a firm pay its owners, and how does the player control it?
+15. When does a pop with coin start a new firm instead of living off it?
+16. What are the personality traits?
+17. How is the buyout price set without a Stock Market?
+18. What happens to the failed firm's workers, stock and facilities?
+19. Is favor one number for the government overall, or one number per firm?
+20. What gets taxed besides trade?
+21. How is the capture-versus-nationalization contest tracked?
+22. What triggers revolution and breakup, and how much warning does the player get?
+23. What drives a regime change, and which government types are in V1?
+24. What makes the government outlaw reverse engineering under Patent law?
+25. How are these behaviors detected and measured?
+26. How exactly are they earned and spent, and do they decay?
+27. How does tech spread naturally?
+28. What does "research at a discount" mean exactly?
+29. What do techs unlock in V1?
+30. Which is the default for the bankruptcy setting, and is it tied to difficulty?
+31. What are the thresholds for each soft ending, and what happens when you hit one?
+32. How many difficulty levels, and are the knobs exposed as a custom game?
+33. Are wages paid before or after the market day? Paying before means pops can spend today's wages today.
+34. What is the UI for V1: terminal, or a graphics front end?
+35. Is the roadmap order right? In particular, should Ownership (pop classes, Stock Market) come before Money?

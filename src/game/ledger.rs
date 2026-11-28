@@ -27,7 +27,8 @@ pub struct CoinFlows {
     pub decayed: f64,
     /// Sink. Coin destroyed by a process or consumed for a desire.
     pub destroyed: f64,
-    /// Sink. Coin held by pops removed for falling under one household.
+    /// Sink. Coin held by pops removed for falling under one household, when
+    /// no other pop is left to merge into.
     pub pruned: f64,
     /// Coin paid from one local actor to another. Neither a source nor a sink.
     pub transfers: f64,
