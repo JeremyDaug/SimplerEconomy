@@ -9041,17 +9041,17 @@ mod buy_should {
 
     #[test]
     fn a_bill_off_the_grain_grid_still_buys() {
-        // Grain at 2.2 cannot hit a 2.231 bill on the thousandth grid.
-        // One extra thousandth of grain covers it. The harder coin stays put.
+        // Gold is the principal. Grain at 2.2 cannot hit a 2.231 bill on
+        // the thousandth grid. One extra thousandth of grain covers it. The
+        // harder coin stays put.
         let mut factuals = world(&[]);
         factuals.goods.insert(GOLD, plain(GOLD, false));
         factuals.goods.get_mut(&GRAIN).unwrap().decay_rate = 0.05;
         factuals.goods.get_mut(&GOLD).unwrap().decay_rate = 0.001;
         factuals.processes.insert(1, bake(vec![destroyed(BREAD, 1.0, false)]));
-        let mut market = market();
-        market.currencies.push(GOLD);
+        let mut market = Market::new(1);
+        market.currencies = vec![GOLD, GRAIN];
         market.set_amv(GRAIN, 2.2);
-        market.set_amv(GOLD, 14.85);
         market.set_amv(BREAD, 2.2315);
         let mut buyer = with_grain(1, 10.0);
         buyer.property.insert(GOLD, PopPRow::new(5.0));

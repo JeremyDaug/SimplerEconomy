@@ -50,10 +50,10 @@
 //! units of that good exchanged today. Consumption is the units consumed
 //! today, by processes and by desires. Salability is that good's share, or
 //! the config default when the market has no row. `amv` is the abstract
-//! market value of one unit. A value carries `+` when it rose since
-//! yesterday, `-` when it fell, and `=` when it held. A good with no stored
-//! value prints `-`. The first stored value has no mark. Time and skills
-//! are left out.
+//! market value of one unit, in the market's principal currency. A value
+//! carries `+` when it rose since yesterday, `-` when it fell, and `=` when
+//! it held. A good with no stored value prints `-`. The first stored
+//! value has no mark. Time and skills are left out.
 //!
 //! Above the pops, an info table lists one household of each demographic.
 //! Subsistence is that household's value per unit of time. Day savings is

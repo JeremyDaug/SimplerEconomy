@@ -57,10 +57,15 @@ pub struct Market {
     pub firms: HashSet<usize>,
     /// Per-good quantity record. Keyed by good id.
     pub goods: HashMap<usize, MarketGood>,
-    /// Abstract market value of one unit. Keyed by good id.
+    /// Abstract market value of one unit, in units of the principal
+    /// currency. Keyed by good id.
     ///
-    /// A missing good has no stored value.
+    /// A missing good has no stored value. See [`Self::principal`].
     pub amv: HashMap<usize, f64>,
+    /// Value of one unit of time, in units of the principal currency.
+    ///
+    /// 1 until [`Self::anchor_prices`] sets it.
+    pub time_price: f64,
     /// Distance / size multiplier on deal bulk. 0 on a one-hex market.
     pub friction: f64,
     /// Tender goods. Can be any number of goods up to the number of goods marked as 'currency'.
@@ -122,7 +127,8 @@ impl Market {
     /// Empty market with this id.
     ///
     /// `id` is the market id. Members, goods, abstract values, ownership, and
-    /// the tender list start empty. Friction starts at 0. Returns that market.
+    /// the tender list start empty. Friction starts at 0 and time is worth
+    /// 1. Returns that market.
     pub fn new(id: usize) -> Self {
         Self {
             id,
@@ -130,6 +136,7 @@ impl Market {
             firms: HashSet::new(),
             goods: HashMap::new(),
             amv: HashMap::new(),
+            time_price: 1.0,
             friction: 0.0,
             currencies: Vec::new(),
             pop_removals: Vec::new(),
@@ -330,9 +337,55 @@ impl Market {
     ///
     /// The abstract market value of one unit of `good`.
     ///
-    /// A stored value is that value. A good with none costs 1. Returns that value.
+    /// The principal currency costs 1. Time costs [`Self::time_price`]. A
+    /// stored value is that value. Any other good costs one unit of time.
+    /// Returns that value.
     pub fn price(&self, good: usize) -> f64 {
-        self.stored_amv(good).unwrap_or(1.0)
+        if self.principal() == Some(good) {
+            return 1.0;
+        }
+        if good == TIME {
+            return self.time_price;
+        }
+        self.stored_amv(good).unwrap_or(self.time_price)
+    }
+
+    /// # Principal
+    ///
+    /// The currency every price on this market is counted in.
+    ///
+    /// The first tender good is the principal. Its value is fixed at 1.
+    /// Returns that good, or `None` when the market has no tender.
+    pub fn principal(&self) -> Option<usize> {
+        self.currencies.first().copied()
+    }
+
+    /// # Anchor Prices
+    ///
+    /// Counts this market's prices in its principal currency, once.
+    ///
+    /// `factuals` supplies the processes. A market with no principal, or
+    /// whose principal already has a stored value, is left as it is. The
+    /// principal's cost in time is [`time_cost`], and its value in time is
+    /// [`opening_price`] of that cost. [`Self::time_price`] becomes 1 over
+    /// that value, and every stored value is multiplied by it. A principal
+    /// that no process makes leaves time at 1. The principal's stored value
+    /// becomes 1.
+    pub fn anchor_prices(&mut self, factuals: &Factuals) {
+        let Some(principal) = self.principal() else {
+            return;
+        };
+        if self.stored_amv(principal).is_some() {
+            return;
+        }
+        let mut visiting = Vec::new();
+        let worth = opening_price(time_cost(self, factuals, principal, &mut visiting), 1.0);
+        debug_assert!(worth.is_finite() && worth > 0.0);
+        self.time_price = 1.0 / worth;
+        for amv in self.amv.values_mut() {
+            *amv = (*amv * self.time_price).max(MIN_PRICE);
+        }
+        self.amv.insert(principal, 1.0);
     }
 
     /// # Pay Owners
@@ -622,7 +675,8 @@ impl Market {
     /// `market.price_cap`. A good with volume above 0 is priced by
     /// [`traded_price`]. A good with volume 0 and a stored value keeps its
     /// morning value unless [`raised_idle_price`] lifts it. A good with
-    /// posted supply or demand and no value opens at [`opening_price`]. A
+    /// posted supply or demand and no value opens at [`opening_price`]. The
+    /// principal currency is not moved. A
     /// value this pass writes is at least [`MIN_PRICE`]. Every value is read
     /// before any is written, so one good's new value does not feed the next.
     fn move_prices(&mut self, factuals: &Factuals) {
@@ -632,6 +686,9 @@ impl Market {
         debug_assert!(cap.is_finite() && cap > 0.0 && cap <= 1.0);
         let mut priced = Vec::new();
         for good in self.goods_to_price() {
+            if self.principal() == Some(good) {
+                continue;
+            }
             let Some(row) = self.goods.get(&good) else {
                 continue;
             };
@@ -643,7 +700,7 @@ impl Market {
             let next = if row.volume == 0.0 {
                 match self.stored_amv(good) {
                     Some(amv) => raised_idle_price(amv, cost),
-                    None if row.is_active() => Some(opening_price(cost)),
+                    None if row.is_active() => Some(opening_price(cost, self.time_price)),
                     None => None,
                 }
             } else {
@@ -872,15 +929,69 @@ fn pay_tender(
 ///
 /// `cost` is [`Market::dearest_unit_cost`], or `None` when no method charges for the
 /// good. A method opens at that cost times `1 + IDLE_COST_MARGIN`, and not
-/// under [`MIN_PRICE`]. No method opens at 1. Returns that price.
-fn opening_price(cost: Option<f64>) -> f64 {
+/// under [`MIN_PRICE`]. No method opens at `unit`, the value of one unit of
+/// time. Returns that price.
+fn opening_price(cost: Option<f64>, unit: f64) -> f64 {
     match cost {
         Some(cost) => {
             debug_assert!(cost.is_finite() && cost > 0.0);
             (cost * (1.0 + IDLE_COST_MARGIN)).max(MIN_PRICE)
         }
-        None => 1.0,
+        None => unit,
     }
+}
+
+/// # Time Cost
+///
+/// The highest cost of one unit of `good`, counted in time.
+///
+/// `market` holds the stored values and `factuals` the processes. Each
+/// process that outputs `good` costs its inputs that are not optional and
+/// not factors, divided by how much of `good` one iteration makes. Time is
+/// 1. A stored value is that value over [`Market::time_price`]. Any other
+/// input is [`opening_price`] of its own time cost. `visiting` holds the
+/// goods already being costed, and one of those is worth 1, so a loop ends.
+/// A method with no cost is left out. Returns that cost, or `None` when no
+/// method charges for the good.
+fn time_cost(
+    market: &Market, factuals: &Factuals, good: usize, visiting: &mut Vec<usize>,
+) -> Option<f64> {
+    visiting.push(good);
+    let mut dearest = None;
+    for process in factuals.each_process() {
+        let made: f64 = process
+            .outputs
+            .iter()
+            .filter(|row| row.good == good)
+            .map(|row| row.amount)
+            .sum();
+        if made <= 0.0 {
+            continue;
+        }
+        let mut cost = 0.0;
+        for input in &process.inputs {
+            if input.is_optional() || matches!(input.input_type, InputType::Factor) {
+                continue;
+            }
+            debug_assert!(input.amount.is_finite() && input.amount > 0.0);
+            let worth = if input.good == TIME || visiting.contains(&input.good) {
+                1.0
+            } else if let Some(amv) = market.stored_amv(input.good) {
+                amv / market.time_price
+            } else {
+                opening_price(time_cost(market, factuals, input.good, visiting), 1.0)
+            };
+            cost += input.amount * worth;
+        }
+        if cost <= 0.0 {
+            continue;
+        }
+        let unit = cost / made;
+        debug_assert!(unit.is_finite() && unit > 0.0);
+        dearest = Some(dearest.map_or(unit, |best: f64| best.max(unit)));
+    }
+    visiting.pop();
+    dearest
 }
 
 /// # Raised Idle Price
@@ -1696,6 +1807,61 @@ mod move_prices_should {
         market.move_prices(&factuals);
         near(market.stored_amv(6).unwrap(), 0.55);
     }
+
+    #[test]
+    fn anchoring_counts_prices_in_the_principal() {
+        // Gold takes 5 time and opens at 5.5. A coin takes 8 time and a
+        // gold, 13.5, and is worth 14.85 time. So time is 1/14.85 coin.
+        use crate::game::good::TIME;
+        let mut factuals = Factuals::new();
+        factuals.processes.insert(1, method(1, vec![input(TIME, 5.0, false)], 4, 1.0));
+        factuals.processes.insert(
+            2,
+            method(2, vec![input(TIME, 8.0, false), input(4, 1.0, false)], 45, 1.0),
+        );
+        let mut market = Market::new(1);
+        market.currencies.push(45);
+        market.set_amv(7, 2.97);
+        market.anchor_prices(&factuals);
+        near(market.time_price, 1.0 / 14.85);
+        near(market.price(45), 1.0);
+        near(market.stored_amv(45).unwrap(), 1.0);
+        near(market.price(TIME), 1.0 / 14.85);
+        near(market.price(7), 0.2);
+        near(market.price(9), 1.0 / 14.85);
+        // A second call leaves the anchored prices alone.
+        market.anchor_prices(&factuals);
+        near(market.time_price, 1.0 / 14.85);
+        near(market.price(7), 0.2);
+    }
+
+    #[test]
+    fn a_principal_nothing_makes_leaves_time_at_one() {
+        let mut market = Market::new(1);
+        market.currencies.push(45);
+        market.anchor_prices(&Factuals::new());
+        near(market.time_price, 1.0);
+        near(market.stored_amv(45).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn the_principal_does_not_move() {
+        let mut market = Market::new(1);
+        market.currencies.push(45);
+        market.set_amv(45, 1.0);
+        market.goods.insert(
+            45,
+            super::MarketGood {
+                sought: 8.0,
+                offered: 4.0,
+                volume: 1.0,
+                ..super::MarketGood::new()
+            },
+        );
+        market.move_prices(&Factuals::new());
+        near(market.stored_amv(45).unwrap(), 1.0);
+        near(market.price(45), 1.0);
+    }
 }
 
 #[cfg(test)]
@@ -1812,10 +1978,10 @@ mod pay_should {
         firm
     }
 
+    /// The coin is the principal, so it is worth 1.
     fn priced() -> Market {
         let mut market = Market::new(1);
         market.currencies.push(COIN);
-        market.set_amv(COIN, 2.0);
         market.set_amv(TOOL, 5.0);
         market.set_amv(GRAIN, 1.0);
         market
@@ -1839,15 +2005,15 @@ mod pay_should {
     fn one_owner_is_paid_the_wage_and_a_tenth_of_the_profit() {
         // Three grain a day at 1 is a basic day of 3, so the wage is 15.
         // Yesterday sold 30, spent 10 on inputs, and paid a wage of 6, so
-        // the profit is 14 and the dividend 1.4. At 2 a coin that is 8.2 coins.
+        // the profit is 14 and the dividend 1.4, so 16.4 coins leave.
         let mut market = priced();
         market.issue_ownership(OwnershipSubject::Firm(1), 30, 1.0);
         let mut firms = [stocked(100.0, 10.0, 30.0, 10.0, 6.0)];
         let mut pops = [owner(30, GRAIN, 3.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(held(&firms[0], COIN), 91.8);
+        near(held(&firms[0], COIN), 83.6);
         near(held(&firms[0], TOOL), 10.0);
-        near(purse(&pops[0], COIN), 8.2);
+        near(purse(&pops[0], COIN), 16.4);
         near(firms[0].budget.wage, 15.0);
         near(firms[0].budget.dividend, 1.4);
         near(firms[0].budget.sold_value, 0.0);
@@ -1872,7 +2038,7 @@ mod pay_should {
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
         near(firms[0].budget.wage, 30.0);
         near(firms[0].budget.dividend, 0.0);
-        near(purse(&pops[0], COIN), 15.0);
+        near(purse(&pops[0], COIN), 30.0);
     }
 
     #[test]
@@ -1883,7 +2049,7 @@ mod pay_should {
         let mut firms = [stocked(100.0, 10.0, 5.0, 10.0, 6.0)];
         let mut pops = [owner(30, GRAIN, 3.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(held(&firms[0], COIN), 92.5);
+        near(held(&firms[0], COIN), 85.0);
         near(firms[0].budget.wage, 15.0);
         near(firms[0].budget.dividend, 0.0);
     }
@@ -1898,9 +2064,9 @@ mod pay_should {
         let mut firms = [stocked(100.0, 10.0, 30.0, 10.0, 6.0)];
         let mut pops = [owner(4, GRAIN, 4.0), owner(30, GRAIN, 4.0)];
         market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
-        near(purse(&pops[0], COIN), 2.675);
-        near(purse(&pops[1], COIN), 8.025);
-        near(held(&firms[0], COIN), 89.3);
+        near(purse(&pops[0], COIN), 5.35);
+        near(purse(&pops[1], COIN), 16.05);
+        near(held(&firms[0], COIN), 78.6);
         near(held(&firms[0], TOOL), 10.0);
     }
 
@@ -1915,7 +2081,7 @@ mod pay_should {
         near(held(&firms[0], COIN), 0.0);
         near(held(&firms[0], TOOL), 10.0);
         near(purse(&pops[0], COIN), 0.5);
-        near(firms[0].budget.wage, 1.0);
+        near(firms[0].budget.wage, 0.5);
         near(firms[0].budget.dividend, 0.0);
     }
 
@@ -1953,7 +2119,6 @@ mod pay_should {
         market.currencies.push(COIN);
         market.currencies.push(GRAIN);
         market.set_amv(GRAIN, 1.0);
-        market.set_amv(COIN, 2.0);
         market.issue_ownership(OwnershipSubject::Firm(1), 30, 1.0);
         let mut firm = Firm::new(1, "agri".into());
         firm.property
@@ -1964,9 +2129,9 @@ mod pay_should {
         let mut pops = [owner(30, GRAIN, 1.0)];
         market.pay_owners(&factuals, &mut pops, &mut firms);
         near(held(&firms[0], GRAIN), 0.0);
-        near(held(&firms[0], COIN), 97.75);
+        near(held(&firms[0], COIN), 95.5);
         near(purse(&pops[0], GRAIN), 0.5);
-        near(purse(&pops[0], COIN), 2.25);
+        near(purse(&pops[0], COIN), 4.5);
     }
 
     #[test]

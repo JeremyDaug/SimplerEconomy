@@ -32,8 +32,10 @@ impl PlayState {
     ///
     /// Advances this game by one turn.
     ///
-    /// Increments `turn` by 1, then runs these steps in order. Each step's
-    /// method holds that step's effects.
+    /// Increments `turn` by 1 and anchors the market's prices to its
+    /// principal currency with [`Market::anchor_prices`], which acts only
+    /// once. Then it runs these steps in order. Each step's method holds
+    /// that step's effects.
     ///
     /// 1. Start of day.
     /// 2. Player action phase.
@@ -54,6 +56,7 @@ impl PlayState {
     /// each currency's day balances.
     pub fn advance_turn(&mut self) {
         self.turn += 1;
+        self.market.anchor_prices(&self.factuals);
         let mut day = self.open_ledger_day();
         self.start_of_day();
         self.player_action_phase();
@@ -669,6 +672,17 @@ mod closed_market_should {
             assert!((flows.closing - start).abs() <= 1e-9 * start, "{flows:?}");
         }
         assert!(state.ledger.days.iter().any(|day| day.coins[&DUCKATS].transfers > 0.0));
+    }
+
+    #[test]
+    fn keep_duckats_at_one_and_count_prices_in_them() {
+        // Minting takes 8 time, so a Duckat is worth 8.8 time.
+        let mut state = closed_market();
+        for _ in 0..200 {
+            state.advance_turn();
+            assert_eq!(state.market.price(DUCKATS), 1.0);
+        }
+        assert!((state.market.time_price - 1.0 / 8.8).abs() < 1e-12);
     }
 
     #[test]
