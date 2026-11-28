@@ -43,6 +43,7 @@ It should not be grindingly difficult, but there should be real challenge and ri
 - **Speed controls** are an option the player can set (for example pause, 1x, 2x, 4x).
 - The exact length of a day isn't a hard realism goal. One day per tick is the standard because that's what the sim already runs on.
 - "Per turn" anywhere in this doc means per day tick.
+- Yearly rates, such as births and deaths, are divided by `pop.turn_length`, the turns in one year. It's 365 by default, so each day applies one day's share of a year.
 
 > **Open question:** Can the player queue or issue orders while paused, and do orders apply at the next tick or immediately?
 > **Proposal:** Orders can be given while paused and all take effect at the start of the next tick (Player Action step in the Day Tick Order). Nothing changes mid-tick.
