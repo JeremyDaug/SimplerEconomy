@@ -117,6 +117,37 @@ pub struct Pop {
     /// The level index is the level minus one. [`Self::store_desire_hold`]
     /// writes one level, and [`Self::desire_hold_at`] reads it.
     desire_hold: Vec<Vec<Vec<f64>>>,
+
+    /// Recent offers and sales, by good.
+    ///
+    /// [`Self::scale_offers`] writes the day's offers and
+    /// [`Self::review_offers`] reads the sales.
+    pub offer_records: HashMap<usize, OfferRecord>,
+}
+
+/// One pop's recent offers and sales of one good.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfferRecord {
+    /// Units offered, then units sold, on each day of the open window, oldest first.
+    pub days: Vec<(f64, f64)>,
+    /// Share of the unreserved units the pop offers. From
+    /// `pop.offer_scale_min` to 1.
+    pub scale: f64,
+    /// Units offered on the last market day. 0 once reviewed.
+    pub last_offered: f64,
+}
+
+impl Default for OfferRecord {
+    /// # Default
+    ///
+    /// An empty window that offers everything unreserved.
+    fn default() -> Self {
+        Self {
+            days: Vec::new(),
+            scale: 1.0,
+            last_offered: 0.0,
+        }
+    }
 }
 
 /// Units of one good an actor puts up for sale.
@@ -211,6 +242,7 @@ impl Pop {
             records: PopRecords::default(),
             line_votes: [PlanVotes::default(); 2],
             desire_hold: Vec::new(),
+            offer_records: HashMap::new(),
         }
     }
 
@@ -1275,6 +1307,66 @@ impl Pop {
             row.reserved = 0.0;
             row.fresh = 0.0;
             row.subsisted = 0.0;
+        }
+    }
+
+    /// # Review Offers
+    ///
+    /// Adds the last market day's offers and sales to each good's window,
+    /// and rescales a good whose window is full.
+    ///
+    /// `config` supplies the `pop.offer_*` keys. Call it before
+    /// [`Self::clear_sold`], while `sold` holds the last day's sales. A good
+    /// offered on that day adds its units offered and the units its row
+    /// sold. Once the window holds `offer_window_days` days, it is judged and
+    /// emptied. A window that sold less than `offer_sold_share` of what it
+    /// offered multiplies the scale by `offer_cut`, down to
+    /// `offer_scale_min`. Any other full window divides the scale by
+    /// `offer_cut`, up to 1. A record back at 1 with an empty window is
+    /// dropped.
+    pub(crate) fn review_offers(&mut self, config: &crate::game::config::PopConfig) {
+        let window = config.offer_window_days as usize;
+        for (good, record) in self.offer_records.iter_mut() {
+            if record.last_offered <= 0.0 {
+                continue;
+            }
+            let sold = self.property.get(good).map_or(0.0, |row| row.sold);
+            record.days.push((record.last_offered, sold));
+            record.last_offered = 0.0;
+            if record.days.len() < window {
+                continue;
+            }
+            let offered: f64 = record.days.iter().map(|day| day.0).sum();
+            let sold: f64 = record.days.iter().map(|day| day.1).sum();
+            record.scale = if sold + 1e-9 < config.offer_sold_share * offered {
+                (record.scale * config.offer_cut).max(config.offer_scale_min)
+            } else {
+                (record.scale / config.offer_cut).min(1.0)
+            };
+            record.days.clear();
+        }
+        self.offer_records
+            .retain(|_, record| record.scale < 1.0 || !record.days.is_empty());
+    }
+
+    /// # Scale Offers
+    ///
+    /// Shrinks this pop's offers by each good's scale and records them.
+    ///
+    /// `offers` are the offers from [`Self::split_goods_sale_reserve`].
+    /// `exempt` lists goods that are always offered whole and never
+    /// recorded. Every other offer of this pop is multiplied by its good's
+    /// [`OfferRecord::scale`], 1 when the good has no record, and the result
+    /// is stored as [`OfferRecord::last_offered`]. Offers from other actors
+    /// are left alone.
+    pub(crate) fn scale_offers(&mut self, offers: &mut [SellOffer], exempt: &[usize]) {
+        for offer in offers.iter_mut() {
+            if offer.seller != Actor::Pop(self.id) || exempt.contains(&offer.good) {
+                continue;
+            }
+            let record = self.offer_records.entry(offer.good).or_default();
+            offer.amount *= record.scale;
+            record.last_offered = offer.amount;
         }
     }
 
@@ -9673,5 +9765,88 @@ mod sentiments_should {
 
         near(pop.sentiment.anger(), 0.7225);
         near(pop.sentiment.contentment(), 0.2775);
+    }
+}
+
+#[cfg(test)]
+mod offer_scale_should {
+    use super::*;
+    use crate::game::config::PopConfig;
+    use crate::game::pop_property::PopPRow;
+
+    const GRAIN: usize = 3;
+    const COIN: usize = 1;
+
+    fn near(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+    }
+
+    fn offer(good: usize, amount: f64) -> SellOffer {
+        SellOffer {
+            seller: Actor::Pop(7),
+            good,
+            amount,
+        }
+    }
+
+    /// Posts `amount` grain, sells `sold` of it, and reviews the day.
+    fn day(pop: &mut Pop, amount: f64, sold: f64) -> f64 {
+        let config = PopConfig::default();
+        let mut offers = vec![offer(GRAIN, amount)];
+        pop.scale_offers(&mut offers, &[COIN, TIME]);
+        pop.property.entry(GRAIN).or_default().sold = sold;
+        pop.review_offers(&config);
+        pop.clear_sold();
+        offers[0].amount
+    }
+
+    #[test]
+    fn halve_the_offer_after_three_days_that_sold_under_half() {
+        let mut pop = Pop::new(7);
+        pop.property.insert(GRAIN, PopPRow::new(100.0));
+        near(day(&mut pop, 100.0, 10.0), 100.0);
+        near(day(&mut pop, 100.0, 10.0), 100.0);
+        near(day(&mut pop, 100.0, 10.0), 100.0);
+        // The window sold 30 of 300, so the next offer is half.
+        near(day(&mut pop, 100.0, 40.0), 50.0);
+        near(day(&mut pop, 100.0, 40.0), 50.0);
+        near(day(&mut pop, 100.0, 40.0), 50.0);
+        // That window sold 120 of 150, so the scale doubles back to 1.
+        near(day(&mut pop, 100.0, 0.0), 100.0);
+        assert!(pop.offer_records[&GRAIN].scale == 1.0);
+    }
+
+    #[test]
+    fn stop_at_the_lowest_scale_and_drop_a_record_back_at_one() {
+        let mut pop = Pop::new(7);
+        for _ in 0..30 {
+            day(&mut pop, 100.0, 0.0);
+        }
+        near(pop.offer_records[&GRAIN].scale, PopConfig::default().offer_scale_min);
+        near(day(&mut pop, 100.0, 0.0), 1.0);
+
+        let mut pop = Pop::new(7);
+        for _ in 0..3 {
+            day(&mut pop, 100.0, 100.0);
+        }
+        assert!(!pop.offer_records.contains_key(&GRAIN));
+    }
+
+    #[test]
+    fn leave_exempt_goods_and_other_sellers_whole() {
+        let mut pop = Pop::new(7);
+        pop.offer_records.insert(COIN, OfferRecord { scale: 0.5, ..OfferRecord::default() });
+        pop.offer_records.insert(GRAIN, OfferRecord { scale: 0.5, ..OfferRecord::default() });
+        let mut offers = vec![
+            offer(COIN, 10.0),
+            offer(GRAIN, 10.0),
+            SellOffer { seller: Actor::Pop(8), good: GRAIN, amount: 10.0 },
+        ];
+        pop.scale_offers(&mut offers, &[COIN]);
+        near(offers[0].amount, 10.0);
+        near(offers[1].amount, 5.0);
+        near(offers[2].amount, 10.0);
+        near(pop.offer_records[&GRAIN].last_offered, 5.0);
+        near(pop.offer_records[&COIN].last_offered, 0.0);
     }
 }

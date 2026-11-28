@@ -541,8 +541,9 @@ impl Market {
     ///
     /// Runs this market's day.
     ///
-    /// Pops clear yesterday's sales, run subsistence, and post sell offers.
-    /// Owners are paid from firm stock, then firms clear yesterday's sales
+    /// Pops review and clear yesterday's sales, run subsistence, and post
+    /// sell offers, scaled by [`Pop::scale_offers`]. Currencies and time are
+    /// never scaled. Owners are paid from firm stock, then firms clear yesterday's sales
     /// and post sell offers. That posted book is what consolidation records.
     /// Then firms and pops trade.
     /// Prices move in record keeping, after the rest of the day.
@@ -560,15 +561,21 @@ impl Market {
         firms: &mut [Firm],
         rng: &mut dyn RngCore,
     ) {
-        // Yesterday's sales have already been planned. Clear them before the new day.
+        // Yesterday's sales have already been planned. Review and clear them before the new day.
         for pop in pops.iter_mut() {
+            pop.review_offers(&factuals.config.pop);
             pop.clear_sold();
             pop.run_subsistence(factuals);
         }
-        // Each pop sorts its property into reserves and sell offers.
+        // Each pop sorts its property into reserves and sell offers, then
+        // scales back goods that have not been selling. Coin and time are
+        // always offered whole.
+        let mut exempt = self.currencies.clone();
+        exempt.push(TIME);
         let mut offers = Vec::new();
         for pop in pops.iter_mut() {
-            let pop_offers = pop.split_goods_sale_reserve(factuals);
+            let mut pop_offers = pop.split_goods_sale_reserve(factuals);
+            pop.scale_offers(&mut pop_offers, &exempt);
             offers.extend(pop_offers);
         }
         // Owners are paid from opening stock, before the firm reserves or sells.
