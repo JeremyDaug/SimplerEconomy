@@ -11,6 +11,10 @@
 # subsistence_common_share = 0.5
 # desire_share_minimum_divisor = 2.0
 # starting_coin_days = 10.0
+# offer_window_days = 3
+# offer_sold_share = 0.5
+# offer_cut = 0.5
+# offer_scale_min = 0.01
 
 # [market]
 # amv_epsilon = 1e-9

@@ -101,6 +101,18 @@ pub const DESIRE_SHARE_MINIMUM_DIVISOR: f64 = 2.0;
 /// Days of basic desires every pop holds in the principal currency when the game starts.
 pub const STARTING_COIN_DAYS: f64 = 10.0;
 
+/// Days of offers a pop looks back over before it changes how much it offers.
+pub const OFFER_WINDOW_DAYS: u32 = 3;
+
+/// Share of what a pop offered over the window it must sell to keep offering all of it.
+pub const OFFER_SOLD_SHARE: f64 = 0.5;
+
+/// Factor a pop's offer share is multiplied by after a window that sold too little.
+pub const OFFER_CUT: f64 = 0.5;
+
+/// Lowest share of its unreserved stock a pop offers.
+pub const OFFER_SCALE_MIN: f64 = 0.01;
+
 /// A good on a market's tender list is bought, and every bill is paid, in thousandths.
 pub const CURRENCY_STEP: f64 = 0.001;
 
@@ -298,6 +310,26 @@ pub struct PopConfig {
     /// [`crate::playstate::PlayState::advance_turn`] tops each pop up to
     /// this. The default is [`STARTING_COIN_DAYS`].
     pub starting_coin_days: f64,
+    /// Days of offers a pop looks back over before it changes how much it
+    /// offers. Must be `>= 1`.
+    ///
+    /// [`crate::game::pop::Pop::review_offers`] reads this and the other
+    /// offer keys. The default is [`OFFER_WINDOW_DAYS`].
+    pub offer_window_days: u32,
+    /// Share of what it offered over the window a pop must sell to keep
+    /// offering all of it. Must be from 0 to 1.
+    ///
+    /// The default is [`OFFER_SOLD_SHARE`].
+    pub offer_sold_share: f64,
+    /// Factor the offer share is multiplied by after a window that sold too
+    /// little. Must be above 0 and at most 1.
+    ///
+    /// The default is [`OFFER_CUT`].
+    pub offer_cut: f64,
+    /// Lowest offer share. Must be above 0 and at most 1.
+    ///
+    /// The default is [`OFFER_SCALE_MIN`].
+    pub offer_scale_min: f64,
 }
 
 impl Default for PopConfig {
@@ -309,7 +341,9 @@ impl Default for PopConfig {
     /// subsistence anchor is [`SUBSISTENCE_ANCHOR`] and the common share is
     /// [`SUBSISTENCE_COMMON_SHARE`]. The desire share minimum divisor is
     /// [`DESIRE_SHARE_MINIMUM_DIVISOR`]. Pops start with
-    /// [`STARTING_COIN_DAYS`] of basic desires in coin.
+    /// [`STARTING_COIN_DAYS`] of basic desires in coin. The offer keys are
+    /// [`OFFER_WINDOW_DAYS`], [`OFFER_SOLD_SHARE`], [`OFFER_CUT`], and
+    /// [`OFFER_SCALE_MIN`].
     fn default() -> Self {
         Self {
             childhood_years: 20.0,
@@ -321,6 +355,10 @@ impl Default for PopConfig {
             subsistence_common_share: SUBSISTENCE_COMMON_SHARE,
             desire_share_minimum_divisor: DESIRE_SHARE_MINIMUM_DIVISOR,
             starting_coin_days: STARTING_COIN_DAYS,
+            offer_window_days: OFFER_WINDOW_DAYS,
+            offer_sold_share: OFFER_SOLD_SHARE,
+            offer_cut: OFFER_CUT,
+            offer_scale_min: OFFER_SCALE_MIN,
         }
     }
 }
@@ -331,8 +369,10 @@ impl PopConfig {
     /// Appends a problem when an age length or the subsistence anchor is
     /// not finite or not above 0, when a share is outside 0 to 1, when
     /// `turn_length` is not finite or below 1, when the desire share
-    /// minimum divisor is not 0 and not at least 1, or when
-    /// `starting_coin_days` is not finite or below 0.
+    /// minimum divisor is not 0 and not at least 1, when
+    /// `starting_coin_days` is not finite or below 0, when
+    /// `offer_window_days` is 0, or when `offer_cut` or `offer_scale_min`
+    /// is not above 0 and at most 1.
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "pop.childhood_years", self.childhood_years, 0.0);
         above(problems, "pop.adulthood_years", self.adulthood_years, 0.0);
@@ -357,6 +397,17 @@ impl PopConfig {
             1.0,
         );
         at_least(problems, "pop.starting_coin_days", self.starting_coin_days, 0.0);
+        if self.offer_window_days == 0 {
+            problems.push("pop.offer_window_days must be at least 1".to_string());
+        }
+        unit_share(problems, "pop.offer_sold_share", self.offer_sold_share);
+        for (name, value) in [
+            ("pop.offer_cut", self.offer_cut),
+            ("pop.offer_scale_min", self.offer_scale_min),
+        ] {
+            above(problems, name, value, 0.0);
+            unit_share(problems, name, value);
+        }
     }
 }
 
@@ -755,6 +806,35 @@ mod config_should {
         cfg.firm.owner_profit_share = 1.0;
         cfg.firm.stock_offer_share = 1.0;
         cfg.validate().expect("no wage, all profit, and all stock");
+    }
+
+    #[test]
+    fn offer_keys_must_keep_a_window_and_a_share_above_zero() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.offer_window_days = 0;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.offer_window_days"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.offer_cut = 0.0;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.offer_cut"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.offer_scale_min = 1.5;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.offer_scale_min"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.offer_sold_share = -0.1;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.offer_sold_share"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.offer_window_days = 1;
+        cfg.pop.offer_cut = 1.0;
+        cfg.pop.offer_scale_min = 1.0;
+        cfg.validate().expect("a one-day window that never cuts");
     }
 
     #[test]
