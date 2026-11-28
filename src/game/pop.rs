@@ -275,7 +275,8 @@ impl Pop {
     /// A positive share is removed from `quantity` and added to `spent`.
     /// Basic cover is the rate divided by `pop.subsistence_anchor`. Common
     /// cover is that times `pop.subsistence_common_share`. Each desire is
-    /// met by [`subsistence_batch`] at that cover. A rate of 0 adds nothing
+    /// met by [`subsistence_batch`] at that cover, and each good made is
+    /// also counted in [`PopPRow::subsisted`]. A rate of 0 adds nothing
     /// and spends no time. Desire satisfaction is left unchanged.
     pub fn run_subsistence(&mut self, factuals: &Factuals) {
         let rate = self.subsistence_rate;
@@ -306,6 +307,9 @@ impl Pop {
         }
         for (good, amount) in made {
             self.add_made(good, amount);
+            if let Some(row) = self.property.get_mut(&good) {
+                row.subsisted += amount;
+            }
         }
     }
 
@@ -1248,7 +1252,8 @@ impl Pop {
     /// stores infinity. The time row's `consumed` is copied to
     /// [`Self::time_consumed`] before the counters clear. A day with no
     /// time row stores 0. `produced`, `consumed`, `spent`, `lost`,
-    /// `reserved`, and `fresh` return to 0. `sold` stays. Quantity stays.
+    /// `reserved`, `fresh`, and `subsisted` return to 0. `sold` stays.
+    /// Quantity stays.
     pub fn record_keeping(&mut self) {
         let mut satisfaction = 0.0;
         let mut any = false;
@@ -1269,6 +1274,7 @@ impl Pop {
             row.lost = 0.0;
             row.reserved = 0.0;
             row.fresh = 0.0;
+            row.subsisted = 0.0;
         }
     }
 
@@ -5191,6 +5197,7 @@ mod run_subsistence_should {
         near(quantity(&pop, 2), 3.0);
         near(pop.property.get(&1).unwrap().produced, 6.0);
         near(pop.property.get(&1).unwrap().fresh, 6.0);
+        near(pop.property.get(&1).unwrap().subsisted, 6.0);
         // Common is half of 8. Luxury does not add more of good 1.
         near(quantity(&pop, 4), 4.0);
         near(pop.desires[0][0].satisfaction, 0.0);

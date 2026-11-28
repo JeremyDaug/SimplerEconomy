@@ -57,6 +57,10 @@ pub struct PopPRow {
     pub spent: f64,
     /// Used and not destroyed. Returned to `quantity` at day end, then decayed.
     pub used: f64,
+    /// Units subsistence made today. Also counted in `produced`.
+    ///
+    /// [`crate::game::pop::Pop::record_keeping`] clears it.
+    pub subsisted: f64,
 }
 
 /// Records kept on a pop.
@@ -148,6 +152,7 @@ impl PopPRow {
         self.sold += other.sold;
         self.spent += other.spent;
         self.used += other.used;
+        self.subsisted += other.subsisted;
     }
 
     /// # With Reserve

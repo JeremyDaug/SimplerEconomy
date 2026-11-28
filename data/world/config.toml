@@ -25,3 +25,5 @@
 # owner_wage_basic_days = 5.0
 # owner_profit_share = 0.10
 # stock_offer_share = 0.10
+# subsistence_cover_share = 0.5
+# short_days_to_compete = 5
