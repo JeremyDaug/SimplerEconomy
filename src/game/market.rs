@@ -436,7 +436,10 @@ impl Market {
     /// `owner_profit_share` times the firm's profit. Profit is the budget
     /// the firm closed yesterday: sold value less input cost less the owner
     /// wage, and not below 0. A firm that did not profit pays no dividend.
-    /// The wage is paid first. Tender is spent least durable first, in
+    /// The wage is paid first, and only up to the firm's
+    /// [`Firm::wage_reserve`]. Before paying, `wage_reserve_share` of the
+    /// closed budget's sold value is added to that reserve, and the wage
+    /// paid is taken from it. Tender is spent least durable first, in
     /// [`CURRENCY_STEP`] units, and only up to the units on hand. Each
     /// firm's budget is cleared, then the wage and dividend that left are
     /// stored on it.
@@ -476,16 +479,20 @@ impl Market {
             let Some(firm_at) = firms.iter().position(|firm| firm.id == firm_id) else {
                 continue;
             };
-            firms[firm_at].budget = FirmBudget::default();
-            if firms[firm_at].is_dead() {
+            let reserve_share = factuals.config.firm.wage_reserve_share;
+            let firm = &mut firms[firm_at];
+            firm.wage_reserve += reserve_share * firm.budget.sold_value;
+            firm.budget = FirmBudget::default();
+            if firm.is_dead() {
                 continue;
             }
             for (pop, fraction) in holders {
                 let Some(pop_at) = pops.iter().position(|pop_row| pop_row.id == pop) else {
                     continue;
                 };
-                // The wage is paid before any share of profit.
-                let wage_bill = fraction * wage_days * pops[pop_at].day_savings(self);
+                // The wage is paid before any share of profit, and only from the reserve.
+                let wage_bill = (fraction * wage_days * pops[pop_at].day_savings(self))
+                    .min(firms[firm_at].wage_reserve);
                 let wage = pay_tender(
                     &mut firms[firm_at],
                     &mut pops[pop_at],
@@ -494,6 +501,7 @@ impl Market {
                     &mut paid,
                 );
                 firms[firm_at].budget.wage += wage;
+                firms[firm_at].wage_reserve = (firms[firm_at].wage_reserve - wage).max(0.0);
                 pops[pop_at].records.owner_pay += wage;
                 let dividend = pay_tender(
                     &mut firms[firm_at],
@@ -2086,9 +2094,11 @@ mod pay_should {
     }
 
     /// A firm holding `coins` and `tools` that closed yesterday with `sold`
-    /// sales, `inputs` of input cost, and a `wage` paid.
+    /// sales, `inputs` of input cost, and a `wage` paid. Its wage reserve of
+    /// 100 covers any wage these tests ask for.
     fn stocked(coins: f64, tools: f64, sold: f64, inputs: f64, wage: f64) -> Firm {
         let mut firm = Firm::new(1, "agri".into());
+        firm.wage_reserve = 100.0;
         if coins > 0.0 {
             firm.property
                 .insert(COIN, FirmPRow::new().with_quantity(coins));
@@ -2250,6 +2260,7 @@ mod pay_should {
             .insert(GRAIN, FirmPRow::new().with_quantity(0.5));
         firm.property
             .insert(COIN, FirmPRow::new().with_quantity(100.0));
+        firm.wage_reserve = 100.0;
         let mut firms = [firm];
         let mut pops = [owner(30, GRAIN, 1.0)];
         market.pay_owners(&factuals, &mut pops, &mut firms);
@@ -2257,6 +2268,35 @@ mod pay_should {
         near(held(&firms[0], COIN), 95.5);
         near(purse(&pops[0], GRAIN), 0.5);
         near(purse(&pops[0], COIN), 4.5);
+    }
+
+    #[test]
+    fn the_wage_is_paid_only_from_the_reserve_sales_fill() {
+        // The reserve starts empty. Yesterday sold 30, so a fifth of it, 6,
+        // goes into the reserve and pays 6 of the 15 wage. Profit is
+        // 30 - 10 - 6 = 14, so the dividend is still 1.4.
+        let mut market = priced();
+        market.issue_ownership(OwnershipSubject::Firm(1), 30, 1.0);
+        let mut firm = stocked(100.0, 10.0, 30.0, 10.0, 6.0);
+        firm.wage_reserve = 0.0;
+        let mut firms = [firm];
+        let mut pops = [owner(30, GRAIN, 3.0)];
+        market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
+        near(firms[0].budget.wage, 6.0);
+        near(firms[0].budget.dividend, 1.4);
+        near(firms[0].wage_reserve, 0.0);
+        near(held(&firms[0], COIN), 92.6);
+
+        // A day with no sales and no reserve pays no wage.
+        market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
+        near(firms[0].budget.wage, 0.0);
+        near(held(&firms[0], COIN), 92.6);
+
+        // A reserve above the wage keeps what is left.
+        firms[0].wage_reserve = 20.0;
+        market.pay_owners(&Factuals::new(), &mut pops, &mut firms);
+        near(firms[0].budget.wage, 15.0);
+        near(firms[0].wage_reserve, 5.0);
     }
 
     #[test]

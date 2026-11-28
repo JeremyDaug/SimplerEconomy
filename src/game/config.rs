@@ -228,6 +228,18 @@ pub const SUBSISTENCE_COVER_SHARE: f64 = 0.5;
 /// Days in a row a covered good must be short before firms make it.
 pub const SHORT_DAYS_TO_COMPETE: u32 = 5;
 
+/// Days a firm's average sales look back over. Each day moves the average one part in this many.
+pub const FIRM_DEMAND_WINDOW_DAYS: f64 = 3.0;
+
+/// Share a firm plans above its average sales, so a line can grow into new demand.
+pub const FIRM_DEMAND_HEADROOM: f64 = 0.10;
+
+/// Iterations a firm keeps on one line when demand would idle every line.
+pub const FIRM_MIN_LINE_TARGET: f64 = 1.0;
+
+/// Share of a firm's sold value set aside to pay the owner wage.
+pub const WAGE_RESERVE_SHARE: f64 = 0.20;
+
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet.
 pub const BASIC_UNMET_SENTIMENT: f64 = 0.04;
@@ -622,6 +634,24 @@ pub struct FirmConfig {
     ///
     /// The default is [`SHORT_DAYS_TO_COMPETE`].
     pub short_days_to_compete: u32,
+    /// Days a firm's average sales look back over. Must be `>= 1`.
+    ///
+    /// The default is [`FIRM_DEMAND_WINDOW_DAYS`].
+    pub demand_window_days: f64,
+    /// Share a firm plans above its average sales. Must be `>= 0`.
+    ///
+    /// The default is [`FIRM_DEMAND_HEADROOM`].
+    pub demand_headroom: f64,
+    /// Iterations a firm keeps on one line when demand would idle every
+    /// line. Must be `>= 0`.
+    ///
+    /// The default is [`FIRM_MIN_LINE_TARGET`].
+    pub min_line_target: f64,
+    /// Share of a firm's sold value set aside to pay the owner wage. Must
+    /// be from 0 to 1.
+    ///
+    /// The default is [`WAGE_RESERVE_SHARE`].
+    pub wage_reserve_share: f64,
 }
 
 impl Default for FirmConfig {
@@ -629,7 +659,9 @@ impl Default for FirmConfig {
     ///
     /// [`OWNER_WAGE_BASIC_DAYS`] is 5, [`OWNER_PROFIT_SHARE`] is 0.10,
     /// [`FIRM_STOCK_OFFER_SHARE`] is 0.10, [`SUBSISTENCE_COVER_SHARE`] is
-    /// 0.5, and [`SHORT_DAYS_TO_COMPETE`] is 5.
+    /// 0.5, [`SHORT_DAYS_TO_COMPETE`] is 5, [`FIRM_DEMAND_WINDOW_DAYS`] is
+    /// 3, [`FIRM_DEMAND_HEADROOM`] is 0.10, [`FIRM_MIN_LINE_TARGET`] is 1,
+    /// and [`WAGE_RESERVE_SHARE`] is 0.20.
     fn default() -> Self {
         Self {
             owner_wage_basic_days: OWNER_WAGE_BASIC_DAYS,
@@ -637,6 +669,10 @@ impl Default for FirmConfig {
             stock_offer_share: FIRM_STOCK_OFFER_SHARE,
             subsistence_cover_share: SUBSISTENCE_COVER_SHARE,
             short_days_to_compete: SHORT_DAYS_TO_COMPETE,
+            demand_window_days: FIRM_DEMAND_WINDOW_DAYS,
+            demand_headroom: FIRM_DEMAND_HEADROOM,
+            min_line_target: FIRM_MIN_LINE_TARGET,
+            wage_reserve_share: WAGE_RESERVE_SHARE,
         }
     }
 }
@@ -645,8 +681,10 @@ impl FirmConfig {
     /// # Validate
     ///
     /// Appends a problem when `owner_wage_basic_days` is not finite or is
-    /// below 0, or when `owner_profit_share`, `stock_offer_share`, or
-    /// `subsistence_cover_share` is outside 0 to 1.
+    /// below 0, when `owner_profit_share`, `stock_offer_share`,
+    /// `subsistence_cover_share`, or `wage_reserve_share` is outside 0 to 1,
+    /// when `demand_window_days` is not finite or below 1, or when
+    /// `demand_headroom` or `min_line_target` is not finite or below 0.
     fn validate(&self, problems: &mut Vec<String>) {
         at_least(
             problems,
@@ -661,6 +699,10 @@ impl FirmConfig {
             "firm.subsistence_cover_share",
             self.subsistence_cover_share,
         );
+        unit_share(problems, "firm.wage_reserve_share", self.wage_reserve_share);
+        at_least(problems, "firm.demand_window_days", self.demand_window_days, 1.0);
+        at_least(problems, "firm.demand_headroom", self.demand_headroom, 0.0);
+        at_least(problems, "firm.min_line_target", self.min_line_target, 0.0);
     }
 }
 
@@ -795,6 +837,18 @@ mod config_should {
         cfg.firm.stock_offer_share = -0.1;
         let msg = message(cfg);
         assert!(msg.contains("firm.stock_offer_share"), "{msg}");
+
+        for (name, change) in [
+            ("firm.wage_reserve_share", (|cfg: &mut GameConfig| cfg.firm.wage_reserve_share = 1.5) as fn(&mut GameConfig)),
+            ("firm.demand_window_days", |cfg| cfg.firm.demand_window_days = 0.5),
+            ("firm.demand_headroom", |cfg| cfg.firm.demand_headroom = -0.1),
+            ("firm.min_line_target", |cfg| cfg.firm.min_line_target = -1.0),
+        ] {
+            let mut cfg = GameConfig::default();
+            change(&mut cfg);
+            let msg = message(cfg);
+            assert!(msg.contains(name), "{msg}");
+        }
 
         let mut cfg = GameConfig::default();
         cfg.firm.subsistence_cover_share = 2.0;

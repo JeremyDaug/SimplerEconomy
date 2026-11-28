@@ -486,7 +486,7 @@ mod coin_ledger_should {
     use crate::game::demographic_source::DemographicSource;
     use crate::game::desire::{Desire, DesireTarget, DesireTargetType};
     use crate::game::factuals::Factuals;
-    use crate::game::firm::{Firm, FirmPRow};
+    use crate::game::firm::{Firm, FirmPRow, ProductionLine};
     use crate::game::good::{Good, GoodTag, TIME};
     use crate::game::household::Household;
     use crate::game::job::{Job, JobLine};
@@ -543,8 +543,9 @@ mod coin_ledger_should {
         pop
     }
 
-    /// One pop mints Duckats, two bake bread, and an owned firm sells bread
-    /// stock. Duckats decay at 0.001 a day. Nothing crosses the border.
+    /// One pop mints Duckats, two bake bread, and an owned bakery holds 1000
+    /// Duckats and 2000 bread. Its one line bakes, one run a day to start.
+    /// Duckats decay at 0.001 a day. Nothing crosses the border.
     pub(super) fn closed_market() -> PlayState {
         let mut factuals = Factuals::new();
         factuals.goods.insert(TIME, good(TIME, 1.0, HashSet::new()));
@@ -570,8 +571,15 @@ mod coin_ledger_should {
             actors.pops.insert(pop.id, pop);
         }
         let mut firm = Firm::new(1, "bakery".into());
-        firm.property.insert(DUCKATS, FirmPRow::new().with_quantity(100.0));
-        firm.property.insert(BREAD, FirmPRow::new().with_quantity(200.0));
+        firm.property.insert(DUCKATS, FirmPRow::new().with_quantity(1000.0));
+        firm.property.insert(BREAD, FirmPRow::new().with_quantity(2000.0));
+        firm.production_line.push(ProductionLine {
+            process: BAKE,
+            target: Some(1.0),
+            inputs: Vec::new(),
+            attempted: 0.0,
+            completed: 0.0,
+        });
         market.firms.insert(firm.id);
         market.issue_ownership(OwnershipSubject::Firm(firm.id), 1, 1.0);
         actors.firms.insert(firm.id, firm);
@@ -680,13 +688,14 @@ mod closed_market_should {
     use crate::game::firm::ProductionLine;
     use crate::game::job::{Job, JobLine};
 
-    /// [`closed_market`] with no minting and no coin decay: pop 1 bakes
-    /// instead of minting, and Duckats keep. Pop 1 owns the firm.
+    /// [`closed_market`] with no minting and no coin decay: pop 1 has no
+    /// craft instead of minting, and Duckats keep. Pop 1 owns the firm, so
+    /// it buys its bread.
     fn no_new_coin() -> PlayState {
         let mut state = closed_market();
         state.factuals.goods.get_mut(&DUCKATS).expect("duckats").decay_rate = 0.0;
         state.actors.pop_mut(1).job = Job::new([
-            JobLine::new(BAKE, None, Vec::new()),
+            JobLine::new(0, None, Vec::new()),
             JobLine::new(0, None, Vec::new()),
         ]);
         state

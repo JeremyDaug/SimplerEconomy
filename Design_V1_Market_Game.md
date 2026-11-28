@@ -285,6 +285,7 @@ The player is one firm. It buys, produces, and sells. Its spending options are: 
 - **Firm founding is in V1, in a simple form.** It's needed to some extent for turnover and healthy long-term competition as new potential industries form.
 - **Owners are paid a wage, then a dividend.** Each owner gets its fraction of both, and the payment comes at the start of the market day, before the firm trades.
   - **The wage** is a multiple of the owner pop's basic day needs: the cost of one day of its basic desires at market prices, for all of its households. A larger owner pop gets a larger wage. The multiple is `firm.owner_wage_basic_days` in the config, default 5.
+  - **The wage comes out of a reserve filled by sales.** Each day the firm sets aside `firm.wage_reserve_share` (default 0.20) of the last day's sales, and the wage is paid only up to that reserve. A firm that sells nothing pays no wage, so the wage can't eat the coin the firm needs for inputs.
   - **The dividend** is a share of the firm's profit from the day before. Profit is sales less input cost less the owner wage. The share is `firm.owner_profit_share` in the config, default 0.10. A firm that made no profit pays no dividend, so a failing firm keeps its coin through a downturn.
   - Both values are config defaults for now. Later they follow the firm's personality.
 
@@ -325,6 +326,8 @@ The player is one firm. It buys, produces, and sells. Its spending options are: 
 ## Firm Budgeting
 
 The existing firm budget (input cost, output value, sold value, owner pay) is the starting point. V1 adds player-facing spending categories on top of it.
+
+- **Output follows demand.** A firm keeps an average of what it sold each day, each day moving it one part in `firm.demand_window_days` (default 3). Each line plans no more runs than cover that average plus `firm.demand_headroom` (default 0.10), the room it needs to grow into new demand. A firm never idles every line for lack of sales: when all its other lines would be under `firm.min_line_target` (default 1) runs, its first one runs that many. Lines idled for competing with subsistence stay idle.
 
 ---
 

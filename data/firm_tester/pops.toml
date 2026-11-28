@@ -17,12 +17,15 @@
 # Agribusiness and has no craft. One pop owns the Clothes Mill and has no
 # craft. One pop owns the Cotton Farm, one owns the Thread Mill, and one
 # owns the Fabric Mill. None of those owners has a craft. A pop buys the
-# goods its own craft does not make.
+# goods its own craft does not make. Every pop but the five owners holds ten
+# households. An owner is one household, so its wage stays small next to its
+# firm.
 
 [[pops]]
 id = 1
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make bread"
@@ -32,6 +35,7 @@ target = 0
 id = 2
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make cabins"
@@ -41,6 +45,7 @@ target = 0
 id = 3
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make water"
@@ -50,6 +55,7 @@ target = 0
 id = 4
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make coal"
@@ -59,6 +65,7 @@ target = 0
 id = 5
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make beer"
@@ -68,6 +75,7 @@ target = 0
 id = 6
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make grain"
@@ -82,6 +90,7 @@ inputs = ["farming"]
 id = 7
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make huts"
@@ -91,6 +100,7 @@ target = 0
 id = 8
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make cotton"
@@ -100,6 +110,7 @@ target = 0
 id = 9
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make thread"
@@ -109,6 +120,7 @@ target = 0
 id = 10
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make fabric"
@@ -118,6 +130,7 @@ target = 0
 id = 11
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make clothes"
@@ -132,6 +145,7 @@ inputs = ["clothworking"]
 id = 12
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make duckats"
@@ -141,6 +155,7 @@ target = 0
 id = 13
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make wood"
@@ -150,6 +165,7 @@ target = 0
 id = 14
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make clay"
@@ -159,6 +175,7 @@ target = 0
 id = 15
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make pots"
@@ -168,6 +185,7 @@ target = 0
 id = 16
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make buckets"
@@ -177,6 +195,7 @@ target = 0
 id = 17
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make iron"
@@ -186,6 +205,7 @@ target = 0
 id = 18
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make copper"
@@ -195,6 +215,7 @@ target = 0
 id = 19
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make tin"
@@ -204,6 +225,7 @@ target = 0
 id = 20
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make bronze"
@@ -213,6 +235,7 @@ target = 0
 id = 21
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make gold"
@@ -222,6 +245,7 @@ target = 0
 id = 22
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make gold_token"
@@ -231,6 +255,7 @@ target = 0
 id = 23
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make wood_tools"
@@ -240,6 +265,7 @@ target = 0
 id = 24
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make iron_tools"
@@ -249,6 +275,7 @@ target = 0
 id = 25
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make bronze_tools"
@@ -258,6 +285,7 @@ target = 0
 id = 26
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make blades"
@@ -267,6 +295,7 @@ target = 0
 id = 27
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make bronze_mirror"
@@ -276,6 +305,7 @@ target = 0
 id = 28
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "make cargo"
@@ -285,6 +315,7 @@ target = 0
 id = 29
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "farmhand labor"
@@ -300,6 +331,7 @@ culture = "village"
 id = 31
 species = "human"
 culture = "village"
+households = 10
 
 [[pops.lines]]
 process = "millhand labor"

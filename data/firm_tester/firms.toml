@@ -3,8 +3,9 @@
 # owners are pop ids. The market records them. One owner holds the firm.
 # Several hold equal parts.
 # stock is opening property. Each firm notes the pile that covers its first
-# run. Labor decays at 1, so a larger pile would rot that night. The 100
-# Duckats are the starter purse. They pay the owner and buy later inputs.
+# run. Labor decays at 1, so a larger pile would rot that night. The 2000
+# Duckats are the starter purse. They buy later inputs. The owner wage is
+# paid from sales, not from this purse.
 
 [[firms]]
 id = 1
@@ -24,7 +25,7 @@ amount = 1
 
 [[firms.stock]]
 good = "duckats"
-amount = 100
+amount = 2000
 
 [[firms]]
 id = 2
@@ -49,7 +50,7 @@ amount = 4
 
 [[firms.stock]]
 good = "duckats"
-amount = 100
+amount = 2000
 
 [[firms]]
 id = 3
@@ -70,7 +71,7 @@ amount = 1
 
 [[firms.stock]]
 good = "duckats"
-amount = 100
+amount = 2000
 
 [[firms]]
 id = 4
@@ -95,7 +96,7 @@ amount = 2
 
 [[firms.stock]]
 good = "duckats"
-amount = 100
+amount = 2000
 
 [[firms]]
 id = 5
@@ -120,4 +121,4 @@ amount = 2
 
 [[firms.stock]]
 good = "duckats"
-amount = 100
+amount = 2000

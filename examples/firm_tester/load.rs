@@ -16,6 +16,7 @@ use simpler_economy::game::desire::{DemoDesire, DesireTarget, DesireTargetType, 
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::firm::{Firm, FirmPRow, ProductionLine};
 use simpler_economy::game::good::Good;
+use simpler_economy::game::household::Household;
 use simpler_economy::game::job::{Job, JobLine};
 use simpler_economy::game::market::{Market, OwnershipSubject};
 use simpler_economy::game::pop::Pop;
@@ -162,6 +163,9 @@ struct PopRow {
     species: String,
     #[serde(default)]
     culture: Option<String>,
+    /// Omitted keeps the one household from [`Pop::new`].
+    #[serde(default)]
+    households: Option<f64>,
     #[serde(default)]
     lines: Vec<LineRow>,
 }
@@ -569,6 +573,18 @@ fn load_pops(
             }
         }
         let mut pop = Pop::new(row.id);
+        // Desire amounts use the household count, so the count is set first.
+        if let Some(count) = row.households {
+            if !count.is_finite() || count <= 0.0 {
+                return Err(ScenarioError::new(format!(
+                    "{}: pop {} households must be above 0",
+                    path.display(),
+                    row.id
+                )));
+            }
+            pop.demographics.household = Household::with_count(count);
+            pop.pre_growth_population = pop.demographics.total_population();
+        }
         pop.demographics.species = kind.id;
         copy_desires(&mut pop, DemographicSource::Species(kind.id), &kind.desires);
         if let Some(name) = &row.culture {
