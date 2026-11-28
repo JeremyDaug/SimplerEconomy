@@ -10,6 +10,7 @@ pub mod firm;
 pub mod good;
 pub mod household;
 pub mod job;
+pub mod ledger;
 pub mod market;
 pub mod pop;
 pub mod pop_property;

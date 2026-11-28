@@ -71,6 +71,7 @@ use simpler_economy::game::desire::{DemoDesire, DesireTarget};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::firm::Firm;
 use simpler_economy::game::good::TIME;
+use simpler_economy::game::ledger::CoinLedger;
 use simpler_economy::game::market::Market;
 use simpler_economy::game::pop::{line_value, market_price, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
@@ -232,6 +233,7 @@ fn stand_up() -> PlayState {
         factuals,
         market: loaded.market,
         actors,
+        ledger: CoinLedger::default(),
         turn: 0,
         is_paused: false,
     }

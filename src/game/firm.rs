@@ -198,6 +198,19 @@ impl Firm {
         }
     }
 
+    /// # Holding
+    ///
+    /// Units of `good` this firm holds.
+    ///
+    /// Sums `quantity` and capital tied up in `used`. A good the firm has
+    /// never held is 0. Returns that sum.
+    pub fn holding(&self, good: usize) -> f64 {
+        self.property
+            .get(&good)
+            .map(|row| row.quantity + row.used)
+            .unwrap_or(0.0)
+    }
+
     /// # Reset Day
     ///
     /// Clears yesterday's fresh marker and yesterday's production record.

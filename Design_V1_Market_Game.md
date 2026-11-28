@@ -64,7 +64,7 @@ V1 uses a handful of goods (see Suggested V1 Scope). Goods keep their V3 rules: 
 
 # Money and Trade
 
-Money is the heart of V1. The core idea: **money is conserved**. It moves between actors, and it is only created or destroyed in a few named ways. Pops in the market are not "magic boxes" that produce or swallow coin.
+Money is the heart of V1. V1's one coin is the **Duckat**, a gold coin named as a nod to the ducat. Players may be able to rename the currency later. The core idea: **money is conserved**. It moves between actors, and it is only created or destroyed in a few named ways. Pops in the market are not "magic boxes" that produce or swallow coin.
 
 ## The External Market
 
@@ -100,15 +100,12 @@ Because of this, coin crosses the market's border in more ways than just paying 
 
 1. **Exports. Always available.** Selling goods to the External Market brings new coin into the market. This is the one source that every run is guaranteed to have. More broadly, any coin a foreign actor pays inside the market (a foreign trader paying local longshoremen, tariffs paid by foreign traders) comes in the same way.
 2. **Government deficit printing.** The government can go into debt, money-printer style. When it spends more than its treasury holds, it prints the difference and keeps track of the debt. This is not true government lending: nobody lends it anything, it just tracks its negative balance. The debt still costs the government (see Government Debt).
-3. **Minting. Not in every run.** Some runs have a way to mint coin (for example a metal deposit and a minting process). It is certainly a source of new money when it exists, but it is not guaranteed.
+3. **Minting. Not in every run.** Some runs have a way to mint coin (for example a metal deposit and a minting process). It is certainly a source of new money when it exists, but it is not guaranteed. Duckats a pop crafts on its job are minted coin too.
 
 ## Where Money Goes (Sinks)
 
 1. **Imports.** Buying goods from the External Market sends coin out of the market. So does any coin paid to a foreign actor (a foreign crew's wages, a foreign trader's profit carried home, the government's interest and debt repayments to its foreign holders).
-2. **Decay (optional).** A tiny daily loss on every coin. It's **optional, with a tunable rate**. It can be turned up, but it should never be a major factor, and it can be removed entirely.
-
-> **Open question:** What should the default decay rate be?
-> **Proposal:** Default it to 1e-6 per day (about 0.04% a year), allow anything from 0 up to a small cap like 1e-4, and allow 0. If it turns out to do nothing useful, default it to 0.
+2. **Decay (optional).** A tiny daily loss on every coin. The default is 0.001 per day, set as the Duckat's decay rate. It's **optional, with a tunable rate**, which becomes a player option later. It can be turned up, but it should never be a major factor, and it can be removed entirely.
 
 ## Later Sources and Sinks (Not V1)
 
@@ -214,6 +211,9 @@ Foreign traders, foreign crews and the government's foreign debt holders are out
 - Keep it as a debug check every tick in debug builds too, so any new feature that creates or deletes coin by accident gets caught immediately.
 
 Ledger: each flow is recorded per day so the player (and we) can see them. That ledger also feeds market research and the government's view of the economy.
+
+> **Open question:** Where does a pop's coin go when the pop is removed for falling under one household?
+> **Proposal:** For now the coin leaves with the pop, and the ledger books it as a sink (pruned). Later it passes to the pop's heirs, for example another pop of the same species and culture, so it stays a transfer.
 
 > **Open question:** Do non-coin goods follow the same conservation rule?
 > **Proposal:** No. Goods are made by production and destroyed by consumption and decay, same as V3. Conservation is about coin only. Goods only matter here in that importing and exporting them moves coin.
@@ -570,7 +570,7 @@ A proposal, built from the V3 and refined V4 orders, cut down to what V1 needs.
 # Suggested V1 Scope
 
 - **One market.**
-- **One currency** (coin).
+- **One currency** (Duckats). Grain and every other good are ordinary goods, not tender.
 - **A handful of goods**, for example: grain, bread, wood, tools, cloth, and labor. Enough for at least one raw input → finished good chain and one tool good that improves production.
 - **2 or 3 rival firms**, plus the **government**. Every firm has an owner pop.
 - One External Market with prices for every good.
@@ -634,7 +634,7 @@ The V4 draft and its review (`Design_V4.md` on `EconCiv-v4-for-realsies`) stay a
 - **Bad actor.** A firm the government flags for behavior it wants out of the market.
 - **Band.** The range around an External price, set by transport and tariffs, inside which local prices move freely.
 - **Border flow.** Coin crossing the market's border: exports, imports, payments to or from foreign actors (including the government's interest and debt repayments), and migrant coin.
-- **Coin.** The single V1 currency.
+- **Coin.** The single V1 currency, the Duckat.
 - **Cantillon effect.** The first receivers of new money get its full value before prices rise, which is effectively a wealth transfer to them.
 - **Debt (government).** The government's negative treasury balance, created by deficit printing. In V1 it is always held abroad.
 - **Decay (coin).** The optional, tunable daily loss of coin.
@@ -668,10 +668,10 @@ The V4 draft and its review (`Design_V4.md` on `EconCiv-v4-for-realsies`) stay a
 3. What does "1000 times slower" mean in mechanical terms?
 4. How are trade capacity, transport cost and the tariff band calculated?
 5. Who runs the traders at the start, and how much of the trade is local versus foreign?
-6. What should the default decay rate be?
-7. Can pops also earn coin by selling goods they make themselves? In V3 pops run subsistence and post sell offers.
-8. How are GDP, the interest rate and the crash consequences worked out?
-9. Does the government ever pay down the principal?
+6. Can pops also earn coin by selling goods they make themselves? In V3 pops run subsistence and post sell offers.
+7. How are GDP, the interest rate and the crash consequences worked out?
+8. Does the government ever pay down the principal?
+9. Where does a pop's coin go when the pop is removed for falling under one household?
 10. Do non-coin goods follow the same conservation rule?
 11. What exactly does market research reveal, and how long does it last?
 12. Is the random sample free and automatic, or an action the player takes?

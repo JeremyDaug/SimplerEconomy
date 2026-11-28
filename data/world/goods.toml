@@ -360,10 +360,10 @@ volume = 0.03
 decay_rate = 0.03
 tags = ["restricted", "immobile"]
 
-# A minted coin. make gold_coins is process 45. One coin takes 16 time.
+# A minted coin, the Duckat. make duckats is process 45. One coin takes 16 time.
 [[goods]]
 id = 45
-name = "gold_coins"
+name = "duckats"
 mass = 1.0
 volume = 0.00001
 decay_rate = 0.001
