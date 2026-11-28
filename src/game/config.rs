@@ -210,6 +210,12 @@ pub const OWNER_PROFIT_SHARE: f64 = 0.10;
 /// Share of a firm's held output stock it offers each day, on top of the last day's output.
 pub const FIRM_STOCK_OFFER_SHARE: f64 = 0.10;
 
+/// Share of what pops eat of a good that their subsistence must make for the good to count as covered.
+pub const SUBSISTENCE_COVER_SHARE: f64 = 0.5;
+
+/// Days in a row a covered good must be short before firms make it.
+pub const SHORT_DAYS_TO_COMPETE: u32 = 5;
+
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet.
 pub const BASIC_UNMET_SENTIMENT: f64 = 0.04;
@@ -538,6 +544,9 @@ impl LaborConfig {
 /// its owner pops each morning, read by
 /// [`crate::game::market::Market::pay_owners`]. `stock_offer_share` sets
 /// how much held stock [`crate::game::firm::Firm::post_sale_offers`] lists.
+/// `subsistence_cover_share` and `short_days_to_compete` decide when
+/// [`crate::game::firm::Firm::planning`] idles a line that would compete
+/// with subsistence.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct FirmConfig {
@@ -553,18 +562,30 @@ pub struct FirmConfig {
     ///
     /// The default is [`FIRM_STOCK_OFFER_SHARE`].
     pub stock_offer_share: f64,
+    /// Share of what pops eat of a good that subsistence must make for it
+    /// to count as covered. Must be from 0 to 1.
+    ///
+    /// The default is [`SUBSISTENCE_COVER_SHARE`].
+    pub subsistence_cover_share: f64,
+    /// Days in a row a covered good must be short before firms make it.
+    ///
+    /// The default is [`SHORT_DAYS_TO_COMPETE`].
+    pub short_days_to_compete: u32,
 }
 
 impl Default for FirmConfig {
     /// # Default
     ///
-    /// [`OWNER_WAGE_BASIC_DAYS`] is 5, [`OWNER_PROFIT_SHARE`] is 0.10, and
-    /// [`FIRM_STOCK_OFFER_SHARE`] is 0.10.
+    /// [`OWNER_WAGE_BASIC_DAYS`] is 5, [`OWNER_PROFIT_SHARE`] is 0.10,
+    /// [`FIRM_STOCK_OFFER_SHARE`] is 0.10, [`SUBSISTENCE_COVER_SHARE`] is
+    /// 0.5, and [`SHORT_DAYS_TO_COMPETE`] is 5.
     fn default() -> Self {
         Self {
             owner_wage_basic_days: OWNER_WAGE_BASIC_DAYS,
             owner_profit_share: OWNER_PROFIT_SHARE,
             stock_offer_share: FIRM_STOCK_OFFER_SHARE,
+            subsistence_cover_share: SUBSISTENCE_COVER_SHARE,
+            short_days_to_compete: SHORT_DAYS_TO_COMPETE,
         }
     }
 }
@@ -573,8 +594,8 @@ impl FirmConfig {
     /// # Validate
     ///
     /// Appends a problem when `owner_wage_basic_days` is not finite or is
-    /// below 0, or when `owner_profit_share` or `stock_offer_share` is
-    /// outside 0 to 1.
+    /// below 0, or when `owner_profit_share`, `stock_offer_share`, or
+    /// `subsistence_cover_share` is outside 0 to 1.
     fn validate(&self, problems: &mut Vec<String>) {
         at_least(
             problems,
@@ -584,6 +605,11 @@ impl FirmConfig {
         );
         unit_share(problems, "firm.owner_profit_share", self.owner_profit_share);
         unit_share(problems, "firm.stock_offer_share", self.stock_offer_share);
+        unit_share(
+            problems,
+            "firm.subsistence_cover_share",
+            self.subsistence_cover_share,
+        );
     }
 }
 
@@ -718,6 +744,11 @@ mod config_should {
         cfg.firm.stock_offer_share = -0.1;
         let msg = message(cfg);
         assert!(msg.contains("firm.stock_offer_share"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.firm.subsistence_cover_share = 2.0;
+        let msg = message(cfg);
+        assert!(msg.contains("firm.subsistence_cover_share"), "{msg}");
 
         let mut cfg = GameConfig::default();
         cfg.firm.owner_wage_basic_days = 0.0;

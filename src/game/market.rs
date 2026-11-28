@@ -119,6 +119,14 @@ pub struct MarketGood {
     pub decayed: f64,
     /// Units of this currency paid from one actor to another today.
     pub paid: f64,
+    /// Units pops made by subsistence today.
+    pub subsisted: f64,
+    /// Units pops consumed for their desires today.
+    pub eaten: f64,
+    /// Days in a row that more was sought than offered.
+    ///
+    /// [`Market::market_day`] counts it. A day that is not short resets it to 0.
+    pub short_days: u32,
 }
 
 impl Market {
@@ -219,6 +227,22 @@ impl Market {
         self.ownership
             .iter()
             .any(|row| row.subject == subject && row.fraction > 0.0)
+    }
+
+    /// # Competes With Subsistence
+    ///
+    /// Whether a firm making `good` here would compete with pops' subsistence.
+    ///
+    /// `factuals` supplies `firm.subsistence_cover_share` and
+    /// `firm.short_days_to_compete`. True when the good is covered, see
+    /// [`MarketGood::is_covered`], and has been short fewer days in a row
+    /// than `short_days_to_compete`. A good with no record is false.
+    pub fn competes_with_subsistence(&self, factuals: &Factuals, good: usize) -> bool {
+        let config = &factuals.config.firm;
+        self.goods.get(&good).is_some_and(|row| {
+            row.is_covered(config.subsistence_cover_share)
+                && row.short_days < config.short_days_to_compete
+        })
     }
 
     /// # Holds Shares
@@ -582,7 +606,9 @@ impl Market {
     /// payments are replaced.
     /// A good offered today replaces its salability with the average of
     /// that share and today's volume over the units offered, posted plus
-    /// listed later. A good not offered today keeps its salability.
+    /// listed later. A good not offered today keeps its salability. A good
+    /// with more sought than offered adds one to its short days. Any other
+    /// good's short days return to 0.
     fn consolidate(&mut self, offered: &HashMap<usize, f64>, book: &ShopBook) {
         for row in self.goods.values_mut() {
             row.offered = 0.0;
@@ -617,6 +643,11 @@ impl Market {
                 row.salability = (row.salability + row.volume / listed) / 2.0;
                 debug_assert!(row.salability.is_finite() && row.salability <= 1.0 + 1e-9);
             }
+            row.short_days = if row.sought > row.offered + 1e-9 {
+                row.short_days + 1
+            } else {
+                0
+            };
         }
     }
 
@@ -627,7 +658,8 @@ impl Market {
     /// `pops` and `firms` are the world's actors. Only members listed on
     /// this market are counted, pops then firms, each lowest id first, so
     /// the same day always gives the same sums. Production, consumption,
-    /// and decay are replaced by today's sums. Stock, offers, and prices are
+    /// and decay are replaced by today's sums, and so are what pops made by
+    /// subsistence and what they consumed for desires. Stock, offers, and prices are
     /// left to their own writers. [`Self::move_prices`] runs after the
     /// rollup.
     pub fn record_keeping(
@@ -640,6 +672,8 @@ impl Market {
             row.production = 0.0;
             row.consumption = 0.0;
             row.decayed = 0.0;
+            row.subsisted = 0.0;
+            row.eaten = 0.0;
         }
         let mut pop_ids: Vec<usize> = self.pops.iter().copied().collect();
         pop_ids.sort_unstable();
@@ -658,6 +692,8 @@ impl Market {
                 market_row.production += row.produced;
                 market_row.consumption += row.consumed + row.spent;
                 market_row.decayed += row.lost;
+                market_row.subsisted += row.subsisted;
+                market_row.eaten += row.consumed;
             }
         }
         for id in firm_ids {
@@ -1094,6 +1130,9 @@ impl Default for MarketGood {
             offered: 0.0,
             sought: 0.0,
             paid: 0.0,
+            subsisted: 0.0,
+            eaten: 0.0,
+            short_days: 0,
         }
     }
 }
@@ -1112,6 +1151,16 @@ impl MarketGood {
     pub fn with_salability(mut self, salability: f64) -> Self {
         self.salability = salability;
         self
+    }
+
+    /// # Is Covered
+    ///
+    /// Whether pops make most of what they eat of this good themselves.
+    ///
+    /// `share` is `firm.subsistence_cover_share`. Returns true when pops ate
+    /// some today and subsistence made at least `share` of it.
+    pub fn is_covered(&self, share: f64) -> bool {
+        self.eaten > 0.0 && self.subsisted + 1e-9 >= share * self.eaten
     }
 
     /// # Is Active
@@ -1318,6 +1367,52 @@ mod orders_should {
         // Nobody posted good 8, so its salability stays.
         near(market.goods[&8].offered, 0.0);
         near(market.goods[&8].salability, 0.7);
+    }
+
+    #[test]
+    fn count_short_days_and_reset_them_on_a_day_that_is_not_short() {
+        let mut market = Market::new(1);
+        let offered = HashMap::from([(GRAIN, 2.0)]);
+        let mut book = ShopBook::default();
+        book.sought.insert(GRAIN, 5.0);
+        market.consolidate(&offered, &book);
+        market.consolidate(&offered, &book);
+        assert_eq!(market.goods[&GRAIN].short_days, 2);
+        // Sought equal to offered is not short.
+        book.sought.insert(GRAIN, 2.0);
+        market.consolidate(&offered, &book);
+        assert_eq!(market.goods[&GRAIN].short_days, 0);
+    }
+
+    #[test]
+    fn compete_with_subsistence_only_while_covered_and_not_short_for_long() {
+        let factuals = Factuals::new();
+        let mut market = Market::new(1);
+        // Pops ate four and made two themselves: half, which counts as most.
+        market.goods.insert(GRAIN, MarketGood {
+            subsisted: 2.0,
+            eaten: 4.0,
+            short_days: 4,
+            ..MarketGood::new()
+        });
+        assert!(market.competes_with_subsistence(&factuals, GRAIN));
+        // Five short days in a row opens the good to firms.
+        market.goods.get_mut(&GRAIN).unwrap().short_days = 5;
+        assert!(!market.competes_with_subsistence(&factuals, GRAIN));
+        // Under half made by subsistence is not covered.
+        market.goods.insert(GRAIN, MarketGood {
+            subsisted: 1.9,
+            eaten: 4.0,
+            ..MarketGood::new()
+        });
+        assert!(!market.competes_with_subsistence(&factuals, GRAIN));
+        // Nothing eaten, or no record, is not covered.
+        market.goods.insert(GRAIN, MarketGood {
+            subsisted: 1.0,
+            ..MarketGood::new()
+        });
+        assert!(!market.competes_with_subsistence(&factuals, GRAIN));
+        assert!(!market.competes_with_subsistence(&factuals, 99));
     }
 
     #[test]
@@ -1530,6 +1625,7 @@ mod record_keeping_should {
                 volume: 2.0,
                 decayed: 99.0,
                 paid: 0.0,
+                ..super::MarketGood::new()
             },
         );
         market.goods.insert(9, super::MarketGood {
@@ -1548,6 +1644,7 @@ mod record_keeping_should {
                 .with_spent(2.0)
                 .with_lost(0.5),
         );
+        pop.property.get_mut(&1).unwrap().subsisted = 3.0;
         pop.property.insert(2, PopPRow::new(5.0).with_produced(5.0));
         let mut other = Pop::new(2);
         other.property.insert(1, PopPRow::new(1.0).with_produced(9.0));
@@ -1588,6 +1685,9 @@ mod record_keeping_should {
         near(market.goods[&2].consumption, 0.0);
         near(market.goods[&9].production, 0.0);
         near(market.goods[&9].stock, 2.0);
+        // Only pops count here: pop 1 made three by subsistence and ate one.
+        near(good.subsisted, 3.0);
+        near(good.eaten, 1.0);
         // Offered six, sought none. The morning value of 1 falls by the capped step.
         near(market.stored_amv(1).unwrap(), 0.98);
         assert!(market.stored_amv(2).is_none());

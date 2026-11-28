@@ -135,9 +135,7 @@ Pops get money with which they can buy goods from **wages, ownership, philanthro
 
 - **Pops sell their own surplus.** Pops make their basics through subsistence and sell the small excess, and their crafts, into the market. That's a transfer from the buyer, and it stays small next to wages and ownership. Laborers whose work leaves no time to make their basics buy it. Owner pops don't run subsistence: they live off their firm and buy what they need. Firms buy some of the surplus as inputs and sell it on as higher-order goods. Subsistence itself is not reduced to push pops into the market.
 - **Every pop starts with coin.** On the first day each pop holds at least `pop.starting_coin_days` (default 10) days of its basic desires in Duckats, so it can buy from day 1. That coin is the opening stock, not a source on the ledger.
-
-> **Open question:** How does a firm avoid competing with subsistence farmers?
-> **Proposal:** A good is subsistence-covered when pops on the market make most of what they eat of it themselves. A firm doesn't run a line whose output is subsistence-covered unless that good has gone short (sought above offered) for several days. Founding picks goods that aren't. A starting firm that makes a covered good, such as a grain farm, buys that good from pops as an input instead. Pops offer only their new surplus plus a small share of what they hold, the same rule firms follow, so a pop's stored stock isn't counted as supply.
+- **Firms don't compete with subsistence.** A good is subsistence-covered when pops on the market made at least `firm.subsistence_cover_share` (default 0.5) of what they ate of it today by subsistence. A firm idles any line that makes a covered good, unless more of the good was sought than offered for `firm.short_days_to_compete` (default 5) days in a row. A firm that uses a covered good as an input, such as a mill using grain, buys it from pops.
 
 ## Spending Pays Someone
 
@@ -674,33 +672,32 @@ The V4 draft and its review (`Design_V4.md` on `EconCiv-v4-for-realsies`) stay a
 2. What does "1000 times slower" mean in mechanical terms?
 3. How are trade capacity, transport cost and the tariff band calculated?
 4. Who runs the traders at the start, and how much of the trade is local versus foreign?
-5. How does a firm avoid competing with subsistence farmers?
-6. How are GDP, the interest rate and the crash consequences worked out?
-7. Does the government ever pay down the principal?
-8. Do non-coin goods follow the same conservation rule?
-9. What exactly does market research reveal, and how long does it last?
-10. Is the random sample free and automatic, or an action the player takes?
-11. How are wages set?
-12. How does the abstract migration work?
-13. How does the player control their own owner pay?
-14. When does a pop with coin start a new firm instead of living off it?
-15. What are the personality traits?
-16. How is the buyout price set without a Stock Market?
-17. What happens to the failed firm's workers, stock and facilities?
-18. Is favor one number for the government overall, or one number per firm?
-19. What gets taxed besides trade?
-20. How is the capture-versus-nationalization contest tracked?
-21. What triggers revolution and breakup, and how much warning does the player get?
-22. What drives a regime change, and which government types are in V1?
-23. What makes the government outlaw reverse engineering under Patent law?
-24. How are these behaviors detected and measured?
-25. How exactly are they earned and spent, and do they decay?
-26. How does tech spread naturally?
-27. What does "research at a discount" mean exactly?
-28. What do techs unlock in V1?
-29. Which is the default for the bankruptcy setting, and is it tied to difficulty?
-30. What are the thresholds for each soft ending, and what happens when you hit one?
-31. How many difficulty levels, and are the knobs exposed as a custom game?
-32. Are wages paid before or after the market day? Paying before means pops can spend today's wages today.
-33. What is the UI for V1: terminal, or a graphics front end?
-34. Is the roadmap order right? In particular, should Ownership (pop classes, Stock Market) come before Money?
+5. How are GDP, the interest rate and the crash consequences worked out?
+6. Does the government ever pay down the principal?
+7. Do non-coin goods follow the same conservation rule?
+8. What exactly does market research reveal, and how long does it last?
+9. Is the random sample free and automatic, or an action the player takes?
+10. How are wages set?
+11. How does the abstract migration work?
+12. How does the player control their own owner pay?
+13. When does a pop with coin start a new firm instead of living off it?
+14. What are the personality traits?
+15. How is the buyout price set without a Stock Market?
+16. What happens to the failed firm's workers, stock and facilities?
+17. Is favor one number for the government overall, or one number per firm?
+18. What gets taxed besides trade?
+19. How is the capture-versus-nationalization contest tracked?
+20. What triggers revolution and breakup, and how much warning does the player get?
+21. What drives a regime change, and which government types are in V1?
+22. What makes the government outlaw reverse engineering under Patent law?
+23. How are these behaviors detected and measured?
+24. How exactly are they earned and spent, and do they decay?
+25. How does tech spread naturally?
+26. What does "research at a discount" mean exactly?
+27. What do techs unlock in V1?
+28. Which is the default for the bankruptcy setting, and is it tied to difficulty?
+29. What are the thresholds for each soft ending, and what happens when you hit one?
+30. How many difficulty levels, and are the knobs exposed as a custom game?
+31. Are wages paid before or after the market day? Paying before means pops can spend today's wages today.
+32. What is the UI for V1: terminal, or a graphics front end?
+33. Is the roadmap order right? In particular, should Ownership (pop classes, Stock Market) come before Money?

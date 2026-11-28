@@ -716,6 +716,10 @@ impl Firm {
     /// one when none are, and it stops at [`FIRM_MIN_TARGET`]. Profitable
     /// means [`FirmBudget::output_value`] cleared [`FIRM_MIN_MARGIN`] on
     /// [`FirmBudget::input_cost`].
+    ///
+    /// Then any line, the first included, whose process puts out a good
+    /// that would compete with subsistence on `market`, see
+    /// [`Market::competes_with_subsistence`], is set to `Some(0)`.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
         if self.is_dead() {
             return;
@@ -747,6 +751,21 @@ impl Firm {
             current
         };
         self.production_line[0].target = Some(next);
+        let Some(market) = market else {
+            return;
+        };
+        for line in &mut self.production_line {
+            let Some(process) = factuals.get_process(line.process) else {
+                continue;
+            };
+            let competes = process
+                .outputs
+                .iter()
+                .any(|output| market.competes_with_subsistence(factuals, output.good));
+            if competes {
+                line.target = Some(0.0);
+            }
+        }
     }
 
     /// # Day Marks
@@ -1420,6 +1439,31 @@ mod plan_should {
         broke.planning(&factuals, None);
         assert!(broke.is_dead());
         near(broke.production_line[0].target.unwrap(), 3.0);
+    }
+
+    #[test]
+    fn idle_a_line_that_competes_with_subsistence_until_the_good_runs_short() {
+        let mut market = Market::new(1);
+        market.currencies.push(1);
+        market.goods.insert(OUTPUT, crate::game::market::MarketGood {
+            subsisted: 3.0,
+            eaten: 4.0,
+            ..crate::game::market::MarketGood::new()
+        });
+        let (mut firm, factuals) = workshop(2.0, 1.0, Some(2.0));
+        firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+        ran(&mut firm, 2.0, 2.0, 1.0, 2.0, 2.0);
+        firm.planning(&factuals, Some(&market));
+        assert!(!firm.is_dead());
+        near(firm.production_line[0].target.unwrap(), 0.0);
+
+        // Short five days in a row: the firm plans as usual again.
+        market.goods.get_mut(&OUTPUT).unwrap().short_days = 5;
+        let (mut firm, factuals) = workshop(2.0, 1.0, Some(2.0));
+        firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
+        ran(&mut firm, 2.0, 2.0, 1.0, 2.0, 2.0);
+        firm.planning(&factuals, Some(&market));
+        near(firm.production_line[0].target.unwrap(), 3.0);
     }
 
     #[test]
