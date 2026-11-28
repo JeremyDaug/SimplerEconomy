@@ -61,7 +61,8 @@ pub struct PopPRow {
 
 /// Records kept on a pop.
 ///
-/// `satisfaction` is the sum of desire satisfaction.
+/// `satisfaction` is the sum of desire satisfaction. `owner_pay` is what
+/// the pop's firm shares paid it on the last market day.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PopRecords {
     /// The total satisfaction for the pop.
@@ -70,6 +71,9 @@ pub struct PopRecords {
     ///
     /// If it is +inf, then the pop has no desires and is always satisfied.
     pub satisfaction: f64,
+    /// Abstract value received as owner wage and dividend on the last
+    /// market day. [`crate::game::market::Market::pay_owners`] writes it.
+    pub owner_pay: f64,
 }
 
 impl DemoRow {

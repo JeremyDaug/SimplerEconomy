@@ -86,26 +86,26 @@ impl PlayState {
     /// the market.
     ///
     /// Each actor's units are [`crate::game::pop::Pop::holding`] or
-    /// [`crate::game::firm::Firm::holding`]. A listed id with no actor is
-    /// skipped. Returns the sums, keyed by currency good.
+    /// [`crate::game::firm::Firm::holding`]. Pops are summed lowest id
+    /// first, then firms, so the same state always gives the same sum. A
+    /// listed id with no actor is skipped. Returns the sums, keyed by
+    /// currency good.
     fn coin_holdings(&self) -> BTreeMap<usize, f64> {
+        let mut pop_ids: Vec<usize> = self.market.pops.iter().copied().collect();
+        pop_ids.sort_unstable();
+        let mut firm_ids: Vec<usize> = self.market.firms.iter().copied().collect();
+        firm_ids.sort_unstable();
         let mut held = BTreeMap::new();
         for &coin in &self.market.currencies {
-            let pops: f64 = self
-                .market
-                .pops
+            let pops = pop_ids
                 .iter()
                 .filter_map(|id| self.actors.pops.get(id))
-                .map(|pop| pop.holding(coin))
-                .sum();
-            let firms: f64 = self
-                .market
-                .firms
+                .map(|pop| pop.holding(coin));
+            let firms = firm_ids
                 .iter()
                 .filter_map(|id| self.actors.firms.get(id))
-                .map(|firm| firm.holding(coin))
-                .sum();
-            held.insert(coin, pops + firms);
+                .map(|firm| firm.holding(coin));
+            held.insert(coin, pops.chain(firms).sum());
         }
         held
     }
@@ -462,10 +462,10 @@ mod coin_ledger_should {
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
     use crate::game::scalingfactor::ScalingFactor;
 
-    const DUCKATS: usize = 1;
-    const BREAD: usize = 2;
+    pub(super) const DUCKATS: usize = 1;
+    pub(super) const BREAD: usize = 2;
     const MINT: usize = 1;
-    const BAKE: usize = 2;
+    pub(super) const BAKE: usize = 2;
 
     fn good(id: usize, decay_rate: f64, tags: HashSet<GoodTag>) -> Good {
         Good {
@@ -510,7 +510,7 @@ mod coin_ledger_should {
 
     /// One pop mints Duckats, two bake bread, and an owned firm sells bread
     /// stock. Duckats decay at 0.001 a day. Nothing crosses the border.
-    fn closed_market() -> PlayState {
+    pub(super) fn closed_market() -> PlayState {
         let mut factuals = Factuals::new();
         factuals.goods.insert(TIME, good(TIME, 1.0, HashSet::new()));
         factuals.goods.insert(DUCKATS, good(DUCKATS, 0.001, HashSet::from([GoodTag::Money])));
@@ -635,5 +635,75 @@ mod coin_ledger_should {
         state.prune_pops(&mut day);
         assert!(state.actors.pops.is_empty());
         assert!((day.coins[&DUCKATS].pruned - held).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod closed_market_should {
+    use super::coin_ledger_should::{closed_market, BAKE, BREAD, DUCKATS};
+    use super::PlayState;
+    use crate::game::job::{Job, JobLine};
+
+    /// [`closed_market`] with no minting and no coin decay: pop 1 bakes
+    /// instead of minting, and Duckats keep. Pop 1 owns the firm.
+    fn no_new_coin() -> PlayState {
+        let mut state = closed_market();
+        state.factuals.goods.get_mut(&DUCKATS).expect("duckats").decay_rate = 0.0;
+        state.actors.pop_mut(1).job = Job::new([
+            JobLine::new(BAKE, None, Vec::new()),
+            JobLine::new(0, None, Vec::new()),
+        ]);
+        state
+    }
+
+    #[test]
+    fn keep_total_coin_fixed_for_a_thousand_days() {
+        let mut state = no_new_coin();
+        let start = state.coin_holdings()[&DUCKATS];
+        for _ in 0..1000 {
+            state.advance_turn();
+            let flows = state.ledger.days.last().expect("a day").coins[&DUCKATS];
+            assert_eq!(flows.sources(), 0.0);
+            assert_eq!(flows.sinks(), 0.0);
+            assert!((flows.closing - start).abs() <= 1e-9 * start, "{flows:?}");
+        }
+        assert!(state.ledger.days.iter().any(|day| day.coins[&DUCKATS].transfers > 0.0));
+    }
+
+    #[test]
+    fn pay_the_owner_pop_what_the_firm_pays_out() {
+        // Only pop 1 holds the firm, so only pop 1 is paid, and it is paid
+        // the firm's whole wage and dividend.
+        let mut state = no_new_coin();
+        let mut paid = 0.0;
+        for _ in 0..1000 {
+            state.advance_turn();
+            let firm = state.actors.firm(1);
+            let out = firm.budget.wage + firm.budget.dividend;
+            assert!((state.actors.pop(1).records.owner_pay - out).abs() < 1e-9);
+            for id in [2, 3] {
+                assert_eq!(state.actors.pop(id).records.owner_pay, 0.0);
+            }
+            paid += out;
+        }
+        assert!(paid > 0.0);
+    }
+
+    #[test]
+    fn repeat_the_same_run_from_the_same_start() {
+        // The market day's rng is seeded from the turn, so two runs match.
+        let mut first = no_new_coin();
+        let mut second = no_new_coin();
+        for _ in 0..200 {
+            first.advance_turn();
+            second.advance_turn();
+        }
+        assert_eq!(first.ledger, second.ledger);
+        for id in [1, 2, 3] {
+            assert_eq!(first.actors.pop(id).holding(DUCKATS), second.actors.pop(id).holding(DUCKATS));
+            assert_eq!(first.actors.pop(id).holding(BREAD), second.actors.pop(id).holding(BREAD));
+        }
+        assert_eq!(first.market.price(BREAD), second.market.price(BREAD));
+        assert_eq!(first.market.price(DUCKATS), second.market.price(DUCKATS));
     }
 }
