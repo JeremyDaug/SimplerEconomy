@@ -733,6 +733,17 @@ impl Pop {
         }
     }
 
+    /// # Holding
+    ///
+    /// Units of `good` this pop holds anywhere.
+    ///
+    /// The row's [`PopPRow::holding`] plus currency savings. A good the pop
+    /// has never held is 0. Returns that sum.
+    pub fn holding(&self, good: usize) -> f64 {
+        let row = self.property.get(&good).map(PopPRow::holding).unwrap_or(0.0);
+        row + self.savings.get(&good).copied().unwrap_or(0.0)
+    }
+
     /// # Store Desire Hold
     ///
     /// Records the satisfaction `gained` for one level of tier `tier`.
@@ -2076,7 +2087,7 @@ struct ShopCtx<'a> {
     factuals: &'a Factuals,
     /// Offers still open. Purchases lower them and coins paid raise them.
     offers: &'a mut Vec<SellOffer>,
-    /// Bids, completed exchanges, and later listings so far.
+    /// Bids, completed exchanges, later listings, and payments so far.
     book: ShopBook,
     /// Draws for [`pick_seller`].
     rng: &'a mut dyn RngCore,
@@ -2098,6 +2109,8 @@ pub(crate) struct ShopBook {
     pub volume: HashMap<usize, f64>,
     /// Units listed after the morning post, by good.
     pub raised: HashMap<usize, f64>,
+    /// Currency units paid from one actor to another, by good.
+    pub paid: HashMap<usize, f64>,
 }
 
 impl ShopBook {
@@ -2134,9 +2147,21 @@ impl ShopBook {
         }
     }
 
+    /// # Note Paid
+    ///
+    /// Adds `units` of currency `good` paid from one actor to another.
+    ///
+    /// A non-positive amount is left out. The same good's payments add.
+    pub(crate) fn note_paid(&mut self, good: usize, units: f64) {
+        if units > 0.0 {
+            *self.paid.entry(good).or_insert(0.0) += units;
+        }
+    }
+
     /// # Absorb
     ///
-    /// Adds `other`'s bids, exchanges, and later listings onto this book.
+    /// Adds `other`'s bids, exchanges, later listings, and payments onto
+    /// this book.
     ///
     /// Amounts of the same good add. A non-positive amount is left out.
     /// The call takes `other`.
@@ -2151,6 +2176,9 @@ impl ShopBook {
         }
         for (good, amount) in other.raised {
             self.note_raised(good, amount);
+        }
+        for (good, amount) in other.paid {
+            self.note_paid(good, amount);
         }
     }
 }
@@ -2652,6 +2680,7 @@ fn pay_from_firm(
         credit_good(pops, ctx, seller, coin.currency, coin.units, false);
         raise_offer(ctx.offers, seller, coin.currency, coin.units);
         ctx.book.note_raised(coin.currency, coin.units);
+        ctx.book.note_paid(coin.currency, coin.units);
     }
 }
 
@@ -3998,6 +4027,7 @@ fn pay_coins(
         credit_good(pops, ctx, seller, coin.currency, coin.units, false);
         raise_offer(ctx.offers, seller, coin.currency, coin.units);
         ctx.book.note_raised(coin.currency, coin.units);
+        ctx.book.note_paid(coin.currency, coin.units);
     }
 }
 

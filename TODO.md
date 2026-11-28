@@ -5,10 +5,11 @@ The V1 build order from [Design_V1_Market_Game.md](Design_V1_Market_Game.md) (Bu
 ## Before step 1
 
 - [x] Prune the Reckoning code to what V1 uses: pops and desires, households, sentiment, AMV pricing, firms, goods, processes and the loaders. V3 founding, migration, the map and the multi-market code leave the V1 branch. They stay in git history.
+- [x] Duckats are the one currency. Grain is an ordinary good.
 
 ## Build order
 
-1. [ ] **Ledger and invariant.** Track all coin and every flow. *Milestone:* a test that sums all coin daily passes over 1000 days.
+1. [x] **Ledger and invariant.** Track all coin and every flow. *Milestone:* a test that sums all coin daily passes over 1000 days.
 2. [ ] **Pops and one firm with an owner pop, closed market.** No trade, no government, no migration. *Milestone:* total coin never changes. Owner payouts reach the owner pop. Prices settle over 1000 days with a seed.
 3. [ ] **Labor.** Firms hire pops for wages. *Milestone:* wages are the main pop income. A test shows a labor shortage stops production when demand for workers exceeds pops.
 4. [ ] **External Market, trade facility, longshoremen and traders.** *Milestone:* coin changes only by border flows. Local prices pushed up or down return to the band. External prices move about 1000 times slower than local ones under the same trade. Too few longshoremen caps trade by capacity. Foreign crew wages show up as border outflows.
@@ -24,5 +25,9 @@ The V1 build order from [Design_V1_Market_Game.md](Design_V1_Market_Game.md) (Bu
 14. [ ] **Market research and the pop sample.** *Milestone:* the player can only see what they've paid for.
 15. [ ] **Difficulty presets and balance passes.**
 16. [ ] **UI.** Headless first (run N days from a seed and print the ledger), then a terminal UI.
+
+## Later
+
+- [ ] Let players rename the currency.
 
 Open questions that a step needs are listed in the design doc's Open Questions (Summary). Answer or adopt the proposal before that step starts.

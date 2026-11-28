@@ -5,7 +5,7 @@
 # Twenty-eight pops, each with one craft. Bread, cabins, beer, huts, and the
 # clothing chain are common goods. Water and coal are gathered for sale, and
 # one pop farms grain. Cotton, thread, fabric, and clothes are one pop each.
-# One pop mints gold coins. Storage adds wood, clay, pots, and buckets.
+# One pop mints Duckats. Storage adds wood, clay, pots, and buckets.
 # Trinkets add iron, copper, tin, bronze, gold, and gold tokens. Tools add
 # wood tools, iron tools, bronze tools, blades, and bronze mirrors. Cabins
 # and huts already cover the rest of storage. One pop hauls cargo. A pop
@@ -116,7 +116,7 @@ species = "human"
 culture = "village"
 
 [[pops.lines]]
-process = "make gold_coins"
+process = "make duckats"
 target = 0
 
 [[pops]]

@@ -112,6 +112,8 @@ pub struct MarketGood {
     pub volume: f64,
     /// Units lost to rot today.
     pub decayed: f64,
+    /// Units of this currency paid from one actor to another today.
+    pub paid: f64,
 }
 
 impl Market {
@@ -328,9 +330,12 @@ impl Market {
     /// units, and only up to the units on hand. Each firm's budget is
     /// cleared, then the wage and dividend that left are stored on it.
     /// A holder who is not in `pops` is skipped.
-    /// A dead firm pays nothing.
-    pub fn pay_owners(&self, factuals: &Factuals, pops: &mut [Pop], firms: &mut [Firm]) {
+    /// A dead firm pays nothing. Returns the currency units paid, by good.
+    pub fn pay_owners(
+        &self, factuals: &Factuals, pops: &mut [Pop], firms: &mut [Firm],
+    ) -> HashMap<usize, f64> {
         let tender = self.payment_tender(factuals);
+        let mut paid = HashMap::new();
         let bills: Vec<(usize, f64, Vec<(usize, f64)>)> = firms
             .iter()
             .map(|firm| {
@@ -367,6 +372,7 @@ impl Market {
                     &mut pops[pop_at],
                     &tender,
                     fraction * OWNER_WAGE,
+                    &mut paid,
                 );
                 firms[firm_at].budget.wage += wage;
                 let dividend = pay_tender(
@@ -374,10 +380,12 @@ impl Market {
                     &mut pops[pop_at],
                     &tender,
                     fraction * wealth * OWNER_DIVIDEND_RATE,
+                    &mut paid,
                 );
                 firms[firm_at].budget.dividend += dividend;
             }
         }
+        paid
     }
 
     /// # Payment Tender
@@ -422,7 +430,8 @@ impl Market {
     /// handed to this market. Firms shop in the order given, through
     /// [`Firm::market_day`]. Pops shop through [`buy_from_offers`],
     /// wealthiest household first. `rng` picks the sellers.
-    /// Offers, bids, and completed exchanges are written after the shops.
+    /// Offers, bids, completed exchanges, and currency paid, owner pay
+    /// included, are written after the shops.
     pub fn market_day(
         &mut self,
         factuals: &Factuals,
@@ -442,7 +451,7 @@ impl Market {
             offers.extend(pop_offers);
         }
         // Owners are paid from opening stock, before the firm reserves or sells.
-        self.pay_owners(factuals, pops, firms);
+        let owner_paid = self.pay_owners(factuals, pops, firms);
         // Firms list what they will sell the same morning.
         for firm in firms.iter_mut() {
             firm.clear_sold();
@@ -452,6 +461,9 @@ impl Market {
         let offered = posted_offers(&offers);
         // Firms shop in the order they were handed in.
         let mut book = ShopBook::default();
+        for (good, units) in owner_paid {
+            book.note_paid(good, units);
+        }
         for index in 0..firms.len() {
             let (before, rest) = firms.split_at_mut(index);
             let (firm, after) = rest.split_first_mut().expect("firm index is in range");
@@ -465,11 +477,12 @@ impl Market {
 
     /// # Consolidate
     ///
-    /// Writes today's offers, bids, and exchanges onto this market.
+    /// Writes today's offers, bids, exchanges, and payments onto this market.
     ///
     /// `offered` is the units posted for sale, by good. `book` is the units
-    /// bid, the units exchanged, and the units listed after the morning
-    /// post. Yesterday's offers, bids, and volume are replaced.
+    /// bid, the units exchanged, the units listed after the morning post,
+    /// and the currency paid. Yesterday's offers, bids, volume, and
+    /// payments are replaced.
     /// A good offered today replaces its salability with the average of
     /// that share and today's volume over the units offered, posted plus
     /// listed later. A good not offered today keeps its salability.
@@ -478,6 +491,7 @@ impl Market {
             row.offered = 0.0;
             row.sought = 0.0;
             row.volume = 0.0;
+            row.paid = 0.0;
         }
         for (&good, &amount) in offered {
             if amount > 0.0 {
@@ -492,6 +506,11 @@ impl Market {
         for (&good, &amount) in &book.volume {
             if amount > 0.0 {
                 self.goods.entry(good).or_default().volume = amount;
+            }
+        }
+        for (&good, &amount) in &book.paid {
+            if amount > 0.0 {
+                self.goods.entry(good).or_default().paid = amount;
             }
         }
         // Supply offered today averages the stored share with today's sell-through.
@@ -768,9 +787,13 @@ fn firm_wealth(firm: &Firm, market: &Market) -> f64 {
 /// `tender` is each good and its price, least durable first. A take is
 /// truncated with [`grid_down`] to [`CURRENCY_STEP`] and not above the
 /// units on hand. A bill that truncates to 0 pays nothing. The units
-/// leave the firm and are added to the pop. The unpaid part of `bill`
-/// is not carried past this call. Returns the abstract value that left.
-fn pay_tender(firm: &mut Firm, pop: &mut Pop, tender: &[(usize, f64)], bill: f64) -> f64 {
+/// leave the firm, are added to the pop, and are added to `paid` by good.
+/// The unpaid part of `bill` is not carried past this call. Returns the
+/// abstract value that left.
+fn pay_tender(
+    firm: &mut Firm, pop: &mut Pop, tender: &[(usize, f64)], bill: f64,
+    paid_units: &mut HashMap<usize, f64>,
+) -> f64 {
     if !(bill.is_finite() && bill > 0.0) {
         return 0.0;
     }
@@ -797,6 +820,7 @@ fn pay_tender(firm: &mut Firm, pop: &mut Pop, tender: &[(usize, f64)], bill: f64
             continue;
         }
         pop.receive_payment(*good, taken);
+        *paid_units.entry(*good).or_insert(0.0) += taken;
         let value = taken * price;
         owed -= value;
         paid += value;
@@ -909,6 +933,7 @@ impl Default for MarketGood {
             availability: 0.0,
             offered: 0.0,
             sought: 0.0,
+            paid: 0.0,
         }
     }
 }
@@ -1337,6 +1362,7 @@ mod record_keeping_should {
                 stock: 4.0,
                 volume: 2.0,
                 decayed: 99.0,
+                paid: 0.0,
             },
         );
         market.goods.insert(9, super::MarketGood {
