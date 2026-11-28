@@ -1,14 +1,14 @@
 # Simpler Economy
 
-Design source of truth is `Design_V3.md`. The user owns that file. Do not edit it unless asked. It takes precedence over older design notes. Read `docs/handoff/current.md` before editing the library.
+Design source of truth is `Design_V1_Market_Game.md`, the V1 market game. The user owns that file. Do not edit it unless asked. Plain statements in it are decided. An **Open question** with a **Proposal** is not decided; build to the proposal only when the work needs it, and say so.
 
-`docs/Overview.md` and `TODO.md` describe the previous tree. They are not the current cut.
+`TODO.md` is the V1 build order from that doc. Work one step at a time, and do not start a step until the one before it passes its milestone.
 
 ## Scope
 
 Do not open the Obsidian vault, and do not mine other git branches, unless the user names a specific note or target.
 
-Do not invent a milestone. Do not start work from the version list in `docs/Overview.md`. Record a cut only after the user writes it.
+Do not invent a milestone. The milestones are the ones in the design doc's Build Order and Test Milestones. Later versions are in its Roadmap; do not pull them into V1.
 
 ## This tree
 
@@ -52,8 +52,8 @@ These are session hats, not standing Grok Bots. Default is Implementer.
 
 Name a role in the first message: Design, Implementer, or Reviewer. One role at a time.
 
-- Design — read-only. `Design_V3.md` first, then `docs/handoff/current.md`. Conflicts with older notes get listed, not resolved by inventing mechanics. No file edits.
+- Design — read-only. `Design_V1_Market_Game.md` first, then `TODO.md`. Conflicts between the doc and the code get listed, not resolved by inventing mechanics. No file edits.
 - Implementer — named files only. This style section. `cargo test --lib` after a library change.
-- Reviewer — no new features. Simplify, refine, debug. Cite `docs/handoff/current.md`. Edits only when asked to apply a specific fix.
+- Reviewer — no new features. Simplify, refine, debug. Cite the design doc. Edits only when asked to apply a specific fix.
 
 Cursor copies live in `.grok/agents/`. The working skill lives in `.grok/skills/econciv-reboot/`.
