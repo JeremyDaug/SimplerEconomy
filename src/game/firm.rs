@@ -28,7 +28,7 @@ pub struct FirmBudget {
     pub output_value: f64,
     /// Goods sold, at the price when they sold.
     pub sold_value: f64,
-    /// Tender paid as the flat owner wage.
+    /// Tender paid as the owner wage.
     pub wage: f64,
     /// Tender paid as the owner dividend.
     pub dividend: f64,

@@ -80,6 +80,7 @@ impl GameConfig {
         self.pop.validate(&mut problems);
         self.market.validate(&mut problems);
         self.labor.validate(&mut problems);
+        self.firm.validate(&mut problems);
         if problems.is_empty() {
             Ok(())
         } else {
@@ -197,15 +198,11 @@ pub const FIRM_SELL_SHARE: f64 = 0.80;
 /// Share added to a firm's uncovered input need before that buy rounds up.
 pub const FIRM_BUY_PAD: f64 = 0.01;
 
-/// Flat owner wage for one firm, in abstract value.
-///
-/// Owners split this by their fractions. It is paid before [`OWNER_DIVIDEND_RATE`].
-pub const OWNER_WAGE: f64 = 1.0;
+/// Days of one owner household's basic desires that one firm pays its owners as a wage.
+pub const OWNER_WAGE_BASIC_DAYS: f64 = 2.0;
 
-/// Share of a firm's property value paid to its owners.
-///
-/// Each owner is paid this share of that value times that owner's fraction.
-pub const OWNER_DIVIDEND_RATE: f64 = 0.01;
+/// Share of a firm's daily profit paid to its owners as a dividend.
+pub const OWNER_PROFIT_SHARE: f64 = 0.5;
 
 /// Share of the pop moved into anger and into fear for each full share of
 /// basic needs left unmet.
@@ -516,10 +513,51 @@ impl LaborConfig {
     }
 }
 
-/// Firm planning. Empty until an organization sets the margin.
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+/// Firm tunables.
+///
+/// `owner_wage_basic_days` and `owner_profit_share` set what a firm pays
+/// its owner pops each morning, read by
+/// [`crate::game::market::Market::pay_owners`].
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct FirmConfig {}
+pub struct FirmConfig {
+    /// Owner wage, in days of one owner household's basic desires. Must be `>= 0`.
+    ///
+    /// The default is [`OWNER_WAGE_BASIC_DAYS`].
+    pub owner_wage_basic_days: f64,
+    /// Share of the firm's profit paid as the dividend. Must be from 0 to 1.
+    ///
+    /// The default is [`OWNER_PROFIT_SHARE`].
+    pub owner_profit_share: f64,
+}
+
+impl Default for FirmConfig {
+    /// # Default
+    ///
+    /// [`OWNER_WAGE_BASIC_DAYS`] is 2 and [`OWNER_PROFIT_SHARE`] is 0.5.
+    fn default() -> Self {
+        Self {
+            owner_wage_basic_days: OWNER_WAGE_BASIC_DAYS,
+            owner_profit_share: OWNER_PROFIT_SHARE,
+        }
+    }
+}
+
+impl FirmConfig {
+    /// # Validate
+    ///
+    /// Appends a problem when `owner_wage_basic_days` is not finite or is
+    /// below 0, or when `owner_profit_share` is outside 0 to 1.
+    fn validate(&self, problems: &mut Vec<String>) {
+        at_least(
+            problems,
+            "firm.owner_wage_basic_days",
+            self.owner_wage_basic_days,
+            0.0,
+        );
+        unit_share(problems, "firm.owner_profit_share", self.owner_profit_share);
+    }
+}
 
 #[cfg(test)]
 mod config_should {
@@ -633,6 +671,25 @@ mod config_should {
         cfg.market.price_gain = 0.05;
         cfg.market.price_cap = 1.0;
         cfg.validate().expect("band ends");
+    }
+
+    #[test]
+    fn owner_wage_must_be_at_least_zero_and_profit_share_a_unit_share() {
+        let mut cfg = GameConfig::default();
+        cfg.firm.owner_wage_basic_days = -1.0;
+        let msg = message(cfg);
+        assert!(msg.contains("firm.owner_wage_basic_days"), "{msg}");
+        assert!(msg.contains("must be >= 0"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.firm.owner_profit_share = 1.5;
+        let msg = message(cfg);
+        assert!(msg.contains("firm.owner_profit_share"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.firm.owner_wage_basic_days = 0.0;
+        cfg.firm.owner_profit_share = 1.0;
+        cfg.validate().expect("no wage and all profit");
     }
 
     #[test]
