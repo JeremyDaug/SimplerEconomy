@@ -221,6 +221,17 @@ impl Market {
             .any(|row| row.subject == subject && row.fraction > 0.0)
     }
 
+    /// # Holds Shares
+    ///
+    /// Whether pop `pop` owns part of any firm on this market.
+    ///
+    /// Returns true when it holds a fraction above 0 of some subject.
+    pub fn holds_shares(&self, pop: usize) -> bool {
+        self.ownership
+            .iter()
+            .any(|row| row.holder == Actor::Pop(pop) && row.fraction > 0.0)
+    }
+
     /// # Ownership Of
     ///
     /// The fraction of `subject` that `holder` owns.

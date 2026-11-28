@@ -1770,8 +1770,9 @@ impl Pop {
     /// one whole step. Zero holds that step. A line never takes a fraction of
     /// a step. Decreases run first. Holds shrink again when they and the lines
     /// ask for more than the grant, and the lines stay on their steps.
-    /// Subsistence takes the time left. A line with no process is `Some(0)`.
-    /// A grant of 0 clears the plan.
+    /// Subsistence takes the time left, except in a pop that holds a firm
+    /// share on `market`, whose subsistence is 0. A line with no process is
+    /// `Some(0)`. A grant of 0 clears the plan.
     pub fn planning(&mut self, factuals: &Factuals, market: Option<&Market>) {
         let budget = self.time_grant(factuals);
         self.line_votes = [PlanVotes::default(); 2];
@@ -1867,7 +1868,9 @@ impl Pop {
             self.job.lines[line.index].target = Some(iterations);
         }
         let free = (budget - spare - craft_time).max(0.0);
-        self.subsistence_rate = free / budget;
+        // An owner lives off its firm and buys what it needs.
+        let owner = market.is_some_and(|market| market.holds_shares(self.id));
+        self.subsistence_rate = if owner { 0.0 } else { free / budget };
     }
 
     /// # Subsistence Per Time
