@@ -40,9 +40,8 @@ pub struct Culture {
     pub work_time_fraction: f64,
     /// Ease of leaving this culture and of other pops entering it.
     ///
-    /// `0` is insular and `1` is open. Values outside `0..=1` are clamped
-    /// when the migration cap reads them. Religion conversion is the same
-    /// kind of ease.
+    /// `0` is insular and `1` is open. Religion conversion is the same kind
+    /// of ease. Nothing reads it yet.
     pub assimilation: f64,
     /// Stratum ids that derive from this culture.
     ///

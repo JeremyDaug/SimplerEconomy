@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use hexx::Hex;
 use rand::RngCore;
 
 use crate::game::config::{FIRM_FINISH_GRACE, FIRM_MIN_MARGIN, FIRM_MIN_TARGET, FIRM_SELL_SHARE};
@@ -11,7 +10,7 @@ use crate::game::pop::{
     can_fund_one, market_price, optional_keeps_value, shop_firm, Pop, SellOffer, ShopBook,
 };
 use crate::game::process::{InputType, Process, ProcessResult};
-use crate::game::{actor::Actor, firmorganization::FirmOrganization};
+use crate::game::actor::Actor;
 
 /// The day's money, in abstract value.
 ///
@@ -37,25 +36,12 @@ pub struct FirmBudget {
 
 /// A firm is one workshop: production and stock.
 ///
-/// Parent, children, and level are the company links. How a larger company
-/// acts is not written yet. Labor is a process input bought on the market.
-/// This firm does not keep a workforce, and it does not record who owns it.
+/// Labor is a process input bought on the market. This firm does not keep
+/// a workforce, and it does not record who owns it.
 #[derive(Debug, Clone)]
 pub struct Firm {
     pub id: usize,
     pub name: String,
-    /// Market this firm operates in.
-    pub market: usize,
-    /// Hex the firm sits on.
-    pub location: Hex,
-    /// Owning firm, if this is a sub-firm.
-    pub parent: Option<usize>,
-    /// Sub-firms this firm owns.
-    pub children: Vec<usize>,
-    /// 0 is the lowest organizational level.
-    pub level: usize,
-    /// How the firm is run. Placeholder weights.
-    pub org_ai_weights: FirmOrganization,
     pub property: HashMap<usize, FirmPRow>,
     pub production_line: Vec<ProductionLine>,
     /// Today's costs and receipts. [`Market::pay_owners`] starts it over.
@@ -63,7 +49,7 @@ pub struct Firm {
     /// Set when this firm cannot fund one run of its first line.
     ///
     /// [`Self::planning`] writes it. A dead firm does not plan, shop,
-    /// produce, or pay its owners. [`Market::found_pop`] can clear it.
+    /// produce, or pay its owners.
     pub dead: bool,
 }
 
@@ -119,20 +105,14 @@ pub struct FirmPRow {
 impl Firm {
     /// # New
     ///
-    /// A firm with this id, name, market, and hex.
+    /// A firm with this id and name.
     ///
-    /// No parent, no children, level 0, an empty organization, an empty
-    /// budget, and no property or production lines. It is not dead.
-    pub fn new(id: usize, name: String, market: usize, location: Hex) -> Self {
+    /// An empty budget, and no property or production lines. It is not
+    /// dead.
+    pub fn new(id: usize, name: String) -> Self {
         Self {
             id,
             name,
-            market,
-            location,
-            parent: None,
-            children: vec![],
-            level: 0,
-            org_ai_weights: FirmOrganization::empty(),
             property: HashMap::new(),
             production_line: vec![],
             budget: FirmBudget::default(),
@@ -905,8 +885,7 @@ mod day_should {
     use crate::game::factuals::Factuals;
     use crate::game::good::{Good, GoodTag};
     use crate::game::process::{InputType, Process, ProcessInput, ProcessOutput};
-    use hexx::Hex;
-
+    
     const INPUT: usize = 2;
     const OUTPUT: usize = 3;
     const COIN: usize = 1;
@@ -940,7 +919,7 @@ mod day_should {
         factuals.goods.insert(INPUT, good(INPUT, 0.0));
         factuals.goods.insert(OUTPUT, good(OUTPUT, 0.0));
         factuals.processes.insert(1, mill(3.0));
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         if input > 0.0 {
             firm.property.insert(INPUT, FirmPRow::new().with_quantity(input));
         }
@@ -1018,7 +997,7 @@ mod day_should {
             1,
             mill(3.0).with_input(ProcessInput::new(TOOL, 1.0, true, InputType::Capital, false)),
         );
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(INPUT, FirmPRow::new().with_quantity(5.0));
         firm.property.insert(TOOL, FirmPRow::new().with_quantity(1.0));
         firm.production_line.push(ProductionLine {
@@ -1042,7 +1021,7 @@ mod day_should {
     fn aging_stock_rots_and_fresh_stays() {
         let mut factuals = Factuals::new();
         factuals.goods.insert(1, good(1, 0.25));
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(
             1,
             FirmPRow {
@@ -1068,7 +1047,7 @@ mod day_should {
         kind.tags.insert(GoodTag::Exposure);
         let mut factuals = Factuals::new();
         factuals.goods.insert(1, kind);
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(1, FirmPRow::new().with_quantity(10.0));
         firm.decay_goods(&factuals);
         near(firm.property[&1].quantity, 10.0);
@@ -1081,7 +1060,7 @@ mod day_should {
         kind.decay_result.insert(2, 0.5);
         let mut factuals = Factuals::new();
         factuals.goods.insert(1, kind);
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(1, FirmPRow::new().with_quantity(4.0));
         firm.decay_goods(&factuals);
         near(firm.property[&1].quantity, 0.0);
@@ -1098,7 +1077,7 @@ mod day_should {
         factuals.goods.insert(OUTPUT, good(OUTPUT, 0.0));
         factuals.goods.insert(COIN, good(COIN, 0.0));
         factuals.processes.insert(1, mill(3.0));
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(INPUT, FirmPRow::new().with_quantity(4.0));
         firm.property.insert(OUTPUT, FirmPRow::new().with_quantity(5.0));
         firm.property.insert(COIN, FirmPRow::new().with_quantity(2.0));
@@ -1136,7 +1115,7 @@ mod day_should {
 
     #[test]
     fn record_keeping_clears_the_day_and_leaves_stock_and_sold() {
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property.insert(
             1,
             FirmPRow {
@@ -1181,8 +1160,7 @@ mod day_should {
 
 #[cfg(test)]
 mod plan_should {
-    use hexx::Hex;
-
+    
     use super::{Firm, FirmPRow, ProductionLine};
     use crate::game::factuals::Factuals;
     use crate::game::market::Market;
@@ -1213,7 +1191,7 @@ mod plan_should {
                 .with_input(ProcessInput::new(INPUT, input_amount, true, InputType::Destroyed, false))
                 .with_output(ProcessOutput::new(OUTPUT, output, true)),
         );
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property
             .insert(INPUT, FirmPRow::new().with_quantity(input_amount));
         firm.production_line.push(line(target));
@@ -1344,7 +1322,7 @@ mod plan_should {
                 .with_input(ProcessInput::new(9, 1.0, true, InputType::Capital, false))
                 .with_output(ProcessOutput::new(OUTPUT, 2.0, true)),
         );
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.property
             .insert(INPUT, FirmPRow::new().with_quantity(1.0));
         firm.property
@@ -1354,7 +1332,7 @@ mod plan_should {
         assert!(!firm.is_dead());
         near(firm.production_line[0].target.unwrap(), 2.0);
 
-        let mut broke = Firm::new(2, "broke".into(), 1, Hex::new(0, 0));
+        let mut broke = Firm::new(2, "broke".into());
         broke.property
             .insert(INPUT, FirmPRow::new().with_quantity(1.0));
         broke.production_line.push(line(Some(3.0)));
@@ -1406,7 +1384,7 @@ mod plan_should {
         near(firm.production_line[0].target.unwrap(), 5.0);
         near(firm.production_line[1].target.unwrap(), 7.0);
 
-        let mut idle = Firm::new(2, "idle".into(), 1, Hex::new(0, 0));
+        let mut idle = Firm::new(2, "idle".into());
         idle.production_line.push(ProductionLine {
             process: 99,
             target: Some(3.0),
@@ -1418,7 +1396,7 @@ mod plan_should {
         near(idle.production_line[0].target.unwrap(), 3.0);
         assert!(!idle.is_dead());
 
-        let mut empty = Firm::new(3, "empty".into(), 1, Hex::new(0, 0));
+        let mut empty = Firm::new(3, "empty".into());
         empty.planning(&factuals, None);
         assert!(empty.production_line.is_empty());
         assert!(!empty.is_dead());
@@ -1433,7 +1411,7 @@ mod plan_should {
                 .with_input(ProcessInput::new(INPUT, 1.0, true, InputType::Destroyed, false))
                 .with_output(ProcessOutput::new(OUTPUT, 2.0, true)),
         );
-        let mut firm = Firm::new(1, "mill".into(), 1, Hex::new(0, 0));
+        let mut firm = Firm::new(1, "mill".into());
         firm.production_line.push(line(Some(4.0)));
         firm.planning(&factuals, None);
         assert!(firm.is_dead());

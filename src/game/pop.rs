@@ -86,13 +86,6 @@ pub struct Pop {
     /// Share of the market population ceiling, in people. `None` leaves this pop out.
     pub population_cap: Option<f64>,
 
-    /// Net households gained from internal migration this day.
-    ///
-    /// Negative is households that left. [`Market::internal_migration`]
-    /// clears it at the start of that pass. A pop that stays is `0`.
-    /// This is the household count, not people.
-    pub migration: f64,
-
     /// Same-day effects waiting for growth or decay.
     pub stored_effects: Vec<PopEffect>,
 
@@ -211,7 +204,6 @@ impl Pop {
             },
             pre_growth_population,
             population_cap: None,
-            migration: 0.0,
             stored_effects: vec![],
             sentiment: Sentiment::new(),
             sol_samples: VecDeque::new(),
@@ -699,35 +691,6 @@ impl Pop {
         self.effective_savings = value;
     }
 
-    /// # Take Savings Share
-    ///
-    /// Removes `share` of each savings stack.
-    ///
-    /// `share` is above 0 and at most 1. A stack that falls within `1e-9` of
-    /// nothing is dropped. [`Self::effective_savings`] is multiplied by the
-    /// share that stays. Returns the goods and amounts removed.
-    pub(crate) fn take_savings_share(&mut self, share: f64) -> HashMap<usize, f64> {
-        debug_assert!(share.is_finite() && share > 0.0 && share <= 1.0);
-        let mut taken = HashMap::new();
-        let goods: Vec<usize> = self.savings.keys().copied().collect();
-        for good in goods {
-            let amount = self.savings[&good];
-            let moved = amount * share;
-            if !moved.is_finite() || moved == 0.0 {
-                continue;
-            }
-            taken.insert(good, moved);
-            let left = amount - moved;
-            if left.abs() < 1e-9 {
-                self.savings.remove(&good);
-            } else {
-                self.savings.insert(good, left);
-            }
-        }
-        self.effective_savings *= 1.0 - share;
-        taken
-    }
-
     /// # Move To Savings
     ///
     /// Removes `amount` of `good` from property and stores it in savings.
@@ -1185,7 +1148,7 @@ impl Pop {
     /// [`Household::update`] applies the bundle for
     /// [`crate::game::config::PopConfig::turn_length`].
     /// The population before that update is stored for [`Self::rescale`].
-    /// The cap and migration are later steps.
+    /// The cap is a later step.
     pub fn growth_phase(&mut self, factuals: &Factuals) {
         if self.demographics.household.count < 1.0 {
             return;
@@ -1489,183 +1452,6 @@ impl Pop {
     /// No sample yet is `None`. Returns that reading.
     pub fn recorded_living(&self) -> Option<f64> {
         self.sol_samples.back().copied()
-    }
-
-    /// # Migration Living
-    ///
-    /// The standard of living a migration offer compares.
-    ///
-    /// The latest finite record is used. Sentiments store it before growth.
-    /// With no finite record, the current standard of living is used.
-    /// A non-finite reading returns `None`.
-    pub(crate) fn migration_living(&self) -> Option<f64> {
-        let recorded = self.recorded_living().filter(|value| value.is_finite());
-        let living = recorded.unwrap_or_else(|| self.standard_of_living());
-        if living.is_finite() {
-            Some(living)
-        } else {
-            None
-        }
-    }
-
-    /// # Migration Households
-    ///
-    /// Signed households this pop will send or receive.
-    ///
-    /// `weighted_sol` is the household-weighted standard of living of the
-    /// pool. `None` means that mean could not be taken. `anger_weight` is
-    /// how hard anger pushes beside fear. `pace` is the share of a saturated
-    /// offer that moves this turn.
-    ///
-    /// Mood is centered on a calm pop. Living is the gap from `weighted_sol`,
-    /// in living points. A gap within half a point is dropped. A pop more
-    /// than 10% under the mean gets that shortfall again, so a low pop
-    /// leaves harder than the same point gap pulls. Mood and that living
-    /// are added. Positive pulls households in. Negative pushes them out.
-    /// The sum
-    /// saturates to one offer, `pace` turns that into a share of this pop,
-    /// and the log2 of its people scales the share. The result is capped at
-    /// the household count. A count under 1, or a non-finite input, returns 0.
-    pub(crate) fn migration_households(
-        &self,
-        weighted_sol: Option<f64>,
-        anger_weight: f64,
-        pace: f64,
-    ) -> f64 {
-        let count = self.demographics.household.count;
-        // A pop under one household is already out of the pool.
-        if !count.is_finite() || count < 1.0 || !pace.is_finite() || pace < 0.0 {
-            return 0.0;
-        }
-        // Hope, happiness, and contentment are the calm side. Fear is flight.
-        // Anger is unrest, so it pushes only at `anger_weight`. Those calm
-        // shares sum with fear and anger to 1, so a fully calm pop would
-        // otherwise always pull. Subtracting 1 centers it on 0. Hope and
-        // happiness do not outpull contentment. They only replace fear and anger.
-        let calm =
-            self.sentiment.hope() + self.sentiment.happiness() + self.sentiment.contentment();
-        let flight = self.sentiment.fear() + anger_weight * self.sentiment.anger();
-        let mood = calm - flight - 1.0;
-        // Living is this pop against the household-weighted mean. With no
-        // finite mean there is nothing to be high or low against. The band
-        // is half a living point, so a high mean still moves on the same
-        // gap. Past the edge, only the overflow counts.
-        const SOL_FLAT_BAND: f64 = 0.5;
-        // A pop this far under the mean, as a share of it, is pushed again.
-        const SOL_LOW_SHARE: f64 = 0.10;
-        let living_pressure = match (self.migration_living(), weighted_sol) {
-            (Some(living), Some(mean)) if mean.is_finite() => {
-                let gap = living - mean;
-                if !gap.is_finite() {
-                    0.0
-                } else {
-                    let absolute = if gap.abs() <= SOL_FLAT_BAND {
-                        0.0
-                    } else {
-                        gap - gap.signum() * SOL_FLAT_BAND
-                    };
-                    // The share is only a push. A pop above the mean does not get it.
-                    let low_band = SOL_LOW_SHARE * mean.abs();
-                    let relative = if gap < -low_band { gap + low_band } else { 0.0 };
-                    absolute + relative
-                }
-            }
-            _ => 0.0,
-        };
-        // Mood and living add. Positive pulls in. Negative pushes out.
-        let pressure = mood + living_pressure;
-        if !pressure.is_finite() {
-            return 0.0;
-        }
-        // The summed pressure saturates at one offer. Full fear reaches that
-        // on its own. Pace is the share of that offer. Further misery does not raise it.
-        let saturated = pressure.clamp(-1.0, 1.0);
-        let people = self.demographics.total_population();
-        // log2 of people grows the fraction with size. A large pop can send
-        // a larger share of itself. A small pop can accept only a small
-        // share, so arrivals do not swamp it. One person or fewer does not scale.
-        let scale = if people > 1.0 {
-            people.log2().max(0.0)
-        } else {
-            0.0
-        };
-        let offered = count * saturated * pace * scale;
-        if !offered.is_finite() {
-            return 0.0;
-        }
-        // A pop cannot send or claim more households than it has.
-        offered.clamp(-count, count)
-    }
-
-    /// # Belonging Snapshot
-    ///
-    /// Property and savings before a migration pays any destination.
-    ///
-    /// Property rows are good id, quantity, and fresh. Savings rows are
-    /// good id and amount. Returns those two lists.
-    pub(crate) fn belonging_snapshot(&self) -> (Vec<(usize, f64, f64)>, Vec<(usize, f64)>) {
-        let stock = self
-            .property
-            .iter()
-            .map(|(&good, row)| (good, row.quantity, row.fresh))
-            .collect();
-        let saved = self
-            .savings
-            .iter()
-            .map(|(&good, &amount)| (good, amount))
-            .collect();
-        (stock, saved)
-    }
-
-    /// # Shift Belongings To
-    ///
-    /// Moves `fraction` of `stock` and `saved` onto `dest` and off this pop.
-    ///
-    /// `stock` and `saved` are a [`Self::belonging_snapshot`] taken before
-    /// any destination was paid. Each call uses that snapshot, so two
-    /// destinations do not compound. Fresh is kept inside its quantity.
-    pub(crate) fn shift_belongings_to(
-        &mut self,
-        dest: &mut Pop,
-        fraction: f64,
-        stock: &[(usize, f64, f64)],
-        saved: &[(usize, f64)],
-    ) {
-        if !fraction.is_finite() || fraction <= 0.0 {
-            return;
-        }
-        for &(good, quantity, fresh) in stock {
-            let moved = quantity * fraction;
-            let moved_fresh = fresh * fraction;
-            if moved == 0.0 && moved_fresh == 0.0 {
-                continue;
-            }
-            let row = dest.property.entry(good).or_default();
-            row.quantity += moved;
-            row.fresh += moved_fresh;
-            row.keep_fresh_inside();
-            if let Some(row) = self.property.get_mut(&good) {
-                row.quantity -= moved;
-                row.fresh -= moved_fresh;
-                if row.quantity < 0.0 && row.quantity > -1e-6 {
-                    row.quantity = 0.0;
-                }
-                row.keep_fresh_inside();
-            }
-        }
-        for &(good, amount) in saved {
-            let moved = amount * fraction;
-            if moved == 0.0 || !moved.is_finite() {
-                continue;
-            }
-            *dest.savings.entry(good).or_insert(0.0) += moved;
-            let left = self.savings.get(&good).copied().unwrap_or(0.0) - moved;
-            if left.abs() < 1e-9 {
-                self.savings.remove(&good);
-            } else {
-                self.savings.insert(good, left);
-            }
-        }
     }
 
     /// # Wealth per Household
@@ -9810,151 +9596,5 @@ mod sentiments_should {
 
         near(pop.sentiment.anger(), 0.7225);
         near(pop.sentiment.contentment(), 0.2775);
-    }
-}
-
-#[cfg(test)]
-mod migration_should {
-    use super::Pop;
-    use crate::game::household::Household;
-    use crate::game::pop_property::PopPRow;
-    use crate::game::sentiment::Sentiment;
-
-    fn near(actual: f64, expected: f64) {
-        assert!(
-            (actual - expected).abs() < 1e-9,
-            "{actual} != {expected}"
-        );
-    }
-
-    fn sized(count: f64) -> Pop {
-        let mut pop = Pop::new(1);
-        pop.demographics.household = Household::with_count(count);
-        pop
-    }
-
-    fn at_living(count: f64, living: f64) -> Pop {
-        let mut pop = sized(count);
-        pop.sol_samples.push_back(living);
-        pop
-    }
-
-    #[test]
-    fn a_calm_pop_at_the_mean_stays() {
-        let pop = at_living(10.0, 4.0);
-        assert_eq!(pop.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn a_gap_inside_half_a_point_stays() {
-        // Half a point around the mean adds nothing. 4.5 is the edge.
-        let inside = at_living(10.0, 4.3);
-        let edge = at_living(10.0, 4.5);
-        assert_eq!(inside.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-        assert_eq!(edge.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn one_point_past_the_flat_band_is_a_full_offer() {
-        // 5.5 is 1.5 over a mean of 4. Half a point comes off, leaving one.
-        let high = at_living(10.0, 5.5);
-        let full = 10.0 * 0.1 * 50.0_f64.log2();
-        near(high.migration_households(Some(4.0), 0.5, 0.1), full);
-    }
-
-    #[test]
-    fn a_low_pop_is_pushed_by_the_share_as_well() {
-        // 3.2 is 0.8 under a mean of 4. Half a point leaves 0.3.
-        // Ten percent of the mean is 0.4, so the share adds the other 0.4.
-        let low = at_living(10.0, 3.2);
-        let high = at_living(10.0, 4.8);
-        let full = 10.0 * 0.1 * 50.0_f64.log2();
-        near(low.migration_households(Some(4.0), 0.5, 0.1), -0.7 * full);
-        near(high.migration_households(Some(4.0), 0.5, 0.1), 0.3 * full);
-    }
-
-    #[test]
-    fn a_small_mean_still_pushes_a_pop_past_the_share() {
-        // 1.6 is 0.4 under a mean of 2, inside the half point.
-        // Ten percent of 2 is 0.2, so the share pushes by the other 0.2.
-        let low = at_living(10.0, 1.6);
-        let high = at_living(10.0, 2.4);
-        let full = 10.0 * 0.1 * 50.0_f64.log2();
-        near(low.migration_households(Some(2.0), 0.5, 0.1), -0.2 * full);
-        assert_eq!(high.migration_households(Some(2.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn a_high_mean_moves_on_the_same_point_gap() {
-        // A mean of 20 hides a gap of 1 inside 10%. The flat half point does not.
-        let high = at_living(10.0, 21.0);
-        let low = at_living(10.0, 19.0);
-        let full = 10.0 * 0.1 * 50.0_f64.log2();
-        near(high.migration_households(Some(20.0), 0.5, 0.1), 0.5 * full);
-        near(low.migration_households(Some(20.0), 0.5, 0.1), -0.5 * full);
-    }
-
-    #[test]
-    fn full_fear_pushes_and_hope_does_not_pull() {
-        let mut afraid = at_living(10.0, 4.0);
-        afraid.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
-        let mut hopeful = at_living(10.0, 4.0);
-        hopeful.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 0.0, 1.0);
-        let full = 10.0 * 0.1 * 50.0_f64.log2();
-        near(afraid.migration_households(Some(4.0), 0.5, 0.1), -full);
-        assert_eq!(hopeful.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn anger_pushes_less_than_the_same_share_of_fear() {
-        let mut afraid = at_living(10.0, 4.0);
-        afraid.sentiment = Sentiment::from_parts(0.0, 0.6, 0.0, 0.4, 0.0);
-        let mut angry = at_living(10.0, 4.0);
-        angry.sentiment = Sentiment::from_parts(0.0, 0.6, 0.4, 0.0, 0.0);
-        let fear = afraid.migration_households(Some(4.0), 0.5, 0.1);
-        let anger = angry.migration_households(Some(4.0), 0.5, 0.1);
-        assert!(fear < anger);
-        assert!(anger < 0.0);
-    }
-
-    #[test]
-    fn a_larger_pop_sends_a_larger_fraction() {
-        let small = at_living(2.0, 2.6);
-        let large = at_living(20.0, 2.6);
-        let small_share = small.migration_households(Some(4.0), 0.5, 0.1).abs() / 2.0;
-        let large_share = large.migration_households(Some(4.0), 0.5, 0.1).abs() / 20.0;
-        assert!(large_share > small_share);
-    }
-
-    #[test]
-    fn one_person_does_not_scale() {
-        let mut pop = Pop::new(1);
-        pop.demographics.household = Household::with_members(1.0, 0.0, 0.0);
-        pop.sentiment = Sentiment::from_parts(0.0, 0.0, 0.0, 1.0, 0.0);
-        assert_eq!(pop.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn under_one_household_offers_nothing() {
-        let pop = sized(0.4);
-        assert_eq!(pop.migration_households(Some(4.0), 0.5, 0.1), 0.0);
-    }
-
-    #[test]
-    fn half_a_share_of_savings_moves_and_the_rest_stays() {
-        let mut origin = sized(10.0);
-        origin.property.insert(1, PopPRow::new(100.0));
-        origin.savings.insert(2, 10.0);
-        let (stock, saved) = origin.belonging_snapshot();
-        let mut dest = sized(10.0);
-        origin.shift_belongings_to(&mut dest, 0.3, &stock, &saved);
-        near(dest.property[&1].quantity, 30.0);
-        near(origin.property[&1].quantity, 70.0);
-        near(dest.savings()[&2], 3.0);
-        near(origin.savings()[&2], 7.0);
-        near(
-            origin.property[&1].quantity + dest.property[&1].quantity,
-            100.0,
-        );
     }
 }

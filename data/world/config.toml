@@ -16,13 +16,6 @@
 # salability_default = 1.0
 # price_gain = 0.10
 # price_cap = 0.20
-# migration_anger_weight = 0.5
-# migration_pace = 0.1
-# founding_households = 5.0
-# founding_min_households = 25.0
-# founding_drought_step = 0.01
-# founding_both_share = 0.2
-# founding_available_drop = 1.5
 
 # [labor]
 # time_per_labor = 16.0
