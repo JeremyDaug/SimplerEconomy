@@ -120,6 +120,14 @@ impl PopPRow {
         }
     }
 
+    /// # Holding
+    ///
+    /// Units held in this row: `quantity` plus capital tied up in `used`.
+    /// Returns that sum.
+    pub fn holding(&self) -> f64 {
+        self.quantity + self.used
+    }
+
     /// # With Reserve
     ///
     /// Sets units earmarked and returns this row.

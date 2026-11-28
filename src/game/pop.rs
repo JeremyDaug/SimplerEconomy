@@ -737,14 +737,10 @@ impl Pop {
     ///
     /// Units of `good` this pop holds anywhere.
     ///
-    /// Sums `quantity`, capital tied up in `used`, and currency savings.
-    /// A good the pop has never held is 0. Returns that sum.
+    /// The row's [`PopPRow::holding`] plus currency savings. A good the pop
+    /// has never held is 0. Returns that sum.
     pub fn holding(&self, good: usize) -> f64 {
-        let row = self
-            .property
-            .get(&good)
-            .map(|row| row.quantity + row.used)
-            .unwrap_or(0.0);
+        let row = self.property.get(&good).map(PopPRow::holding).unwrap_or(0.0);
         row + self.savings.get(&good).copied().unwrap_or(0.0)
     }
 

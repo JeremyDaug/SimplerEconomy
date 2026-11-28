@@ -202,13 +202,10 @@ impl Firm {
     ///
     /// Units of `good` this firm holds.
     ///
-    /// Sums `quantity` and capital tied up in `used`. A good the firm has
-    /// never held is 0. Returns that sum.
+    /// The row's [`FirmPRow::holding`]. A good the firm has never held is 0.
+    /// Returns that amount.
     pub fn holding(&self, good: usize) -> f64 {
-        self.property
-            .get(&good)
-            .map(|row| row.quantity + row.used)
-            .unwrap_or(0.0)
+        self.property.get(&good).map(FirmPRow::holding).unwrap_or(0.0)
     }
 
     /// # Reset Day
@@ -780,6 +777,14 @@ impl FirmPRow {
     /// A zero ledger. Same value as [`Self::default`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// # Holding
+    ///
+    /// Units held in this row: `quantity` plus capital tied up in `used`.
+    /// Returns that sum.
+    pub fn holding(&self) -> f64 {
+        self.quantity + self.used
     }
 
     /// # Available
