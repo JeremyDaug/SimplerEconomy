@@ -98,6 +98,9 @@ pub const SUBSISTENCE_COMMON_SHARE: f64 = 0.5;
 /// Divisor for a desire's implicit minimum and cap.
 pub const DESIRE_SHARE_MINIMUM_DIVISOR: f64 = 2.0;
 
+/// Days of basic desires every pop holds in the principal currency when the game starts.
+pub const STARTING_COIN_DAYS: f64 = 10.0;
+
 /// A good on a market's tender list is bought, and every bill is paid, in thousandths.
 pub const CURRENCY_STEP: f64 = 0.001;
 
@@ -283,6 +286,12 @@ pub struct PopConfig {
     /// [`crate::game::desire::Desire::implicit_minimum`] reads this value.
     /// The default is [`DESIRE_SHARE_MINIMUM_DIVISOR`].
     pub desire_share_minimum_divisor: f64,
+    /// Days of basic desires each pop holds in the principal currency on
+    /// the first day. Must be `>= 0`.
+    ///
+    /// [`crate::playstate::PlayState::advance_turn`] tops each pop up to
+    /// this. The default is [`STARTING_COIN_DAYS`].
+    pub starting_coin_days: f64,
 }
 
 impl Default for PopConfig {
@@ -293,7 +302,8 @@ impl Default for PopConfig {
     /// one day, so a year is [`TURNS_PER_YEAR`] turns. The
     /// subsistence anchor is [`SUBSISTENCE_ANCHOR`] and the common share is
     /// [`SUBSISTENCE_COMMON_SHARE`]. The desire share minimum divisor is
-    /// [`DESIRE_SHARE_MINIMUM_DIVISOR`].
+    /// [`DESIRE_SHARE_MINIMUM_DIVISOR`]. Pops start with
+    /// [`STARTING_COIN_DAYS`] of basic desires in coin.
     fn default() -> Self {
         Self {
             childhood_years: 20.0,
@@ -304,6 +314,7 @@ impl Default for PopConfig {
             subsistence_anchor: SUBSISTENCE_ANCHOR,
             subsistence_common_share: SUBSISTENCE_COMMON_SHARE,
             desire_share_minimum_divisor: DESIRE_SHARE_MINIMUM_DIVISOR,
+            starting_coin_days: STARTING_COIN_DAYS,
         }
     }
 }
@@ -313,8 +324,9 @@ impl PopConfig {
     ///
     /// Appends a problem when an age length or the subsistence anchor is
     /// not finite or not above 0, when a share is outside 0 to 1, when
-    /// `turn_length` is not finite or below 1, or when the desire share
-    /// minimum divisor is not 0 and not at least 1.
+    /// `turn_length` is not finite or below 1, when the desire share
+    /// minimum divisor is not 0 and not at least 1, or when
+    /// `starting_coin_days` is not finite or below 0.
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "pop.childhood_years", self.childhood_years, 0.0);
         above(problems, "pop.adulthood_years", self.adulthood_years, 0.0);
@@ -338,6 +350,7 @@ impl PopConfig {
             self.desire_share_minimum_divisor,
             1.0,
         );
+        at_least(problems, "pop.starting_coin_days", self.starting_coin_days, 0.0);
     }
 }
 
@@ -711,6 +724,18 @@ mod config_should {
         cfg.firm.owner_profit_share = 1.0;
         cfg.firm.stock_offer_share = 1.0;
         cfg.validate().expect("no wage, all profit, and all stock");
+    }
+
+    #[test]
+    fn starting_coin_days_must_be_at_least_zero() {
+        let mut cfg = GameConfig::default();
+        cfg.pop.starting_coin_days = -1.0;
+        let msg = message(cfg);
+        assert!(msg.contains("pop.starting_coin_days"), "{msg}");
+
+        let mut cfg = GameConfig::default();
+        cfg.pop.starting_coin_days = 0.0;
+        cfg.validate().expect("no starting coin");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 # subsistence_anchor = 0.75
 # subsistence_common_share = 0.5
 # desire_share_minimum_divisor = 2.0
+# starting_coin_days = 10.0
 
 # [market]
 # amv_epsilon = 1e-9

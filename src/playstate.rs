@@ -34,8 +34,9 @@ impl PlayState {
     ///
     /// Increments `turn` by 1 and anchors the market's prices to its
     /// principal currency with [`Market::anchor_prices`], which acts only
-    /// once. Then it runs these steps in order. Each step's method holds
-    /// that step's effects.
+    /// once. On the first turn, [`Self::seed_starting_coin`] runs next.
+    /// Then it runs these steps in order. Each step's method holds that
+    /// step's effects.
     ///
     /// 1. Start of day.
     /// 2. Player action phase.
@@ -57,6 +58,9 @@ impl PlayState {
     pub fn advance_turn(&mut self) {
         self.turn += 1;
         self.market.anchor_prices(&self.factuals);
+        if self.turn == 1 {
+            self.seed_starting_coin();
+        }
         let mut day = self.open_ledger_day();
         self.start_of_day();
         self.player_action_phase();
@@ -81,6 +85,34 @@ impl PlayState {
             );
         }
         self.ledger.days.push(day);
+    }
+
+    /// # Seed Starting Coin
+    ///
+    /// Tops every listed pop up to its starting purse.
+    ///
+    /// A pop's purse is `pop.starting_coin_days` times
+    /// [`crate::game::pop::Pop::day_savings`], in the market's principal
+    /// currency. A pop already holding that much is left as it is. A market
+    /// with no principal gives nothing. The coin is there before the first
+    /// ledger day opens, so it is part of that day's opening.
+    fn seed_starting_coin(&mut self) {
+        let Some(principal) = self.market.principal() else {
+            return;
+        };
+        let days = self.factuals.config.pop.starting_coin_days;
+        let mut ids: Vec<usize> = self.market.pops.iter().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(pop) = self.actors.pops.get_mut(&id) else {
+                continue;
+            };
+            let purse = days * pop.day_savings(&self.market);
+            let short = purse - pop.holding(principal);
+            if short > 0.0 {
+                pop.receive_payment(principal, short);
+            }
+        }
     }
 
     /// # Coin Holdings
@@ -672,6 +704,28 @@ mod closed_market_should {
             assert!((flows.closing - start).abs() <= 1e-9 * start, "{flows:?}");
         }
         assert!(state.ledger.days.iter().any(|day| day.coins[&DUCKATS].transfers > 0.0));
+    }
+
+    #[test]
+    fn top_each_pop_up_to_its_starting_purse() {
+        // Bread is unpriced, so it costs one unit of time, 1/8.8 Duckat.
+        // Pop 2 needs 3 bread a day, so ten days is 30/8.8 Duckats.
+        let mut state = closed_market();
+        state.actors.pop_mut(2).property.remove(&DUCKATS);
+        state.market.anchor_prices(&state.factuals);
+        state.seed_starting_coin();
+        assert!((state.actors.pop(2).holding(DUCKATS) - 30.0 / 8.8).abs() < 1e-9);
+        assert_eq!(state.actors.pop(1).holding(DUCKATS), 50.0);
+        assert_eq!(state.actors.pop(3).holding(DUCKATS), 20.0);
+    }
+
+    #[test]
+    fn leave_subsistence_to_pops_that_own_no_firm() {
+        // Pop 1 owns the firm, so it buys instead of making its basics.
+        let mut state = closed_market();
+        state.advance_turn();
+        assert_eq!(state.actors.pop(1).subsistence_rate, 0.0);
+        assert!(state.actors.pop(2).subsistence_rate > 0.0);
     }
 
     #[test]

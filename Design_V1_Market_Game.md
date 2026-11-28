@@ -133,8 +133,11 @@ Everything else just moves coin from one actor to another inside the market:
 
 Pops get money with which they can buy goods from **wages, ownership, philanthropy and government welfare**. That's what makes them not magic boxes: if nobody pays them, they can't buy.
 
-> **Open question:** Can pops also earn coin by selling goods they make themselves? In V3 pops run subsistence and post sell offers.
-> **Proposal:** Yes, pops can still sell their own surplus (subsistence and crafts) into the market, since that's just a transfer from the buyer. It stays small next to wages and ownership.
+- **Pops sell their own surplus.** Pops make their basics through subsistence and sell the small excess, and their crafts, into the market. That's a transfer from the buyer, and it stays small next to wages and ownership. Laborers whose work leaves no time to make their basics buy it. Owner pops don't run subsistence: they live off their firm and buy what they need. Firms buy some of the surplus as inputs and sell it on as higher-order goods. Subsistence itself is not reduced to push pops into the market.
+- **Every pop starts with coin.** On the first day each pop holds at least `pop.starting_coin_days` (default 10) days of its basic desires in Duckats, so it can buy from day 1. That coin is the opening stock, not a source on the ledger.
+
+> **Open question:** How does a firm avoid competing with subsistence farmers?
+> **Proposal:** A good is subsistence-covered when pops on the market make most of what they eat of it themselves. A firm doesn't run a line whose output is subsistence-covered unless that good has gone short (sought above offered) for several days. Founding picks goods that aren't. A starting firm that makes a covered good, such as a grain farm, buys that good from pops as an input instead. Pops offer only their new surplus plus a small share of what they hold, the same rule firms follow, so a pop's stored stock isn't counted as supply.
 
 ## Spending Pays Someone
 
@@ -671,7 +674,7 @@ The V4 draft and its review (`Design_V4.md` on `EconCiv-v4-for-realsies`) stay a
 2. What does "1000 times slower" mean in mechanical terms?
 3. How are trade capacity, transport cost and the tariff band calculated?
 4. Who runs the traders at the start, and how much of the trade is local versus foreign?
-5. Can pops also earn coin by selling goods they make themselves? In V3 pops run subsistence and post sell offers.
+5. How does a firm avoid competing with subsistence farmers?
 6. How are GDP, the interest rate and the crash consequences worked out?
 7. Does the government ever pay down the principal?
 8. Do non-coin goods follow the same conservation rule?
