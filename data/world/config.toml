@@ -19,3 +19,7 @@
 
 # [labor]
 # time_per_labor = 16.0
+
+# [firm]
+# owner_wage_basic_days = 5.0
+# owner_profit_share = 0.10

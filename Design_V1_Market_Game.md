@@ -282,9 +282,13 @@ The player is one firm. It buys, produces, and sells. Its spending options are: 
 - **The player is technically a pop too**, the owner pop of the player's firm. That's mostly automatic: the player runs the firm, and the owner pop just lives off what the firm pays it.
 - Owner pops can **start new firms**. A pop with enough coin can found one.
 - **Firm founding is in V1, in a simple form.** It's needed to some extent for turnover and healthy long-term competition as new potential industries form.
+- **Owners are paid a wage, then a dividend.** Each owner gets its fraction of both, and the payment comes at the start of the market day, before the firm trades.
+  - **The wage** is a multiple of the owner pop's basic day needs: the cost of one day of its basic desires at market prices, for all of its households. A larger owner pop gets a larger wage. The multiple is `firm.owner_wage_basic_days` in the config, default 5.
+  - **The dividend** is a share of the firm's profit from the day before. Profit is sales less input cost less the owner wage. The share is `firm.owner_profit_share` in the config, default 0.10. A firm that made no profit pays no dividend, so a failing firm keeps its coin through a downturn.
+  - Both values are config defaults for now. Later they follow the firm's personality.
 
-> **Open question:** How much does a firm pay its owners, and how does the player control it?
-> **Proposal:** Dividends are a share of profit. Rivals set the share by personality, starting from the existing `OWNER_DIVIDEND_RATE`. The existing `OWNER_WAGE` can stay as a small fixed owner wage or be dropped. The player sets their own dividend rate as a slider. The player's owner pop buys its own goods automatically, and the player doesn't manage its desires.
+> **Open question:** How does the player control their own owner pay?
+> **Proposal:** The player sets their own wage multiple and profit share as sliders. The player's owner pop buys its own goods automatically, and the player doesn't manage its desires.
 
 > **Open question:** When does a pop with coin start a new firm instead of living off it?
 > **Proposal:** A pop with coin above a threshold has a daily chance to found a firm, weighted by its personality and by which goods are short in the market (high prices, unmet demand). Otherwise it spends down its savings on its own desires.
@@ -501,14 +505,14 @@ What exists in the repo now (checked on the `EconCiv-3-The-Reckoning` branch at 
 - **Sentiment** (`sentiment.rs`). The five-part pop mood (happiness, contentment, anger, fear, hope), which can be blended by population for the whole market. Feeds government favor, stability and revolution risk.
 - **AMV pricing** (`market.rs`). Per-good AMV, updated at end of day from supply and demand in `Market::record_keeping`, with a `MIN_PRICE` floor. This becomes the local price step, and with a much smaller sensitivity, the External price step.
 - **Currency handling** (`market.rs`, `config.rs`). The market already has a currency list, and payment uses currency goods in `CURRENCY_STEP` units. Coin as a good with a decay rate is how the optional coin decay can work.
-- **Firms** (`firm.rs`). `Firm`, `ProductionLine`, `FirmBudget` (input cost, output value, sold value, dividend), production, sell offers, record keeping and planning. `Market::pay_owners` pays an owner wage and a dividend from firm stock. That pays out of goods the firm actually has, so it already respects conservation.
+- **Firms** (`firm.rs`). `Firm`, `ProductionLine`, `FirmBudget` (input cost, output value, sold value, dividend), production, sell offers, record keeping and planning. `Market::pay_owners` pays the owner wage and dividend (see Firm Ownership) from firm stock. That pays out of goods the firm actually has, so it already respects conservation.
 - **Processes and goods** (`process.rs`, `good.rs`), and the data loaders and the `pop_tester` and `firm_tester` examples, which are a good base for headless V1 test runs.
 - **Tech node** (`tech.rs`). `Technology` already has a cost, parents, children, a tier, and unlocks for processes and goods. `techtree.rs` is an empty shell.
 
 ## Needs Rework
 
 - **Labor and wages.** `workforce.rs` has a wage-row structure (workers, hours, a wage basket, profit share), but morning settlement isn't written. V1 needs labor hiring from pops working end to end.
-- **Owner pay.** `OWNER_WAGE` and `OWNER_DIVIDEND_RATE` already assume pops own firms, which matches V1. It needs to cover the player's owner pop and buyout payouts.
+- **Owner pay.** `Market::pay_owners` already pays pops who own firms, which matches V1. It needs to cover the player's owner pop and buyout payouts.
 - **Government.** `nation.rs` has a `Nation` with empty early and late market day hooks. The government's treasury, debt and printing, taxes and tariffs, welfare, favor, stability and personality are all new.
 - **Founding.** The current founding code (pops starting new pops and firms) is too involved for V1. A simpler version is in V1 scope so pops with coin can start firms, for turnover and new industries.
 - **Pop savings.** The savings requirements of new pops from older versions come back, so idly wealthy pops draw down slowly.
