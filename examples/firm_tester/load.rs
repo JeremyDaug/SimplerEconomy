@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use hexx::Hex;
 use serde::Deserialize;
 
 use simpler_economy::game::culture::Culture;
@@ -24,13 +23,13 @@ use simpler_economy::game::process::Process;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::game::species::Species;
 
-/// Species, cultures, pops, firms, and markets loaded from one scenario folder.
+/// Species, cultures, pops, firms, and the market loaded from one scenario folder.
 pub(crate) struct Scenario {
     pub(crate) species: Vec<Species>,
     pub(crate) cultures: Vec<Culture>,
     pub(crate) pops: Vec<Pop>,
     pub(crate) firms: Vec<Firm>,
-    pub(crate) markets: Vec<Market>,
+    pub(crate) market: Market,
 }
 
 /// A scenario file that could not be read or applied.
@@ -197,7 +196,6 @@ struct FirmFile {
 struct FirmRow {
     id: usize,
     name: String,
-    market: usize,
     #[serde(default)]
     owners: Vec<usize>,
     #[serde(default)]
@@ -249,7 +247,7 @@ pub(crate) fn load_scenario(dir: &Path, factuals: &mut Factuals) -> Result<Scena
     let pops = load_pops(&dir.join("pops.toml"), &species, &cultures, &processes, &goods, factuals)?;
     let mut market = load_market(&dir.join("market.toml"), &goods, &pops)?;
     let firms = load_firms(&dir.join("firms.toml"), &processes, &goods, &mut market)?;
-    Ok(Scenario { species, cultures, pops, firms, markets: vec![market] })
+    Ok(Scenario { species, cultures, pops, firms, market })
 }
 
 /// # Load Goods
@@ -672,10 +670,9 @@ fn load_market(path: &Path, goods: &HashMap<String, usize>, pops: &[Pop]) -> Res
 /// The firms in `path`, and their membership on `market`.
 ///
 /// `processes` and `goods` resolve each line. A repeated firm id is an
-/// error. A market id that is not `market` is an error. `owners` names the
-/// pops that hold the firm. The market records those rights. One owner holds
-/// all of it. Several owners hold equal parts, and the last part is whatever
-/// is left so the total is 1.
+/// error. `owners` names the pops that hold the firm. The market records
+/// those rights. One owner holds all of it. Several owners hold equal
+/// parts, and the last part is whatever is left so the total is 1.
 /// An empty owner list, pop 0, a repeated pop, or a pop that is not on
 /// `market` is an error. `stock` is opening property. A missing good, a
 /// repeated good, or an amount that is not above 0 is an error. Each firm
@@ -688,12 +685,6 @@ fn load_firms(
     for row in file.firms {
         if firms.iter().any(|other: &Firm| other.id == row.id) {
             return Err(ScenarioError::new(format!("{}: firm id {} is repeated", path.display(), row.id)));
-        }
-        if row.market != market.id {
-            return Err(ScenarioError::new(format!(
-                "{}: firm {} market {} is not in market.toml",
-                path.display(), row.id, row.market
-            )));
         }
         if row.owners.is_empty() {
             return Err(ScenarioError::new(format!("{}: firm {} has no owner", path.display(), row.id)));
@@ -727,7 +718,7 @@ fn load_firms(
         for line in &row.lines {
             production_line.push(build_firm_line(path, line, processes, goods)?);
         }
-        let mut firm = Firm::new(row.id, row.name, row.market, Hex::new(0, 0));
+        let mut firm = Firm::new(row.id, row.name);
         firm.production_line = production_line;
         let mut seen_goods = Vec::new();
         for stock in &row.stock {

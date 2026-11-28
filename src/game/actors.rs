@@ -1,29 +1,26 @@
 use std::collections::HashMap;
 
-use crate::game::{factuals::Factuals, firm::Firm, institution::Institution, market::{member_homes, Market}, pop::Pop, scalingfactor::ScalingFactor};
+use crate::game::{factuals::Factuals, firm::Firm, market::Market, pop::Pop, scalingfactor::ScalingFactor};
 
 /// # Actors
 ///
-/// Common storage for active game actors (pops, firms, institutions, …).
-/// Markets and other systems should hold membership ids / indexes, not duplicate
-/// ownership of these entities.
+/// Common storage for active game actors (pops and firms).
+/// The market and other systems should hold membership ids / indexes, not
+/// duplicate ownership of these entities.
 #[derive(Debug)]
 pub struct Actors {
     pub pops: HashMap<usize, Pop>,
     pub firms: HashMap<usize, Firm>,
-    pub institutions: HashMap<usize, Institution>,
-    // Could hold spatial indices or tile->agent mappings for quick lookup
 }
 
 impl Actors {
     /// # New
     ///
-    /// Empty pop, firm, and institution maps.
+    /// Empty pop and firm maps.
     pub fn new() -> Self {
         Self {
             pops: HashMap::new(),
             firms: HashMap::new(),
-            institutions: HashMap::new(),
         }
     }
 
@@ -71,49 +68,23 @@ impl Actors {
             .unwrap_or_else(|| panic!("firm {id} is not in Actors"))
     }
 
-    /// # Institution
-    ///
-    /// The institution stored under `id`.
-    ///
-    /// Panics if that institution is missing.
-    pub fn institution(&self, id: usize) -> &Institution {
-        self.institutions
-            .get(&id)
-            .unwrap_or_else(|| panic!("institution {id} is not in Actors"))
-    }
-
-    /// # Institution Mut
-    ///
-    /// Mutable access to the institution stored under `id`.
-    ///
-    /// Panics if that institution is missing.
-    pub fn institution_mut(&mut self, id: usize) -> &mut Institution {
-        self.institutions
-            .get_mut(&id)
-            .unwrap_or_else(|| panic!("institution {id} is not in Actors"))
-    }
-    
     /// # Day Start
     ///
-    /// Gives each pop its morning goods and records them on that pop's market.
+    /// Gives each pop its morning goods and records them on the market.
     ///
-    /// `markets` is every market, keyed by id. `factuals` supplies
-    /// `labor.time_per_labor`. Each pop gains good 0 at that rate per unit of
-    /// household labor. The default is [`crate::game::config::TIME_PER_LABOR`].
-    /// A positive amount is recorded with [`Market::record_supply`]. A pop
-    /// listed on no market still receives the goods.
-    pub fn start_day(&mut self, markets: &mut HashMap<usize, Market>, factuals: &Factuals) {
-        let homes = member_homes(markets, |market| &market.pops);
+    /// `market` is the market. `factuals` supplies `labor.time_per_labor`.
+    /// Each pop gains good 0 at that rate per unit of household labor. The
+    /// default is [`crate::game::config::TIME_PER_LABOR`]. A positive amount
+    /// is recorded with [`Market::record_supply`]. A pop not listed on the
+    /// market still receives the goods, and they are not recorded.
+    pub fn start_day(&mut self, market: &mut Market, factuals: &Factuals) {
         let time_per_labor = factuals.config.labor.time_per_labor;
         let time_gen = [(0, ScalingFactor::Labor(time_per_labor))];
         for (pop_id, pop) in self.pops.iter_mut() {
             let added = pop.start_day(&time_gen);
-            let Some(&market_id) = homes.get(pop_id) else {
+            if !market.pops.contains(pop_id) {
                 continue;
-            };
-            let market = markets
-                .get_mut(&market_id)
-                .unwrap_or_else(|| panic!("market {market_id} is not in the day-start set"));
+            }
             for (good_id, amount) in added {
                 if amount > 0.0 {
                     market.record_supply(good_id, amount);
@@ -171,51 +142,40 @@ impl Actors {
 
     /// # Planning
     ///
-    /// Runs planning for each pop, firm, and institution.
+    /// Runs planning for each pop and firm.
     ///
-    /// `factuals` supplies the world. `markets` are the markets an actor may
-    /// read. Each actor runs on its own thread. A pop or firm listed on a
-    /// market plans against that market. Institution planning is not written
-    /// yet. Then each market releases the owners of a dead firm.
-    pub fn planning(&mut self, factuals: &Factuals, markets: &mut HashMap<usize, Market>) {
-        let homes = member_homes(markets, |market| &market.pops);
-        let firm_homes = member_homes(markets, |market| &market.firms);
+    /// `factuals` supplies the world. `market` is the market. Each actor
+    /// runs on its own thread. A pop or firm listed on the market plans
+    /// against it. One that is not listed plans with no market.
+    pub fn planning(&mut self, factuals: &Factuals, market: &Market) {
         let pops = &mut self.pops;
         let firms = &mut self.firms;
-        let institutions = &mut self.institutions;
         std::thread::scope(|scope| {
             for pop in pops.values_mut() {
-                let market = homes.get(&pop.id).and_then(|id| markets.get(id));
-                scope.spawn(move || pop.planning(factuals, market));
+                let read = market.pops.contains(&pop.id).then_some(market);
+                scope.spawn(move || pop.planning(factuals, read));
             }
             for firm in firms.values_mut() {
-                let market = firm_homes.get(&firm.id).and_then(|id| markets.get(id));
-                scope.spawn(move || firm.planning(factuals, market));
-            }
-            for institution in institutions.values_mut() {
-                scope.spawn(|| institution.planning(factuals));
+                let read = market.firms.contains(&firm.id).then_some(market);
+                scope.spawn(move || firm.planning(factuals, read));
             }
         });
-        for market in markets.values_mut() {
-            market.release_dead_firms(firms, pops);
-        }
     }
 
     /// # Sentiments
     ///
     /// Runs sentiments for each pop.
     ///
-    /// `markets` are the markets a pop may read. Each pop runs on its own
-    /// thread. A pop listed on a market prices its wealth against that
-    /// market. The mood is updated first, then stored satisfaction is dropped.
-    pub fn sentiments(&mut self, markets: &HashMap<usize, Market>) {
-        let homes = member_homes(markets, |market| &market.pops);
+    /// `market` is the market. Each pop runs on its own thread. A pop
+    /// listed on the market prices its wealth against it. The mood is
+    /// updated first, then stored satisfaction is dropped.
+    pub fn sentiments(&mut self, market: &Market) {
         let pops = &mut self.pops;
         std::thread::scope(|scope| {
             for pop in pops.values_mut() {
-                let market = homes.get(&pop.id).and_then(|id| markets.get(id));
+                let read = market.pops.contains(&pop.id).then_some(market);
                 scope.spawn(move || {
-                    pop.update_sentiments(market);
+                    pop.update_sentiments(read);
                     pop.calculate_sol();
                 });
             }

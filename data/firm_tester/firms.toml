@@ -9,7 +9,6 @@
 [[firms]]
 id = 1
 name = "Agribusiness"
-market = 1
 owners = [30]
 
 [[firms.lines]]
@@ -30,7 +29,6 @@ amount = 100
 [[firms]]
 id = 2
 name = "Clothes Mill"
-market = 1
 owners = [32]
 
 [[firms.lines]]
@@ -56,7 +54,6 @@ amount = 100
 [[firms]]
 id = 3
 name = "Cotton Farm"
-market = 1
 owners = [33]
 
 [[firms.lines]]
@@ -78,7 +75,6 @@ amount = 100
 [[firms]]
 id = 4
 name = "Thread Mill"
-market = 1
 owners = [34]
 
 [[firms.lines]]
@@ -104,7 +100,6 @@ amount = 100
 [[firms]]
 id = 5
 name = "Fabric Mill"
-market = 1
 owners = [35]
 
 [[firms.lines]]

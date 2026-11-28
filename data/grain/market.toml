@@ -1,7 +1,0 @@
-# One market. An omitted pop list would be every loaded pop. Friction 1
-# matches the live goods note.
-
-id = 1
-currencies = ["grain", "gold_coins"]
-pops = [1]
-friction = 1.0
