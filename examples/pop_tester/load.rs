@@ -20,12 +20,12 @@ use simpler_economy::game::pop::Pop;
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::game::species::Species;
 
-/// Species, cultures, pops, and markets loaded from one scenario folder.
+/// Species, cultures, pops, and the market loaded from one scenario folder.
 pub(crate) struct Scenario {
     pub(crate) species: Vec<Species>,
     pub(crate) cultures: Vec<Culture>,
     pub(crate) pops: Vec<Pop>,
-    pub(crate) markets: Vec<Market>,
+    pub(crate) market: Market,
 }
 
 /// A scenario file that could not be read or applied.
@@ -211,7 +211,7 @@ pub(crate) fn load_scenario(dir: &Path, factuals: &Factuals) -> Result<Scenario,
     let cultures = load_cultures(&dir.join("cultures.toml"), &desires)?;
     let pops = load_pops(&dir.join("pops.toml"), &species, &cultures, &processes, &goods)?;
     let market = load_market(&dir.join("market.toml"), &goods, &pops)?;
-    Ok(Scenario { species, cultures, pops, markets: vec![market] })
+    Ok(Scenario { species, cultures, pops, market })
 }
 
 /// # Load Platonic

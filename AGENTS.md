@@ -12,11 +12,11 @@ Do not invent a milestone. The milestones are the ones in the design doc's Build
 
 ## This tree
 
-Rust 2024 library, crate `simpler_economy`. No library binary. No Bevy in simulation code. Use `std` collections. `hexx` is the hex map. Bring Bevy back with a client.
+Rust 2024 library, crate `simpler_economy`. No library binary. No Bevy in simulation code. Use `std` collections. V1 has one market and no map. Bring Bevy back with a client.
 
 World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Goods and processes are the live systems. Their loaders are `Good::load_from_toml` and `Process::load_from_toml`. `Factuals` loads a world folder from those, then config. The load note is `docs/handoff/loaders.md`.
 
-`Household` stays whole. Other game types keep their fields and stay method stubs. Do not fill a stub unless asked. `Unit` and `TechTree` stay empty.
+`Household` stays whole. Other game types keep their fields and stay method stubs. Do not fill a stub unless asked. `TechTree` stays empty until its build step.
 
 The pop tester is `examples/pop_tester`. It runs one pop through the turn.
 
@@ -32,7 +32,7 @@ Match the surrounding module. Follow the style rules below. No drive-by formatti
 
 A boolean checker that changes nothing is named as a question. `exchange_ok` is `is_exchange_ok` or `is_valid_exchange`.
 
-Reads from storage types (`Actors`, `Players`, `Factuals`, `MapData`, and the same kind of holder) go through a getter. If the getter is missing, add it and keep the expect or panic on that getter. Call sites use the getter.
+Reads from storage types (`Actors`, `Factuals`, and the same kind of holder) go through a getter. If the getter is missing, add it and keep the expect or panic on that getter. Call sites use the getter.
 
 ### Comments
 

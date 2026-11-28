@@ -16,7 +16,7 @@ description: Working rules for JeremyDaug/SimplerEconomy. Trigger on simpler_eco
 
 ## What this crate is
 
-Rust 2024 lib crate `simpler_economy`. No library binary. No Bevy in simulation code. The pop tester example is `examples/pop_tester`. `std` collections. `hexx` for the hex map. Bring Bevy back only with a client.
+Rust 2024 lib crate `simpler_economy`. No library binary. No Bevy in simulation code. The pop tester example is `examples/pop_tester`. `std` collections. V1 has one market and no map. Bring Bevy back only with a client.
 
 World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Goods and processes are the live systems. Their loaders are `Good::load_from_toml` and `Process::load_from_toml`. `Factuals` loads a world folder from those, then config. Details are in `docs/handoff/loaders.md`.
 
@@ -27,7 +27,7 @@ World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Good
 - When the user names a file, edit only that file.
 - Match the surrounding module. No drive-by formatting.
 - A boolean checker that changes nothing is named as a question (`is_exchange_ok`, not `exchange_ok`).
-- Reads from storage types (`Actors`, `Players`, `Factuals`, `MapData`, and the same kind of holder) go through a getter. If the getter is missing, add it and keep the expect or panic on that getter.
+- Reads from storage types (`Actors`, `Factuals`, and the same kind of holder) go through a getter. If the getter is missing, add it and keep the expect or panic on that getter.
 - Every function doc starts with a `#` header of the name. The doc says the inputs, the logic, and the outputs. Small and private functions get that doc too.
 - A step inside a function gets a one-line comment when the code does not already say it.
 - When a comment already matches the code, add a link or connection. Leave the paragraph. If a comment looks wrong and the function was not just changed, ask before rewriting it.

@@ -4,7 +4,7 @@ The V1 build order from [Design_V1_Market_Game.md](Design_V1_Market_Game.md) (Bu
 
 ## Before step 1
 
-- [ ] Prune the Reckoning code to what V1 uses: pops and desires, households, sentiment, AMV pricing, firms, goods, processes and the loaders. V3 founding, migration, the map and the multi-market code leave the V1 branch. They stay in git history.
+- [x] Prune the Reckoning code to what V1 uses: pops and desires, households, sentiment, AMV pricing, firms, goods, processes and the loaders. V3 founding, migration, the map and the multi-market code leave the V1 branch. They stay in git history.
 
 ## Build order
 

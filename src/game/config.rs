@@ -42,7 +42,6 @@ impl std::error::Error for ConfigLoadError {}
 #[serde(default)]
 pub struct GameConfig {
     pub pop: PopConfig,
-    pub player_resources: PlayerResourceConfig,
     pub market: MarketConfig,
     pub deal: DealConfig,
     pub market_priority: MarketPriorityConfig,
@@ -339,19 +338,11 @@ impl PopConfig {
     }
 }
 
-/// Player-score yields. Empty until those pools are wired again.
-/// The pools themselves live on [`crate::game::player_resources::PlayerResources`].
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
-#[serde(default)]
-pub struct PlayerResourceConfig {}
-
 /// Market tunables.
 ///
 /// `salability_default` is the salability of a good with no record.
 /// `amv_epsilon` is the half-width of the stored-AMV dead zone.
 /// `price_gain` and `price_cap` scale the daily surplus and shortage step.
-/// The migration and founding knobs are loaded here. Founding is not
-/// written yet.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MarketConfig {
@@ -370,53 +361,19 @@ pub struct MarketConfig {
     ///
     /// The design example is 0.20. The day's ratio is already within 1.
     pub price_cap: f64,
-    /// Weight of anger beside fear on the way out. Must be `>= 0`.
-    pub migration_anger_weight: f64,
-    /// Share of a saturated push or pull that moves in one year.
-    ///
-    /// Must be from 0 to 1. The saturated fraction stays under this share.
-    pub migration_pace: f64,
-    /// Households one founding moves. Must be `> 0`.
-    pub founding_households: f64,
-    /// Households a pop needs before a founding may leave. Must be `> 0`.
-    pub founding_min_households: f64,
-    /// Chance added each open day that a founding is attempted.
-    ///
-    /// Must be from 0 to 1. The first day after the rest is one step. Each
-    /// later day that does not create a pop adds another. The chance stops
-    /// at 1. A join does not clear it.
-    pub founding_drought_step: f64,
-    /// Share of foundings that apply both an add and a drop. Must be from 0 to 1.
-    pub founding_both_share: f64,
-    /// Extra weight on a drop whose product already covered the request.
-    ///
-    /// Must be `>= 0`. `1` leaves the base weight.
-    pub founding_available_drop: f64,
 }
 
 impl Default for MarketConfig {
     /// # Default
     ///
     /// The AMV dead zone is `1e-9`. Salability starts at one. Price
-    /// gain is 0.10 and the price cap is 0.20. Anger weighs half of fear.
-    /// One tenth of a saturated push moves in a year.
-    /// A founding moves 5 households out of a pop of at least 25. An open
-    /// day adds one hundredth to the chance a founding is attempted. One
-    /// fifth of foundings both add and drop. A covered drop weighs half
-    /// again its base.
+    /// gain is 0.10 and the price cap is 0.20.
     fn default() -> Self {
         Self {
             amv_epsilon: 1e-9,
             salability_default: 1.0,
             price_gain: 0.10,
             price_cap: 0.20,
-            migration_anger_weight: 0.5,
-            migration_pace: 0.1,
-            founding_households: 5.0,
-            founding_min_households: 25.0,
-            founding_drought_step: 0.01,
-            founding_both_share: 0.2,
-            founding_available_drop: 1.5,
         }
     }
 }
@@ -424,10 +381,9 @@ impl Default for MarketConfig {
 impl MarketConfig {
     /// # Validate
     ///
-    /// Appends a problem when `amv_epsilon` or a household count is not
-    /// finite or not above 0, when a weight is not finite or below 0, when
-    /// a share is outside 0 to 1, when `price_gain` is not above 0, or when
-    /// `price_cap` is not above 0 and at most 1.
+    /// Appends a problem when `amv_epsilon` is not finite or not above 0,
+    /// when `salability_default` is outside 0 to 1, when `price_gain` is not
+    /// above 0, or when `price_cap` is not above 0 and at most 1.
     fn validate(&self, problems: &mut Vec<String>) {
         above(problems, "market.amv_epsilon", self.amv_epsilon, 0.0);
         unit_share(
@@ -443,41 +399,6 @@ impl MarketConfig {
                 self.price_cap
             ));
         }
-        at_least(
-            problems,
-            "market.migration_anger_weight",
-            self.migration_anger_weight,
-            0.0,
-        );
-        unit_share(problems, "market.migration_pace", self.migration_pace);
-        above(
-            problems,
-            "market.founding_households",
-            self.founding_households,
-            0.0,
-        );
-        above(
-            problems,
-            "market.founding_min_households",
-            self.founding_min_households,
-            0.0,
-        );
-        unit_share(
-            problems,
-            "market.founding_drought_step",
-            self.founding_drought_step,
-        );
-        unit_share(
-            problems,
-            "market.founding_both_share",
-            self.founding_both_share,
-        );
-        at_least(
-            problems,
-            "market.founding_available_drop",
-            self.founding_available_drop,
-            0.0,
-        );
     }
 }
 
@@ -690,19 +611,6 @@ mod config_should {
     }
 
     #[test]
-    fn at_least_rejects_below_zero_and_accepts_zero() {
-        let mut cfg = GameConfig::default();
-        cfg.market.migration_anger_weight = -1.0;
-        let msg = message(cfg);
-        assert!(msg.contains("market.migration_anger_weight"), "{msg}");
-        assert!(msg.contains("must be >= 0"), "{msg}");
-
-        let mut cfg = GameConfig::default();
-        cfg.market.founding_available_drop = 0.0;
-        cfg.validate().expect("zero weight");
-    }
-
-    #[test]
     fn price_gain_must_be_above_zero_and_price_cap_at_most_one() {
         let mut cfg = GameConfig::default();
         cfg.market.price_gain = 0.0;
@@ -731,9 +639,9 @@ mod config_should {
     fn validate_reports_every_failure() {
         let mut cfg = GameConfig::default();
         cfg.pop.adulthood_years = 0.0;
-        cfg.market.migration_pace = 2.0;
+        cfg.market.price_gain = 0.0;
         let msg = message(cfg);
         assert!(msg.contains("pop.adulthood_years"), "{msg}");
-        assert!(msg.contains("market.migration_pace"), "{msg}");
+        assert!(msg.contains("market.price_gain"), "{msg}");
     }
 }

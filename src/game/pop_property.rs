@@ -61,9 +61,7 @@ pub struct PopPRow {
 
 /// Records kept on a pop.
 ///
-/// `satisfaction` is the sum of desire satisfaction. `migration_in` and
-/// `migration_out` are the households that arrived and the households that
-/// left. The other pop is not stored.
+/// `satisfaction` is the sum of desire satisfaction.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PopRecords {
     /// The total satisfaction for the pop.
@@ -72,17 +70,6 @@ pub struct PopRecords {
     ///
     /// If it is +inf, then the pop has no desires and is always satisfied.
     pub satisfaction: f64,
-
-    /// Households that arrived this day.
-    ///
-    /// [`crate::game::market::Market::internal_migration`] clears this with
-    /// [`crate::game::pop::Pop::migration`].
-    pub migration_in: f64,
-
-    /// Households that left this day.
-    ///
-    /// Cleared with [`Self::migration_in`].
-    pub migration_out: f64,
 }
 
 impl DemoRow {

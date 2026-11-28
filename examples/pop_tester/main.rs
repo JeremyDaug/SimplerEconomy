@@ -19,20 +19,11 @@
 //! over the iterations asked, in whole units, from those lines'
 //! `completed` and `attempted`.
 //! Savings and stock are priced per household, in the pop's first market currency.
-//! In and out are the households that arrived and the households that left.
 //! SOL is the standard of living recorded before decay. Hope, happy,
 //! fear, and anger are that pop's sentiment shares. Contentment is
 //! whatever those four leave. The last column is why that pop stopped buying.
 //!
-//! Under the pops, a founding table lists the next attempt and the three
-//! splits most likely if that attempt hits. Chance is that attempt. Rest
-//! is the days before it. Pop is the parent and the craft they already
-//! do. Process is the work they would take. Split is that pair's share of
-//! a hit. Result is `new`, or `join` and the pop who already does that
-//! work. The line under the rows is what this day did, and the chance it
-//! used. A wait prints `today rest`.
-//!
-//! Under that, a craft table lists each craft line. Craft names the
+//! Under the pops, a craft table lists each craft line. Craft names the
 //! process, then its share of morning time and the same finished-over-asked
 //! fraction. Profit, salability, demand, luck, decay, durability, living,
 //! and idle are the votes that wrote that plan. A vote prints `+1`, `-1`,
@@ -53,7 +44,7 @@
 //! Step is `expand`, `hold`, or `contract`. `bar` means the tally would
 //! expand and subsistence turned that into a hold.
 //!
-//! Under the crafts, each market lists its goods. Supply is the units
+//! Under the crafts, the market lists its goods. Supply is the units
 //! offered at the start of the market day, in whole units. Demand is the
 //! units that market recorded as sought, in whole units. Exchange is the
 //! units of that good exchanged today. Consumption is the units consumed
@@ -72,8 +63,6 @@
 //! cargo run --example pop_tester
 //! cargo run --example pop_tester -- 1
 //! cargo run --example pop_tester -- 30 10
-//! cargo run --example pop_tester -- grain
-//! cargo run --example pop_tester -- grain 40
 //! ```
 
 use std::collections::HashMap;
@@ -84,10 +73,7 @@ use simpler_economy::game::actors::Actors;
 use simpler_economy::game::desire::{DemoDesire, DesireTarget};
 use simpler_economy::game::factuals::Factuals;
 use simpler_economy::game::good::TIME;
-use simpler_economy::game::map::Map;
-use simpler_economy::game::mapdata::{EnvironmentData, MapData};
-use simpler_economy::game::market::{FoundingEvent, Market};
-use simpler_economy::game::players::Players;
+use simpler_economy::game::market::Market;
 use simpler_economy::game::pop::{line_value, market_price, PlanVotes, Pop};
 use simpler_economy::game::scalingfactor::ScalingFactor;
 use simpler_economy::playstate::PlayState;
@@ -98,8 +84,6 @@ use load::load_scenario;
 
 const WORLD_DIR: &str = "world";
 const SCENARIO_DIR: &str = "pop_tester";
-/// Parent and process pairs the founding table keeps.
-const FOUNDING_ROWS: usize = 3;
 /// A pop's ceiling share is this many times its people when the cap is set.
 const CAP_MULTIPLIER: f64 = 1000.0;
 
@@ -220,8 +204,8 @@ fn ceiling_people(state: &PlayState) -> f64 {
 ///
 /// The world folder and `scenario` under `data/`, at turn 0.
 ///
-/// `scenario` is the folder name. Species, cultures, pops, and markets come
-/// from [`load_scenario`]. The map is one hex. Returns that play state.
+/// `scenario` is the folder name. Species, cultures, pops, and the market
+/// come from [`load_scenario`]. Returns that play state.
 fn stand_up(scenario: &str) -> PlayState {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
     let world = root.join(WORLD_DIR);
@@ -244,19 +228,10 @@ fn stand_up(scenario: &str) -> PlayState {
     for pop in loaded.pops {
         actors.pops.insert(pop.id, pop);
     }
-    let mut markets = HashMap::new();
-    for market in loaded.markets {
-        markets.insert(market.id, market);
-    }
     PlayState {
         factuals,
-        map_data: MapData {
-            map: Map::new(1, 1),
-            markets,
-            environment: EnvironmentData {},
-        },
+        market: loaded.market,
         actors,
-        players: Players { players: HashMap::new() },
         turn: 0,
         is_paused: false,
     }
@@ -303,18 +278,14 @@ fn print_banner(state: &PlayState, scenario: &str, cap_multiplier: f64) {
             println!("{}: {summary}", demographic(state, pop));
         }
     }
-    let mut market_ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
-    market_ids.sort_unstable();
-    for id in &market_ids {
-        let market = state.map_data.market(*id);
-        let names: Vec<String> = market.currencies.iter().copied().map(|good| good_name(&state.factuals, good)).collect();
-        let names = names.join(", ");
-        if market_ids.len() == 1 {
-            println!("currencies: {names}");
-        } else {
-            println!("market {id}: {names}");
-        }
-    }
+    let names: Vec<String> = state
+        .market
+        .currencies
+        .iter()
+        .copied()
+        .map(|good| good_name(&state.factuals, good))
+        .collect();
+    println!("currencies: {}", names.join(", "));
 }
 
 /// # Desire Summary
@@ -494,8 +465,6 @@ struct PopRow {
     subsistence: String,
     labor: String,
     size: String,
-    migration_in: String,
-    migration_out: String,
     savings: String,
     stock: String,
     sol: String,
@@ -519,8 +488,8 @@ fn pop_rows(state: &PlayState) -> Vec<PopRow> {
 
 /// # Pop Row
 ///
-/// `pop` as demographic, subsistence, labor, size, households that arrived,
-/// households that left, savings, stock, SOL, mood, and why buying stopped.
+/// `pop` as demographic, subsistence, labor, size, savings, stock, SOL,
+/// mood, and why buying stopped.
 ///
 /// Subsistence names its type and the share of this pop's morning time.
 /// Labor is the time and the fraction for labor lines. The plan is the
@@ -529,8 +498,7 @@ fn pop_rows(state: &PlayState) -> Vec<PopRow> {
 /// with no lines shows a dash. Size is the number of people. Savings and
 /// stock come from [`holding_value`], divided by the household count.
 /// SOL is [`Pop::recorded_living`]. Hope, happy, fear, and anger are
-/// those sentiment shares. In and out are the household counts on
-/// [`Pop::records`]. Stop is why this pop stopped buying.
+/// those sentiment shares. Stop is why this pop stopped buying.
 /// Returns that row.
 fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
     let budget = pop.time_grant(&state.factuals);
@@ -573,8 +541,6 @@ fn pop_row(state: &PlayState, pop: &Pop) -> PopRow {
             labor_lines.then_some((labor_completed, labor_attempted)),
         ),
         size: qty_text(pop.demographics.total_population()),
-        migration_in: qty_text(pop.records.migration_in),
-        migration_out: qty_text(pop.records.migration_out),
         savings: qty_text(per_household(savings)),
         stock: qty_text(per_household(stock)),
         sol: qty_text(pop.recorded_living().unwrap_or(0.0)),
@@ -605,7 +571,7 @@ fn stop_text(state: &PlayState, pop: &Pop) -> String {
 ///
 /// Savings and stock for `pop`, in abstract value.
 ///
-/// The market is the lowest id that lists the pop. Savings sums every
+/// The market is the one that lists the pop. Savings sums every
 /// good on that market's currency list, from property and from
 /// [`Pop::savings`]. Stock sums every other good in those two places.
 /// A pop on no market has no currencies, so savings is 0 and stock is
@@ -637,15 +603,11 @@ fn holding_value(state: &PlayState, pop: &Pop) -> (f64, f64) {
 
 /// # Home Market
 ///
-/// The market with the lowest id that lists `pop_id`.
+/// The market, when it lists `pop_id`.
 ///
-/// A pop listed on none is `None`. Returns that market.
+/// A pop the market does not list is `None`. Returns that market.
 fn home_market(state: &PlayState, pop_id: usize) -> Option<&Market> {
-    let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
-    ids.sort_unstable();
-    ids.into_iter()
-        .find(|id| state.map_data.market(*id).pops.contains(&pop_id))
-        .map(|id| state.map_data.market(id))
+    state.market.pops.contains(&pop_id).then_some(&state.market)
 }
 
 /// # Demographic
@@ -864,16 +826,13 @@ fn print_info(state: &PlayState) {
 
 /// # Print Table
 ///
-/// Draws an info table, then one row per pop in `rows`, then founding, crafts, and one table per market.
+/// Draws an info table, then one row per pop in `rows`, then crafts, then the market.
 ///
 /// The day is [`PlayState::turn`]. The info table is one household of each
 /// demographic. Pop columns are demographic, subsistence, labor, size,
-/// in, out, savings per household, stock per household, sol, hope, happy,
-/// fear, anger, and stop. In and out are households. Those two columns
-/// keep room for a fractional count, so a zero does not shift the columns
-/// after them. The founding table follows the pops, then the craft
-/// table, then the market tables, one blank line after
-/// each. `prior` is yesterday's prices for the markets. Writes the day
+/// savings per household, stock per household, sol, hope, happy, fear,
+/// anger, and stop. The craft table follows the pops, then the market
+/// table, one blank line after each. `prior` is yesterday's prices. Writes the day
 /// and the tables below what is already printed.
 fn print_table(state: &PlayState, rows: &[PopRow], prior: &Prices) {
     println!();
@@ -884,9 +843,6 @@ fn print_table(state: &PlayState, rows: &[PopRow], prior: &Prices) {
     let sub_w = col_width("subsistence", rows.iter().map(|row| row.subsistence.len()));
     let labor_w = col_width("labor", rows.iter().map(|row| row.labor.len()));
     let size_w = col_width("size", rows.iter().map(|row| row.size.len()));
-    // A zero is narrower than `xx.xxxx`. The floor holds that width every day.
-    let in_w = col_width("in", rows.iter().map(|row| row.migration_in.len())).max(7);
-    let out_w = col_width("out", rows.iter().map(|row| row.migration_out.len())).max(7);
     let savings_w = col_width("savings/hh", rows.iter().map(|row| row.savings.len()));
     let stock_w = col_width("stock/hh", rows.iter().map(|row| row.stock.len()));
     let sol_w = col_width("sol", rows.iter().map(|row| row.sol.len()));
@@ -898,9 +854,9 @@ fn print_table(state: &PlayState, rows: &[PopRow], prior: &Prices) {
     println!(
         "{}",
         table_line(
-            "demographic", "subsistence", "labor", "size", "in", "out",
+            "demographic", "subsistence", "labor", "size",
             "savings/hh", "stock/hh", "sol", "hope", "happy", "fear", "anger", "stop",
-            demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
+            demo_w, sub_w, labor_w, size_w, savings_w, stock_w,
             sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
         )
     );
@@ -909,14 +865,13 @@ fn print_table(state: &PlayState, rows: &[PopRow], prior: &Prices) {
             "{}",
             table_line(
                 &row.demographic, &row.subsistence, &row.labor, &row.size,
-                &row.migration_in, &row.migration_out, &row.savings, &row.stock,
+                &row.savings, &row.stock,
                 &row.sol, &row.hope, &row.happy, &row.fear, &row.anger, &row.stop,
-                demo_w, sub_w, labor_w, size_w, in_w, out_w, savings_w, stock_w,
+                demo_w, sub_w, labor_w, size_w, savings_w, stock_w,
                 sol_w, hope_w, happy_w, fear_w, anger_w, stop_w,
             )
         );
     }
-    print_founding(state);
     print_craft_table(state);
     print_market_tables(state, prior);
     let _ = io::stdout().flush();
@@ -940,220 +895,11 @@ struct CraftRow {
     step: String,
 }
 
-/// One likely split on the founding table.
-struct FoundingRow {
-    chance: String,
-    rest: String,
-    pop: String,
-    process: String,
-    split: String,
-    result: String,
-}
-
-/// # Print Founding
-///
-/// Draws the founding table for each market, lowest id first.
-///
-/// A blank line separates it from the pops. Chance and rest are the next
-/// attempt. The rows are the most likely parent and process pairs. The
-/// line under them is the attempt this day already ran.
-fn print_founding(state: &PlayState) {
-    let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
-    ids.sort_unstable();
-    let only = ids.len() == 1;
-    for id in ids {
-        print_founding_market(state, id, only);
-    }
-}
-
-/// # Print Founding Market
-///
-/// Draws the founding table for market `id`.
-///
-/// `only` leaves the market id off the title when the run has one market.
-/// Chance is the next attempt. Rest is the days before it. Up to
-/// [`FOUNDING_ROWS`] pairs follow, highest split share first. An empty
-/// list still prints the chance and the rest. The last line is what this
-/// day did.
-fn print_founding_market(state: &PlayState, id: usize, only: bool) {
-    let market = state.map_data.market(id);
-    let outlook = market.founding_outlook(&state.actors.pops, &state.actors.firms, &state.factuals);
-    let mut rows = Vec::new();
-    if outlook.prospects.is_empty() {
-        rows.push(FoundingRow {
-            chance: percent_text(outlook.chance * 100.0),
-            rest: outlook.rest.to_string(),
-            pop: "-".to_string(),
-            process: "-".to_string(),
-            split: "-".to_string(),
-            result: "-".to_string(),
-        });
-    }
-    for (index, prospect) in outlook.prospects.iter().take(FOUNDING_ROWS).enumerate() {
-        rows.push(FoundingRow {
-            chance: if index == 0 { percent_text(outlook.chance * 100.0) } else { String::new() },
-            rest: if index == 0 { outlook.rest.to_string() } else { String::new() },
-            pop: pop_label(state, prospect.parent),
-            process: match prospect.firm {
-                Some(firm) => firm_name(state, firm),
-                None => process_name(state, prospect.process),
-            },
-            split: percent_text(prospect.chance * 100.0),
-            result: match prospect.firm {
-                Some(firm) => format!("firm {firm}"),
-                None => match prospect.joins {
-                    Some(dest) => format!("join {}", pop_label(state, dest)),
-                    None => "new".to_string(),
-                },
-            },
-        });
-    }
-    println!();
-    if only {
-        println!("founding");
-    } else {
-        println!("founding {id}");
-    }
-    let chance_w = col_width("chance", rows.iter().map(|row| row.chance.len()));
-    let rest_w = col_width("rest", rows.iter().map(|row| row.rest.len()));
-    let pop_w = col_width("pop", rows.iter().map(|row| row.pop.len()));
-    let process_w = col_width("process", rows.iter().map(|row| row.process.len()));
-    let split_w = col_width("split", rows.iter().map(|row| row.split.len()));
-    let result_w = col_width("result", rows.iter().map(|row| row.result.len()));
-    println!(
-        "{:>chance_w$}  {:>rest_w$}  {:<pop_w$}  {:<process_w$}  {:>split_w$}  {:<result_w$}",
-        "chance",
-        "rest",
-        "pop",
-        "process",
-        "split",
-        "result",
-        chance_w = chance_w,
-        rest_w = rest_w,
-        pop_w = pop_w,
-        process_w = process_w,
-        split_w = split_w,
-        result_w = result_w,
-    );
-    for row in &rows {
-        println!(
-            "{:>chance_w$}  {:>rest_w$}  {:<pop_w$}  {:<process_w$}  {:>split_w$}  {:<result_w$}",
-            row.chance,
-            row.rest,
-            row.pop,
-            row.process,
-            row.split,
-            row.result,
-            chance_w = chance_w,
-            rest_w = rest_w,
-            pop_w = pop_w,
-            process_w = process_w,
-            split_w = split_w,
-            result_w = result_w,
-        );
-    }
-    println!("{}", founding_today(state, market));
-}
-
-/// # Founding Today
-///
-/// What market `market` did on this day's founding attempt.
-///
-/// A wait names no chance. Any other result names the chance that attempt
-/// used. A new pop names its id, the parent, and the process. A join names
-/// the pop who received the households. A restarted firm names the firm,
-/// the owner, and the parent. Returns that line.
-fn founding_today(state: &PlayState, market: &Market) -> String {
-    let Some(day) = market.founding_day() else {
-        return "today -".to_string();
-    };
-    let chance = percent_text(day.chance * 100.0);
-    match day.event {
-        FoundingEvent::Rest => "today rest".to_string(),
-        FoundingEvent::Miss => format!("today miss {chance}"),
-        FoundingEvent::Nobody => format!("today nobody {chance}"),
-        FoundingEvent::New { parent, process, id } => format!(
-            "today {chance} new pop {id} from {} as {}",
-            pop_label(state, parent),
-            process_name(state, process),
-        ),
-        FoundingEvent::Join { parent, process, dest } => format!(
-            "today {chance} join {} from {} as {}",
-            pop_label(state, dest),
-            pop_label(state, parent),
-            process_name(state, process),
-        ),
-        FoundingEvent::Firm { parent, id, firm } => format!(
-            "today {chance} firm {firm} owned by pop {} from {}",
-            pop_label(state, id),
-            pop_label(state, parent),
-        ),
-    }
-}
-
-/// # Firm Name
-///
-/// The loaded name of firm `id`.
-///
-/// A missing firm panics. Returns that name.
-fn firm_name(state: &PlayState, id: usize) -> String {
-    state.actors.firm(id).name.clone()
-}
-
-/// # Pop Label
-///
-/// `id` and the craft that pop already runs.
-///
-/// A missing pop is the id. A pop with no loaded process is idle.
-/// Returns that label.
-fn pop_label(state: &PlayState, id: usize) -> String {
-    let Some(pop) = state.actors.pops.get(&id) else {
-        return id.to_string();
-    };
-    format!("{id} {}", craft_name(state, pop))
-}
-
-/// # Craft Name
-///
-/// The craft process on `pop`, or its labor process when it has no craft.
-///
-/// A line whose process is missing is left out. No loaded line is idle.
-/// Returns that name.
-fn craft_name(state: &PlayState, pop: &Pop) -> String {
-    let mut labor = None;
-    for line in &pop.job.lines {
-        let Some(process) = state.factuals.get_process(line.process) else {
-            continue;
-        };
-        if process.is_labor() {
-            if labor.is_none() {
-                labor = Some(process.name.clone());
-            }
-        } else {
-            return process.name.clone();
-        }
-    }
-    labor.unwrap_or_else(|| "idle".to_string())
-}
-
-/// # Process Name
-///
-/// The loaded name of process `id`.
-///
-/// A missing process is its id. Returns that name.
-fn process_name(state: &PlayState, id: usize) -> String {
-    state
-        .factuals
-        .get_process(id)
-        .map(|process| process.name.clone())
-        .unwrap_or_else(|| id.to_string())
-}
-
 /// # Print Craft Table
 ///
 /// Draws one row for each craft line, lowest pop id first.
 ///
-/// A blank line separates it from the founding table. A pop with no craft is left
+/// A blank line separates it from the pops. A pop with no craft is left
 /// out. The votes are the ones planning stored on the pop. Margin and per
 /// time come from [`line_value`].
 fn print_craft_table(state: &PlayState) {
@@ -1355,17 +1101,13 @@ struct MarketRow {
 
 /// # Print Market Tables
 ///
-/// Draws one table for each market in `state`, lowest id first.
+/// Draws the table for the market in `state`.
 ///
-/// A blank line separates a table from the crafts, and from the market
-/// before it. `prior` is yesterday's prices.
+/// A blank line separates it from the crafts. `prior` is yesterday's
+/// prices.
 fn print_market_tables(state: &PlayState, prior: &Prices) {
-    let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
-    ids.sort_unstable();
-    for id in ids {
-        println!();
-        print_market(state, state.map_data.market(id), prior);
-    }
+    println!();
+    print_market(state, &state.market, prior);
 }
 
 /// # Print Market
@@ -1627,14 +1369,10 @@ fn salability_of(state: &PlayState, market: &Market, good: usize) -> f64 {
 /// A value is keyed by market id and good id. Returns that map.
 fn snapshot_prices(state: &PlayState) -> Prices {
     let mut prices = Prices::default();
-    let mut ids: Vec<usize> = state.map_data.markets.keys().copied().collect();
-    ids.sort_unstable();
-    for id in ids {
-        let market = state.map_data.market(id);
-        for good in listed_goods(state, market) {
-            if let Some(amv) = market.stored_amv(good) {
-                prices.amv.insert((id, good), amv);
-            }
+    let market = &state.market;
+    for good in listed_goods(state, market) {
+        if let Some(amv) = market.stored_amv(good) {
+            prices.amv.insert((market.id, good), amv);
         }
     }
     prices
@@ -1690,14 +1428,14 @@ fn col_width(header: &str, cells: impl Iterator<Item = usize>) -> usize {
 /// The widths are the columns. Demographic and subsistence sit on the
 /// left. The other columns sit on the right. Returns that line.
 fn table_line(
-    demographic: &str, subsistence: &str, labor: &str, size: &str, arrived: &str, left: &str,
+    demographic: &str, subsistence: &str, labor: &str, size: &str,
     savings: &str, stock: &str, sol: &str, hope: &str, happy: &str, fear: &str, anger: &str,
-    stop: &str, demo_w: usize, sub_w: usize, labor_w: usize, size_w: usize, in_w: usize,
-    out_w: usize, savings_w: usize, stock_w: usize, sol_w: usize, hope_w: usize, happy_w: usize,
+    stop: &str, demo_w: usize, sub_w: usize, labor_w: usize, size_w: usize,
+    savings_w: usize, stock_w: usize, sol_w: usize, hope_w: usize, happy_w: usize,
     fear_w: usize, anger_w: usize, stop_w: usize,
 ) -> String {
     format!(
-        "{demographic:<demo_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {arrived:>in_w$}  {left:>out_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {hope:>hope_w$}  {happy:>happy_w$}  {fear:>fear_w$}  {anger:>anger_w$}  {stop:>stop_w$}"
+        "{demographic:<demo_w$}  {subsistence:<sub_w$}  {labor:>labor_w$}  {size:>size_w$}  {savings:>savings_w$}  {stock:>stock_w$}  {sol:>sol_w$}  {hope:>hope_w$}  {happy:>happy_w$}  {fear:>fear_w$}  {anger:>anger_w$}  {stop:>stop_w$}"
     )
 }
 
