@@ -1,19 +1,18 @@
 ---
 name: econciv-reboot
-description: Working rules for JeremyDaug/SimplerEconomy. Trigger on simpler_economy, goods, processes, factuals, Design_V3, Overview.md, AGENTS.md, or any sim library change. Do not use for a Bevy client.
+description: Working rules for JeremyDaug/SimplerEconomy. Trigger on simpler_economy, goods, processes, factuals, Design_V1_Market_Game, TODO.md, AGENTS.md, or any sim library change. Do not use for a Bevy client.
 ---
 
 # Simpler Economy
 
 ## Tree
 
-- Design pin — `Design_V3.md`. The user owns it. Do not edit it. It wins over older notes where they disagree.
-- Working note — `docs/handoff/current.md`. Load path — `docs/handoff/loaders.md`.
-- `docs/Overview.md` and `TODO.md` describe the previous tree. Do not restore that behavior from them.
+- Design pin — `Design_V1_Market_Game.md`, the V1 market game. The user owns it. Do not edit it. Open questions and their proposals in it are not decided.
+- Build order — `TODO.md`, taken from the pin. Load path — `docs/handoff/loaders.md`.
 - Working rules — repo `AGENTS.md`.
 - Do not open the Obsidian vault or mine other branches unless the user names a note or target.
-- Do not invent a milestone. Do not start work from the version list in `docs/Overview.md`.
-- `Unit` and `TechTree` stay empty until asked.
+- Do not invent a milestone. Work the `TODO.md` steps in order. Later versions are in the pin's Roadmap.
+- `TechTree` stays empty until its build step.
 
 ## What this crate is
 
@@ -41,7 +40,7 @@ World data is `data/world/goods.toml`, `processes.toml`, and `config.toml`. Good
 
 ## What not to invent
 
-Do not invent mechanics `Design_V3.md` does not state. Do not treat a silent gap as permission to copy `docs/Overview.md`. The open list is in `docs/handoff/current.md`.
+Do not invent mechanics `Design_V1_Market_Game.md` does not state. Do not treat a silent gap as permission to copy earlier versions from git history. The open list is the pin's Open Questions (Summary).
 
 ## Agents
 
