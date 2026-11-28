@@ -348,12 +348,17 @@ impl Market {
     /// units, and only up to the units on hand. Each firm's budget is
     /// cleared, then the wage and dividend that left are stored on it.
     /// A holder who is not in `pops` is skipped.
-    /// A dead firm pays nothing. Returns the currency units paid, by good.
+    /// A dead firm pays nothing. Each pop's
+    /// [`crate::game::pop::PopRecords::owner_pay`] is set to the value it
+    /// received. Returns the currency units paid, by good.
     pub fn pay_owners(
         &self, factuals: &Factuals, pops: &mut [Pop], firms: &mut [Firm],
     ) -> HashMap<usize, f64> {
         let tender = self.payment_tender(factuals);
         let mut paid = HashMap::new();
+        for pop in pops.iter_mut() {
+            pop.records.owner_pay = 0.0;
+        }
         let bills: Vec<(usize, f64, Vec<(usize, f64)>)> = firms
             .iter()
             .map(|firm| {
@@ -393,6 +398,7 @@ impl Market {
                     &mut paid,
                 );
                 firms[firm_at].budget.wage += wage;
+                pops[pop_at].records.owner_pay += wage;
                 let dividend = pay_tender(
                     &mut firms[firm_at],
                     &mut pops[pop_at],
@@ -401,6 +407,7 @@ impl Market {
                     &mut paid,
                 );
                 firms[firm_at].budget.dividend += dividend;
+                pops[pop_at].records.owner_pay += dividend;
             }
         }
         paid
@@ -546,9 +553,11 @@ impl Market {
     /// Rolls member output, consumption, and rot into this market's goods.
     ///
     /// `pops` and `firms` are the world's actors. Only members listed on
-    /// this market are counted. Production, consumption, and decay are
-    /// replaced by today's sums. Stock, offers, and prices are left to their
-    /// own writers. [`Self::move_prices`] runs after the rollup.
+    /// this market are counted, pops then firms, each lowest id first, so
+    /// the same day always gives the same sums. Production, consumption,
+    /// and decay are replaced by today's sums. Stock, offers, and prices are
+    /// left to their own writers. [`Self::move_prices`] runs after the
+    /// rollup.
     pub fn record_keeping(
         &mut self,
         factuals: &Factuals,
@@ -560,7 +569,11 @@ impl Market {
             row.consumption = 0.0;
             row.decayed = 0.0;
         }
-        for &id in &self.pops {
+        let mut pop_ids: Vec<usize> = self.pops.iter().copied().collect();
+        pop_ids.sort_unstable();
+        let mut firm_ids: Vec<usize> = self.firms.iter().copied().collect();
+        firm_ids.sort_unstable();
+        for id in pop_ids {
             let pop = pops
                 .get(&id)
                 .unwrap_or_else(|| panic!("pop {id} is not in the record set"));
@@ -575,7 +588,7 @@ impl Market {
                 market_row.decayed += row.lost;
             }
         }
-        for &id in &self.firms {
+        for id in firm_ids {
             let firm = firms
                 .get(&id)
                 .unwrap_or_else(|| panic!("firm {id} is not in the record set"));
