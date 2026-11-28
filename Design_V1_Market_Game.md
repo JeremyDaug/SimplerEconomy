@@ -54,6 +54,7 @@ It should not be grindingly difficult, but there should be real challenge and ri
 - Everything else in the world is represented by the **External Market** (see Money and Trade).
 - Prices inside the market use the existing AMV supply-and-demand pricing (see Carryover from Existing Code).
 - **Prices are quoted in Duckats.** The market's first currency is its principal, and its value is fixed at 1. With one currency there is nothing for it to trade against, so it never moves, and AMV and the Duckat price are the same number. Before the first day, the market counts what one Duckat costs to mint, in time, and sets the value of one unit of time from that. Every opening price is then in Duckats.
+- **Supply is what is offered.** Prices move on the units put up for sale that day, not on stock held back. A firm offers what it made on the last day plus `firm.stock_offer_share` (default 0.10) of its held output stock. The rest is held and isn't supply.
 
 ## Goods
 

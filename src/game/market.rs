@@ -1436,8 +1436,8 @@ mod orders_should {
 
     #[test]
     fn a_firm_sale_records_the_price_it_sold_at() {
-        // Bread is 3. The firm lists six and the buyer takes some.
-        // The budget is the units sold times that price.
+        // Bread is 3. The firm made six yesterday, lists them, and the
+        // buyer takes some. The budget is the units sold times that price.
         let mut factuals = Factuals::new();
         factuals.goods.insert(GRAIN, plain(GRAIN));
         factuals.goods.insert(BREAD, plain(BREAD));
@@ -1452,7 +1452,14 @@ mod orders_should {
         buyer.property.insert(GRAIN, PopPRow::new(20.0));
         buyer.desires[0].push(bread_desire(4.0));
         let mut firm = Firm::new(1, "bakery".into());
-        firm.property.insert(BREAD, FirmPRow::new().with_quantity(6.0));
+        firm.property.insert(
+            BREAD,
+            FirmPRow {
+                quantity: 6.0,
+                made: 6.0,
+                ..FirmPRow::default()
+            },
+        );
         firm.production_line.push(ProductionLine {
             process: 1,
             target: Some(0.0),
